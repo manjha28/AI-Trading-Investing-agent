@@ -770,32 +770,6 @@ export default function App() {
     }
   }
 
-  async function cleanupSyntheticInstruments() {
-    try {
-      const result = await apiRequest<{
-        deleted_unlinked: number;
-        marked_for_relink: number;
-        deleted_ids: string[];
-        relink_ids: string[];
-        message: string;
-      }>(
-        '/market-data/instruments/cleanup-synthetic',
-        { method: 'POST' },
-      );
-      setNotice(`${result.message} Removed ${result.deleted_unlinked}; marked ${result.marked_for_relink} for relinking.`);
-      if (selectedInstrument && result.deleted_ids.includes(selectedInstrument.id)) {
-        setSelectedInstrument(null);
-        setMarketHistory(null);
-        setMarketQuote(null);
-      } else if (selectedInstrument && result.relink_ids.includes(selectedInstrument.id)) {
-        const updated = await apiRequest<MarketInstrument>(`/market-data/instruments/${selectedInstrument.id}`);
-        setSelectedInstrument(updated);
-      }
-    } catch (requestError) {
-      setError((requestError as Error).message);
-    }
-  }
-
   async function signOut() {
     setError('');
     setNotice('');
@@ -825,7 +799,6 @@ export default function App() {
             <label>Password<input name="password" type="password" minLength={12} autoComplete={registering ? 'new-password' : 'current-password'} required /></label>
             <button className="primary-button" type="submit">{registering ? 'Create account' : 'Sign in'}</button>
           </form>
-          <button className="secondary-button" type="button" onClick={() => void cleanupSyntheticInstruments()}>Clean up synthetic demo instruments</button>
           {error && <p className="error-message" role="alert"><CircleAlert size={16} />{error}</p>}
           <button className="text-button" type="button" onClick={() => { setError(''); setRegistering((value) => !value); }}>
             {registering ? 'Already have an account? Sign in' : 'Create an account'}

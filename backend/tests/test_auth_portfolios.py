@@ -74,6 +74,7 @@ def test_registration_hashes_password_and_issues_protected_session(
     )
     registered = response.json()
 
+    assert response.status_code == 201
     assert registered["email"] == "person@example.com"
     assert "password" not in registered
     assert client.cookies.get("session_token")
@@ -86,6 +87,19 @@ def test_registration_hashes_password_and_issues_protected_session(
         user = session.scalar(select(User).where(User.email == "person@example.com"))
         assert user is not None
         assert user.password_hash != "correct-horse-battery"
+        assert user.password_hash.startswith("scrypt$")
+
+
+def test_registration_rejects_duplicate_email_case_insensitively(client: TestClient) -> None:
+    register(client, "person@example.com")
+
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "PERSON@example.com", "password": "another-correct-password"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "An account with this email already exists"}
 
 
 def test_login_and_csrf_protected_logout(client: TestClient) -> None:
