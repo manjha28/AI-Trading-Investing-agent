@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,9 +7,12 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.api import auth
 from app.db import Base, get_db
+from app.email_verification import EmailDeliveryError
 from app.main import app
-from app.models import User
+from app.models import EmailVerificationToken, User
+from app.security import hash_token
 
 
 @pytest.fixture
@@ -42,8 +46,13 @@ def register(client: TestClient, email: str) -> dict:
         "/api/v1/auth/register",
         json={"email": email, "password": "correct-horse-battery"},
     )
-    assert response.status_code == 201
-    return response.json()
+    assert response.status_code == 202
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "correct-horse-battery"},
+    )
+    assert login_response.status_code == 200
+    return login_response.json()
 
 
 def create_portfolio(client: TestClient, name: str) -> dict:
@@ -72,17 +81,17 @@ def test_registration_hashes_password_and_issues_protected_session(
         "/api/v1/auth/register",
         json={"email": "person@example.com", "password": "correct-horse-battery"},
     )
-    registered = response.json()
 
-    assert response.status_code == 201
-    assert registered["email"] == "person@example.com"
-    assert "password" not in registered
-    assert client.cookies.get("session_token")
-    assert client.cookies.get("csrf_token")
-    assert any(
-        cookie.startswith("session_token=") and "httponly" in cookie.lower()
-        for cookie in response.headers.get_list("set-cookie")
+    assert response.status_code == 202
+    assert response.json() == {"message": auth.REGISTRATION_MESSAGE}
+    assert not client.cookies.get("session_token")
+    assert not client.cookies.get("csrf_token")
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "person@example.com", "password": "correct-horse-battery"},
     )
+    assert login_response.status_code == 200
+    assert login_response.json()["email_verified"] is False
     with Session(test_engine) as session:
         user = session.scalar(select(User).where(User.email == "person@example.com"))
         assert user is not None
@@ -90,16 +99,141 @@ def test_registration_hashes_password_and_issues_protected_session(
         assert user.password_hash.startswith("scrypt$")
 
 
-def test_registration_rejects_duplicate_email_case_insensitively(client: TestClient) -> None:
-    register(client, "person@example.com")
+def test_registration_sends_hashed_single_use_verification_token(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    delivered: list[tuple[str, str]] = []
+    monkeypatch.setattr(auth, "send_verification_email", lambda email, token: delivered.append((email, token)))
 
     response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "verify@example.com", "password": "correct-horse-battery"},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"message": auth.REGISTRATION_MESSAGE}
+    assert not client.cookies.get("session_token")
+    assert delivered and delivered[0][0] == "verify@example.com"
+    raw_token = delivered[0][1]
+    assert raw_token not in response.text
+    with Session(test_engine) as db:
+        token_row = db.scalar(select(EmailVerificationToken))
+        assert token_row is not None
+        assert token_row.token_hash == hash_token(raw_token)
+        assert token_row.token_hash != raw_token
+        assert token_row.expires_at > token_row.created_at
+
+    verified = client.post("/api/v1/auth/verify-email", json={"token": raw_token})
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["email_verified"] is True
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "verify@example.com", "password": "correct-horse-battery"},
+    )
+    assert login_response.status_code == 200
+    assert login_response.json()["email_verified"] is True
+    assert client.get("/api/v1/auth/me").json()["email_verified"] is True
+    assert client.post("/api/v1/auth/verify-email", json={"token": raw_token}).status_code == 400
+
+
+def test_email_verification_rejects_invalid_and_expired_tokens(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    delivered: list[str] = []
+    monkeypatch.setattr(auth, "send_verification_email", lambda _email, token: delivered.append(token))
+    register(client, "expired@example.com")
+    with Session(test_engine) as db:
+        token_row = db.scalar(select(EmailVerificationToken))
+        assert token_row is not None
+        token_row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+
+    invalid = client.post("/api/v1/auth/verify-email", json={"token": "x" * 43})
+    expired = client.post("/api/v1/auth/verify-email", json={"token": delivered[0]})
+
+    assert invalid.status_code == 400
+    assert expired.status_code == 410
+    assert client.get("/api/v1/auth/me").json()["email_verified"] is False
+
+
+def test_resend_verification_rate_limits_and_invalidates_prior_link(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    delivered: list[str] = []
+    monkeypatch.setattr(auth, "send_verification_email", lambda _email, token: delivered.append(token))
+    register(client, "resend@example.com")
+    first_token = delivered[0]
+    immediate = client.post("/api/v1/auth/verification/resend", headers={
+        "X-CSRF-Token": client.cookies.get("csrf_token", ""),
+    })
+    assert immediate.status_code == 429
+
+    with Session(test_engine) as db:
+        token_row = db.scalar(select(EmailVerificationToken).order_by(EmailVerificationToken.created_at))
+        assert token_row is not None
+        token_row.created_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        db.commit()
+
+    resent = client.post("/api/v1/auth/verification/resend", headers={
+        "X-CSRF-Token": client.cookies.get("csrf_token", ""),
+    })
+    assert resent.status_code == 202, resent.text
+    assert len(delivered) == 2
+    assert client.post("/api/v1/auth/verify-email", json={"token": first_token}).status_code == 400
+    verified = client.post("/api/v1/auth/verify-email", json={"token": delivered[1]})
+    assert verified.status_code == 200
+    assert verified.json()["email_verified"] is True
+
+
+def test_email_delivery_failure_keeps_account_unverified_and_resend_error_is_safe(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    def fail_delivery(_email: str, _token: str) -> None:
+        raise EmailDeliveryError("provider response with private details")
+
+    monkeypatch.setattr(auth, "send_verification_email", fail_delivery)
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "delivery-failure@example.com", "password": "correct-horse-battery"},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"message": auth.REGISTRATION_MESSAGE}
+    assert "provider response" not in response.text
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "delivery-failure@example.com", "password": "correct-horse-battery"},
+    )
+    assert login_response.status_code == 200
+    assert login_response.json()["email_verified"] is False
+    assert client.get("/api/v1/auth/me").json()["email_verified"] is False
+
+    with Session(test_engine) as db:
+        token_row = db.scalar(select(EmailVerificationToken))
+        assert token_row is not None
+        token_row.created_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        db.commit()
+
+    resend = client.post("/api/v1/auth/verification/resend", headers={
+        "X-CSRF-Token": client.cookies.get("csrf_token", ""),
+    })
+    assert resend.status_code == 503
+    assert "provider response" not in resend.text
+
+
+def test_registration_rejects_duplicate_email_case_insensitively(client: TestClient) -> None:
+    first = client.post(
+        "/api/v1/auth/register",
+        json={"email": "person@example.com", "password": "correct-horse-battery"},
+    )
+    second = client.post(
         "/api/v1/auth/register",
         json={"email": "PERSON@example.com", "password": "another-correct-password"},
     )
 
-    assert response.status_code == 409
-    assert response.json() == {"detail": "An account with this email already exists"}
+    assert first.status_code == second.status_code == 202
+    assert first.json() == second.json() == {"message": auth.REGISTRATION_MESSAGE}
+    assert not client.cookies.get("session_token")
 
 
 def test_login_and_csrf_protected_logout(client: TestClient) -> None:

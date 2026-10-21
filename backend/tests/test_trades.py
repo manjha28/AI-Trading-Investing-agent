@@ -36,7 +36,12 @@ def register(client: TestClient, email: str) -> None:
         "/api/v1/auth/register",
         json={"email": email, "password": "correct-horse-battery"},
     )
-    assert response.status_code == 201
+    assert response.status_code == 202
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "correct-horse-battery"},
+    )
+    assert login_response.status_code == 200
 
 
 def create_trade(client: TestClient, **payload):

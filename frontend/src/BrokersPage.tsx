@@ -8,9 +8,10 @@ type Broker = {
   enabled: boolean;
   synthetic: boolean;
   connected: boolean;
+  connection_status: 'connected' | 'expired' | 'not_connected';
+  integration_status: 'available' | 'setup_required' | 'pending' | 'synthetic';
   expires_at: string | null;
   last_synced_at: string | null;
-  direct_login: boolean;
 };
 
 type Difference = {
@@ -23,6 +24,13 @@ type Difference = {
   exchanges: string[];
 };
 
+type BrokerAccount = {
+  profile: Record<string, unknown>;
+  funds: unknown;
+  order_history: unknown[];
+  synthetic: boolean;
+};
+
 const readableStatus: Record<Difference['status'], string> = {
   missing: 'Missing at broker',
   extra: 'Not in manual ledger',
@@ -32,10 +40,11 @@ const readableStatus: Record<Difference['status'], string> = {
 export function BrokersPage({ portfolioId }: { portfolioId: string }) {
   const [brokers, setBrokers] = useState<Broker[]>([]);
   const [differences, setDifferences] = useState<Record<string, Difference[]>>({});
-  const [clientCode, setClientCode] = useState('');
-  const [pin, setPin] = useState('');
-  const [totp, setTotp] = useState('');
+  const [accounts, setAccounts] = useState<Record<string, BrokerAccount>>({});
+  const [accountErrors, setAccountErrors] = useState<Record<string, string>>({});
+  const [clientId, setClientId] = useState('');
   const [busy, setBusy] = useState('');
+  const [failedBroker, setFailedBroker] = useState('');
   const [error, setError] = useState('');
   const [brokerApiUnavailable, setBrokerApiUnavailable] = useState(false);
   const [notice, setNotice] = useState('');
@@ -43,6 +52,24 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
   const refresh = useCallback(async () => {
     const nextBrokers = await apiRequest<Broker[]>('/brokers');
     setBrokers(nextBrokers);
+    const accountResults = await Promise.all(nextBrokers
+      .filter((broker) => broker.connected)
+      .map(async (broker) => {
+        try {
+          const account = await apiRequest<BrokerAccount>(`/brokers/${broker.slug}/account`);
+          return [broker.slug, account, ''] as const;
+        } catch (requestError) {
+          return [broker.slug, null, (requestError as Error).message] as const;
+        }
+      }));
+    const nextAccounts: Record<string, BrokerAccount> = {};
+    const nextAccountErrors: Record<string, string> = {};
+    for (const [slug, account, message] of accountResults) {
+      if (account) nextAccounts[slug] = account;
+      else if (message) nextAccountErrors[slug] = message;
+    }
+    setAccounts(nextAccounts);
+    setAccountErrors(nextAccountErrors);
     if (!portfolioId) {
       setDifferences({});
       return;
@@ -71,19 +98,14 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
   async function connect(broker: Broker) {
     setError('');
     setNotice('');
+    setFailedBroker('');
     setBusy(broker.slug);
     try {
-      const body = broker.slug === 'angel_one'
-        ? { client_code: clientCode, pin, totp }
-        : broker.slug === 'dhan'
-          ? { client_id: clientCode }
-          : {};
+      const body = broker.slug === 'dhan' ? { client_id: clientId } : {};
       const result = await apiRequest<{ redirect_url: string | null; connected: boolean }>(
         `/brokers/${broker.slug}/connect`,
         { method: 'POST', body: JSON.stringify(body) },
       );
-      setPin('');
-      setTotp('');
       if (result.redirect_url) {
         window.location.assign(result.redirect_url);
         return;
@@ -91,6 +113,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
       await refresh();
       setNotice(`${broker.name} connected. No orders can be placed through this connection.`);
     } catch (requestError) {
+      setFailedBroker(broker.slug);
       setError((requestError as Error).message);
     } finally {
       setBusy('');
@@ -100,6 +123,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
   async function sync(broker: Broker) {
     setError('');
     setNotice('');
+    setFailedBroker('');
     setBusy(broker.slug);
     try {
       const result = await apiRequest<{ holdings_count: number; positions_count: number; synthetic: boolean }>(
@@ -111,6 +135,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
         `${broker.name}: synced ${result.holdings_count} holding(s) and ${result.positions_count} position(s).${result.synthetic ? ' These values are synthetic demo data.' : ''}`,
       );
     } catch (requestError) {
+      setFailedBroker(broker.slug);
       setError((requestError as Error).message);
     } finally {
       setBusy('');
@@ -121,12 +146,14 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
     if (!window.confirm(`Disconnect ${broker.name}? This deletes its saved connection credential.`)) return;
     setError('');
     setNotice('');
+    setFailedBroker('');
     setBusy(broker.slug);
     try {
       await apiRequest<void>(`/brokers/${broker.slug}`, { method: 'DELETE' });
       await refresh();
       setNotice(`${broker.name} disconnected. Its previously synced mirror remains read-only.`);
     } catch (requestError) {
+      setFailedBroker(broker.slug);
       setError((requestError as Error).message);
     } finally {
       setBusy('');
@@ -198,28 +225,54 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
               <div>
                 <h2>{broker.name}</h2>
                 <p className={broker.connected ? 'broker-status connected' : 'broker-status'}>
-                  {broker.connected ? 'Connected' : broker.enabled ? 'Not connected' : 'Disabled — credentials required'}
-                </p>
+                      {busy === broker.slug
+                            ? broker.connected ? 'Syncing…' : 'Connecting…'
+                        : failedBroker === broker.slug
+                          ? 'Connection failed'
+                          : broker.connection_status === 'connected'
+                        ? 'Connected'
+                        : broker.connection_status === 'expired'
+                          ? 'Connection expired — reconnect required'
+                          : broker.integration_status === 'pending'
+                            ? 'Pending — official redirect flow required'
+                            : broker.enabled
+                              ? 'Not connected'
+                              : broker.integration_status === 'synthetic'
+                                ? 'Synthetic demo only'
+                                : 'Not connected — app setup required'}
+                    </p>
               </div>
             </div>
             {broker.synthetic && <p className="broker-synthetic">SYNTHETIC DEMO DATA — NOT A REAL ACCOUNT</p>}
             {broker.last_synced_at && <p className="broker-sync-time">Last sync: {new Date(broker.last_synced_at).toLocaleString()}</p>}
             {broker.expires_at && <p className="broker-sync-time">Session expiry: {new Date(broker.expires_at).toLocaleString()}</p>}
-            {broker.slug === 'dhan' && !broker.connected && broker.enabled && (
-              <label className="broker-secret-field">Dhan client ID<input value={clientCode} onChange={(event) => setClientCode(event.target.value)} autoComplete="off" /></label>
+            {broker.last_synced_at && (
+              <p className="broker-sync-time">
+                Account data source: {broker.synthetic ? 'synthetic demo' : 'live broker API'} · Last successful sync {new Date(broker.last_synced_at).toLocaleString()}
+              </p>
             )}
-            {broker.slug === 'angel_one' && !broker.connected && broker.enabled && (
-              <div className="broker-login-fields">
-                <label className="broker-secret-field">Client code<input value={clientCode} onChange={(event) => setClientCode(event.target.value)} autoComplete="off" /></label>
-                <label className="broker-secret-field">PIN<input type="password" value={pin} onChange={(event) => setPin(event.target.value)} autoComplete="new-password" /></label>
-                <label className="broker-secret-field">TOTP<input type="password" value={totp} onChange={(event) => setTotp(event.target.value)} autoComplete="one-time-code" /></label>
-                <small>Sent only to SmartAPI for login and never stored.</small>
-              </div>
+            {broker.slug === 'dhan' && !broker.connected && broker.enabled && broker.integration_status === 'available' && (
+              <label className="broker-secret-field">Dhan client ID<input value={clientId} onChange={(event) => setClientId(event.target.value)} autoComplete="off" /></label>
+            )}
+            {broker.integration_status === 'pending' && (
+              <p className="broker-sync-time">Authentication is not available yet. Trading Copilot never collects your broker password, PIN, or OTP.</p>
+            )}
+            {broker.integration_status === 'setup_required' && (
+              <p className="broker-sync-time">Requires a developer app, registered redirect URL, and server-side API credentials.</p>
+            )}
+            {accountErrors[broker.slug] && <p className="broker-sync-time">Account details unavailable: {accountErrors[broker.slug]}</p>}
+            {accounts[broker.slug] && (
+              <details className="broker-sync-time">
+                <summary>{accounts[broker.slug].synthetic ? 'Synthetic demo account details' : 'Live broker account details'}</summary>
+                <p>Profile: {JSON.stringify(accounts[broker.slug].profile)}</p>
+                <p>Funds: {JSON.stringify(accounts[broker.slug].funds)}</p>
+                <p>Read-only order history: {accounts[broker.slug].order_history.length} record(s)</p>
+              </details>
             )}
             <div className="broker-actions">
               {!broker.connected ? (
-                <button className="primary-button" type="button" onClick={() => void connect(broker)} disabled={!broker.enabled || busy === broker.slug || (broker.slug === 'dhan' && !clientCode) || (broker.slug === 'angel_one' && (!clientCode || !pin || !totp))}>
-                  {busy === broker.slug ? 'Connecting…' : 'Connect'}
+                <button className="primary-button" type="button" onClick={() => void connect(broker)} disabled={!broker.enabled || busy === broker.slug || (broker.slug === 'dhan' && !clientId)}>
+                  {busy === broker.slug ? 'Connecting…' : broker.connection_status === 'expired' ? 'Reconnect' : 'Connect'}
                 </button>
               ) : (
                 <>
@@ -267,6 +320,14 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
             )}
           </article>
         ))}
+        <article className="broker-card">
+          <div className="broker-card-heading">
+            <span className="broker-logo" aria-hidden="true">+</span>
+            <div><h2>Other brokers</h2><p className="broker-status">Not supported yet</p></div>
+          </div>
+          <p className="broker-sync-time">Only the brokers listed here have adapters. No connection is attempted for other providers.</p>
+          <button className="secondary-button" type="button" disabled>Pending integration</button>
+        </article>
       </div>}
       {!brokerApiUnavailable && !brokers.length && !error && <p className="table-empty">Loading available brokers…</p>}
       {!portfolioId && <p className="accounting-note">Create or select a manual portfolio to compare holdings and import confirmed differences.</p>}

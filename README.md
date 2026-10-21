@@ -105,7 +105,17 @@ curl -i http://127.0.0.1:5173/api/v1/ready
 - Codespaces devcontainer with PostgreSQL service
 - Portfolio valuation is available for instrument-linked holdings and explicitly marks missing, stale, and synthetic prices as unreliable. Journal CSV import, corporate actions, research, backtesting, live orders, and AI are not connected.
 
-Authentication routes are under `/api/v1/auth`: `POST /register`, `POST /login`, `GET /me`, and `POST /logout`. Sessions are opaque server-side records; password and session tokens are stored only as hashes. Portfolio writes require the `csrf_token` cookie value in the `X-CSRF-Token` header. Production cookies are Secure; configure HTTPS and an exact `FRONTEND_ORIGIN` before deployment. Authentication rate limiting, email verification, account recovery, corporate actions, and FX conversion remain unfinished.
+Authentication routes are under `/api/v1/auth`: `POST /register`, `POST /login`, `GET /me`, `POST /verify-email`, `POST /verification/resend`, and `POST /logout`. Registration returns the same generic acknowledgement for new and existing email addresses to prevent enumeration; sign in after registration. Accounts remain unverified until a single-use, hashed, 24-hour token is confirmed. The verification email is sent through Resend; delivery failure does not mark the account verified, and a signed-in user can request a rate-limited resend. Sessions are opaque server-side records; password and session tokens are stored only as hashes. Portfolio writes require the `csrf_token` cookie value in the `X-CSRF-Token` header. Production cookies are Secure; configure HTTPS and an exact `FRONTEND_ORIGIN` before deployment. Account recovery, broad authentication rate limiting, corporate actions, and FX conversion remain unfinished.
+
+For email verification, create a Resend account, add and verify a domain you control, then create an API key with email-send access. Set these backend-only values:
+
+```dotenv
+RESEND_API_KEY=
+RESEND_FROM_EMAIL=Trading Copilot <accounts@mail.example.com>
+EMAIL_VERIFICATION_URL=https://app.example.com/
+```
+
+The `RESEND_FROM_EMAIL` domain must be verified in Resend. `EMAIL_VERIFICATION_URL` must be the public frontend root; links use a URL fragment (`/#verify-email/<single-use-token>`) so the token is not sent in the frontend HTTP request. In Codespaces, set it to the forwarded port-5173 URL. Do not use `FINNHUB_API_KEY` for mail. Apply migration `0012_email_verification` with `cd backend && alembic upgrade head`.
 
 Portfolio transaction CSV uses exactly `transaction_type,symbol,quantity,unit_price,amount,fee,occurred_at`; trade rows leave `amount` blank, and cash/dividend rows leave `quantity` and `unit_price` blank. Timestamps must include a timezone. The importer accepts up to 1 MB and 1,000 rows, shows a preview, rejects invalid ledger changes as a batch, and skips rows matching existing transactions or earlier rows in the same file. Export is portfolio-scoped and marked `no-store`.
 
@@ -149,7 +159,7 @@ Broker endpoints only read profile, holdings, positions, order history, and fund
 Broker API routes are under `/api/v1/brokers`:
 
 - `GET /api/v1/brokers` — supported brokers and the current user's connection status.
-- `POST /api/v1/brokers/{slug}/connect` — starts broker login and returns a redirect URL, except Angel One's direct TOTP login.
+- `POST /api/v1/brokers/{slug}/connect` — starts the broker's official redirect/consent flow. Angel One is explicitly pending; Trading Copilot never collects broker passwords, PINs, or OTPs.
 - `GET /api/v1/brokers/{slug}/callback` — handles broker callback and stores encrypted tokens.
 - `POST /api/v1/brokers/{slug}/sync` — refreshes the read-only holdings/positions mirror idempotently.
 - `GET /api/v1/brokers/{slug}/mirror?kind=holding|position` — reads the current user's mirror.
@@ -158,7 +168,7 @@ Broker API routes are under `/api/v1/brokers`:
 - `POST /api/v1/brokers/{slug}/reconciliation/import` — creates explicitly confirmed manual transactions for selected differences.
 - `DELETE /api/v1/brokers/{slug}` — hard-deletes that user's encrypted broker credential and pending OAuth state.
 
-Every broker route requires an authenticated session with a verified email and a completed 2FA step, and all mutating requests require CSRF validation. This M3 change adds fail-closed `users.email_verified` and `user_sessions.two_factor_verified` fields, defaulting to false. This repository does not yet implement M2 verification/2FA enrollment or completion, so broker access remains blocked until M2 sets these fields only after real verification; do not manually mark accounts verified to bypass the gate. The mock broker is not an authentication bypass.
+Every broker route requires an authenticated session with a verified email and a completed 2FA step, and all mutating requests require CSRF validation. Email verification is implemented; session 2FA enrollment and completion are still pending, so real broker access remains blocked until a real 2FA flow is implemented. Do not manually mark accounts or sessions verified to bypass the gate. The mock broker is clearly synthetic and is not a real broker connection.
 
 Set `BROKER_ENCRYPTION_KEY` in the backend environment before connecting any broker. Generate a Fernet key with:
 
@@ -173,12 +183,12 @@ Keep the key stable and private: losing it makes stored broker tokens unreadable
 | --- | --- | --- |
 | Zerodha Kite Connect | `BROKER_ZERODHA_ENABLED=true`, `ZERODHA_API_KEY`, `ZERODHA_API_SECRET`, `ZERODHA_REDIRECT_URL` | Register the exact URL `http://localhost:5173/api/v1/brokers/zerodha/callback` locally, or `https://<codespace>-5173.app.github.dev/api/v1/brokers/zerodha/callback` in Codespaces, in the Kite developer console. Kite redirects with a short-lived `request_token`; ordinary access tokens cannot be refreshed, so reconnect after expiry. |
 | Upstox | `BROKER_UPSTOX_ENABLED=true`, `UPSTOX_CLIENT_ID`, `UPSTOX_CLIENT_SECRET`, `UPSTOX_REDIRECT_URI` | Register the exact URL `http://localhost:5173/api/v1/brokers/upstox/callback` locally, or the corresponding forwarded Codespaces URL. Upstox returns a single-use authorization code. Standard OAuth access tokens do not provide a documented refresh-token grant; reconnect when expired. |
-| Angel One SmartAPI | `BROKER_ANGEL_ONE_ENABLED=true`, `ANGEL_ONE_API_KEY`, `ANGEL_ONE_CLIENT_LOCAL_IP`, `ANGEL_ONE_CLIENT_PUBLIC_IP`, `ANGEL_ONE_MAC_ADDRESS` | SmartAPI has no conventional redirect callback. Login is completed by its API using the user's client code, PIN, and TOTP; PIN/TOTP are sent only for login and are not stored. A refresh token is used when available. |
+| Angel One SmartAPI | Not enabled | Pending. The documented SmartAPI login requires collecting the user's client PIN/TOTP in a way this application intentionally does not support. No credentials are requested or accepted. |
 | Dhan | `BROKER_DHAN_ENABLED=true`, `DHAN_API_KEY`, `DHAN_API_SECRET`, `DHAN_REDIRECT_URI` | Register `http://localhost:5173/api/v1/brokers/dhan/callback` locally, or the corresponding forwarded Codespaces URL. Dhan uses its consent login and returns a `tokenId` to this callback; it is exchanged server-side. |
 
-For Codespaces, set each broker redirect variable to the exact HTTPS forwarded **frontend** URL shown in the Ports panel (port 5173), and register the same URL with that broker. The callback path must match exactly. Do not forward the backend API port publicly for broker callbacks. Zerodha and Upstox documented login flows: [Kite Connect](https://kite.trade/docs/connect/v3/user/) and [Upstox authentication](https://upstox.com/developer/api-documentation/authentication/). Angel One's API login is documented under [SmartAPI Authentication](https://smartapi.angelbroking.com/docs/Authentication); Dhan's consent process is in [DhanHQ Authentication](https://dhanhq.co/docs/v2/authentication/).
+For Codespaces, set each broker redirect variable to the exact HTTPS forwarded **frontend** URL shown in the Ports panel (port 5173), and register the same URL with that broker. The callback path must match exactly. Do not forward the backend API port publicly for broker callbacks. Zerodha documents the request-token exchange and next-day token expiry in [Kite Connect User API](https://kite.trade/docs/connect/v3/user/); Upstox documents its official OAuth authorization-code flow in [Upstox Authentication](https://upstox.com/developer/api-documentation/authentication/); Dhan documents individual API-key consent in [DhanHQ Authentication](https://dhanhq.co/docs/v2/authentication/). Each requires the user's developer app/API access and exact redirect registration; verify current access eligibility and any commercial/approval terms in each broker's developer console before enabling it. No live credentials or broker account were available here, so live authentication and permissions have not been verified. No additional broker is currently supported beyond the listed adapters.
 
-After configuring the backend environment, apply all additive migrations through `0011_read_only_brokers` with `cd backend && alembic upgrade head`.
+After configuring the backend environment, apply all additive migrations through `0012_email_verification` with `cd backend && alembic upgrade head`.
 
 Run backend tests with `cd backend && python -m pytest -q`. Frontend type-check/build with `cd frontend && npm run build`.
 

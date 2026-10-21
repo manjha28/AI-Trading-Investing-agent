@@ -41,9 +41,6 @@ OAUTH_STATE_TTL = timedelta(minutes=10)
 
 class ConnectRequest(BaseModel):
     client_id: str | None = Field(default=None, min_length=1, max_length=80)
-    client_code: str | None = Field(default=None, min_length=1, max_length=80)
-    pin: str | None = Field(default=None, min_length=1, max_length=128)
-    totp: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class MirrorRow(BaseModel):
@@ -412,15 +409,29 @@ def list_brokers(
     result = []
     for slug, adapter_type in ADAPTERS.items():
         credential = credentials.get(slug)
+        expires_at = credential.expires_at if credential else None
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        expired = expires_at is not None and expires_at <= _now()
         result.append({
             "slug": slug,
             "name": adapter_type.display_name,
             "enabled": adapter_type().enabled,
             "synthetic": adapter_type.is_synthetic,
-            "connected": credential is not None,
-            "expires_at": credential.expires_at if credential else None,
+            "integration_status": (
+                "pending" if slug == "angel_one"
+                else "synthetic" if adapter_type.is_synthetic
+                else "available" if adapter_type().enabled
+                else "setup_required"
+            ),
+            "connection_status": (
+                "not_connected" if credential is None
+                else "expired" if expired else "connected"
+            ),
+            "connected": credential is not None and not expired,
+            "expires_at": expires_at,
             "last_synced_at": credential.last_synced_at if credential else None,
-            "direct_login": slug == "angel_one",
+            "direct_login": False,
         })
     return result
 
@@ -446,9 +457,6 @@ async def connect_broker(
         key: value
         for key, value in {
             "client_id": body.client_id,
-            "client_code": body.client_code,
-            "pin": body.pin,
-            "totp": body.totp,
         }.items()
         if value is not None
     }
@@ -461,10 +469,6 @@ async def connect_broker(
         parsed_redirect = urlsplit(redirect_uri)
         return_origin = f"{parsed_redirect.scheme}://{parsed_redirect.netloc}"
     try:
-        if slug == "angel_one":
-            tokens, expires_at = adapter.exchange_callback({}, credentials)
-            _save_credential(db, _user_id(active_session), slug, tokens, expires_at)
-            return {"redirect_url": None, "connected": True}
         redirect_url = adapter.authenticate(state=state, redirect_uri=redirect_uri, credentials=credentials)
     except BrokerAdapterError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
@@ -482,16 +486,15 @@ async def connect_broker(
         )
     )
     db.commit()
-    if slug != "angel_one":
-        response.set_cookie(
-            key=f"broker_state_{slug}",
-            value=state,
-            httponly=True,
-            secure=settings.environment == "production",
-            samesite="lax",
-            max_age=int(OAUTH_STATE_TTL.total_seconds()),
-            path=f"/api/v1/brokers/{slug}/callback",
-        )
+    response.set_cookie(
+        key=f"broker_state_{slug}",
+        value=state,
+        httponly=True,
+        secure=settings.environment == "production",
+        samesite="lax",
+        max_age=int(OAUTH_STATE_TTL.total_seconds()),
+        path=f"/api/v1/brokers/{slug}/callback",
+    )
     return {"redirect_url": redirect_url, "connected": False}
 
 

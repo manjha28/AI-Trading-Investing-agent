@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     environment: str = "development"
     frontend_origin: str = "http://localhost:5173"
     database_url: str = "postgresql+psycopg://copilot:copilot@postgres:5432/trading_copilot"
+    resend_api_key: SecretStr | None = None
+    resend_from_email: str = ""
+    email_verification_url: str = "http://localhost:5173/"
     market_data_providers: str = "delta_exchange,binance,yfinance,upstox,mock"
     twelve_data_api_key: SecretStr | None = None
     finnhub_api_key: SecretStr | None = None
@@ -24,11 +27,6 @@ class Settings(BaseSettings):
     upstox_client_id: SecretStr | None = None
     upstox_client_secret: SecretStr | None = None
     upstox_redirect_uri: str | None = None
-    broker_angel_one_enabled: bool = False
-    angel_one_api_key: SecretStr | None = None
-    angel_one_client_local_ip: str | None = None
-    angel_one_client_public_ip: str | None = None
-    angel_one_mac_address: str | None = None
     broker_dhan_enabled: bool = False
     dhan_api_key: SecretStr | None = None
     dhan_api_secret: SecretStr | None = None

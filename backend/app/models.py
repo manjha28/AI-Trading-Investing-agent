@@ -38,6 +38,22 @@ class UserSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class EmailVerificationToken(Base):
+    __tablename__ = "email_verification_tokens"
+    __table_args__ = (
+        Index("ix_email_verification_tokens_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Portfolio(Base):
     __tablename__ = "portfolios"
     __table_args__ = (

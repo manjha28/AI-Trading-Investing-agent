@@ -51,7 +51,12 @@ def register(client: TestClient, email: str = "market@example.com") -> None:
         "/api/v1/auth/register",
         json={"email": email, "password": "correct-horse-battery"},
     )
-    assert response.status_code == 201, response.text
+    assert response.status_code == 202, response.text
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "correct-horse-battery"},
+    )
+    assert login_response.status_code == 200, login_response.text
 
 
 def test_market_data_endpoints_require_authentication(client: TestClient) -> None:

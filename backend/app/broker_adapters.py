@@ -350,114 +350,40 @@ class UpstoxAdapter(BrokerAdapter):
 
 class AngelOneAdapter(BrokerAdapter):
     slug = "angel_one"
-    display_name = "Angel One SmartAPI"
-    api_root = "https://apiconnect.angelone.in/rest/secure/angelbroking"
-
-    @property
-    def api_key(self) -> str | None:
-        return _secret(settings.angel_one_api_key)
+    display_name = "Angel One SmartAPI (pending)"
+    api_root = ""
 
     @property
     def enabled(self) -> bool:
-        return settings.broker_angel_one_enabled and _required(
-            self.api_key,
-            settings.angel_one_client_local_ip,
-            settings.angel_one_client_public_ip,
-            settings.angel_one_mac_address,
-        )
+        return False
 
-    def authenticate(self, *, state: str, redirect_uri: str, credentials: Mapping[str, str]) -> None:
-        if not self.enabled:
-            raise BrokerAdapterError("Broker is disabled or credentials are not configured")
-        return None
+    def authenticate(self, *, state: str, redirect_uri: str, credentials: Mapping[str, str]) -> str:
+        raise BrokerAdapterError(
+            "Angel One integration is pending a supported redirect-only authentication flow"
+        )
 
     def exchange_callback(
         self, parameters: Mapping[str, str], credentials: Mapping[str, str]
     ) -> tuple[dict[str, str], datetime]:
-        if not self.enabled or not _required(
-            credentials.get("client_code"), credentials.get("pin"), credentials.get("totp")
-        ):
-            raise BrokerAdapterError("Angel One login credentials are required")
-        payload = _request(
-            "POST",
-            "https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword",
-            headers=self._headers(),
-            json={
-                "clientcode": credentials["client_code"],
-                "password": credentials["pin"],
-                "totp": credentials["totp"],
-            },
-        )
-        data = _unwrap(payload)
-        if not isinstance(data, dict) or not data.get("jwtToken"):
-            raise BrokerAdapterError("Broker did not issue an access token")
-        tokens = {
-            "access_token": str(data["jwtToken"]),
-            "refresh_token": str(data.get("refreshToken", "")),
-            "client_code": credentials["client_code"],
-        }
-        return tokens, _expires_at(data, timedelta(hours=24))
-
-    def _headers(self, access_token: str | None = None) -> dict[str, str]:
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "X-PrivateKey": self.api_key or "",
-            "X-UserType": "USER",
-            "X-SourceID": "WEB",
-            "X-ClientLocalIP": settings.angel_one_client_local_ip or "",
-            "X-ClientPublicIP": settings.angel_one_client_public_ip or "",
-            "X-MACAddress": settings.angel_one_mac_address or "",
-        }
-        if access_token:
-            headers["Authorization"] = f"Bearer {access_token}"
-        return headers
+        raise BrokerAdapterError("Angel One integration is pending")
 
     def refresh_token(self, tokens: Mapping[str, str]) -> tuple[dict[str, str], datetime]:
-        if not self.enabled or not tokens.get("refresh_token"):
-            raise BrokerReconnectRequired("Reconnect to this broker to renew the session")
-        payload = _request(
-            "POST",
-            f"https://apiconnect.angelone.in/rest/auth/angelbroking/jwt/v1/generateTokens",
-            headers=self._headers(),
-            json={"refreshToken": tokens["refresh_token"]},
-        )
-        data = _unwrap(payload)
-        if not isinstance(data, dict) or not data.get("jwtToken"):
-            raise BrokerReconnectRequired("Reconnect to this broker to renew the session")
-        return {
-            "access_token": str(data["jwtToken"]),
-            "refresh_token": str(data.get("refreshToken", tokens["refresh_token"])),
-            "client_code": tokens["client_code"],
-        }, _expires_at(data, timedelta(hours=24))
-
-    def get(self, path: str, access_token: str, tokens: Mapping[str, str]) -> Any:
-        method = "POST" if path.endswith("/getProfile") else "GET"
-        payload = _request(
-            method,
-            f"{self.api_root}{path}",
-            headers=self._headers(access_token),
-            **({"json": {}} if method == "POST" else {}),
-        )
-        return _unwrap(payload)
+        raise BrokerReconnectRequired("Angel One integration is pending")
 
     def get_profile(self, access_token: str, tokens: Mapping[str, str]) -> Any:
-        return self.get("/user/v1/getProfile", access_token, tokens)
+        raise BrokerAdapterError("Angel One integration is pending")
 
     def get_holdings(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
-        payload = self.get("/portfolio/v1/getAllHolding", access_token, tokens)
-        return _list_payload(payload)
+        raise BrokerAdapterError("Angel One integration is pending")
 
     def get_positions(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
-        payload = self.get("/portfolio/v1/getPosition", access_token, tokens)
-        return _list_payload(payload)
+        raise BrokerAdapterError("Angel One integration is pending")
 
     def get_order_history(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
-        payload = self.get("/order/v1/getOrderBook", access_token, tokens)
-        return _list_payload(payload)
+        raise BrokerAdapterError("Angel One integration is pending")
 
     def get_funds(self, access_token: str, tokens: Mapping[str, str]) -> Any:
-        return self.get("/user/v1/getRMS", access_token, tokens)
+        raise BrokerAdapterError("Angel One integration is pending")
 
 
 class DhanAdapter(BrokerAdapter):

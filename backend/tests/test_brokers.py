@@ -2,10 +2,11 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import pytest
+import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api import brokers
+from app.broker_adapters import BrokerAdapterError, UpstoxAdapter
 from app.config import settings
 from app.db import Base, get_db
 from app.main import BrokerCallbackAccessLogFilter, app
@@ -60,7 +62,12 @@ def register(client: TestClient, email: str) -> None:
         "/api/v1/auth/register",
         json={"email": email, "password": "correct-horse-battery"},
     )
-    assert response.status_code == 201
+    assert response.status_code == 202
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "correct-horse-battery"},
+    )
+    assert login_response.status_code == 200
 
 
 def complete_broker_gate(client: TestClient, test_engine) -> None:
@@ -145,7 +152,6 @@ def test_broker_list_route_is_mounted_and_returns_connection_status(clients, tes
     [
         ("zerodha", "broker_zerodha_enabled", ("zerodha_api_key", "zerodha_api_secret", "zerodha_redirect_url")),
         ("upstox", "broker_upstox_enabled", ("upstox_client_id", "upstox_client_secret", "upstox_redirect_uri")),
-        ("angel_one", "broker_angel_one_enabled", ("angel_one_api_key", "angel_one_client_local_ip", "angel_one_client_public_ip", "angel_one_mac_address")),
         ("dhan", "broker_dhan_enabled", ("dhan_api_key", "dhan_api_secret", "dhan_redirect_uri")),
     ],
 )
@@ -163,6 +169,94 @@ def test_real_broker_adapters_fail_closed_without_credentials(
 
     assert response.status_code == 503
     assert "credentials" in response.json()["detail"]
+
+
+def test_angel_one_is_pending_without_collecting_login_secrets(clients, test_engine) -> None:
+    first, _ = clients
+    register(first, "angel-pending@example.com")
+    complete_broker_gate(first, test_engine)
+
+    brokers_response = first.get("/api/v1/brokers")
+    angel_one = next(item for item in brokers_response.json() if item["slug"] == "angel_one")
+    connect_response = first.post(
+        "/api/v1/brokers/angel_one/connect",
+        headers=csrf(first),
+        json={},
+    )
+
+    assert angel_one["integration_status"] == "pending"
+    assert angel_one["enabled"] is False
+    assert angel_one["direct_login"] is False
+    assert connect_response.status_code == 503
+
+
+def test_upstox_official_oauth_redirect_and_exchange_are_server_side(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "broker_upstox_enabled", True)
+    monkeypatch.setattr(settings, "upstox_client_id", SecretStr("test-client-id"))
+    monkeypatch.setattr(settings, "upstox_client_secret", SecretStr("test-client-secret"))
+    monkeypatch.setattr(
+        settings,
+        "upstox_redirect_uri",
+        "https://app.example.com/api/v1/brokers/upstox/callback",
+    )
+    adapter = UpstoxAdapter()
+    redirect_url = adapter.authenticate(
+        state="opaque-state",
+        redirect_uri="https://app.example.com/api/v1/brokers/upstox/callback",
+        credentials={},
+    )
+    parameters = parse_qs(urlsplit(redirect_url).query)
+    assert parameters == {
+        "response_type": ["code"],
+        "client_id": ["test-client-id"],
+        "redirect_uri": ["https://app.example.com/api/v1/brokers/upstox/callback"],
+        "state": ["opaque-state"],
+    }
+
+    captured: dict[str, object] = {}
+
+    def mocked_request(method: str, url: str, **kwargs):
+        captured.update(method=method, url=url, **kwargs)
+        return httpx.Response(
+            200,
+            json={"access_token": "test-access-token", "expires_in": 3600},
+        )
+
+    monkeypatch.setattr(httpx, "request", mocked_request)
+    tokens, expires_at = adapter.exchange_callback({"code": "single-use-code"}, {})
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.upstox.com/v2/login/authorization/token"
+    assert captured["data"] == {
+        "code": "single-use-code",
+        "client_id": "test-client-id",
+        "client_secret": "test-client-secret",
+        "redirect_uri": "https://app.example.com/api/v1/brokers/upstox/callback",
+        "grant_type": "authorization_code",
+    }
+    assert tokens == {"access_token": "test-access-token"}
+    assert expires_at > datetime.now(timezone.utc)
+
+
+def test_upstox_rejected_authorization_fails_without_exposing_provider_body(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "broker_upstox_enabled", True)
+    monkeypatch.setattr(settings, "upstox_client_id", SecretStr("test-client-id"))
+    monkeypatch.setattr(settings, "upstox_client_secret", SecretStr("test-client-secret"))
+    monkeypatch.setattr(
+        settings,
+        "upstox_redirect_uri",
+        "https://app.example.com/api/v1/brokers/upstox/callback",
+    )
+    monkeypatch.setattr(
+        httpx,
+        "request",
+        lambda *_args, **_kwargs: httpx.Response(403, json={"error": "permission_denied"}),
+    )
+
+    with pytest.raises(BrokerAdapterError) as error:
+        UpstoxAdapter().exchange_callback({"code": "bad-code"}, {})
+
+    assert "permission_denied" not in str(error.value)
 
 
 def test_connect_fails_closed_without_fernet_key(clients, test_engine, monkeypatch) -> None:

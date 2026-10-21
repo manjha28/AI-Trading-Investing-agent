@@ -17,11 +17,17 @@ import {
   Trash2,
   Wallet,
 } from 'lucide-react';
-import { apiRequest, downloadCsv } from './api';
+import { ApiRequestError, apiRequest, downloadCsv } from './api';
 import { CandleChart } from './CandleChart';
 import { BrokersPage } from './BrokersPage';
 
-type User = { id: string; email: string; created_at: string };
+type User = {
+  id: string;
+  email: string;
+  created_at: string;
+  email_verified: boolean;
+  verification_email_sent?: boolean | null;
+};
 type Portfolio = { id: string; name: string; base_currency: string; created_at: string };
 type Position = { symbol: string; quantity: string; cost_basis: string; average_cost: string };
 type PortfolioSummary = {
@@ -236,9 +242,19 @@ function marketRangeParams(interval: string, startDate: string, endDate: string)
   });
 }
 
+function readEmailVerificationToken(): string | null {
+  const match = window.location.hash.match(/^#verify-email\/([A-Za-z0-9_-]{32,128})$/);
+  if (!match) return null;
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  return match[1];
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [verificationToken] = useState(readEmailVerificationToken);
+  const [verificationStatus, setVerificationStatus] = useState<'verifying' | 'verified' | 'expired' | 'failed'>('verifying');
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [portfolioId, setPortfolioId] = useState('');
@@ -277,6 +293,23 @@ export default function App() {
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    if (!verificationToken) return;
+    apiRequest<User>('/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ token: verificationToken }),
+    })
+      .then((verifiedUser) => {
+        setUser((current) => current?.id === verifiedUser.id ? verifiedUser : current);
+        setVerificationStatus('verified');
+      })
+      .catch((requestError: Error) => {
+        setVerificationStatus(
+          requestError instanceof ApiRequestError && requestError.status === 410 ? 'expired' : 'failed',
+        );
+      });
+  }, [verificationToken]);
 
   useEffect(() => {
     apiRequest<User>('/auth/me')
@@ -378,11 +411,23 @@ export default function App() {
     setError('');
     const form = new FormData(event.currentTarget);
     try {
-      const result = await apiRequest<User>(registering ? '/auth/register' : '/auth/login', {
+      if (registering) {
+        const result = await apiRequest<{ message: string }>('/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({ email: form.get('email'), password: form.get('password') }),
+        });
+        setRegistering(false);
+        setNotice(`${result.message} Check your inbox and spam folder. After verifying, sign in to continue.`);
+        return;
+      }
+      const result = await apiRequest<User>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email: form.get('email'), password: form.get('password') }),
       });
       setUser(result);
+      if (!result.email_verified) {
+        setNotice('Verify your email to unlock broker connections. You can continue using manual portfolio features.');
+      }
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -783,6 +828,42 @@ export default function App() {
     }
   }
 
+  async function resendVerificationEmail() {
+    setError('');
+    setNotice('');
+    try {
+      const result = await apiRequest<{ message: string }>('/auth/verification/resend', {
+        method: 'POST',
+        body: '{}',
+      });
+      setNotice(result.message);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
+  }
+
+  if (verificationToken) {
+    const message = verificationStatus === 'verifying'
+      ? 'Verifying your email…'
+      : verificationStatus === 'verified'
+        ? 'Email verified. Broker connections are now available after you sign in.'
+        : verificationStatus === 'expired'
+          ? 'This verification link has expired. Sign in and request a new verification email.'
+          : 'This verification link is invalid or has already been used. Sign in to request a new one.';
+    return (
+      <main className="auth-layout">
+        <section className="auth-panel" aria-live="polite">
+          <div className="brand-lockup"><span className="brand-symbol"><Activity size={20} /></span><span>Trading Copilot</span></div>
+          <h1>Email verification</h1>
+          <p>{message}</p>
+          {verificationStatus !== 'verifying' && (
+            <button className="primary-button" type="button" onClick={() => window.location.assign('/')}>Continue</button>
+          )}
+        </section>
+      </main>
+    );
+  }
+
   if (checkingSession) {
     return <main className="loading-screen"><Activity size={20} /> Checking secure session</main>;
   }
@@ -794,6 +875,7 @@ export default function App() {
           <div className="brand-lockup"><span className="brand-symbol"><Activity size={20} /></span><span>Trading Copilot</span></div>
           <p className="eyebrow">PERSONAL INVESTMENT WORKSPACE</p>
           <h1>{registering ? 'Create your account' : 'Sign in'}</h1>
+          {registering && <p>We’ll email a verification link. Verify your address, then sign in to connect a broker.</p>}
           <form className="form-stack" onSubmit={submitAuth}>
             <label>Email address<input name="email" type="email" autoComplete="email" required /></label>
             <label>Password<input name="password" type="password" minLength={12} autoComplete={registering ? 'new-password' : 'current-password'} required /></label>
@@ -850,12 +932,28 @@ export default function App() {
           <div className="header-actions">
             {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
             <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketDataStatus}</span>
-            <span className="user-chip">{user.email}</span>
+            <span className="user-chip">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</span>
           </div>
         </header>
 
         {error && <p className="error-banner" role="alert"><CircleAlert size={17} />{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error">×</button></p>}
         {notice && <p className="success-banner" role="status"><ShieldCheck size={17} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss notice">×</button></p>}
+
+        {!onboardingDismissed && (
+          <section className="data-note" aria-label="Broker onboarding">
+            <div>
+              <strong>Connect your broker account.</strong>
+              <span>
+                {user.email_verified
+                  ? ' Use a broker’s official sign-in to securely read supported account data, or skip and keep using manual entry and CSV import.'
+                  : ' Verify your email before connecting a broker. You can continue using manual entry and CSV import.'}
+              </span>
+            </div>
+            {!user.email_verified && <button className="secondary-button" type="button" onClick={() => void resendVerificationEmail()}>Resend verification email</button>}
+            <button className="primary-button" type="button" disabled={!user.email_verified} onClick={() => setActiveView('brokers')}>Connect broker</button>
+            <button className="text-button" type="button" onClick={() => setOnboardingDismissed(true)}>Skip for now</button>
+          </section>
+        )}
 
         {activeView === 'brokers' ? (
           <BrokersPage portfolioId={portfolioId} />
