@@ -17,6 +17,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     email_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
+    two_factor_secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    two_factor_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    two_factor_last_counter: Mapped[int | None] = mapped_column()
+    two_factor_failed_attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    two_factor_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sessions: Mapped[list["UserSession"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )

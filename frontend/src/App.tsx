@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   Activity,
   ArrowDownLeft,
@@ -27,6 +27,11 @@ type User = {
   created_at: string;
   email_verified: boolean;
   verification_email_sent?: boolean | null;
+};
+type TwoFactorStatus = {
+  enabled: boolean;
+  session_verified: boolean;
+  setup_required: boolean;
 };
 type Portfolio = { id: string; name: string; base_currency: string; created_at: string };
 type Position = { symbol: string; quantity: string; cost_basis: string; average_cost: string };
@@ -253,7 +258,16 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [verificationToken] = useState(readEmailVerificationToken);
-  const [verificationStatus, setVerificationStatus] = useState<'verifying' | 'verified' | 'expired' | 'failed'>('verifying');
+  const [verificationStatus, setVerificationStatus] = useState<
+    'verifying' | 'verified' | 'expired' | 'invalid' | 'reused' | 'failed'
+  >('verifying');
+  const verificationStarted = useRef(false);
+  const [twoFactorStatus, setTwoFactorStatus] = useState<TwoFactorStatus | null>(null);
+  const [twoFactorSecret, setTwoFactorSecret] = useState('');
+  const [twoFactorProvisioningUri, setTwoFactorProvisioningUri] = useState('');
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorBusy, setTwoFactorBusy] = useState(false);
+  const [twoFactorError, setTwoFactorError] = useState('');
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
@@ -295,7 +309,8 @@ export default function App() {
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
-    if (!verificationToken) return;
+    if (!verificationToken || verificationStarted.current) return;
+    verificationStarted.current = true;
     apiRequest<User>('/auth/verify-email', {
       method: 'POST',
       body: JSON.stringify({ token: verificationToken }),
@@ -305,9 +320,20 @@ export default function App() {
         setVerificationStatus('verified');
       })
       .catch((requestError: Error) => {
-        setVerificationStatus(
-          requestError instanceof ApiRequestError && requestError.status === 410 ? 'expired' : 'failed',
-        );
+        if (!(requestError instanceof ApiRequestError)) {
+          setVerificationStatus('failed');
+        } else if (requestError.status === 410) {
+          setVerificationStatus('expired');
+        } else if (requestError.code === 'verification_token_reused') {
+          setVerificationStatus('reused');
+        } else if (
+          requestError.code === 'verification_token_invalid'
+          || requestError.status === 422
+        ) {
+          setVerificationStatus('invalid');
+        } else {
+          setVerificationStatus('failed');
+        }
       });
   }, [verificationToken]);
 
@@ -317,6 +343,24 @@ export default function App() {
       .catch(() => setUser(null))
       .finally(() => setCheckingSession(false));
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setTwoFactorStatus(null);
+      return;
+    }
+    let active = true;
+    apiRequest<TwoFactorStatus>('/auth/2fa/status')
+      .then((status) => {
+        if (active) setTwoFactorStatus(status);
+      })
+      .catch((requestError: Error) => {
+        if (active) setTwoFactorError(requestError.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -427,6 +471,8 @@ export default function App() {
       setUser(result);
       if (!result.email_verified) {
         setNotice('Verify your email to unlock broker connections. You can continue using manual portfolio features.');
+      } else {
+        setNotice('Sign-in successful. Verify or set up app-based two-factor authentication to access brokers.');
       }
     } catch (requestError) {
       setError((requestError as Error).message);
@@ -821,6 +867,7 @@ export default function App() {
     try {
       await apiRequest<void>('/auth/logout', { method: 'POST' });
       setUser(null);
+      setTwoFactorStatus(null);
       setPortfolios([]);
       setPortfolioId('');
     } catch (requestError) {
@@ -842,14 +889,56 @@ export default function App() {
     }
   }
 
+  async function beginTwoFactorSetup() {
+    setTwoFactorError('');
+    setTwoFactorBusy(true);
+    try {
+      const result = await apiRequest<{ secret: string; provisioning_uri: string }>('/auth/2fa/setup', {
+        method: 'POST',
+        body: '{}',
+      });
+      setTwoFactorSecret(result.secret);
+      setTwoFactorProvisioningUri(result.provisioning_uri);
+    } catch (requestError) {
+      setTwoFactorError((requestError as Error).message);
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  }
+
+  async function verifyTwoFactor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setTwoFactorError('');
+    setTwoFactorBusy(true);
+    try {
+      const result = await apiRequest<TwoFactorStatus>('/auth/2fa/verify', {
+        method: 'POST',
+        body: JSON.stringify({ code: twoFactorCode }),
+      });
+      setTwoFactorStatus({ ...result, setup_required: false });
+      setTwoFactorSecret('');
+      setTwoFactorProvisioningUri('');
+      setTwoFactorCode('');
+      setNotice('Two-factor authentication is verified for this session. Broker access is available.');
+    } catch (requestError) {
+      setTwoFactorError((requestError as Error).message);
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  }
+
   if (verificationToken) {
     const message = verificationStatus === 'verifying'
       ? 'Verifying your email…'
       : verificationStatus === 'verified'
-        ? 'Email verified. Broker connections are now available after you sign in.'
+        ? 'Email verified. Sign in, then set up app-based two-factor authentication to access brokers.'
         : verificationStatus === 'expired'
           ? 'This verification link has expired. Sign in and request a new verification email.'
-          : 'This verification link is invalid or has already been used. Sign in to request a new one.';
+          : verificationStatus === 'reused'
+            ? 'This verification link was already used. Sign in to continue.'
+            : verificationStatus === 'invalid'
+              ? 'This verification link is malformed or invalid. Request a new verification email after signing in.'
+              : 'Email verification could not be completed. Try again or request a new verification email.';
     return (
       <main className="auth-layout">
         <section className="auth-panel" aria-live="polite">
@@ -892,6 +981,51 @@ export default function App() {
   }
 
   const selectedPortfolio = portfolios.find((portfolio) => portfolio.id === portfolioId);
+  const twoFactorPanel = (
+    <section className="data-note" aria-label="Two-factor authentication">
+      <div>
+        <strong>{twoFactorStatus?.enabled ? 'Verify this session' : 'Set up two-factor authentication'}</strong>
+        <span>
+          {twoFactorStatus?.enabled
+            ? ' Enter the current six-digit code from your authenticator app to unlock read-only broker access.'
+            : ' Broker connections require app-based two-factor authentication. Use an authenticator app; Trading Copilot never asks for your broker PIN or OTP.'}
+        </span>
+        {twoFactorSecret && (
+          <div className="form-stack">
+            <p>Scan the provisioning link with an authenticator app, or enter this setup key manually:</p>
+            <a href={twoFactorProvisioningUri}>Open authenticator app</a>
+            <code>{twoFactorSecret}</code>
+          </div>
+        )}
+        {!twoFactorStatus?.enabled && !twoFactorSecret && (
+          <button className="secondary-button" type="button" onClick={() => void beginTwoFactorSetup()} disabled={twoFactorBusy}>
+            {twoFactorBusy ? 'Preparing…' : 'Set up authenticator app'}
+          </button>
+        )}
+        {(twoFactorStatus?.enabled || twoFactorSecret) && (
+          <form className="form-stack" onSubmit={(event) => void verifyTwoFactor(event)}>
+            <label>
+              Authenticator code
+              <input
+                name="two_factor_code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                value={twoFactorCode}
+                onChange={(event) => setTwoFactorCode(event.target.value)}
+                required
+              />
+            </label>
+            <button className="primary-button" type="submit" disabled={twoFactorBusy}>
+              {twoFactorBusy ? 'Verifying…' : twoFactorStatus?.enabled ? 'Verify session' : 'Verify and enable'}
+            </button>
+          </form>
+        )}
+        {twoFactorError && <p className="error-message" role="alert">{twoFactorError}</p>}
+      </div>
+    </section>
+  );
   const currency = summary?.currency ?? selectedPortfolio?.base_currency ?? 'USD';
   const valuationBySymbol = new Map(
     (valuation?.positions ?? []).map((position) => [position.symbol, position]),
@@ -945,18 +1079,22 @@ export default function App() {
               <strong>Connect your broker account.</strong>
               <span>
                 {user.email_verified
-                  ? ' Use a broker’s official sign-in to securely read supported account data, or skip and keep using manual entry and CSV import.'
+                  ? ' Complete app-based two-factor verification, then use a broker’s official sign-in to securely read supported account data. You can also skip and use manual entry and CSV import.'
                   : ' Verify your email before connecting a broker. You can continue using manual entry and CSV import.'}
               </span>
             </div>
             {!user.email_verified && <button className="secondary-button" type="button" onClick={() => void resendVerificationEmail()}>Resend verification email</button>}
-            <button className="primary-button" type="button" disabled={!user.email_verified} onClick={() => setActiveView('brokers')}>Connect broker</button>
+            {user.email_verified && twoFactorStatus && !twoFactorStatus.session_verified && activeView !== 'brokers' && twoFactorPanel}
+            <button className="primary-button" type="button" disabled={!user.email_verified || !twoFactorStatus?.session_verified} onClick={() => setActiveView('brokers')}>Connect broker</button>
             <button className="text-button" type="button" onClick={() => setOnboardingDismissed(true)}>Skip for now</button>
           </section>
         )}
 
         {activeView === 'brokers' ? (
-          <BrokersPage portfolioId={portfolioId} />
+          <>
+            {user.email_verified && twoFactorStatus && !twoFactorStatus.session_verified && twoFactorPanel}
+            <BrokersPage portfolioId={portfolioId} />
+          </>
         ) : activeView === 'market-data' ? (
           <section className="market-page">
             <div className="data-note"><CircleDollarSign size={17} /><span>Market data provenance and freshness are shown for each result. Provider mappings are not verified exchange listings unless explicitly marked; market data is not used for portfolio valuation.</span></div>

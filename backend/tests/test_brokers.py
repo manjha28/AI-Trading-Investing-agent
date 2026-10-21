@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
@@ -21,6 +22,7 @@ from app.db import Base, get_db
 from app.main import BrokerCallbackAccessLogFilter, app
 from app.models import BrokerCredential, BrokerMirror, PortfolioTransaction, UserSession
 from app.security import hash_token
+from app.two_factor import code_for_counter
 
 
 @pytest.fixture
@@ -57,6 +59,15 @@ def encryption_key(monkeypatch):
     return key
 
 
+@pytest.fixture(autouse=True)
+def two_factor_encryption_key(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "two_factor_encryption_key",
+        SecretStr(Fernet.generate_key().decode("ascii")),
+    )
+
+
 def register(client: TestClient, email: str) -> None:
     response = client.post(
         "/api/v1/auth/register",
@@ -78,8 +89,20 @@ def complete_broker_gate(client: TestClient, test_engine) -> None:
         )
         assert user_session is not None
         user_session.user.email_verified = True
-        user_session.two_factor_verified = True
         db.commit()
+    setup = client.post(
+        "/api/v1/auth/2fa/setup",
+        headers=csrf(client),
+        json={},
+    )
+    assert setup.status_code == 201, setup.text
+    counter = int(datetime.now(timezone.utc).timestamp() // 30)
+    verified = client.post(
+        "/api/v1/auth/2fa/verify",
+        headers=csrf(client),
+        json={"code": code_for_counter(setup.json()["secret"], counter)},
+    )
+    assert verified.status_code == 200, verified.text
 
 
 def csrf(client: TestClient) -> dict[str, str]:
@@ -115,13 +138,13 @@ def test_fernet_token_round_trip_and_ciphertext_at_rest(encryption_key) -> None:
 def test_broker_endpoints_fail_closed_until_email_and_two_factor_are_verified(
     clients, test_engine,
 ) -> None:
-    first, _ = clients
+    first, second = clients
     register(first, "unverified@example.com")
 
     response = first.get("/api/v1/brokers")
 
     assert response.status_code == 403
-    assert "verified email" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "email_verification_required"
     with Session(test_engine) as db:
         user_session = db.scalar(select(UserSession))
         assert user_session is not None
@@ -129,7 +152,30 @@ def test_broker_endpoints_fail_closed_until_email_and_two_factor_are_verified(
         db.commit()
     response = first.get("/api/v1/brokers")
     assert response.status_code == 403
-    assert "two-factor" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "two_factor_setup_required"
+
+    setup = first.post(
+        "/api/v1/auth/2fa/setup",
+        headers=csrf(first),
+        json={},
+    )
+    counter = int(datetime.now(timezone.utc).timestamp() // 30)
+    challenge = first.post(
+        "/api/v1/auth/2fa/verify",
+        headers=csrf(first),
+        json={"code": code_for_counter(setup.json()["secret"], counter)},
+    )
+    assert challenge.status_code == 200, challenge.text
+    assert first.get("/api/v1/brokers").status_code == 200
+
+    login = second.post(
+        "/api/v1/auth/login",
+        json={"email": "unverified@example.com", "password": "correct-horse-battery"},
+    )
+    assert login.status_code == 200
+    incomplete_session = second.get("/api/v1/brokers")
+    assert incomplete_session.status_code == 403
+    assert incomplete_session.json()["detail"]["code"] == "two_factor_required"
 
 
 def test_broker_list_route_is_mounted_and_returns_connection_status(clients, test_engine) -> None:
@@ -168,7 +214,7 @@ def test_real_broker_adapters_fail_closed_without_credentials(
     response = first.post(f"/api/v1/brokers/{slug}/connect", headers=csrf(first), json={})
 
     assert response.status_code == 503
-    assert "credentials" in response.json()["detail"]
+    assert "credentials" in response.json()["detail"]["message"]
 
 
 def test_angel_one_is_pending_without_collecting_login_secrets(clients, test_engine) -> None:
@@ -272,7 +318,7 @@ def test_connect_fails_closed_without_fernet_key(clients, test_engine, monkeypat
     )
 
     assert response.status_code == 503
-    assert "encryption" in response.json()["detail"]
+    assert "encryption" in response.json()["detail"]["message"]
 
 
 def test_expired_mock_token_refreshes_before_account_sync(

@@ -1,11 +1,15 @@
 const apiBaseUrl = '/api/v1';
 
 type ApiError = {
-  detail?: string | { msg?: string }[] | Record<string, unknown>;
+  detail?: string | { msg?: string; code?: string; message?: string }[] | {
+    msg?: string;
+    code?: string;
+    message?: string;
+  };
 };
 
 export class ApiRequestError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message);
     this.name = 'ApiRequestError';
   }
@@ -38,14 +42,18 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   if (response.status === 204) return undefined as T;
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiError;
+    const detail = body.detail;
+    const code = detail && !Array.isArray(detail) && typeof detail === 'object'
+      ? detail.code
+      : undefined;
     const message = typeof body.detail === 'string'
       ? body.detail
       : Array.isArray(body.detail)
         ? body.detail.map((issue) => issue.msg ?? 'Invalid request').join(', ')
-        : body.detail
-          ? JSON.stringify(body.detail)
+        : body.detail && typeof body.detail === 'object'
+          ? body.detail.message ?? 'The request could not be completed.'
           : `Request failed (${response.status})`;
-    throw new ApiRequestError(message, response.status);
+    throw new ApiRequestError(message, response.status, code);
   }
   return (await response.json()) as T;
 }

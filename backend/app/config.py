@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     market_data_refresh_seconds: int = Field(default=300, gt=0)
     market_data_scheduler_enabled: bool = False
     broker_encryption_key: SecretStr | None = None
+    two_factor_encryption_key: SecretStr | None = None
     broker_zerodha_enabled: bool = False
     zerodha_api_key: SecretStr | None = None
     zerodha_api_secret: SecretStr | None = None

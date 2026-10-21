@@ -1,18 +1,23 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+import base64
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api import auth
+from app.config import settings
 from app.db import Base, get_db
 from app.email_verification import EmailDeliveryError
 from app.main import app
 from app.models import EmailVerificationToken, User
 from app.security import hash_token
+from app.two_factor import code_for_counter, matching_counter
 
 
 @pytest.fixture
@@ -74,6 +79,14 @@ def add_transaction(client: TestClient, portfolio_id: str, payload: dict):
     )
 
 
+def test_totp_matches_rfc_6238_sha1_vector() -> None:
+    secret = base64.b32encode(b"12345678901234567890").decode("ascii").rstrip("=")
+    timestamp = datetime.fromtimestamp(59, timezone.utc)
+
+    assert code_for_counter(secret, 1) == "287082"
+    assert matching_counter(secret, "287082", timestamp, window=0) == 1
+
+
 def test_registration_hashes_password_and_issues_protected_session(
     client: TestClient, test_engine
 ) -> None:
@@ -133,7 +146,9 @@ def test_registration_sends_hashed_single_use_verification_token(
     assert login_response.status_code == 200
     assert login_response.json()["email_verified"] is True
     assert client.get("/api/v1/auth/me").json()["email_verified"] is True
-    assert client.post("/api/v1/auth/verify-email", json={"token": raw_token}).status_code == 400
+    reused = client.post("/api/v1/auth/verify-email", json={"token": raw_token})
+    assert reused.status_code == 400
+    assert reused.json()["detail"]["code"] == "verification_token_reused"
 
 
 def test_email_verification_rejects_invalid_and_expired_tokens(
@@ -152,6 +167,7 @@ def test_email_verification_rejects_invalid_and_expired_tokens(
     expired = client.post("/api/v1/auth/verify-email", json={"token": delivered[0]})
 
     assert invalid.status_code == 400
+    assert invalid.json()["detail"]["code"] == "verification_token_invalid"
     assert expired.status_code == 410
     assert client.get("/api/v1/auth/me").json()["email_verified"] is False
 
@@ -183,6 +199,64 @@ def test_resend_verification_rate_limits_and_invalidates_prior_link(
     verified = client.post("/api/v1/auth/verify-email", json={"token": delivered[1]})
     assert verified.status_code == 200
     assert verified.json()["email_verified"] is True
+
+
+def test_totp_setup_challenge_and_replay_protection(client: TestClient, test_engine, monkeypatch) -> None:
+    key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setattr(settings, "two_factor_encryption_key", SecretStr(key))
+    register(client, "two-factor@example.com")
+
+    initial_status = client.get("/api/v1/auth/2fa/status")
+    assert initial_status.status_code == 200
+    assert initial_status.json() == {
+        "enabled": False,
+        "session_verified": False,
+        "setup_required": True,
+    }
+    setup = client.post(
+        "/api/v1/auth/2fa/setup",
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
+        json={},
+    )
+    assert setup.status_code == 201, setup.text
+    secret = setup.json()["secret"]
+    assert setup.json()["provisioning_uri"].startswith("otpauth://totp/")
+    with Session(test_engine) as db:
+        user = db.scalar(select(User).where(User.email == "two-factor@example.com"))
+        assert user is not None
+        assert user.two_factor_secret_encrypted != secret
+        assert user.two_factor_enabled is False
+
+    counter = int(datetime.now(timezone.utc).timestamp() // 30)
+    code = code_for_counter(secret, counter)
+    headers = {"X-CSRF-Token": client.cookies.get("csrf_token", "")}
+    wrong_code = ("0" if code[0] != "0" else "1") + code[1:]
+    invalid_code = client.post("/api/v1/auth/2fa/verify", headers=headers, json={"code": wrong_code})
+    assert invalid_code.status_code == 401
+    assert invalid_code.json()["detail"]["code"] == "two_factor_code_invalid"
+    verified = client.post("/api/v1/auth/2fa/verify", headers=headers, json={"code": code})
+    assert verified.status_code == 200, verified.text
+    assert verified.json() == {"enabled": True, "session_verified": True}
+    reused_code = client.post("/api/v1/auth/2fa/verify", headers=headers, json={"code": code})
+    assert reused_code.status_code == 409
+    assert reused_code.json()["detail"]["code"] == "two_factor_code_reused"
+    assert client.get("/api/v1/auth/2fa/status").json()["session_verified"] is True
+
+    client.post("/api/v1/auth/logout", headers=headers)
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "two-factor@example.com", "password": "correct-horse-battery"},
+    )
+    assert login_response.status_code == 200
+    assert client.get("/api/v1/auth/2fa/status").json()["session_verified"] is False
+    next_code = code_for_counter(secret, counter + 1)
+    challenge = client.post(
+        "/api/v1/auth/2fa/verify",
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
+        json={"code": next_code},
+    )
+    assert challenge.status_code == 200, challenge.text
+    assert client.get("/api/v1/auth/2fa/status").json()["session_verified"] is True
 
 
 def test_email_delivery_failure_keeps_account_unverified_and_resend_error_is_safe(

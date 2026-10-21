@@ -69,10 +69,25 @@ def require_broker_access(
     active_session: UserSession = Depends(get_active_session),
 ) -> UserSession:
     if not active_session.user.email_verified:
-        raise HTTPException(status_code=403, detail="A verified email is required for broker access")
+        raise HTTPException(status_code=403, detail={
+            "code": "email_verification_required",
+            "message": "Verify your email address before accessing broker connections.",
+        })
+    if not active_session.user.two_factor_enabled:
+        raise HTTPException(status_code=403, detail={
+            "code": "two_factor_setup_required",
+            "message": "Set up app-based two-factor authentication before accessing broker connections.",
+        })
     if not active_session.two_factor_verified:
-        raise HTTPException(status_code=403, detail="A session with completed two-factor verification is required")
+        raise HTTPException(status_code=403, detail={
+            "code": "two_factor_required",
+            "message": "Verify this session with your authenticator app before accessing broker connections.",
+        })
     return active_session
+
+
+def _broker_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
 def _user_id(active_session: UserSession) -> UUID:
@@ -86,11 +101,11 @@ def _now() -> datetime:
 def _fernet() -> Fernet:
     key = settings.broker_encryption_key
     if key is None:
-        raise HTTPException(status_code=503, detail="Broker token encryption is not configured")
+        raise _broker_error(503, "broker_setup_required", "Broker token encryption is not configured.")
     try:
         return Fernet(key.get_secret_value().encode())
     except (ValueError, TypeError) as error:
-        raise HTTPException(status_code=503, detail="Broker token encryption is misconfigured") from error
+        raise _broker_error(503, "broker_setup_required", "Broker token encryption is misconfigured.") from error
 
 
 def encrypt_tokens(tokens: dict[str, str]) -> str:
@@ -116,7 +131,11 @@ def _adapter(slug: str) -> BrokerAdapter:
     except KeyError as error:
         raise HTTPException(status_code=404, detail="Broker not supported") from error
     if not adapter.enabled:
-        raise HTTPException(status_code=503, detail="Broker is disabled or required credentials are absent")
+        raise _broker_error(
+            503,
+            "broker_setup_required",
+            "This broker is disabled or missing required credentials and callback settings.",
+        )
     return adapter
 
 
@@ -240,9 +259,13 @@ def _fresh_tokens(
         try:
             tokens, expires_at = adapter.refresh_token(tokens)
         except BrokerReconnectRequired as error:
-            raise HTTPException(status_code=401, detail=str(error)) from error
+            raise _broker_error(401, "broker_authentication_required", str(error)) from error
         except BrokerAdapterError as error:
-            raise HTTPException(status_code=502, detail="Broker token refresh failed; reconnect and try again") from error
+            raise _broker_error(
+                502,
+                "broker_provider_error",
+                "Broker token refresh failed; reconnect and try again.",
+            ) from error
         credential.encrypted_tokens = encrypt_tokens(tokens)
         credential.expires_at = expires_at
         db.commit()
@@ -471,7 +494,7 @@ async def connect_broker(
     try:
         redirect_url = adapter.authenticate(state=state, redirect_uri=redirect_uri, credentials=credentials)
     except BrokerAdapterError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        raise _broker_error(503, "broker_setup_required", str(error)) from error
     metadata = {
         **({"client_id": credentials["client_id"]} if slug == "dhan" and "client_id" in credentials else {}),
         "return_origin": return_origin,
@@ -530,7 +553,11 @@ def broker_callback(
         )
         encrypted_tokens = encrypt_tokens(tokens)
     except BrokerAdapterError as error:
-        raise HTTPException(status_code=502, detail="Broker authorization failed; retry the connection") from error
+        raise _broker_error(
+            502,
+            "broker_provider_error",
+            "Broker authorization failed; retry the connection.",
+        ) from error
 
     user_id = _user_id(active_session)
     return_origin = (state_row.metadata_json or {}).get("return_origin")
@@ -610,9 +637,9 @@ def sync_broker(
             slug,
         )
     except BrokerReconnectRequired as error:
-        raise HTTPException(status_code=401, detail=str(error)) from error
+        raise _broker_error(401, "broker_authentication_required", str(error)) from error
     except BrokerAdapterError as error:
-        raise HTTPException(status_code=502, detail="Broker account sync failed") from error
+        raise _broker_error(502, "broker_provider_error", "Broker account sync failed.") from error
 
     credential = db.scalar(
         select(BrokerCredential)
@@ -679,9 +706,9 @@ def get_broker_account(
             "synthetic": adapter.is_synthetic,
         }
     except BrokerReconnectRequired as error:
-        raise HTTPException(status_code=401, detail=str(error)) from error
+        raise _broker_error(401, "broker_authentication_required", str(error)) from error
     except BrokerAdapterError as error:
-        raise HTTPException(status_code=502, detail="Broker account read failed") from error
+        raise _broker_error(502, "broker_provider_error", "Broker account read failed.") from error
 
 
 @router.get("/{slug}/reconciliation")

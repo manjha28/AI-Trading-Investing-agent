@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import desc, select, update
@@ -11,6 +12,13 @@ from app.db import get_db
 from app.email_verification import EmailDeliveryError, send_verification_email
 from app.models import EmailVerificationToken, User, UserSession
 from app.security import hash_password, hash_token, new_token, verify_password
+from app.two_factor import (
+    decrypt_secret,
+    encrypt_secret,
+    generate_secret,
+    matching_counter,
+    provisioning_uri,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 SESSION_DAYS = 7
@@ -40,8 +48,19 @@ class VerifyEmailRequest(BaseModel):
     token: str = Field(min_length=32, max_length=128)
 
 
+class TwoFactorCode(BaseModel):
+    code: str = Field(pattern=r"^\d{6}$")
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _auth_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message},
+    )
 
 
 def _set_session_cookies(response: Response, session_token: str, csrf_token: str) -> None:
@@ -146,8 +165,10 @@ def verify_email(
         .where(EmailVerificationToken.token_hash == hash_token(payload.token))
         .with_for_update()
     )
-    if token_row is None or token_row.consumed_at is not None:
-        raise HTTPException(status_code=400, detail="Verification link is invalid or already used")
+    if token_row is None:
+        raise _auth_error(400, "verification_token_invalid", "Verification link is invalid.")
+    if token_row.consumed_at is not None:
+        raise _auth_error(400, "verification_token_reused", "This verification link has already been used.")
 
     expires_at = token_row.expires_at
     if expires_at.tzinfo is None:
@@ -157,7 +178,7 @@ def verify_email(
 
     user = db.get(User, token_row.user_id)
     if user is None:
-        raise HTTPException(status_code=400, detail="Verification link is invalid or already used")
+        raise _auth_error(400, "verification_token_invalid", "Verification link is invalid.")
     now = _utcnow()
     user.email_verified = True
     token_row.consumed_at = now
@@ -209,6 +230,114 @@ def hmac_compare(left: str, right: str) -> bool:
     import hmac
 
     return hmac.compare_digest(left, right)
+
+
+@router.get("/2fa/status")
+def two_factor_status(active_session: UserSession = Depends(get_active_session)):
+    return {
+        "enabled": active_session.user.two_factor_enabled,
+        "session_verified": active_session.two_factor_verified,
+        "setup_required": not active_session.user.two_factor_enabled,
+    }
+
+
+@router.post("/2fa/setup", status_code=201)
+def setup_two_factor(
+    response: Response,
+    active_session: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store"
+    user = db.scalar(select(User).where(User.id == active_session.user_id).with_for_update())
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if user.two_factor_enabled:
+        raise _auth_error(409, "two_factor_already_enabled", "Two-factor authentication is already set up.")
+    key = settings.two_factor_encryption_key
+    if key is None:
+        raise _auth_error(
+            503,
+            "two_factor_configuration_missing",
+            "App-based two-factor setup is unavailable until the server encryption key is configured.",
+        )
+    secret = generate_secret()
+    try:
+        user.two_factor_secret_encrypted = encrypt_secret(secret, key.get_secret_value())
+    except (ValueError, TypeError) as error:
+        raise _auth_error(
+            503,
+            "two_factor_configuration_invalid",
+            "App-based two-factor setup is unavailable because the server encryption key is invalid.",
+        ) from error
+    user.two_factor_last_counter = None
+    db.commit()
+    return {
+        "secret": secret,
+        "provisioning_uri": provisioning_uri(secret, user.email),
+    }
+
+
+@router.post("/2fa/verify")
+def verify_two_factor(
+    payload: TwoFactorCode,
+    response: Response,
+    active_session: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store"
+    user = db.scalar(select(User).where(User.id == active_session.user_id).with_for_update())
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if user.two_factor_secret_encrypted is None:
+        raise _auth_error(409, "two_factor_setup_required", "Set up an authenticator app before verifying a code.")
+
+    now = _utcnow()
+    locked_until = user.two_factor_locked_until
+    if locked_until is not None and locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    if locked_until is not None and locked_until > now:
+        raise _auth_error(429, "two_factor_rate_limited", "Too many incorrect codes. Wait before trying again.")
+    if locked_until is not None:
+        user.two_factor_locked_until = None
+        user.two_factor_failed_attempts = 0
+
+    key = settings.two_factor_encryption_key
+    if key is None:
+        raise _auth_error(
+            503,
+            "two_factor_configuration_missing",
+            "Two-factor verification is unavailable until the server encryption key is configured.",
+        )
+    try:
+        secret = decrypt_secret(user.two_factor_secret_encrypted, key.get_secret_value())
+    except (InvalidToken, UnicodeDecodeError, ValueError, TypeError) as error:
+        raise _auth_error(
+            503,
+            "two_factor_secret_unavailable",
+            "The saved authenticator credential cannot be read. Contact support to reset two-factor setup.",
+        ) from error
+
+    counter = matching_counter(secret, payload.code, now)
+    if counter is None:
+        user.two_factor_failed_attempts += 1
+        if user.two_factor_failed_attempts >= 5:
+            user.two_factor_failed_attempts = 0
+            user.two_factor_locked_until = now + timedelta(minutes=15)
+            db.commit()
+            raise _auth_error(429, "two_factor_rate_limited", "Too many incorrect codes. Wait 15 minutes.")
+        db.commit()
+        raise _auth_error(401, "two_factor_code_invalid", "The authenticator code is invalid or expired.")
+    if user.two_factor_last_counter is not None and counter <= user.two_factor_last_counter:
+        db.commit()
+        raise _auth_error(409, "two_factor_code_reused", "This authenticator code was already used. Enter the next code.")
+
+    user.two_factor_enabled = True
+    user.two_factor_last_counter = counter
+    user.two_factor_failed_attempts = 0
+    user.two_factor_locked_until = None
+    active_session.two_factor_verified = True
+    db.commit()
+    return {"enabled": True, "session_verified": True}
 
 
 @router.get("/me", response_model=UserResponse)

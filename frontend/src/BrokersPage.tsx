@@ -31,6 +31,26 @@ type BrokerAccount = {
   synthetic: boolean;
 };
 
+function brokerErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiRequestError)) return (error as Error).message;
+  switch (error.code) {
+    case 'email_verification_required':
+      return 'Verify your email before accessing broker connections.';
+    case 'two_factor_setup_required':
+      return 'Set up app-based two-factor authentication before accessing broker connections.';
+    case 'two_factor_required':
+      return 'Verify this session with your authenticator app before accessing broker connections.';
+    case 'broker_setup_required':
+      return `Broker setup is unavailable: ${error.message}`;
+    case 'broker_authentication_required':
+      return `Broker sign-in is required again: ${error.message}`;
+    case 'broker_provider_error':
+      return `The broker provider could not complete the request: ${error.message}`;
+    default:
+      return error.message;
+  }
+}
+
 const readableStatus: Record<Difference['status'], string> = {
   missing: 'Missing at broker',
   extra: 'Not in manual ledger',
@@ -59,7 +79,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
           const account = await apiRequest<BrokerAccount>(`/brokers/${broker.slug}/account`);
           return [broker.slug, account, ''] as const;
         } catch (requestError) {
-          return [broker.slug, null, (requestError as Error).message] as const;
+          return [broker.slug, null, brokerErrorMessage(requestError)] as const;
         }
       }));
     const nextAccounts: Record<string, BrokerAccount> = {};
@@ -91,7 +111,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
         setBrokerApiUnavailable(true);
         return;
       }
-      setError(requestError.message);
+      setError(brokerErrorMessage(requestError));
     });
   }, [refresh]);
 
@@ -114,7 +134,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
       setNotice(`${broker.name} connected. No orders can be placed through this connection.`);
     } catch (requestError) {
       setFailedBroker(broker.slug);
-      setError((requestError as Error).message);
+      setError(brokerErrorMessage(requestError));
     } finally {
       setBusy('');
     }
@@ -136,7 +156,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
       );
     } catch (requestError) {
       setFailedBroker(broker.slug);
-      setError((requestError as Error).message);
+      setError(brokerErrorMessage(requestError));
     } finally {
       setBusy('');
     }
@@ -154,7 +174,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
       setNotice(`${broker.name} disconnected. Its previously synced mirror remains read-only.`);
     } catch (requestError) {
       setFailedBroker(broker.slug);
-      setError((requestError as Error).message);
+      setError(brokerErrorMessage(requestError));
     } finally {
       setBusy('');
     }
@@ -193,7 +213,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
       await refresh();
       setNotice(`${result.imported_count} explicitly confirmed manual transaction imported.`);
     } catch (requestError) {
-      setError((requestError as Error).message);
+      setError(brokerErrorMessage(requestError));
     } finally {
       setBusy('');
     }

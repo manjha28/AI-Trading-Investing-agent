@@ -105,7 +105,7 @@ curl -i http://127.0.0.1:5173/api/v1/ready
 - Codespaces devcontainer with PostgreSQL service
 - Portfolio valuation is available for instrument-linked holdings and explicitly marks missing, stale, and synthetic prices as unreliable. Journal CSV import, corporate actions, research, backtesting, live orders, and AI are not connected.
 
-Authentication routes are under `/api/v1/auth`: `POST /register`, `POST /login`, `GET /me`, `POST /verify-email`, `POST /verification/resend`, and `POST /logout`. Registration returns the same generic acknowledgement for new and existing email addresses to prevent enumeration; sign in after registration. Accounts remain unverified until a single-use, hashed, 24-hour token is confirmed. The verification email is sent through Resend; delivery failure does not mark the account verified, and a signed-in user can request a rate-limited resend. Sessions are opaque server-side records; password and session tokens are stored only as hashes. Portfolio writes require the `csrf_token` cookie value in the `X-CSRF-Token` header. Production cookies are Secure; configure HTTPS and an exact `FRONTEND_ORIGIN` before deployment. Account recovery, broad authentication rate limiting, corporate actions, and FX conversion remain unfinished.
+Authentication routes are under `/api/v1/auth`: `POST /register`, `POST /login`, `GET /me`, `POST /verify-email`, `POST /verification/resend`, `GET /2fa/status`, `POST /2fa/setup`, `POST /2fa/verify`, and `POST /logout`. Registration returns the same generic acknowledgement for new and existing email addresses to prevent enumeration; sign in after registration. Accounts remain unverified until a single-use, hashed, 24-hour token is confirmed. The verification email is sent through Resend; delivery failure does not mark the account verified, and a signed-in user can request a rate-limited resend. Sessions are opaque server-side records; password and session tokens are stored only as hashes. Portfolio writes require the `csrf_token` cookie value in the `X-CSRF-Token` header. Production cookies are Secure; configure HTTPS and an exact `FRONTEND_ORIGIN` before deployment. Account recovery, broad authentication rate limiting, corporate actions, and FX conversion remain unfinished.
 
 For email verification, create a Resend account, add and verify a domain you control, then create an API key with email-send access. Set these backend-only values:
 
@@ -115,7 +115,7 @@ RESEND_FROM_EMAIL=Trading Copilot <accounts@mail.example.com>
 EMAIL_VERIFICATION_URL=https://app.example.com/
 ```
 
-The `RESEND_FROM_EMAIL` domain must be verified in Resend. `EMAIL_VERIFICATION_URL` must be the public frontend root; links use a URL fragment (`/#verify-email/<single-use-token>`) so the token is not sent in the frontend HTTP request. In Codespaces, set it to the forwarded port-5173 URL. Do not use `FINNHUB_API_KEY` for mail. Apply migration `0012_email_verification` with `cd backend && alembic upgrade head`.
+The `RESEND_FROM_EMAIL` domain must be verified in Resend. `EMAIL_VERIFICATION_URL` must be the public frontend root; links use a URL fragment (`/#verify-email/<single-use-token>`) so the token is not sent in the frontend HTTP request. In Codespaces, set it to the forwarded port-5173 URL. Do not use `FINNHUB_API_KEY` for mail. Apply all migrations with `cd backend && alembic upgrade head`.
 
 Portfolio transaction CSV uses exactly `transaction_type,symbol,quantity,unit_price,amount,fee,occurred_at`; trade rows leave `amount` blank, and cash/dividend rows leave `quantity` and `unit_price` blank. Timestamps must include a timezone. The importer accepts up to 1 MB and 1,000 rows, shows a preview, rejects invalid ledger changes as a batch, and skips rows matching existing transactions or earlier rows in the same file. Export is portfolio-scoped and marked `no-store`.
 
@@ -168,16 +168,16 @@ Broker API routes are under `/api/v1/brokers`:
 - `POST /api/v1/brokers/{slug}/reconciliation/import` — creates explicitly confirmed manual transactions for selected differences.
 - `DELETE /api/v1/brokers/{slug}` — hard-deletes that user's encrypted broker credential and pending OAuth state.
 
-Every broker route requires an authenticated session with a verified email and a completed 2FA step, and all mutating requests require CSRF validation. Email verification is implemented; session 2FA enrollment and completion are still pending, so real broker access remains blocked until a real 2FA flow is implemented. Do not manually mark accounts or sessions verified to bypass the gate. The mock broker is clearly synthetic and is not a real broker connection.
+Every broker route requires an authenticated session with a verified email and a completed app-based TOTP verification, and all mutating requests require CSRF validation. Users enroll an authenticator app after sign-in; newly created sessions require a fresh six-digit challenge. TOTP secrets are encrypted at rest and codes are single-use per time step, with failed attempts rate-limited. Configure `TWO_FACTOR_ENCRYPTION_KEY` as a private Fernet key before enrolling users. Existing users need to enroll after applying migration `0013_app_two_factor`; existing sessions remain unverified until they complete a challenge. Do not manually mark accounts or sessions verified to bypass the gate. The mock broker is clearly synthetic and is not a real broker connection.
 
-Set `BROKER_ENCRYPTION_KEY` in the backend environment before connecting any broker. Generate a Fernet key with:
+Set `BROKER_ENCRYPTION_KEY` and `TWO_FACTOR_ENCRYPTION_KEY` in the backend environment before connecting brokers or enrolling authenticator apps. Generate a Fernet key for each setting with:
 
 ```bash
 cd backend
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Keep the key stable and private: losing it makes stored broker tokens unreadable. Never commit it or expose broker secrets to the frontend. Each real adapter is opt-in and fails closed unless its enable flag is true and every required credential and callback setting is present:
+Keep both keys stable and private: losing either key makes its encrypted data unreadable. Never commit keys or expose broker secrets to the frontend. Each real adapter is opt-in and fails closed unless its enable flag is true and every required credential and callback setting is present:
 
 | Broker | Required backend environment | Login callback URL / flow |
 | --- | --- | --- |
@@ -188,7 +188,7 @@ Keep the key stable and private: losing it makes stored broker tokens unreadable
 
 For Codespaces, set each broker redirect variable to the exact HTTPS forwarded **frontend** URL shown in the Ports panel (port 5173), and register the same URL with that broker. The callback path must match exactly. Do not forward the backend API port publicly for broker callbacks. Zerodha documents the request-token exchange and next-day token expiry in [Kite Connect User API](https://kite.trade/docs/connect/v3/user/); Upstox documents its official OAuth authorization-code flow in [Upstox Authentication](https://upstox.com/developer/api-documentation/authentication/); Dhan documents individual API-key consent in [DhanHQ Authentication](https://dhanhq.co/docs/v2/authentication/). Each requires the user's developer app/API access and exact redirect registration; verify current access eligibility and any commercial/approval terms in each broker's developer console before enabling it. No live credentials or broker account were available here, so live authentication and permissions have not been verified. No additional broker is currently supported beyond the listed adapters.
 
-After configuring the backend environment, apply all additive migrations through `0012_email_verification` with `cd backend && alembic upgrade head`.
+After configuring the backend environment, apply all additive migrations through `0013_app_two_factor` with `cd backend && alembic upgrade head`.
 
 Run backend tests with `cd backend && python -m pytest -q`. Frontend type-check/build with `cd frontend && npm run build`.
 
