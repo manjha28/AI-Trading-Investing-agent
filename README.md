@@ -1,6 +1,6 @@
 # Trading Copilot
 
-A mobile-first foundation for an integrated AI trading and investing copilot. It is currently read-only: no broker credentials, live market feed, or order placement is configured.
+A mobile-first foundation for an integrated AI trading and investing copilot. Broker integrations are read-only and disabled by default; there is no broker order placement.
 
 ## Prerequisites
 - Python 3.11 or newer
@@ -26,7 +26,7 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
-Start PostgreSQL before the migration. For local development, the Codespaces Compose setup provides PostgreSQL; outside Codespaces, run `docker compose -f .devcontainer/docker-compose.yml up -d postgres` from the repository root. The default local connection is `copilot:copilot` on `localhost:5432`; override `DATABASE_URL` for a separately managed database.
+Start PostgreSQL before the migration. For local development, the Codespaces Compose setup provides PostgreSQL; outside Codespaces, run `docker compose -f .devcontainer/docker-compose.yml up -d postgres` from the repository root. The default connection uses the Compose hostname `postgres` and the `copilot` database user; when running the backend outside the Compose network, override `DATABASE_URL` to use `localhost` or your managed database host.
 
 Check liveness at `http://127.0.0.1:8000/api/v1/health`, database readiness at `http://127.0.0.1:8000/api/v1/ready`, and the API at `http://127.0.0.1:8000/docs`.
 
@@ -103,7 +103,7 @@ curl -i http://127.0.0.1:5173/api/v1/ready
 - Authenticated instrument search/details, mock or optional provider quotes, bounded historical OHLCV sync/retrieval, idempotent storage, cached quote freshness, provider status, and provenance-aware history freshness
 - Installable PWA manifest and service worker caching only the static app shell/assets; API responses are excluded
 - Codespaces devcontainer with PostgreSQL service
-- Portfolio market values remain unavailable. The default mock stores only explicitly synthetic fixtures; an optional Twelve Data adapter is available but has no configured credentials or verified live coverage. Journal CSV import, corporate actions, research, backtesting, live orders, and AI are not connected.
+- Portfolio valuation is available for instrument-linked holdings and explicitly marks missing, stale, and synthetic prices as unreliable. Journal CSV import, corporate actions, research, backtesting, live orders, and AI are not connected.
 
 Authentication routes are under `/api/v1/auth`: `POST /register`, `POST /login`, `GET /me`, and `POST /logout`. Sessions are opaque server-side records; password and session tokens are stored only as hashes. Portfolio writes require the `csrf_token` cookie value in the `X-CSRF-Token` header. Production cookies are Secure; configure HTTPS and an exact `FRONTEND_ORIGIN` before deployment. Authentication rate limiting, email verification, account recovery, corporate actions, and FX conversion remain unfinished.
 
@@ -111,17 +111,74 @@ Portfolio transaction CSV uses exactly `transaction_type,symbol,quantity,unit_pr
 
 ## Market data (Phase 4 foundation)
 
-The configured provider defaults to `mock`, a deterministic synthetic fixture provider. Its `DEMO_*` instruments and OHLCV values are not exchange-listed securities or real prices. Search results explicitly report `is_synthetic=true` and provider mappings as unverified. An optional Twelve Data adapter supports [symbol search](https://twelvedata.com/docs/discovery/symbol-search), [quotes](https://twelvedata.com/docs/market-data/quote), and [time series](https://twelvedata.com/docs/market-data/time-series) for common stocks, ETFs, indices, and cryptocurrencies in its supported country mappings. It is not enabled by default; live connectivity, venue coverage, entitlements, and licensing have not been verified. Unsupported provider asset types and countries are omitted from search results. Do not use fixture data for investing decisions or portfolio valuations.
+The ordered provider chain defaults to `delta_exchange,binance,yfinance,upstox,mock`. It starts with unauthenticated free sources, so real market data is available with a completely empty `.env`: Delta Exchange and Binance provide public crypto market data, and yfinance provides equities without an API key. Upstox is an opt-in NSE source and stays inactive until an authenticated user account is connected (M3). Providers that fail or do not cover a symbol are skipped in order. Mock data is restricted to two `ALPHA` demo instruments (US and India); these are not exchange-listed securities or real prices. Real instruments never fall back to synthetic quotes or bars: when all live providers fail, prices are unavailable, and previously stored synthetic data is hidden. Portfolio valuation explicitly marks synthetic, stale, and unavailable prices unreliable. Search persists provider identifiers against the canonical instrument so resolved symbols are reused. Yahoo Finance maps NSE to `.NS`, BSE to `.BO`, and US symbols without a suffix; its 1m/15m/1h history windows are limited to 7/60/730 days respectively. Delta Exchange and Binance candles paginate at their upstream caps. Twelve Data and Finnhub remain optional, disabled-by-default US-market fallbacks that require their own API keys; Twelve Data's free tier excludes NSE/BSE and Finnhub free does not provide equity candles. Provider coverage, live connectivity, entitlements, and licensing must still be verified. Do not use synthetic fallback data for investing decisions.
 
 Authenticated API endpoints:
 - `GET /api/v1/market-data/provider` — provider health and capabilities.
 - `GET /api/v1/market-data/instruments?query=...&limit=...` — provider search and canonical instrument persistence; same symbols at different venues remain distinct.
 - `GET /api/v1/market-data/instruments/{id}` — instrument metadata and provider identifiers.
-- `GET /api/v1/market-data/instruments/{id}/quote` — latest quote through the configured adapter, cached per provider for `MARKET_DATA_QUOTE_FRESHNESS_SECONDS` (default 60). A stale cached quote is returned with an explicit stale status if the refresh fails; no cached quote returns a service-unavailable error.
+- `POST /api/v1/market-data/instruments/cleanup-synthetic` — remove unlinked demo instruments, preserve linked portfolio instruments, flag them for relinking, and report real replacement matches when providers resolve them.
+- `GET /api/v1/market-data/instruments/{id}/quote` — latest quote through the provider chain, cached per provider for `MARKET_DATA_QUOTE_FRESHNESS_SECONDS` (default 60). Add `?refresh=true` to bypass a fresh cache. Synthetic quotes are available only for the two `ALPHA` demos; real instruments return unavailable when live providers fail.
 - `POST /api/v1/market-data/instruments/{id}/history/sync?interval=1d&start=...&end=...&limit=...` — fetch, validate, and idempotently store bounded OHLCV history.
 - `GET /api/v1/market-data/instruments/{id}/history?interval=...&start=...&end=...&offset=...&limit=...` — retrieve stored bars and freshness/provenance metadata.
+- `POST /api/v1/portfolios/{id}/positions/{symbol}/instrument` — link a searched instrument to all existing buy/sell transactions for an open holding. Existing transactions remain valid and unlinked until attached.
+- `GET /api/v1/portfolios/{id}/valuation` — return per-position values and portfolio totals with price freshness, synthetic flags, confidence, and reasons. Foreign-currency holdings are not converted and remain unavailable in a differently denominated portfolio.
+- `POST` / `DELETE /api/v1/market-data/watchlist/{instrument_id}` — include or remove an instrument from the authenticated user's background quote-refresh watchlist.
 
-Intervals are `1d`, `1h`, and `15m`; range caps are 366, 31, and 7 days respectively, and each request is limited to at most 500 bars. Dates must be timezone-aware; stored timestamps are normalized to UTC. Conflicting duplicate bars are ignored rather than overwritten. History freshness reports `fresh`, `stale`, `unavailable`, or `never_fetched`; it is based on the last successful fetch, while also exposing the latest bar time. Quote freshness uses the last successful quote retrieval and its configured cache window. Closed-market detection and scheduled refresh are not implemented. Configure `MARKET_DATA_PROVIDER`, `MARKET_DATA_QUOTE_FRESHNESS_SECONDS`, `MARKET_DATA_DAILY_FRESHNESS_SECONDS`, and `MARKET_DATA_INTRADAY_FRESHNESS_SECONDS` in the backend environment. To select Twelve Data, set `MARKET_DATA_PROVIDER=twelve_data` and provide `TWELVE_DATA_API_KEY` in the backend environment only; never put provider credentials in frontend settings. The adapter applies bounded timeouts, response sizes, bar counts, and one retry for transient transport/server errors. It does not retry rate-limit responses. Check the provider's current plan, exchange entitlements, and licensing before use. Provider status reports configured credentials, not verified live connectivity; the first successful upstream request is still required to verify access.
+Intervals are `1d`, `1h`, `15m`, and `1m`; yfinance range caps are unlimited for daily bars, 730, 60, and 7 days respectively for the other intervals, and each retrieval request is limited to at most 500 bars. Dates must be timezone-aware; stored timestamps are normalized to UTC. Conflicting duplicate bars are ignored rather than overwritten, and stored ranges are reused rather than fetched again. History freshness reports `fresh`, `stale`, `unavailable`, or `never_fetched`; it is based on the last successful fetch, while also exposing the latest bar time. Quote freshness uses the last successful quote retrieval and its configured cache window. The optional background quote scheduler is disabled by default; enable it with `MARKET_DATA_SCHEDULER_ENABLED=true` and set `MARKET_DATA_REFRESH_SECONDS` (default 300). It refreshes instruments linked to holdings and the authenticated watchlist. The scheduler does not start during tests.
+
+Set these backend `.env` values:
+
+```dotenv
+MARKET_DATA_PROVIDERS=delta_exchange,binance,yfinance,upstox,mock
+TWELVE_DATA_API_KEY=
+FINNHUB_API_KEY=
+MARKET_DATA_QUOTE_FRESHNESS_SECONDS=60
+MARKET_DATA_DAILY_FRESHNESS_SECONDS=172800
+MARKET_DATA_INTRADAY_FRESHNESS_SECONDS=3600
+MARKET_DATA_REFRESH_SECONDS=300
+MARKET_DATA_SCHEDULER_ENABLED=false
+```
+
+Provider keys belong in the backend environment only. The default chain does not read Twelve Data or Finnhub credentials; add either provider explicitly to `MARKET_DATA_PROVIDERS` to opt in. yfinance requires no API key. The detail-page history uses lightweight-charts for native candlesticks and volume, with a line toggle and crosshair OHLC readout. Values remain full precision in the API and CSV; the history table displays prices to two decimal places.
+
+## Read-only broker connections (M3)
+
+Broker endpoints only read profile, holdings, positions, order history, and funds. There is deliberately no broker order placement, modification, or cancellation method or endpoint. Broker holdings and positions are stored in a separate user-scoped mirror and do not modify the manual portfolio ledger. Reconciliation imports create ordinary manual buy/sell ledger entries only after the user confirms each difference. The `mock_broker` is always available but returns fixed, clearly synthetic demo values.
+
+Broker API routes are under `/api/v1/brokers`:
+
+- `GET /api/v1/brokers` — supported brokers and the current user's connection status.
+- `POST /api/v1/brokers/{slug}/connect` — starts broker login and returns a redirect URL, except Angel One's direct TOTP login.
+- `GET /api/v1/brokers/{slug}/callback` — handles broker callback and stores encrypted tokens.
+- `POST /api/v1/brokers/{slug}/sync` — refreshes the read-only holdings/positions mirror idempotently.
+- `GET /api/v1/brokers/{slug}/mirror?kind=holding|position` — reads the current user's mirror.
+- `GET /api/v1/brokers/{slug}/account` — reads profile, funds, and order history from the connected broker; never returns credentials.
+- `GET /api/v1/brokers/{slug}/reconciliation?portfolio_id=...` — compares broker holdings with the selected manual portfolio.
+- `POST /api/v1/brokers/{slug}/reconciliation/import` — creates explicitly confirmed manual transactions for selected differences.
+- `DELETE /api/v1/brokers/{slug}` — hard-deletes that user's encrypted broker credential and pending OAuth state.
+
+Every broker route requires an authenticated session with a verified email and a completed 2FA step, and all mutating requests require CSRF validation. This M3 change adds fail-closed `users.email_verified` and `user_sessions.two_factor_verified` fields, defaulting to false. This repository does not yet implement M2 verification/2FA enrollment or completion, so broker access remains blocked until M2 sets these fields only after real verification; do not manually mark accounts verified to bypass the gate. The mock broker is not an authentication bypass.
+
+Set `BROKER_ENCRYPTION_KEY` in the backend environment before connecting any broker. Generate a Fernet key with:
+
+```bash
+cd backend
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Keep the key stable and private: losing it makes stored broker tokens unreadable. Never commit it or expose broker secrets to the frontend. Each real adapter is opt-in and fails closed unless its enable flag is true and every required credential and callback setting is present:
+
+| Broker | Required backend environment | Login callback URL / flow |
+| --- | --- | --- |
+| Zerodha Kite Connect | `BROKER_ZERODHA_ENABLED=true`, `ZERODHA_API_KEY`, `ZERODHA_API_SECRET`, `ZERODHA_REDIRECT_URL` | Register the exact URL `http://localhost:5173/api/v1/brokers/zerodha/callback` locally, or `https://<codespace>-5173.app.github.dev/api/v1/brokers/zerodha/callback` in Codespaces, in the Kite developer console. Kite redirects with a short-lived `request_token`; ordinary access tokens cannot be refreshed, so reconnect after expiry. |
+| Upstox | `BROKER_UPSTOX_ENABLED=true`, `UPSTOX_CLIENT_ID`, `UPSTOX_CLIENT_SECRET`, `UPSTOX_REDIRECT_URI` | Register the exact URL `http://localhost:5173/api/v1/brokers/upstox/callback` locally, or the corresponding forwarded Codespaces URL. Upstox returns a single-use authorization code. Standard OAuth access tokens do not provide a documented refresh-token grant; reconnect when expired. |
+| Angel One SmartAPI | `BROKER_ANGEL_ONE_ENABLED=true`, `ANGEL_ONE_API_KEY`, `ANGEL_ONE_CLIENT_LOCAL_IP`, `ANGEL_ONE_CLIENT_PUBLIC_IP`, `ANGEL_ONE_MAC_ADDRESS` | SmartAPI has no conventional redirect callback. Login is completed by its API using the user's client code, PIN, and TOTP; PIN/TOTP are sent only for login and are not stored. A refresh token is used when available. |
+| Dhan | `BROKER_DHAN_ENABLED=true`, `DHAN_API_KEY`, `DHAN_API_SECRET`, `DHAN_REDIRECT_URI` | Register `http://localhost:5173/api/v1/brokers/dhan/callback` locally, or the corresponding forwarded Codespaces URL. Dhan uses its consent login and returns a `tokenId` to this callback; it is exchanged server-side. |
+
+For Codespaces, set each broker redirect variable to the exact HTTPS forwarded **frontend** URL shown in the Ports panel (port 5173), and register the same URL with that broker. The callback path must match exactly. Do not forward the backend API port publicly for broker callbacks. Zerodha and Upstox documented login flows: [Kite Connect](https://kite.trade/docs/connect/v3/user/) and [Upstox authentication](https://upstox.com/developer/api-documentation/authentication/). Angel One's API login is documented under [SmartAPI Authentication](https://smartapi.angelbroking.com/docs/Authentication); Dhan's consent process is in [DhanHQ Authentication](https://dhanhq.co/docs/v2/authentication/).
+
+After configuring the backend environment, apply all additive migrations through `0011_read_only_brokers` with `cd backend && alembic upgrade head`.
 
 Run backend tests with `cd backend && python -m pytest -q`. Frontend type-check/build with `cd frontend && npm run build`.
 
@@ -129,29 +186,21 @@ Run backend tests with `cd backend && python -m pytest -q`. Frontend type-check/
 - [x] Phase 1: backend/frontend baseline, PostgreSQL connectivity, migrations, health/readiness, Codespaces setup
 - [x] Phase 2: authentication, normalized user/session/portfolio models and user isolation
 - [x] Phase 3: portfolio CSV import/export and duplicate detection; portfolio/journal CRUD, accounting, and currency-isolated journal analytics
-- [ ] Phase 4: instrument master, provider adapters, history and freshness (mock and optional Twelve Data adapter implemented; live credentials and coverage not verified)
+- [ ] Phase 4: instrument master, provider chain, history, portfolio valuation, and freshness (code complete; live credentials and coverage not verified)
 - [ ] Phase 5: sourced research, valuation and scenarios
 - [ ] Phase 6: indicators, backtesting, risk controls and paper trading
 - [ ] Phase 7: persisted alerts, scheduled reports and AI tools
 - [ ] Phase 8: mobile/PWA polish, security, deployment and end-to-end verification
 
-Phases 1-3 are complete for the currently scoped behaviors. Phase 4 is in progress: the normalized instrument master, provider abstraction, mock fixture, optional Twelve Data adapter, historical storage, quote cache, freshness API, and market-data UI are implemented. Real credentials, provider connectivity, and verified market coverage are not configured; research, backtesting, live orders, and AI remain incomplete. Migrations `0001` through `0008` are additive and preserve existing application data. The PWA shell can load offline after installation, but authentication and private data require a network connection; no guaranteed background refresh or iOS push behavior is claimed.
+Phases 1-3 are complete for the currently scoped behaviors. Phase 4 includes a free-first Delta Exchange/Binance/yfinance market-data chain, two explicit synthetic `ALPHA` demos, persisted symbol mappings, nullable instrument links on transactions, portfolio valuation, optional background quote refresh, and live/synthetic/unavailable UI states. Upstox and the paid providers remain opt-in. Migrations `0001` through `0010` are additive and preserve existing application data. The PWA shell can load offline after installation, but authentication and private data require a network connection; the optional quote scheduler is disabled by default.
 
-The accounting methods are intentionally limited: portfolio equity positions use long-only weighted-average cost, fees are capitalized on buys and deducted from sale proceeds, cash is rounded to cents with half-even rounding, and oversells/negative cash are rejected. Journal net P&L is `(exit - entry) × quantity × multiplier - fees` for long trades and the reverse price delta for shorts. Open-trade P&L and portfolio market value are unavailable without verified prices. Journal summary totals include only the requested currency; there is no currency conversion.
+The accounting methods are intentionally limited: portfolio equity positions use long-only weighted-average cost, fees are capitalized on buys and deducted from sale proceeds, cash is rounded to cents with half-even rounding, and oversells/negative cash are rejected. Journal net P&L is `(exit - entry) × quantity × multiplier - fees` for long trades and the reverse price delta for shorts. Portfolio market value is reliable only when every position is linked and all quotes are fresh, non-synthetic, and denominated in the portfolio currency. Journal summary totals and portfolio valuation do not convert FX.
 
 Never put API keys in frontend code or commit `.env` files. Market data licences, exchange permissions and broker rules must be checked before production use.
 
 ## Continuation checkpoint (2026-10-21)
 
-This section records the last inspected workspace state to make future work easier to resume. Re-check Git, services, and the database before relying on a dated status.
+The Phase 4 baseline was committed and pushed to `origin/main`; the `phase4-baseline` tag identifies that baseline. All current schema tables are applied, and the database contains a real user row. The Codespaces 502 was resolved by using VS Code Desktop: browser port forwarding was the failure, not the application. Recheck the live worktree and database before relying on this checkpoint; current M1.5 changes may be uncommitted.
 
-- Git branch is `main`, tracking `origin/main`; the inspected local branch was even with its upstream. The working tree contains a large, uncommitted implementation spanning the backend foundation, frontend, Codespaces setup, migrations `0001`-`0008`, and tests. Preserve all modified and untracked work; do not reset, clean, stage broadly, amend, or push this work as one batch.
-- The frontend dev server was listening on `0.0.0.0:5173`; local requests to `/`, source modules, and proxied API health/readiness returned `200`, and `/api/v1/auth/me` returned the expected signed-out `401`. These local checks alone did not diagnose the browser failure.
-- Diagnosis of the reported browser `502`: the Codespaces hostname matched this workspace, but a request carrying that forwarded `Host` header was rejected by Vite with `403 Blocked request. This host ... is not allowed.` The exact-host configuration in `frontend/vite.config.ts` now permits the generated port-5173 Codespaces hostname derived from `CODESPACE_NAME` and `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN`; after configuration reload, both the forwarded-host root request and proxied health check returned `200`. Keep the port private and do not allow all hosts.
-- Backend test command: `cd backend && python -m pytest -q`. Last recorded result after the market-data quote cache work: **45 passed**, with one Starlette/httpx deprecation warning.
-- Frontend build command: `cd frontend && npm run build`. Last recorded result: **passed**; Vite reported non-fatal `lucide-react` `"use client"` directive notices.
-- Alembic offline SQL generation through `0008_market_quote_cache` succeeded. The reachable PostgreSQL database `trading_copilot` had no public tables or `alembic_version` row at last inspection. No migration was applied. Do not infer migration readiness from `/api/v1/ready`; it checks connectivity only.
-- Market-data provider defaults to `mock`. Twelve Data support is optional and credentials are not configured; no live connection, venue coverage, or entitlement has been verified. Synthetic fixtures are never suitable for portfolio valuation.
-- Phase 4 currently includes the normalized instrument/provider mapping schema, bounded/idempotent history sync and retrieval, history freshness/provenance, optional Twelve Data search/quote/history adapter, persistent quote cache with stale fallback, and a market-data UI. Phase 4 remains unverified against live provider access and a migrated PostgreSQL deployment.
 - Phases 5-8 remain outstanding: sourced research and scenario models; indicators/backtesting/risk/paper trading; persisted alerts/reports/AI tools; and final mobile/security/deployment/end-to-end verification. Live order execution must remain disabled.
-- Before each future milestone, inspect the full worktree and diff, select only the milestone's related files, run focused tests/build/migration checks, and review staged contents for secrets and generated files. Commit/push only a coherent passing milestone to the configured upstream; never force-push or overwrite unrelated changes.
+The market-data default is free-first (`delta_exchange,binance,yfinance,upstox,mock`) and requires no provider credentials for public crypto/equity data. Only two `ALPHA` demos are synthetic; real instruments show unavailable when all live providers fail. Apply migration `0010_free_market_data_and_relink` after the Phase 4 migrations. Phases 5-8 remain outstanding: sourced research and scenario models; indicators/backtesting/risk/paper trading; persisted alerts/reports/AI tools; and final mobile/security/deployment/end-to-end verification. Live order execution must remain disabled.

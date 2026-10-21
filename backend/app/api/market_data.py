@@ -28,20 +28,25 @@ from app.models import (
     MarketBar,
     MarketQuote,
     MarketDataSync,
+    PortfolioTransaction,
     User,
     UserSession,
     WatchlistInstrument,
 )
 from app.provider_adapters import (
+    BinanceProvider,
+    DeltaExchangeProvider,
     FinnhubProvider,
+    UpstoxProvider,
     YahooFinanceProvider,
+    binance_provider_symbol,
     candidate_for_instrument,
     canonical_provider_symbol,
 )
 from app.twelve_data import TwelveDataProvider
 
 router = APIRouter(prefix="/market-data", tags=["market data"])
-BarInterval = Literal["1d", "1h", "15m"]
+BarInterval = Literal["1d", "1h", "15m", "1m"]
 MAX_BARS = 500
 
 
@@ -76,18 +81,14 @@ class MarketDataProviderChain:
         )
 
 
-def get_market_data_provider() -> MarketDataProvider:
-    if settings.market_data_provider == "twelve_data":
-        key = settings.twelve_data_api_key.get_secret_value() if settings.twelve_data_api_key else ""
-        if not key.strip():
-            raise HTTPException(
-                status_code=503,
-                detail="Twelve Data is selected but its server-side API key is not configured",
-            )
-        return TwelveDataProvider(key)
+def create_market_data_provider_chain(
+    names: tuple[str, ...] | None = None,
+    *,
+    upstox_access_token: str | None = None,
+) -> MarketDataProviderChain:
     providers: list[MarketDataProvider] = []
-    names = ("mock",) if os.environ.get("PYTEST_CURRENT_TEST") else settings.market_data_provider_names
-    for name in names:
+    selected_names = names or settings.market_data_provider_names
+    for name in selected_names:
         if name == "twelve_data":
             key = settings.twelve_data_api_key.get_secret_value() if settings.twelve_data_api_key else ""
             if key.strip():
@@ -98,11 +99,23 @@ def get_market_data_provider() -> MarketDataProvider:
                 providers.append(FinnhubProvider(key))
         elif name == "yfinance":
             providers.append(YahooFinanceProvider())
+        elif name == "delta_exchange":
+            providers.append(DeltaExchangeProvider())
+        elif name == "binance":
+            providers.append(BinanceProvider())
+        elif name == "upstox":
+            if upstox_access_token and upstox_access_token.strip():
+                providers.append(UpstoxProvider(upstox_access_token))
         elif name == "mock":
             providers.append(MockMarketDataProvider())
     if not any(provider.name == "mock" for provider in providers):
         providers.append(MockMarketDataProvider())
     return MarketDataProviderChain(providers)
+
+
+def get_market_data_provider() -> MarketDataProvider:
+    names = ("mock",) if os.environ.get("PYTEST_CURRENT_TEST") else None
+    return create_market_data_provider_chain(names)
 
 
 def _providers(provider: MarketDataProvider) -> list[MarketDataProvider]:
@@ -127,25 +140,23 @@ def _resolve_provider_candidate(
         None,
     )
     if mapping is not None:
-        if provider.name == "mock":
-            try:
-                candidate = provider.get_instrument(mapping.provider_instrument_id)
-            except MarketDataProviderError:
-                candidate = candidate_for_instrument(
-                    provider.name,
-                    mapping.provider_instrument_id,
-                    mapping.provider_symbol,
-                    symbol=instrument.symbol,
-                    display_name=instrument.display_name,
-                    asset_class=instrument.asset_class,
-                    venue=instrument.venue,
-                    currency=instrument.currency,
-                    country=instrument.country,
-                    timezone_name=instrument.timezone,
-                    is_synthetic=True,
-                )
-        else:
-            candidate = provider.get_instrument(mapping.provider_instrument_id)
+        candidate = candidate_for_instrument(
+            provider.name,
+            mapping.provider_instrument_id,
+            mapping.provider_symbol,
+            symbol=instrument.symbol,
+            display_name=instrument.display_name,
+            asset_class=instrument.asset_class,
+            venue=instrument.venue,
+            currency=instrument.currency,
+            country=instrument.country,
+            timezone_name=instrument.timezone,
+            is_synthetic=provider.is_mock,
+            multiplier=instrument.multiplier,
+            expiry=instrument.expiry,
+            strike=instrument.strike,
+            option_type=instrument.option_type,
+        )
         return _validated_candidate(provider, candidate), mapping
 
     candidate: InstrumentCandidate | None = None
@@ -160,13 +171,20 @@ def _resolve_provider_candidate(
             ),
             None,
         )
-    elif provider.name in {"finnhub", "yfinance"}:
+    elif provider.name in {"finnhub", "yfinance", "delta_exchange", "binance"}:
         if provider.name == "finnhub" and instrument.country == "IN":
-            provider_symbol = f"{instrument.venue.upper()}:{instrument.symbol.upper()}"
+            exchange = (
+                "BSE"
+                if instrument.venue.upper() in {"BSE", "XBOM", "BOM", "BSE_EQ"}
+                else "NSE"
+            )
+            provider_symbol = f"{exchange}:{instrument.symbol.upper()}"
         elif provider.name == "yfinance":
             provider_symbol = canonical_provider_symbol(
                 instrument.symbol, instrument.venue, instrument.country
             )
+        elif provider.name == "binance":
+            provider_symbol = binance_provider_symbol(instrument.symbol)
         else:
             provider_symbol = instrument.symbol.upper()
         provider_id = f"{provider_symbol}|{instrument.venue.upper()}"
@@ -181,8 +199,14 @@ def _resolve_provider_candidate(
             currency=instrument.currency,
             country=instrument.country,
             timezone_name=instrument.timezone,
+            multiplier=instrument.multiplier,
+            expiry=instrument.expiry,
+            strike=instrument.strike,
+            option_type=instrument.option_type,
         )
     elif provider.name == "mock":
+        if not instrument.is_synthetic:
+            raise MarketDataProviderError("synthetic_fallback_disabled_for_real_instrument")
         provider_id = f"SYNTHETIC|{instrument.id}"
         candidate = candidate_for_instrument(
             provider.name,
@@ -196,6 +220,10 @@ def _resolve_provider_candidate(
             country=instrument.country,
             timezone_name=instrument.timezone,
             is_synthetic=True,
+            multiplier=instrument.multiplier,
+            expiry=instrument.expiry,
+            strike=instrument.strike,
+            option_type=instrument.option_type,
         )
 
     if candidate is None:
@@ -248,6 +276,7 @@ class InstrumentResponse(BaseModel):
     strike: Decimal | None
     option_type: str | None
     is_synthetic: bool
+    relink_required: bool
     provider_identifiers: list[ProviderIdentifierResponse]
 
 
@@ -310,6 +339,7 @@ def _instrument_response(instrument: Instrument) -> InstrumentResponse:
         strike=instrument.strike,
         option_type=instrument.option_type,
         is_synthetic=instrument.is_synthetic,
+        relink_required=instrument.relink_required,
         provider_identifiers=[
             ProviderIdentifierResponse(
                 provider=mapping.provider,
@@ -391,15 +421,21 @@ def _get_instrument(db: Session, instrument_id: UUID) -> Instrument:
 def _freshness(
     db: Session, instrument_id: UUID, interval: str, *, now: datetime | None = None
 ) -> FreshnessResponse:
+    instrument = db.get(Instrument, instrument_id)
+    is_synthetic_instrument = instrument.is_synthetic if instrument else False
     sync = db.scalar(
         select(MarketDataSync).where(
             MarketDataSync.instrument_id == instrument_id,
             MarketDataSync.interval == interval,
-        ).order_by(MarketDataSync.attempted_at.desc())
+        ).order_by(
+            MarketDataSync.attempted_at.desc(),
+            MarketDataSync.succeeded_at.is_not(None).desc(),
+        )
     )
     latest_bar = db.scalar(
         select(MarketBar)
         .where(MarketBar.instrument_id == instrument_id, MarketBar.interval == interval)
+        .where(MarketBar.is_synthetic.is_(True) if is_synthetic_instrument else MarketBar.is_synthetic.is_(False))
         .order_by(MarketBar.timestamp.desc())
         .limit(1)
     )
@@ -460,8 +496,8 @@ def _validate_range(interval: str, start: datetime, end: datetime) -> tuple[date
     start_utc, end_utc = _utc(start), _utc(end)
     if start_utc >= end_utc:
         raise HTTPException(status_code=422, detail="start must be before end")
-    max_days = {"1d": 366, "1h": 31, "15m": 7}[interval]
-    if end_utc - start_utc > timedelta(days=max_days):
+    max_days = {"1m": 7, "15m": 60, "1h": 730}.get(interval)
+    if max_days is not None and end_utc - start_utc > timedelta(days=max_days):
         raise HTTPException(
             status_code=422,
             detail=f"Date range for {interval} bars cannot exceed {max_days} days",
@@ -528,6 +564,8 @@ def provider_status(
         configuration=(
             "synthetic fixture provider"
             if health.is_mock
+            else "public providers; no API credentials required"
+            if health.status.startswith("provider_chain:public_provider")
             else "credentials configured; live connectivity is not verified"
         ),
     )
@@ -570,6 +608,67 @@ def get_instrument(
     db: Session = Depends(get_db),
 ):
     return _instrument_response(_get_instrument(db, instrument_id))
+
+
+@router.post("/instruments/cleanup-synthetic")
+def cleanup_synthetic_instruments(
+    provider: MarketDataProvider = Depends(get_market_data_provider),
+    _: UserSession = Depends(require_csrf),
+    _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    synthetic_instruments = db.scalars(
+        select(Instrument).where(
+            Instrument.is_synthetic.is_(True),
+            Instrument.venue.like("DEMO%"),
+        )
+    ).all()
+    deleted = 0
+    marked_for_relink = 0
+    deleted_ids: list[str] = []
+    relink_ids: list[str] = []
+    resolved_replacements: dict[str, list[str]] = {}
+    resolution_failures: dict[str, str] = {}
+    for instrument in synthetic_instruments:
+        linked = db.scalar(
+            select(PortfolioTransaction.id)
+            .where(PortfolioTransaction.instrument_id == instrument.id)
+            .limit(1)
+        )
+        if linked is not None:
+            instrument.relink_required = True
+            marked_for_relink += 1
+            relink_ids.append(str(instrument.id))
+            replacements = []
+            try:
+                candidates = provider.search_instruments(instrument.symbol, 50)
+            except MarketDataProviderError as error:
+                candidates = []
+                resolution_failures[str(instrument.id)] = error.code
+            except (TimeoutError, ValueError):
+                candidates = []
+                resolution_failures[str(instrument.id)] = "provider_unavailable"
+            for candidate in candidates:
+                if candidate.is_synthetic or candidate.symbol.casefold() != instrument.symbol.casefold():
+                    continue
+                replacement = _upsert_provider_instrument(db, candidate, datetime.now(timezone.utc))
+                replacements.append(str(replacement.id))
+            if replacements:
+                resolved_replacements[str(instrument.id)] = replacements
+        else:
+            db.delete(instrument)
+            deleted += 1
+            deleted_ids.append(str(instrument.id))
+    db.commit()
+    return {
+        "deleted_unlinked": deleted,
+        "marked_for_relink": marked_for_relink,
+        "deleted_ids": deleted_ids,
+        "relink_ids": relink_ids,
+        "resolved_replacements": resolved_replacements,
+        "resolution_failures": resolution_failures,
+        "message": "Synthetic holdings were retained and marked for relinking.",
+    }
 
 
 @router.post("/watchlist/{instrument_id}", status_code=204)
@@ -629,29 +728,51 @@ def latest_quote(
     now = datetime.now(timezone.utc)
     stale_cache: tuple[MarketQuote, bool] | None = None
     for active_provider in _providers(provider):
-        try:
-            candidate, mapping = _resolve_provider_candidate(db, instrument, active_provider)
-        except (MarketDataProviderError, TimeoutError, ValueError):
+        if active_provider.is_mock and not instrument.is_synthetic:
             continue
+        provider_mapping = next(
+            (
+                item for item in instrument.provider_identifiers
+                if item.provider == active_provider.name
+            ),
+            None,
+        )
         cached_quote = db.scalar(
             select(MarketQuote).where(
                 MarketQuote.instrument_id == instrument.id,
                 MarketQuote.source == active_provider.name,
             )
         )
-        if cached_quote is not None:
+        if cached_quote is not None and (
+            instrument.is_synthetic or not cached_quote.is_synthetic
+        ):
             cache_age = (now - _utc(cached_quote.retrieved_at)).total_seconds()
             if not refresh and 0 <= cache_age <= settings.market_data_quote_freshness_seconds:
+                price_age = (now - _utc(cached_quote.timestamp)).total_seconds()
+                price_is_stale = price_age > settings.market_data_quote_freshness_seconds
                 db.commit()
                 return _quote_response(
                     instrument,
                     cached_quote,
-                    freshness="fresh",
-                    freshness_message="Cached quote is within the configured freshness window.",
+                    freshness="stale" if price_is_stale else "fresh",
+                    freshness_message=(
+                        "Quote data is older than the configured freshness window."
+                        if price_is_stale
+                        else "Cached quote is within the configured freshness window."
+                    ),
                     is_cached=True,
-                    is_verified=mapping.is_verified,
+                    is_verified=provider_mapping.is_verified if provider_mapping else False,
                 )
-            stale_cache = stale_cache or (cached_quote, mapping.is_verified)
+            stale_cache = stale_cache or (
+                cached_quote,
+                provider_mapping.is_verified if provider_mapping else False,
+            )
+        try:
+            candidate, mapping = _resolve_provider_candidate(db, instrument, active_provider)
+        except (MarketDataProviderError, TimeoutError, ValueError):
+            continue
+        if cached_quote is not None and stale_cache is not None:
+            stale_cache = (stale_cache[0], mapping.is_verified)
         try:
             bar = HistoricalBar.model_validate(active_provider.get_latest_quote(candidate))
         except (MarketDataProviderError, TimeoutError, ValueError):
@@ -669,15 +790,20 @@ def latest_quote(
         cached_quote.volume = bar.volume
         cached_quote.retrieved_at = retrieved_at
         cached_quote.is_synthetic = active_provider.is_mock or candidate.is_synthetic
+        price_is_stale = (
+            retrieved_at - _utc(bar.timestamp)
+        ).total_seconds() > settings.market_data_quote_freshness_seconds
         db.commit()
         db.refresh(cached_quote)
         return _quote_response(
             instrument,
             cached_quote,
-            freshness="fresh",
+            freshness="stale" if price_is_stale else "fresh",
             freshness_message=(
                 "Synthetic fallback quote; this is not a live market price."
                 if cached_quote.is_synthetic
+                else "Provider returned a quote older than the configured freshness window."
+                if price_is_stale
                 else f"Quote retrieved from {active_provider.name}."
             ),
             is_cached=False,
@@ -747,11 +873,36 @@ def sync_history(
 ):
     instrument = _get_instrument(db, instrument_id)
     start_utc, end_utc = _validate_range(interval, start, end)
-    attempted_at = datetime.now(timezone.utc)
+    cached_range = db.scalar(
+        select(MarketBar.id)
+        .where(
+            MarketBar.instrument_id == instrument.id,
+            MarketBar.interval == interval,
+            MarketBar.is_synthetic.is_(True if instrument.is_synthetic else False),
+            MarketBar.timestamp >= start_utc,
+            MarketBar.timestamp < end_utc,
+        )
+        .limit(1)
+    )
+    if cached_range is not None:
+        db.commit()
+        return get_history(
+            instrument_id=instrument_id,
+            interval=interval,
+            start=start_utc,
+            end=end_utc,
+            offset=0,
+            limit=limit,
+            _user=_user,
+            db=db,
+        )
     selected_provider: MarketDataProvider | None = None
     selected_candidate: InstrumentCandidate | None = None
     validated_bars: list[HistoricalBar] = []
+    yfinance_lookback_error: str | None = None
     for active_provider in _providers(provider):
+        if active_provider.is_mock and not instrument.is_synthetic:
+            continue
         try:
             candidate, _mapping = _resolve_provider_candidate(db, instrument, active_provider)
             bars = active_provider.get_historical_bars(
@@ -766,19 +917,38 @@ def sync_history(
             selected_candidate = candidate
             validated_bars = candidate_bars
             break
-        except (MarketDataProviderError, TimeoutError, ValueError):
+        except MarketDataProviderError as error:
+            if error.code.startswith("yfinance_") and "lookback_exceeded" in error.code:
+                yfinance_lookback_error = error.code
             _sync_record(
                 db,
                 instrument.id,
                 interval,
                 source=active_provider.name,
-                attempted_at=attempted_at,
+                attempted_at=datetime.now(timezone.utc),
+                status="unavailable",
+                rows_received=0,
+                safe_error_code=error.code[:48],
+            )
+        except (TimeoutError, ValueError):
+            _sync_record(
+                db,
+                instrument.id,
+                interval,
+                source=active_provider.name,
+                attempted_at=datetime.now(timezone.utc),
                 status="unavailable",
                 rows_received=0,
                 safe_error_code="provider_unavailable_or_invalid_response",
             )
     if selected_provider is None or selected_candidate is None:
         db.commit()
+        if yfinance_lookback_error:
+            max_days = {"1m": 7, "15m": 60, "1h": 730}[interval]
+            raise HTTPException(
+                status_code=422,
+                detail=f"Yahoo Finance {interval} history is limited to the most recent {max_days} days.",
+            )
         raise HTTPException(status_code=503, detail="Historical market data is temporarily unavailable")
 
     retrieved_at = datetime.now(timezone.utc)
@@ -865,6 +1035,8 @@ def get_history(
         MarketBar.instrument_id == instrument.id,
         MarketBar.interval == interval,
     )
+    if not instrument.is_synthetic:
+        query = query.where(MarketBar.is_synthetic.is_(False))
     if start is not None and end is not None:
         start_utc, end_utc = _validate_range(interval, start, end)
         query = query.where(MarketBar.timestamp >= start_utc, MarketBar.timestamp < end_utc)

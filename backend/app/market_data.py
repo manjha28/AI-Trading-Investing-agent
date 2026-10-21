@@ -21,7 +21,7 @@ class InstrumentCandidate(BaseModel):
     display_name: str = Field(min_length=1, max_length=160)
     asset_class: str
     venue: str = Field(min_length=1, max_length=32)
-    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    currency: str = Field(pattern=r"^[A-Z]{3,4}$")
     country: str = Field(pattern=r"^[A-Z]{2}$")
     timezone: str = Field(min_length=1, max_length=64)
     multiplier: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=8)
@@ -152,77 +152,6 @@ class MockMarketDataProvider:
             timezone="Asia/Kolkata",
             is_synthetic=True,
         ),
-        InstrumentCandidate(
-            provider="mock",
-            provider_instrument_id="DEMO-US-INDEX-001",
-            provider_symbol="DEMO_US:INDEX1",
-            symbol="INDEX1",
-            display_name="Demo Market Index",
-            asset_class="index",
-            venue="DEMO_US",
-            currency="USD",
-            country="US",
-            timezone="America/New_York",
-            is_synthetic=True,
-        ),
-        InstrumentCandidate(
-            provider="mock",
-            provider_instrument_id="DEMO-US-ETF-001",
-            provider_symbol="DEMO_US:ETF1",
-            symbol="ETF1",
-            display_name="Demo Exchange Traded Fund",
-            asset_class="etf",
-            venue="DEMO_US",
-            currency="USD",
-            country="US",
-            timezone="America/New_York",
-            is_synthetic=True,
-        ),
-        InstrumentCandidate(
-            provider="mock",
-            provider_instrument_id="DEMO-US-FUTURE-001",
-            provider_symbol="DEMO_US:FUT1-2027",
-            symbol="FUT1",
-            display_name="Demo Equity Future",
-            asset_class="future",
-            venue="DEMO_US",
-            currency="USD",
-            country="US",
-            timezone="America/New_York",
-            multiplier=Decimal("10"),
-            expiry=date(2027, 3, 19),
-            is_synthetic=True,
-        ),
-        InstrumentCandidate(
-            provider="mock",
-            provider_instrument_id="DEMO-US-OPTION-001",
-            provider_symbol="DEMO_US:OPT1-2027-100-C",
-            symbol="OPT1",
-            display_name="Demo Equity Call Option",
-            asset_class="option",
-            venue="DEMO_US",
-            currency="USD",
-            country="US",
-            timezone="America/New_York",
-            multiplier=Decimal("100"),
-            expiry=date(2027, 3, 19),
-            strike=Decimal("100"),
-            option_type="call",
-            is_synthetic=True,
-        ),
-        InstrumentCandidate(
-            provider="mock",
-            provider_instrument_id="DEMO-CRYPTO-BETA-USD-001",
-            provider_symbol="DEMO_CRYPTO:BETA-USD",
-            symbol="BETA-USD",
-            display_name="Beta Demo Crypto Pair",
-            asset_class="crypto",
-            venue="DEMO_CRYPTO",
-            currency="USD",
-            country="ZZ",
-            timezone="UTC",
-            is_synthetic=True,
-        ),
     )
 
     def search_instruments(self, query: str, limit: int) -> list[InstrumentCandidate]:
@@ -252,11 +181,17 @@ class MockMarketDataProvider:
         end: datetime,
         limit: int,
     ) -> list[HistoricalBar]:
-        if interval not in {"1d", "1h", "15m"}:
+        if interval not in {"1d", "1h", "15m", "1m", "5m"}:
             raise MarketDataProviderError("unsupported_interval")
         if start.utcoffset() is None or end.utcoffset() is None or start >= end:
             raise MarketDataProviderError("invalid_time_range")
-        step = {"1d": timedelta(days=1), "1h": timedelta(hours=1), "15m": timedelta(minutes=15)}[interval]
+        step = {
+            "1d": timedelta(days=1),
+            "1h": timedelta(hours=1),
+            "15m": timedelta(minutes=15),
+            "5m": timedelta(minutes=5),
+            "1m": timedelta(minutes=1),
+        }[interval]
         cursor = start.astimezone(timezone.utc)
         end_utc = end.astimezone(timezone.utc)
         offset = sum(instrument.provider_instrument_id.encode("utf-8")) % 37
@@ -282,9 +217,10 @@ class MockMarketDataProvider:
 
     def get_latest_quote(self, instrument: InstrumentCandidate) -> HistoricalBar:
         now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-        return self.get_historical_bars(
+        bar = self.get_historical_bars(
             instrument, "1h", now - timedelta(hours=1), now, 1
         )[0]
+        return bar.model_copy(update={"timestamp": datetime.now(timezone.utc)})
 
     def health(self) -> ProviderHealth:
         return ProviderHealth(

@@ -7,6 +7,7 @@ import {
   CircleAlert,
   CircleDollarSign,
   Clock3,
+  Landmark,
   LogOut,
   Pencil,
   Plus,
@@ -16,17 +17,9 @@ import {
   Trash2,
   Wallet,
 } from 'lucide-react';
-import {
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 import { apiRequest, downloadCsv } from './api';
+import { CandleChart } from './CandleChart';
+import { BrokersPage } from './BrokersPage';
 
 type User = { id: string; email: string; created_at: string };
 type Portfolio = { id: string; name: string; base_currency: string; created_at: string };
@@ -151,6 +144,7 @@ type MarketInstrument = {
   strike: string | null;
   option_type: string | null;
   is_synthetic: boolean;
+  relink_required: boolean;
   provider_identifiers: { provider: string; provider_instrument_id: string; provider_symbol: string; is_verified: boolean }[];
 };
 type MarketBar = {
@@ -199,6 +193,12 @@ type MarketQuote = {
 };
 
 function formatMoney(value: string, currency: string): string {
+  if (currency.length !== 3) {
+    return `${new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(Number(value))} ${currency}`;
+  }
   return new Intl.NumberFormat(currency === 'INR' ? 'en-IN' : 'en-US', {
     style: 'currency',
     currency,
@@ -250,7 +250,9 @@ export default function App() {
   const [csvContent, setCsvContent] = useState('');
   const [csvPreview, setCsvPreview] = useState<CsvImportPreview | null>(null);
   const [importingCsv, setImportingCsv] = useState(false);
-  const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data'>('overview');
+  const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers'>(
+    () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
+  );
   const [transactionType, setTransactionType] = useState<TransactionType>('deposit');
   const [journalTrades, setJournalTrades] = useState<JournalTrade[]>([]);
   const [journalAnalytics, setJournalAnalytics] = useState<JournalAnalytics | null>(null);
@@ -728,6 +730,16 @@ export default function App() {
     }
   }
 
+  async function addSelectedInstrumentToWatchlist() {
+    if (!selectedInstrument) return;
+    try {
+      await apiRequest<void>(`/market-data/watchlist/${selectedInstrument.id}`, { method: 'POST' });
+      setNotice(`${selectedInstrument.symbol} added to the quote-refresh watchlist.`);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
+  }
+
   async function loadMarketHistory() {
     if (!selectedInstrument || !marketStart || !marketEnd) return;
     setError('');
@@ -755,6 +767,32 @@ export default function App() {
       }
     } finally {
       setLoadingMarketHistory(false);
+    }
+  }
+
+  async function cleanupSyntheticInstruments() {
+    try {
+      const result = await apiRequest<{
+        deleted_unlinked: number;
+        marked_for_relink: number;
+        deleted_ids: string[];
+        relink_ids: string[];
+        message: string;
+      }>(
+        '/market-data/instruments/cleanup-synthetic',
+        { method: 'POST' },
+      );
+      setNotice(`${result.message} Removed ${result.deleted_unlinked}; marked ${result.marked_for_relink} for relinking.`);
+      if (selectedInstrument && result.deleted_ids.includes(selectedInstrument.id)) {
+        setSelectedInstrument(null);
+        setMarketHistory(null);
+        setMarketQuote(null);
+      } else if (selectedInstrument && result.relink_ids.includes(selectedInstrument.id)) {
+        const updated = await apiRequest<MarketInstrument>(`/market-data/instruments/${selectedInstrument.id}`);
+        setSelectedInstrument(updated);
+      }
+    } catch (requestError) {
+      setError((requestError as Error).message);
     }
   }
 
@@ -787,6 +825,7 @@ export default function App() {
             <label>Password<input name="password" type="password" minLength={12} autoComplete={registering ? 'new-password' : 'current-password'} required /></label>
             <button className="primary-button" type="submit">{registering ? 'Create account' : 'Sign in'}</button>
           </form>
+          <button className="secondary-button" type="button" onClick={() => void cleanupSyntheticInstruments()}>Clean up synthetic demo instruments</button>
           {error && <p className="error-message" role="alert"><CircleAlert size={16} />{error}</p>}
           <button className="text-button" type="button" onClick={() => { setError(''); setRegistering((value) => !value); }}>
             {registering ? 'Already have an account? Sign in' : 'Create an account'}
@@ -803,19 +842,19 @@ export default function App() {
     (valuation?.positions ?? []).map((position) => [position.symbol, position]),
   );
   const pricedPositions = valuation?.positions.filter((position) => position.last_price !== null) ?? [];
-  const marketDataStatus = pricedPositions.length === 0
+  const visiblePriceStates = pricedPositions.length > 0
+    ? pricedPositions
+    : marketQuote
+      ? [marketQuote]
+      : [];
+  const marketDataStatus = visiblePriceStates.length === 0
+    || valuation?.positions.some((position) => position.freshness === 'unavailable')
     ? 'unavailable'
-    : pricedPositions.some((position) => position.is_synthetic || position.freshness === 'stale')
+    : visiblePriceStates.some((position) => position.freshness === 'stale')
+      ? 'unavailable'
+      : visiblePriceStates.some((position) => position.is_synthetic)
       ? 'synthetic'
       : 'live';
-  const marketChartData = marketHistory?.bars.map((bar) => ({
-    timestamp: new Date(bar.timestamp).toLocaleDateString(),
-    Open: Number(bar.open),
-    High: Number(bar.high),
-    Low: Number(bar.low),
-    Close: Number(bar.close),
-  })) ?? [];
-
   return (
     <div className="app-frame">
       <aside className="sidebar">
@@ -826,6 +865,7 @@ export default function App() {
           <button className={activeView === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('activity')}><ReceiptText size={17} /> Transactions</button>
           <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={17} /> Trade journal</button>
           <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={17} /> Market data</button>
+          <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={17} /> Brokers</button>
         </nav>
         <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /> Paper ledger only<span>Market data: {marketDataStatus}</span></div>
         <button className="signout-button" onClick={signOut}><LogOut size={16} /> Sign out</button>
@@ -833,7 +873,7 @@ export default function App() {
 
       <main className="workspace">
         <header className="workspace-header">
-          <div><p className="eyebrow">PORTFOLIO WORKSPACE</p><h1>{activeView === 'overview' ? 'Overview' : activeView === 'journal' ? 'Trade journal' : activeView === 'market-data' ? 'Market data' : 'Transactions'}</h1></div>
+          <div><p className="eyebrow">PORTFOLIO WORKSPACE</p><h1>{activeView === 'overview' ? 'Overview' : activeView === 'journal' ? 'Trade journal' : activeView === 'market-data' ? 'Market data' : activeView === 'brokers' ? 'Connect Broker' : 'Transactions'}</h1></div>
           <div className="header-actions">
             {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
             <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketDataStatus}</span>
@@ -844,17 +884,19 @@ export default function App() {
         {error && <p className="error-banner" role="alert"><CircleAlert size={17} />{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error">×</button></p>}
         {notice && <p className="success-banner" role="status"><ShieldCheck size={17} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss notice">×</button></p>}
 
-        {activeView === 'market-data' ? (
+        {activeView === 'brokers' ? (
+          <BrokersPage portfolioId={portfolioId} />
+        ) : activeView === 'market-data' ? (
           <section className="market-page">
             <div className="data-note"><CircleDollarSign size={17} /><span>Market data provenance and freshness are shown for each result. Provider mappings are not verified exchange listings unless explicitly marked; market data is not used for portfolio valuation.</span></div>
             <div className="content-grid market-grid">
               <section className="data-section">
                 <div className="section-heading"><div><p className="eyebrow">INSTRUMENT MASTER</p><h2>Search instruments</h2></div><Search size={18} /></div>
                 <form className="market-search" onSubmit={searchMarketInstruments}>
-                  <label>Symbol, name, or venue<input value={marketQuery} onChange={(event) => setMarketQuery(event.target.value)} minLength={1} maxLength={80} placeholder="Try ALPHA" required /></label>
+                  <label>Symbol, name, or venue<input value={marketQuery} onChange={(event) => setMarketQuery(event.target.value)} minLength={1} maxLength={80} placeholder="AAPL, RELIANCE, BTCUSD" required /></label>
                   <button className="primary-button" type="submit" disabled={searchingMarket}><Search size={15} />{searchingMarket ? 'Searching…' : 'Search'}</button>
                 </form>
-                {marketInstruments.length === 0 ? <div className="table-empty">{searchingMarket ? 'Searching instrument master…' : 'Search to find available demo instruments.'}</div> : (
+                {marketInstruments.length === 0 ? <div className="table-empty">{searchingMarket ? 'Searching instrument master…' : 'Search available equities and crypto markets.'}</div> : (
                   <div className="market-instrument-list" aria-label="Instrument search results">
                     {marketInstruments.map((instrument) => <button className={selectedInstrument?.id === instrument.id ? 'market-instrument selected' : 'market-instrument'} type="button" key={instrument.id} onClick={() => void selectMarketInstrument(instrument)}>
                       <span><strong>{instrument.symbol}</strong><small>{instrument.display_name}</small></span><span className="market-instrument-meta">{instrument.venue} · {instrument.currency}<small>{instrument.asset_class}</small></span>
@@ -869,12 +911,15 @@ export default function App() {
                     <p>{selectedInstrument.display_name}</p>
                     <span>{selectedInstrument.asset_class.toUpperCase()} · {selectedInstrument.country} · {selectedInstrument.currency} · {selectedInstrument.timezone}</span>
                     {selectedInstrument.is_synthetic && <strong className="synthetic-badge">SYNTHETIC DEMO INSTRUMENT</strong>}
+                    {selectedInstrument.relink_required && <strong className="relink-warning">Portfolio holding needs relinking to a real instrument.</strong>}
                     {selectedInstrument.expiry && <span>Expiry {selectedInstrument.expiry}{selectedInstrument.strike ? ` · ${selectedInstrument.option_type} ${selectedInstrument.strike}` : ''}{selectedInstrument.multiplier ? ` · multiplier ${selectedInstrument.multiplier}` : ''}</span>}
                     {selectedInstrument.provider_identifiers.map((mapping) => <span key={`${mapping.provider}-${mapping.provider_instrument_id}`}>Provider ID: {mapping.provider}:{mapping.provider_instrument_id} · {mapping.is_verified ? 'verified mapping' : 'unverified mapping'}</span>)}
                   </div>
-                  <button className="secondary-button" type="button" onClick={loadMarketQuote} disabled={loadingMarketQuote}>{loadingMarketQuote ? 'Loading quote…' : 'Load latest quote'}</button>
+                  {summary?.positions.some((position) => position.symbol === selectedInstrument.symbol) && selectedInstrument.currency === currency && <button className="secondary-button" type="button" onClick={() => void attachSelectedInstrument()}>Link to portfolio holding</button>}
+                  <button className="secondary-button" type="button" onClick={() => void addSelectedInstrumentToWatchlist()}>Add to refresh watchlist</button>
+                  <button className="secondary-button" type="button" onClick={() => void loadMarketQuote(selectedInstrument, true)} disabled={loadingMarketQuote}>{loadingMarketQuote ? 'Loading quote…' : 'Refresh instrument price'}</button>
                   {marketQuote && <div className="market-quote" aria-live="polite">
-                    <div className="section-heading"><div><p className="eyebrow">LATEST QUOTE</p><h3>{formatMoney(marketQuote.bar.close, marketQuote.currency)}</h3></div><span className={`freshness-badge freshness-${marketQuote.freshness}`}>{marketQuote.freshness}</span></div>
+                    <div className="section-heading"><div><p className="eyebrow">LATEST PRICE</p><h3>{formatMoney(marketQuote.bar.close, marketQuote.currency)}</h3></div><span className={`freshness-badge ${marketQuote.is_synthetic ? 'freshness-synthetic' : `freshness-${marketQuote.freshness}`}`}>{marketQuote.is_synthetic ? 'synthetic' : marketQuote.freshness}</span></div>
                     <p className="market-provenance">{marketQuote.freshness_message} Source: {marketQuote.source} · Retrieved: {new Date(marketQuote.retrieved_at).toLocaleString()} · {marketQuote.is_cached ? 'Cached' : 'Provider response'} · {marketQuote.is_synthetic ? 'Synthetic' : marketQuote.is_verified ? 'Verified' : 'Unverified'}</p>
                   </div>}
                   <div className="market-range">
@@ -889,10 +934,13 @@ export default function App() {
             {marketHistory && selectedInstrument && <section className="data-section market-history">
               <div className="section-heading"><div><p className="eyebrow">PROVENANCE &amp; FRESHNESS</p><h2>{selectedInstrument.symbol} history</h2></div><span className={`freshness-badge freshness-${marketHistory.freshness.status}`}>{marketHistory.freshness.status.replace('_', ' ')}</span></div>
               <p className="market-provenance">{marketHistory.freshness.message} Source: {marketHistory.freshness.source ?? '—'} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Latest bar: {marketHistory.freshness.latest_bar_timestamp ? new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'}</p>
-              {marketHistory.bars.length === 0 ? <div className="table-empty">No bars are available for that date range.</div> : <div className="table-scroll"><table><thead><tr><th>Timestamp (UTC)</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody>{marketHistory.bars.map((bar) => {
-                const verified = selectedInstrument.provider_identifiers.find((mapping) => mapping.provider === bar.source)?.is_verified === true;
-                return <tr key={`${bar.timestamp}-${bar.source}`}><td>{new Date(bar.timestamp).toISOString().replace('T', ' ').replace('.000Z', 'Z')}</td><td>{bar.open}</td><td>{bar.high}</td><td>{bar.low}</td><td>{bar.close}</td><td>{bar.volume}</td><td>{bar.is_synthetic ? 'Synthetic · ' : ''}{bar.is_synthetic || !verified ? 'Unverified · ' : 'Verified · '}{bar.source}</td></tr>;
-              })}</tbody></table></div>}
+              {marketHistory.bars.length === 0 ? <div className="table-empty">No bars are available for that date range.</div> : <>
+                <CandleChart bars={marketHistory.bars} currency={selectedInstrument.currency} interval={marketInterval} />
+                <div className="table-scroll"><table><thead><tr><th>Timestamp (UTC)</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody>{marketHistory.bars.map((bar) => {
+                  const verified = selectedInstrument.provider_identifiers.find((mapping) => mapping.provider === bar.source)?.is_verified === true;
+                  return <tr key={`${bar.timestamp}-${bar.source}`}><td>{new Date(bar.timestamp).toISOString().replace('T', ' ').replace('.000Z', 'Z')}</td><td>{Number(bar.open).toFixed(2)}</td><td>{Number(bar.high).toFixed(2)}</td><td>{Number(bar.low).toFixed(2)}</td><td>{Number(bar.close).toFixed(2)}</td><td>{bar.volume}</td><td>{bar.is_synthetic ? 'Synthetic · ' : ''}{bar.is_synthetic || !verified ? 'Unverified · ' : 'Verified · '}{bar.source}</td></tr>;
+                })}</tbody></table></div>
+              </>}
             </section>}
           </section>
         ) : activeView === 'journal' ? (
@@ -951,14 +999,22 @@ export default function App() {
           </section>
         ) : (
           <>
-            <div className="data-note"><CircleDollarSign size={17} /><span>Prices and market value are unavailable until a verified market-data source is configured.</span></div>
+            <div className="valuation-toolbar">
+              <div className="data-note"><CircleDollarSign size={17} /><span>{valuation?.confidence === 'unreliable' ? valuation.reasons.join(' ') : 'Portfolio prices are shown with freshness and source provenance; synthetic data is never presented as live.'}</span></div>
+              <button className="secondary-button" type="button" onClick={() => void refreshPortfolioValuation()} disabled={refreshingValuation || !portfolioId}>
+                {refreshingValuation ? 'Refreshing…' : 'Refresh prices'}
+              </button>
+              <span className="last-updated">Updated {valuation?.last_updated ? new Date(valuation.last_updated).toLocaleString() : '—'}</span>
+            </div>
             {loadingPortfolio || !summary ? <p className="loading-inline">Loading persisted portfolio data…</p> : (
               <>
-                <section className="metrics-row" aria-label="Portfolio balances">
+                <section className="metrics-row portfolio-metrics" aria-label="Portfolio balances">
                   <article className="metric"><span>Cash balance</span><strong>{formatMoney(summary.cash_balance, currency)}</strong><small>After recorded fees</small></article>
-                  <article className="metric"><span>Open cost basis</span><strong>{formatMoney(summary.invested_cost, currency)}</strong><small>{summary.positions.length} open positions</small></article>
+                  <article className="metric"><span>Market value</span><strong>{valuation ? formatMoney(valuation.market_value, currency) : 'Unavailable'}</strong><small>{valuation?.confidence === 'unreliable' ? 'Partial or synthetic prices' : `${summary.positions.length} open positions`}</small></article>
+                  <article className="metric"><span>Total value</span><strong>{valuation ? formatMoney(valuation.total_value, currency) : 'Unavailable'}</strong><small>Cash + priced holdings · no FX</small></article>
+                  <article className="metric"><span>Unrealized P&amp;L</span><strong className={valuation && Number(valuation.unrealized_pnl) >= 0 ? 'positive' : 'negative'}>{valuation ? formatMoney(valuation.unrealized_pnl, currency) : 'Unavailable'}</strong><small>{valuation?.confidence === 'unreliable' ? 'Unreliable valuation' : 'Based on last prices'}</small></article>
+                  <article className="metric"><span>Day change</span><strong className={valuation && Number(valuation.day_change) >= 0 ? 'positive' : 'negative'}>{valuation ? formatMoney(valuation.day_change, currency) : 'Unavailable'}</strong><small>Quoted open-to-last move</small></article>
                   <article className="metric"><span>Realized P&amp;L</span><strong className={Number(summary.realized_pnl) >= 0 ? 'positive' : 'negative'}>{formatMoney(summary.realized_pnl, currency)}</strong><small>Sales and recorded cash income</small></article>
-                  <article className="metric unavailable"><span>Unrealized P&amp;L</span><strong>Unavailable</strong><small>No verified prices connected</small></article>
                 </section>
 
                 <div className="content-grid">
@@ -966,14 +1022,29 @@ export default function App() {
                     <div className="section-heading"><div><p className="eyebrow">{activeView === 'overview' ? 'CURRENT EXPOSURE' : 'LEDGER'}</p><h2>{activeView === 'overview' ? 'Open positions' : 'Transaction history'}</h2></div><span className="section-count">{activeView === 'overview' ? summary.positions.length : transactions.length} records</span></div>
                     {activeView === 'overview' ? (
                       summary.positions.length === 0 ? <div className="table-empty">No open positions recorded.</div> : (
-                        <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Quantity</th><th>Average cost</th><th>Cost basis</th></tr></thead><tbody>{summary.positions.map((position) => <tr key={position.symbol}><td className="instrument-cell">{position.symbol}</td><td>{formatQuantity(position.quantity)}</td><td>{formatMoney(position.average_cost, currency)}</td><td>{formatMoney(position.cost_basis, currency)}</td></tr>)}</tbody></table></div>
+                        <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Quantity</th><th>Average cost</th><th>Cost basis</th><th>Last price</th><th>Market value</th><th>Unrealized P&amp;L</th><th>Day change</th><th>Weight</th><th>Data quality</th></tr></thead><tbody>{summary.positions.map((position) => {
+                          const priced = valuationBySymbol.get(position.symbol);
+                          const needsAttention = !priced || priced.freshness === 'stale' || priced.is_synthetic || priced.freshness === 'unavailable';
+                          return <tr key={position.symbol}>
+                            <td className="instrument-cell">{position.symbol}</td>
+                            <td>{formatQuantity(position.quantity)}</td>
+                            <td>{formatMoney(position.average_cost, currency)}</td>
+                            <td>{formatMoney(position.cost_basis, currency)}</td>
+                            <td>{priced?.last_price ? formatMoney(priced.last_price, currency) : '—'}</td>
+                            <td>{priced?.market_value ? formatMoney(priced.market_value, currency) : '—'}</td>
+                            <td className={priced?.unrealized_pnl === null || priced?.unrealized_pnl === undefined ? '' : Number(priced.unrealized_pnl) >= 0 ? 'positive' : 'negative'}>{priced?.unrealized_pnl ? formatMoney(priced.unrealized_pnl, currency) : '—'}</td>
+                            <td>{priced?.day_change ? formatMoney(priced.day_change, currency) : '—'}{priced?.day_change_percent ? ` (${Number(priced.day_change_percent).toFixed(2)}%)` : ''}</td>
+                            <td>{priced?.weight_percent ? `${Number(priced.weight_percent).toFixed(2)}%` : '—'}</td>
+                            <td>{needsAttention ? <span className={`freshness-badge ${priced?.is_synthetic ? 'freshness-synthetic' : `freshness-${priced?.freshness ?? 'unavailable'}`}`}>{priced?.is_synthetic ? 'synthetic' : priced?.freshness ?? 'unlinked'}</span> : <span className="freshness-badge freshness-fresh">live</span>}</td>
+                          </tr>;
+                        })}</tbody></table></div>
                       )
                     ) : (
                       transactions.length === 0 ? <div className="table-empty">No transactions recorded.</div> : (
                         <div className="table-scroll"><table><thead><tr><th>Type</th><th>Instrument</th><th>Quantity</th><th>Gross amount</th><th>Fee</th><th>Event time</th><th /></tr></thead><tbody>{[...transactions].reverse().map((transaction) => <tr key={transaction.id}><td><span className={`type-label type-${transaction.transaction_type}`}>{transaction.transaction_type}</span></td><td>{transaction.symbol ?? 'Cash'}</td><td>{transaction.quantity ? formatQuantity(transaction.quantity) : '—'}</td><td>{formatMoney(transaction.amount, currency)}</td><td>{formatMoney(transaction.fee, currency)}</td><td>{new Date(transaction.occurred_at).toLocaleString()}</td><td><button className="icon-button" type="button" onClick={() => startEditingTransaction(transaction)} aria-label={`Edit ${transaction.transaction_type} transaction`}><Pencil size={15} /></button><button className="icon-button" type="button" onClick={() => removeTransaction(transaction.id)} aria-label={`Delete ${transaction.transaction_type} transaction`}><Trash2 size={15} /></button></td></tr>)}</tbody></table></div>
                       )
                     )}
-                    <div className="valuation-footnote"><span className="status-dot muted" /> Market value and unrealized P&amp;L are intentionally not estimated.</div>
+                    <div className="valuation-footnote"><span className={`status-dot ${marketDataStatus}`} /> {valuation?.confidence === 'unreliable' ? `Valuation is unreliable: ${valuation.reasons.join(' ')}` : `Open cost basis ${formatMoney(summary.invested_cost, currency)} · market prices are not FX-converted.`}</div>
                   </section>
 
                   <section className="entry-section">
@@ -1024,6 +1095,7 @@ export default function App() {
         <button className={activeView === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('activity')}><ReceiptText size={18} /><span>Transactions</span></button>
         <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={18} /><span>Journal</span></button>
         <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={18} /><span>Markets</span></button>
+        <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={18} /><span>Brokers</span></button>
       </nav>
     </div>
   );

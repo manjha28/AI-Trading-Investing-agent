@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -127,7 +127,7 @@ def test_history_request_bounds_and_timezone_are_validated(client: TestClient) -
         params={
             "start": "2024-01-01T00:00:00Z",
             "end": "2026-01-01T00:00:00Z",
-            "interval": "1d",
+            "interval": "1h",
         },
     )
     too_many = client.post(
@@ -297,7 +297,7 @@ def test_quote_refresh_failure_returns_cached_quote_as_stale(
         session.commit()
 
     class FailingProvider(MockMarketDataProvider):
-        def get_instrument(self, provider_instrument_id):
+        def get_latest_quote(self, instrument):
             raise MarketDataProviderError("upstream failure with private details")
 
     app.dependency_overrides[get_market_data_provider] = FailingProvider
@@ -313,7 +313,23 @@ def test_quote_refresh_failure_returns_cached_quote_as_stale(
 
 def test_instrument_and_bar_models_reject_invalid_contracts_and_ohlc() -> None:
     provider = MockMarketDataProvider()
-    option = provider.get_instrument("DEMO-US-OPTION-001")
+    option = InstrumentCandidate(
+        provider="mock",
+        provider_instrument_id="OPTION-TEST",
+        provider_symbol="DEMO:OPT1-2027-100-C",
+        symbol="OPT1",
+        display_name="Demo Equity Call Option",
+        asset_class="option",
+        venue="DEMO",
+        currency="USD",
+        country="US",
+        timezone="America/New_York",
+        multiplier=Decimal("100"),
+        expiry=date(2027, 3, 19),
+        strike=Decimal("100"),
+        option_type="call",
+        is_synthetic=True,
+    )
     assert option.asset_class == "option"
     assert option.strike == Decimal("100")
 

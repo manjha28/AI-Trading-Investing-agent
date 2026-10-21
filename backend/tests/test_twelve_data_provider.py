@@ -3,10 +3,9 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from fastapi import HTTPException
 from pydantic import SecretStr
 
-from app.api.market_data import get_market_data_provider
+from app.api.market_data import create_market_data_provider_chain, get_market_data_provider
 from app.config import settings
 from app.market_data import InstrumentCandidate, MarketDataProviderError
 from app.twelve_data import TwelveDataProvider
@@ -257,20 +256,18 @@ def test_health_does_not_claim_verified_live_connectivity() -> None:
     assert health.status == "credentials_configured_connectivity_unverified"
 
 
-def test_provider_factory_requires_backend_api_key(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "market_data_provider", "twelve_data")
+def test_provider_factory_missing_credentials_falls_through_to_unkeyed_provider(monkeypatch) -> None:
     monkeypatch.setattr(settings, "twelve_data_api_key", SecretStr(""))
+    monkeypatch.setattr(settings, "finnhub_api_key", SecretStr(""))
 
-    with pytest.raises(HTTPException) as error:
-        get_market_data_provider()
+    provider = create_market_data_provider_chain(
+        ("twelve_data", "finnhub", "yfinance", "mock")
+    )
 
-    assert error.value.status_code == 503
-    assert "API key is not configured" in error.value.detail
+    assert [item.name for item in provider.providers] == ["yfinance", "mock"]
 
 
 def test_provider_factory_keeps_mock_as_explicit_default(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "market_data_provider", "mock")
-
     provider = get_market_data_provider()
 
     assert provider.name == "mock"
@@ -278,9 +275,8 @@ def test_provider_factory_keeps_mock_as_explicit_default(monkeypatch) -> None:
 
 
 def test_provider_factory_selects_twelve_data_with_server_key(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "market_data_provider", "twelve_data")
     monkeypatch.setattr(settings, "twelve_data_api_key", SecretStr("server-side-test-key"))
 
-    provider = get_market_data_provider()
+    provider = create_market_data_provider_chain(("twelve_data", "mock"))
 
-    assert isinstance(provider, TwelveDataProvider)
+    assert isinstance(provider.providers[0], TwelveDataProvider)

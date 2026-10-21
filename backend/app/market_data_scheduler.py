@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.accounting import LedgerError, calculate_ledger
 from app.api.market_data import get_market_data_provider, latest_quote
 from app.config import settings
 from app.db import engine
@@ -17,13 +18,39 @@ logger = logging.getLogger(__name__)
 
 def _refresh_quotes() -> None:
     with Session(engine) as db:
-        instrument_ids = set(
-            db.scalars(
-                select(PortfolioTransaction.instrument_id)
-                .where(PortfolioTransaction.instrument_id.is_not(None))
-                .distinct()
-            ).all()
-        )
+        portfolio_ids = db.scalars(
+            select(PortfolioTransaction.portfolio_id)
+            .where(PortfolioTransaction.instrument_id.is_not(None))
+            .distinct()
+        ).all()
+        instrument_ids = set()
+        for portfolio_id in portfolio_ids:
+            transactions = list(
+                db.scalars(
+                    select(PortfolioTransaction)
+                    .where(PortfolioTransaction.portfolio_id == portfolio_id)
+                    .order_by(
+                        PortfolioTransaction.occurred_at,
+                        PortfolioTransaction.created_at,
+                        PortfolioTransaction.id,
+                    )
+                ).all()
+            )
+            try:
+                held_symbols = set(calculate_ledger(transactions).positions)
+            except LedgerError:
+                logger.warning(
+                    "Skipping scheduled refresh for portfolio %s with an invalid ledger",
+                    portfolio_id,
+                )
+                continue
+            instrument_ids.update(
+                transaction.instrument_id
+                for transaction in transactions
+                if transaction.instrument_id is not None
+                and transaction.transaction_type in {"buy", "sell"}
+                and transaction.symbol in held_symbols
+            )
         instrument_ids.update(
             db.scalars(select(WatchlistInstrument.instrument_id).distinct()).all()
         )

@@ -828,8 +828,10 @@ def portfolio_valuation(
         position.model_copy(
             update={
                 "weight_percent": (
-                    position.market_value * Decimal("100") / market_value_total
-                    if position.market_value is not None and market_value_total > 0
+                    position.market_value * Decimal("100")
+                    / (ledger.cash_balance + market_value_total)
+                    if position.market_value is not None
+                    and ledger.cash_balance + market_value_total > 0
                     else None
                 )
             }

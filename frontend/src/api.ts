@@ -4,6 +4,13 @@ type ApiError = {
   detail?: string | { msg?: string }[] | Record<string, unknown>;
 };
 
+export class ApiRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
 function csrfToken(): string | undefined {
   const cookie = document.cookie
     .split('; ')
@@ -38,7 +45,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
         : body.detail
           ? JSON.stringify(body.detail)
           : `Request failed (${response.status})`;
-    throw new Error(message);
+    throw new ApiRequestError(message, response.status);
   }
   return (await response.json()) as T;
 }

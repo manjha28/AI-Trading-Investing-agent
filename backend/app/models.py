@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, JSON, Numeric, String, UniqueConstraint, Uuid
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, JSON, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -16,6 +16,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    email_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
     sessions: Mapped[list["UserSession"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
@@ -33,6 +34,7 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    two_factor_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
@@ -124,7 +126,7 @@ class Instrument(Base):
             "asset_class IN ('equity', 'etf', 'index', 'future', 'option', 'crypto')",
             name="ck_instruments_asset_class",
         ),
-        CheckConstraint("length(currency) = 3", name="ck_instruments_currency_length"),
+        CheckConstraint("length(currency) IN (3, 4)", name="ck_instruments_currency_length"),
         CheckConstraint(
             "(asset_class = 'option' AND expiry IS NOT NULL AND strike IS NOT NULL "
             "AND option_type IN ('call', 'put')) OR "
@@ -149,7 +151,7 @@ class Instrument(Base):
     display_name: Mapped[str] = mapped_column(String(160), nullable=False)
     asset_class: Mapped[str] = mapped_column(String(12), nullable=False)
     venue: Mapped[str] = mapped_column(String(32), nullable=False)
-    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    currency: Mapped[str] = mapped_column(String(4), nullable=False)
     country: Mapped[str] = mapped_column(String(2), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     multiplier: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
@@ -157,6 +159,7 @@ class Instrument(Base):
     strike: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     option_type: Mapped[str | None] = mapped_column(String(4))
     is_synthetic: Mapped[bool] = mapped_column(default=False, nullable=False)
+    relink_required: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     provider_identifiers: Mapped[list["InstrumentProviderIdentifier"]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"
@@ -215,7 +218,7 @@ class MarketBar(Base):
             "source",
             name="uq_market_bars_instrument_interval_time_source",
         ),
-        CheckConstraint("interval IN ('1d', '1h', '15m')", name="ck_market_bars_interval"),
+        CheckConstraint("interval IN ('1d', '1h', '15m', '1m')", name="ck_market_bars_interval"),
         CheckConstraint(
             "low <= high AND low <= open AND low <= close "
             "AND high >= open AND high >= close",
@@ -285,7 +288,7 @@ class MarketDataSync(Base):
     __tablename__ = "market_data_syncs"
     __table_args__ = (
         UniqueConstraint("instrument_id", "interval", "source", name="uq_market_sync_instrument"),
-        CheckConstraint("interval IN ('1d', '1h', '15m')", name="ck_market_sync_interval"),
+        CheckConstraint("interval IN ('1d', '1h', '15m', '1m')", name="ck_market_sync_interval"),
         CheckConstraint("status IN ('success', 'unavailable')", name="ck_market_sync_status"),
         Index("ix_market_sync_instrument_interval", "instrument_id", "interval"),
     )
@@ -301,3 +304,64 @@ class MarketDataSync(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     rows_received: Mapped[int] = mapped_column(default=0, nullable=False)
     safe_error_code: Mapped[str | None] = mapped_column(String(48))
+
+
+class BrokerCredential(Base):
+    __tablename__ = "broker_credentials"
+    __table_args__ = (
+        UniqueConstraint("user_id", "broker", name="uq_broker_credentials_user_broker"),
+        Index("ix_broker_credentials_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    broker: Mapped[str] = mapped_column(String(32), nullable=False)
+    encrypted_tokens: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BrokerOAuthState(Base):
+    __tablename__ = "broker_oauth_states"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    broker: Mapped[str] = mapped_column(String(32), nullable=False)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    metadata_json: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class BrokerMirror(Base):
+    __tablename__ = "broker_mirror"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "broker",
+            "kind",
+            "symbol",
+            "exchange",
+            "product",
+            name="uq_broker_mirror_position",
+        ),
+        CheckConstraint("kind IN ('holding', 'position')", name="ck_broker_mirror_kind"),
+        Index("ix_broker_mirror_user_broker", "user_id", "broker"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    broker: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    product: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    average_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
