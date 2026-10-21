@@ -1,0 +1,18 @@
+{
+  "name": "Trading Copilot",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/AI-Trading-Investing-agent",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    }
+  },
+  "forwardPorts": [5173, 8000, 5432],
+  "portsAttributes": {
+    "8000": { "label": "FastAPI", "onAutoForward": "notify", "visibility": "public" },
+    "5173": { "label": "Vite", "onAutoForward": "openBrowser", "visibility": "public" },
+    "5432": { "label": "PostgreSQL", "onAutoForward": "ignore" }
+  },
+  "postCreateCommand": "python -m pip install -r backend/requirements.txt && cd frontend && npm install"
+}

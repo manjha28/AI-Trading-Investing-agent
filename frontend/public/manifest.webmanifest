@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Trading Copilot",
+  "short_name": "Copilot",
+  "description": "A personal portfolio ledger and trading journal.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f3f5f1",
+  "theme_color": "#19372e",
+  "icons": [
+    {
+      "src": "/icons/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
