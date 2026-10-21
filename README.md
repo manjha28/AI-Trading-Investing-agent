@@ -170,14 +170,14 @@ Broker API routes are under `/api/v1/brokers`:
 
 Every broker route requires an authenticated session with a verified email and a completed app-based TOTP verification, and all mutating requests require CSRF validation. Users enroll an authenticator app after sign-in; newly created sessions require a fresh six-digit challenge. TOTP secrets are encrypted at rest and codes are single-use per time step, with failed attempts rate-limited. Configure `TWO_FACTOR_ENCRYPTION_KEY` as a private Fernet key before enrolling users. Existing users need to enroll after applying migration `0013_app_two_factor`; existing sessions remain unverified until they complete a challenge. Do not manually mark accounts or sessions verified to bypass the gate. The mock broker is clearly synthetic and is not a real broker connection.
 
-Set `BROKER_ENCRYPTION_KEY` and `TWO_FACTOR_ENCRYPTION_KEY` in the backend environment before connecting brokers or enrolling authenticator apps. Generate a Fernet key for each setting with:
+Set `BROKER_ENCRYPTION_KEY` and `TWO_FACTOR_ENCRYPTION_KEY` in `backend/.env` before connecting brokers or enrolling authenticator apps. The application loads `.env` relative to its working directory; run/reload the backend with `backend/` as its working directory. Each value may be a canonical 44-character URL-safe base64 Fernet key or a 64-character hexadecimal encoding of 32 random bytes (the format emitted by `secrets.token_hex(32)`). Hex values are normalized in memory to Fernet's canonical encoding; the key material is not changed. Generate a canonical Fernet key for each setting with:
 
 ```bash
 cd backend
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Keep both keys stable and private: losing either key makes its encrypted data unreadable. Never commit keys or expose broker secrets to the frontend. Each real adapter is opt-in and fails closed unless its enable flag is true and every required credential and callback setting is present:
+Keep both keys stable and private: losing or changing either key makes data encrypted under it unreadable. Do not rotate a key if encrypted broker credentials or TOTP secrets already exist unless you have an explicit re-encryption plan. Never commit keys or expose broker secrets to the frontend. Each real adapter is opt-in and fails closed unless its enable flag is true and every required credential and callback setting is present:
 
 | Broker | Required backend environment | Login callback URL / flow |
 | --- | --- | --- |

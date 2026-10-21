@@ -9,17 +9,19 @@ from urllib.parse import quote
 
 from cryptography.fernet import Fernet
 
+from app.fernet_keys import normalize_fernet_key
+
 
 def generate_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
 
 
 def encrypt_secret(secret: str, key: str) -> str:
-    return Fernet(key.encode("ascii")).encrypt(secret.encode("ascii")).decode("ascii")
+    return Fernet(normalize_fernet_key(key)).encrypt(secret.encode("ascii")).decode("ascii")
 
 
 def decrypt_secret(encrypted_secret: str, key: str) -> str:
-    return Fernet(key.encode("ascii")).decrypt(encrypted_secret.encode("ascii")).decode("ascii")
+    return Fernet(normalize_fernet_key(key)).decrypt(encrypted_secret.encode("ascii")).decode("ascii")
 
 
 def provisioning_uri(secret: str, account: str) -> str:

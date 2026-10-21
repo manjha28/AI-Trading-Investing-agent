@@ -25,6 +25,7 @@ from app.broker_adapters import (
 )
 from app.config import settings
 from app.db import get_db
+from app.fernet_keys import normalize_fernet_key
 from app.models import (
     BrokerCredential,
     BrokerMirror,
@@ -103,7 +104,7 @@ def _fernet() -> Fernet:
     if key is None:
         raise _broker_error(503, "broker_setup_required", "Broker token encryption is not configured.")
     try:
-        return Fernet(key.get_secret_value().encode())
+        return Fernet(normalize_fernet_key(key.get_secret_value()))
     except (ValueError, TypeError) as error:
         raise _broker_error(503, "broker_setup_required", "Broker token encryption is misconfigured.") from error
 

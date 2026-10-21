@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 import base64
+import secrets
 
 import pytest
 from cryptography.fernet import Fernet
@@ -85,6 +86,24 @@ def test_totp_matches_rfc_6238_sha1_vector() -> None:
 
     assert code_for_counter(secret, 1) == "287082"
     assert matching_counter(secret, "287082", timestamp, window=0) == 1
+
+
+def test_hex_configured_fernet_key_works_through_two_factor_setup(
+    client: TestClient, monkeypatch
+) -> None:
+    hex_key = secrets.token_hex(32)
+    monkeypatch.setattr(settings, "two_factor_encryption_key", SecretStr(hex_key))
+    register(client, "hex-key-two-factor@example.com")
+
+    setup = client.post(
+        "/api/v1/auth/2fa/setup",
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
+        json={},
+    )
+
+    assert setup.status_code == 201, setup.text
+    assert setup.json()["secret"]
+    assert setup.headers["cache-control"] == "no-store"
 
 
 def test_registration_hashes_password_and_issues_protected_session(
