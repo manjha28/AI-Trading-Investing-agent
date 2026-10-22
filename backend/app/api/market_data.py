@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.auth import get_current_user, require_csrf
+from app.api.auth import get_active_session, get_current_user, require_csrf
 from app.config import settings
 from app.db import get_db
 from app.market_data import (
@@ -24,7 +24,9 @@ from app.market_data import (
 )
 from app.models import (
     Instrument,
+    InstrumentFundamental,
     InstrumentProviderIdentifier,
+    InstrumentSnapshot,
     MarketBar,
     MarketQuote,
     MarketDataSync,
@@ -33,6 +35,8 @@ from app.models import (
     UserSession,
     WatchlistInstrument,
 )
+from app.services.indicators import IndicatorValue, compute_indicators
+from app.services import fundamentals as fundamentals_service
 from app.provider_adapters import (
     BinanceProvider,
     DeltaExchangeProvider,
@@ -46,6 +50,7 @@ from app.provider_adapters import (
 from app.twelve_data import TwelveDataProvider
 
 router = APIRouter(prefix="/market-data", tags=["market data"])
+indicators_router = APIRouter(tags=["market data indicators"])
 BarInterval = Literal["1d", "1h", "15m", "1m"]
 MAX_BARS = 500
 
@@ -79,6 +84,63 @@ class MarketDataProviderChain:
             capabilities=primary.capabilities,
             status=f"provider_chain:{primary.status}",
         )
+
+
+class FundamentalSnapshotResponse(BaseModel):
+    market_cap: Decimal | None
+    pe: Decimal | None
+    pb: Decimal | None
+    dividend_yield: Decimal | None
+    sector: str | None
+    industry: str | None
+    source: str
+    fetched_at: datetime
+    stale: bool
+
+
+class FundamentalPeriodResponse(BaseModel):
+    id: UUID
+    period_type: str
+    period_end: date
+    currency: str
+    revenue: Decimal | None
+    net_income: Decimal | None
+    eps: Decimal | None
+    operating_margin: Decimal | None
+    total_assets: Decimal | None
+    total_liabilities: Decimal | None
+    total_equity: Decimal | None
+    operating_cash_flow: Decimal | None
+    free_cash_flow: Decimal | None
+    total_debt: Decimal | None
+    shares_outstanding: Decimal | None
+    source: str
+    fetched_at: datetime
+    stale: bool
+    revenue_yoy_growth_pct: Decimal | None = None
+    net_income_yoy_growth_pct: Decimal | None = None
+    eps_yoy_growth_pct: Decimal | None = None
+    free_cash_flow_yoy_growth_pct: Decimal | None = None
+
+
+class FundamentalsResponse(BaseModel):
+    instrument_id: UUID
+    symbol: str
+    currency: str
+    snapshot: FundamentalSnapshotResponse | None
+    fundamentals: list[FundamentalPeriodResponse]
+    unavailable: bool
+    message: str
+    disclaimer: str = "Fundamentals are provider-reported decision support, not investment advice. No FX conversion is applied."
+
+
+class FundamentalsSyncResponse(BaseModel):
+    instrument_id: UUID
+    status: Literal["available", "unavailable"]
+    source: str | None
+    fetched_at: datetime | None
+    fundamentals_count: int
+    message: str
 
 
 def create_market_data_provider_chain(
@@ -310,6 +372,51 @@ class HistoryResponse(BaseModel):
     limit: int
 
 
+class IndicatorValueResponse(BaseModel):
+    value: Decimal | None
+    is_synthetic: bool
+    bars_required: int
+    bars_used: int
+    status: Literal["available", "insufficient_history"]
+
+
+class IndicatorsResponse(BaseModel):
+    instrument_id: UUID
+    symbol: str
+    currency: str
+    interval: BarInterval
+    freshness: FreshnessResponse
+    source: str | None
+    latest_bar: datetime | None
+    bars_available: int
+    indicators: dict[str, IndicatorValueResponse]
+    disclaimer: str = "Decision support, not investment advice."
+
+
+def _indicator_result(value: IndicatorValue) -> IndicatorValueResponse:
+    return IndicatorValueResponse(
+        value=value.value,
+        is_synthetic=value.is_synthetic,
+        bars_required=value.bars_required,
+        bars_used=value.bars_used,
+        status="available" if value.value is not None else "insufficient_history",
+    )
+
+
+def require_verified_market_session(
+    active_session: UserSession = Depends(get_active_session),
+) -> UserSession:
+    if not active_session.user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "email_verification_required",
+                "message": "Verify your email address before viewing indicators.",
+            },
+        )
+    return active_session
+
+
 class QuoteResponse(BaseModel):
     instrument_id: UUID
     symbol: str
@@ -322,6 +429,27 @@ class QuoteResponse(BaseModel):
     is_synthetic: bool
     is_verified: bool
     bar: HistoricalBar
+
+
+class WatchlistQuoteResponse(BaseModel):
+    source: str
+    retrieved_at: datetime
+    freshness: Literal["fresh", "stale"]
+    is_synthetic: bool
+    is_verified: bool
+    close: Decimal
+
+
+class WatchlistEntryResponse(BaseModel):
+    instrument_id: UUID
+    symbol: str
+    display_name: str
+    asset_class: str
+    venue: str
+    currency: str
+    is_synthetic: bool
+    relink_required: bool
+    quote: WatchlistQuoteResponse | None
 
 
 def _instrument_response(instrument: Instrument) -> InstrumentResponse:
@@ -608,6 +736,280 @@ def get_instrument(
     db: Session = Depends(get_db),
 ):
     return _instrument_response(_get_instrument(db, instrument_id))
+
+
+def _growth(current: Decimal | None, previous: Decimal | None) -> Decimal | None:
+    if current is None or previous in (None, Decimal("0")):
+        return None
+    return (current - previous) / abs(previous) * Decimal("100")
+
+
+def _fundamental_period_responses(
+    rows: list[InstrumentFundamental],
+) -> list[FundamentalPeriodResponse]:
+    ordered = sorted(rows, key=lambda row: row.period_end)
+    values: list[FundamentalPeriodResponse] = []
+    for row in ordered:
+        previous = [
+            candidate for candidate in ordered
+            if 360 <= (row.period_end - candidate.period_end).days <= 370
+        ]
+        prior = min(previous, key=lambda candidate: abs((row.period_end - candidate.period_end).days - 365), default=None)
+        values.append(FundamentalPeriodResponse(
+            id=row.id,
+            period_type=row.period_type,
+            period_end=row.period_end,
+            currency=row.currency,
+            revenue=row.revenue,
+            net_income=row.net_income,
+            eps=row.eps,
+            operating_margin=row.operating_margin,
+            total_assets=row.total_assets,
+            total_liabilities=row.total_liabilities,
+            total_equity=row.total_equity,
+            operating_cash_flow=row.operating_cash_flow,
+            free_cash_flow=row.free_cash_flow,
+            total_debt=row.total_debt,
+            shares_outstanding=row.shares_outstanding,
+            source=row.source,
+            fetched_at=_utc(row.fetched_at),
+            stale=fundamentals_service.is_stale(row.fetched_at),
+            revenue_yoy_growth_pct=_growth(row.revenue, prior.revenue if prior else None),
+            net_income_yoy_growth_pct=_growth(row.net_income, prior.net_income if prior else None),
+            eps_yoy_growth_pct=_growth(row.eps, prior.eps if prior else None),
+            free_cash_flow_yoy_growth_pct=_growth(row.free_cash_flow, prior.free_cash_flow if prior else None),
+        ))
+    return values
+
+
+@router.post(
+    "/instruments/{instrument_id}/fundamentals/sync",
+    response_model=FundamentalsSyncResponse,
+)
+def sync_instrument_fundamentals(
+    instrument_id: UUID,
+    _session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> FundamentalsSyncResponse:
+    instrument = _get_instrument(db, instrument_id)
+    if instrument.is_synthetic:
+        return FundamentalsSyncResponse(
+            instrument_id=instrument.id,
+            status="unavailable",
+            source=None,
+            fetched_at=None,
+            fundamentals_count=0,
+            message="Fundamentals are unavailable for synthetic demo instruments; no fallback data was used.",
+        )
+    chain = create_market_data_provider_chain(("yfinance",))
+    yfinance_provider = next(
+        (active for active in _providers(chain) if active.name == "yfinance"),
+        None,
+    )
+    if yfinance_provider is None:
+        return FundamentalsSyncResponse(
+            instrument_id=instrument.id,
+            status="unavailable",
+            source=None,
+            fetched_at=None,
+            fundamentals_count=0,
+            message="Fundamentals are unavailable because the yfinance provider could not be initialized.",
+        )
+    try:
+        candidate, _mapping = _resolve_provider_candidate(db, instrument, yfinance_provider)
+        rows, snapshot = fundamentals_service.sync_instrument_fundamentals(
+            db, instrument, candidate.provider_symbol
+        )
+    except (MarketDataProviderError, TimeoutError, ValueError):
+        db.rollback()
+        return FundamentalsSyncResponse(
+            instrument_id=instrument.id,
+            status="unavailable",
+            source=None,
+            fetched_at=None,
+            fundamentals_count=0,
+            message="Fundamentals are unavailable from providers. No synthetic fallback was used.",
+        )
+    return FundamentalsSyncResponse(
+        instrument_id=instrument.id,
+        status="available",
+        source=snapshot.source,
+        fetched_at=_utc(snapshot.fetched_at),
+        fundamentals_count=len(rows),
+        message="Provider fundamentals synchronized.",
+    )
+
+
+@router.get(
+    "/instruments/{instrument_id}/fundamentals",
+    response_model=FundamentalsResponse,
+)
+def get_instrument_fundamentals(
+    instrument_id: UUID,
+    period_type: Literal["annual", "quarterly"] | None = Query(default=None),
+    _session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+) -> FundamentalsResponse:
+    instrument = _get_instrument(db, instrument_id)
+    query = select(InstrumentFundamental).where(
+        InstrumentFundamental.instrument_id == instrument.id
+    )
+    if period_type is not None:
+        query = query.where(InstrumentFundamental.period_type == period_type)
+    fundamentals = list(db.scalars(query))
+    snapshot = db.scalar(
+        select(InstrumentSnapshot)
+        .where(InstrumentSnapshot.instrument_id == instrument.id)
+        .limit(1)
+    )
+    snapshot_response = None if snapshot is None else FundamentalSnapshotResponse(
+        market_cap=snapshot.market_cap,
+        pe=snapshot.pe,
+        pb=snapshot.pb,
+        dividend_yield=snapshot.dividend_yield,
+        sector=snapshot.sector,
+        industry=snapshot.industry,
+        source=snapshot.source,
+        fetched_at=_utc(snapshot.fetched_at),
+        stale=fundamentals_service.is_stale(snapshot.fetched_at),
+    )
+    rows = _fundamental_period_responses(fundamentals)
+    return FundamentalsResponse(
+        instrument_id=instrument.id,
+        symbol=instrument.symbol,
+        currency=instrument.currency,
+        snapshot=snapshot_response,
+        fundamentals=rows,
+        unavailable=snapshot_response is None and not rows,
+        message=(
+            "Fundamentals are unavailable from providers."
+            if snapshot_response is None and not rows
+            else "Provider-reported fundamentals are shown with source and freshness."
+        ),
+    )
+
+
+@indicators_router.get(
+    "/instruments/{instrument_id}/indicators", response_model=IndicatorsResponse
+)
+def get_instrument_indicators(
+    instrument_id: UUID,
+    interval: BarInterval = Query(default="1d"),
+    _session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+) -> IndicatorsResponse:
+    instrument = _get_instrument(db, instrument_id)
+    latest_bar = db.scalar(
+        select(MarketBar)
+        .where(MarketBar.instrument_id == instrument.id, MarketBar.interval == interval)
+        .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
+        .limit(1)
+    )
+    bars: list[MarketBar] = []
+    if latest_bar is not None:
+        bars = list(
+            db.scalars(
+                select(MarketBar)
+                .where(
+                    MarketBar.instrument_id == instrument.id,
+                    MarketBar.interval == interval,
+                    MarketBar.source == latest_bar.source,
+                )
+                .order_by(MarketBar.timestamp.desc())
+                .limit(MAX_BARS)
+            )
+        )
+        bars.reverse()
+    calculated = compute_indicators(bars)
+    indicators = {
+        name: _indicator_result(value)
+        for name, value in calculated.__dict__.items()
+    }
+    return IndicatorsResponse(
+        instrument_id=instrument.id,
+        symbol=instrument.symbol,
+        currency=instrument.currency,
+        interval=interval,
+        freshness=_freshness(db, instrument.id, interval),
+        source=latest_bar.source if latest_bar else None,
+        latest_bar=_utc(latest_bar.timestamp) if latest_bar else None,
+        bars_available=len(bars),
+        indicators=indicators,
+    )
+
+
+@router.get("/watchlist", response_model=list[WatchlistEntryResponse])
+def get_watchlist(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    entries = db.scalars(
+        select(WatchlistInstrument)
+        .where(WatchlistInstrument.user_id == user.id)
+        .options(
+            selectinload(WatchlistInstrument.instrument).selectinload(
+                Instrument.provider_identifiers
+            )
+        )
+        .order_by(WatchlistInstrument.created_at, WatchlistInstrument.id)
+    ).all()
+    quotes_by_instrument: dict[UUID, MarketQuote] = {}
+    if entries:
+        cached_quotes = db.scalars(
+            select(MarketQuote)
+            .where(
+                MarketQuote.instrument_id.in_(
+                    [entry.instrument_id for entry in entries]
+                )
+            )
+            .order_by(MarketQuote.retrieved_at.desc(), MarketQuote.source)
+        ).all()
+        for quote in cached_quotes:
+            quotes_by_instrument.setdefault(quote.instrument_id, quote)
+
+    now = datetime.now(timezone.utc)
+    result = []
+    for entry in entries:
+        instrument = entry.instrument
+        quote = quotes_by_instrument.get(instrument.id)
+        quote_response = None
+        if quote is not None:
+            retrieved_at = _utc(quote.retrieved_at)
+            quote_timestamp = _utc(quote.timestamp)
+            age = max(
+                (now - retrieved_at).total_seconds(),
+                (now - quote_timestamp).total_seconds(),
+            )
+            quote_response = WatchlistQuoteResponse(
+                source=quote.source,
+                retrieved_at=retrieved_at,
+                freshness=(
+                    "fresh"
+                    if 0 <= age <= settings.market_data_quote_freshness_seconds
+                    else "stale"
+                ),
+                is_synthetic=quote.is_synthetic,
+                is_verified=any(
+                    mapping.provider == quote.source and mapping.is_verified
+                    for mapping in instrument.provider_identifiers
+                ),
+                close=quote.close,
+            )
+        result.append(
+            WatchlistEntryResponse(
+                instrument_id=instrument.id,
+                symbol=instrument.symbol,
+                display_name=instrument.display_name,
+                asset_class=instrument.asset_class,
+                venue=instrument.venue,
+                currency=instrument.currency,
+                is_synthetic=instrument.is_synthetic,
+                relink_required=instrument.relink_required,
+                quote=quote_response,
+            )
+        )
+    return result
 
 
 @router.post("/instruments/cleanup-synthetic")

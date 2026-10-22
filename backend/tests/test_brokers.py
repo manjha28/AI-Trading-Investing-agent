@@ -12,11 +12,12 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api import brokers
-from app.broker_adapters import BrokerAdapterError, UpstoxAdapter
+from app.broker_adapters import BrokerAdapterError, DhanAdapter, UpstoxAdapter
 from app.config import settings
 from app.db import Base, get_db
 from app.main import BrokerCallbackAccessLogFilter, app
@@ -124,6 +125,167 @@ def connect_mock(client: TestClient) -> None:
     assert callback.status_code == 303, callback.text
     assert "broker_connected=mock_broker" in callback.headers["location"]
     assert "token" not in callback.headers["location"]
+
+
+def prepare_dhan_sync(client: TestClient, test_engine, encryption_key, monkeypatch) -> None:
+    register(client, "dhan-diagnostics@example.com")
+    complete_broker_gate(client, test_engine)
+    monkeypatch.setattr(settings, "broker_dhan_enabled", True)
+    monkeypatch.setattr(settings, "dhan_api_key", SecretStr("DIAGNOSTIC_API_KEY_SENTINEL"))
+    monkeypatch.setattr(settings, "dhan_api_secret", SecretStr("DIAGNOSTIC_API_SECRET_SENTINEL"))
+    monkeypatch.setattr(
+        settings,
+        "dhan_redirect_uri",
+        "https://app.example.com/api/v1/brokers/dhan/callback",
+    )
+    session_token = client.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(UserSession.token_hash == hash_token(session_token))
+        )
+        assert user_session is not None
+        now = datetime.now(timezone.utc)
+        db.add(
+            BrokerCredential(
+                user_id=user_session.user_id,
+                broker="dhan",
+                encrypted_tokens=brokers.encrypt_tokens({
+                    "access_token": "DIAGNOSTIC_ACCESS_TOKEN_SENTINEL",
+                    "client_id": "DIAGNOSTIC_CLIENT_ID_SENTINEL",
+                }),
+                expires_at=now + timedelta(hours=1),
+                connected_at=now,
+            )
+        )
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    ("failing_path", "expected_stage", "successful_calls"),
+    [
+        ("/v2/holdings", "holdings_api_request", 0),
+        ("/v2/positions", "positions_api_request", 1),
+    ],
+)
+def test_dhan_sync_http_failure_logs_endpoint_and_sanitized_provider_error(
+    clients, test_engine, encryption_key, monkeypatch, caplog,
+    failing_path, expected_stage, successful_calls,
+) -> None:
+    first, _ = clients
+    prepare_dhan_sync(first, test_engine, encryption_key, monkeypatch)
+    requested_paths: list[str] = []
+
+    def mocked_request(method, url, **kwargs):
+        path = httpx.URL(url).path
+        requested_paths.append(path)
+        if path == failing_path:
+            return httpx.Response(
+                401,
+                json={
+                    "errorCode": "DH-401",
+                    "errorMessage": (
+                        "Invalid access token DIAGNOSTIC_ACCESS_TOKEN_SENTINEL; "
+                        "token=SHORT_TOKEN_SENTINEL; "
+                        "api_secret=DIAGNOSTIC_API_SECRET_SENTINEL; "
+                        "accountId=DIAGNOSTIC_CLIENT_ID_SENTINEL; "
+                        "quantity=987654321"
+                    ),
+                },
+                request=httpx.Request(method, url),
+            )
+        return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "request", mocked_request)
+    caplog.set_level("WARNING", logger="app.broker_adapters")
+
+    response = first.post(
+        "/api/v1/brokers/dhan/sync",
+        headers=csrf(first),
+        json={},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == "Broker account sync failed."
+    assert requested_paths[successful_calls] == failing_path
+    diagnostic = caplog.text
+    assert f"stage={expected_stage}" in diagnostic
+    assert f"endpoint={failing_path}" in diagnostic
+    assert "status_code=401" in diagnostic
+    assert "error_class=HTTPStatusError" in diagnostic
+    assert "provider_code=DH-401" in diagnostic
+    assert "DIAGNOSTIC_ACCESS_TOKEN_SENTINEL" not in diagnostic
+    assert "SHORT_TOKEN_SENTINEL" not in diagnostic
+    assert "DIAGNOSTIC_API_SECRET_SENTINEL" not in diagnostic
+    assert "DIAGNOSTIC_CLIENT_ID_SENTINEL" not in diagnostic
+    assert "987654321" not in diagnostic
+    assert "dhan-diagnostics@example.com" not in diagnostic
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_stage"),
+    [
+        ("holding", "holdings_response_normalization"),
+        ("position", "positions_response_normalization"),
+    ],
+)
+def test_dhan_sync_normalization_failures_have_distinct_safe_diagnostics(
+    clients, test_engine, encryption_key, monkeypatch, caplog, kind, expected_stage
+) -> None:
+    first, _ = clients
+    prepare_dhan_sync(first, test_engine, encryption_key, monkeypatch)
+    monkeypatch.setattr(DhanAdapter, "get_holdings", lambda *_args: (
+        [{"tradingsymbol": "HOLDING_VALUE_SENTINEL", "quantity": "not-a-number"}]
+        if kind == "holding" else []
+    ))
+    monkeypatch.setattr(DhanAdapter, "get_positions", lambda *_args: (
+        [{"tradingsymbol": "POSITION_VALUE_SENTINEL", "netQty": "not-a-number"}]
+    ))
+    caplog.set_level("WARNING", logger="app.api.brokers")
+
+    response = first.post(
+        "/api/v1/brokers/dhan/sync",
+        headers=csrf(first),
+        json={},
+    )
+
+    assert response.status_code == 502
+    assert expected_stage in caplog.text
+    assert "error_class=BrokerAdapterError" in caplog.text
+    assert "could not be normalized" in caplog.text
+    assert "HOLDING_VALUE_SENTINEL" not in caplog.text
+    assert "POSITION_VALUE_SENTINEL" not in caplog.text
+    assert "DIAGNOSTIC_ACCESS_TOKEN_SENTINEL" not in caplog.text
+    assert "DIAGNOSTIC_CLIENT_ID_SENTINEL" not in caplog.text
+
+
+def test_dhan_sync_persistence_failure_logs_class_without_database_values(
+    clients, test_engine, encryption_key, monkeypatch, caplog
+) -> None:
+    first, _ = clients
+    prepare_dhan_sync(first, test_engine, encryption_key, monkeypatch)
+    monkeypatch.setattr(DhanAdapter, "get_holdings", lambda *_args: [])
+    monkeypatch.setattr(DhanAdapter, "get_positions", lambda *_args: [])
+
+    def fail_commit(_session):
+        raise IntegrityError("statement with DIAGNOSTIC_HOLDING_VALUE_SENTINEL", {}, RuntimeError("private row value"))
+
+    monkeypatch.setattr(Session, "commit", fail_commit)
+    caplog.set_level("WARNING", logger="app.api.brokers")
+
+    response = first.post(
+        "/api/v1/brokers/dhan/sync",
+        headers=csrf(first),
+        json={},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Broker account sync could not be saved"
+    assert "stage=broker_mirror_persistence" in caplog.text
+    assert "error_class=IntegrityError" in caplog.text
+    assert "database details omitted" in caplog.text
+    assert "DIAGNOSTIC_HOLDING_VALUE_SENTINEL" not in caplog.text
+    assert "private row value" not in caplog.text
+    assert "DIAGNOSTIC_ACCESS_TOKEN_SENTINEL" not in caplog.text
 
 
 def test_fernet_token_round_trip_and_ciphertext_at_rest(encryption_key) -> None:

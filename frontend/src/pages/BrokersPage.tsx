@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ApiRequestError, apiRequest } from './api';
-import './brokers.css';
+import { ApiRequestError, apiRequest } from '../api';
+import '../brokers.css';
 
 type Broker = {
   slug: string;

@@ -1,15 +1,86 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+_SENSITIVE_PROVIDER_FIELD = re.compile(
+    r"(?i)\b(access[-_ ]?token|refresh[-_ ]?token|tokenid|token|authorization|"
+    r"app[_ -]?secret|api[_ -]?secret|api[_ -]?key|dhanclient(?:id|ucc|name)|"
+    r"account(?:[-_ ]?id)?|"
+    r"client(?:[-_ ]?id)?|ucc|password|pin|otp|securityid|isin|symbol|"
+    r"quantity|holdings?)\b(?:\s*[:=]\s*|\s+)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_OPAQUE_PROVIDER_VALUE = re.compile(r"\b[A-Za-z0-9_~+/=-]{24,}\b")
+_LONG_NUMBER = re.compile(r"\b\d{5,}\b")
+_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+def _safe_provider_error(payload: Any) -> tuple[str | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    details = payload.get("data")
+    if isinstance(details, dict):
+        payload = {**payload, **details}
+    raw_code = next(
+        (payload.get(key) for key in ("errorCode", "error_code", "code") if payload.get(key) is not None),
+        None,
+    )
+    code = None
+    if isinstance(raw_code, (str, int)) and re.fullmatch(
+        r"(?:[A-Z]{1,8}[-_.]?)?\d{1,5}", str(raw_code)
+    ):
+        code = str(raw_code)
+    raw_message = next(
+        (
+            payload.get(key)
+            for key in ("errorMessage", "error_message", "message", "remarks")
+            if isinstance(payload.get(key), str)
+        ),
+        None,
+    )
+    if raw_message is None:
+        return code, None
+    message = _SENSITIVE_PROVIDER_FIELD.sub(lambda match: f"{match.group(1)}=[REDACTED]", raw_message)
+    message = _URL.sub("[URL_REDACTED]", message)
+    message = _OPAQUE_PROVIDER_VALUE.sub("[VALUE_REDACTED]", message)
+    message = _LONG_NUMBER.sub("[NUMBER_REDACTED]", message)
+    message = "".join(char if char.isprintable() else " " for char in message)
+    return code, message[:160]
+
+
+def _log_dhan_request_failure(
+    stage: str,
+    path: str,
+    *,
+    error_class: str,
+    description: str,
+    status_code: int | None = None,
+    payload: Any = None,
+) -> None:
+    provider_code, provider_message = _safe_provider_error(payload)
+    logger.warning(
+        "Dhan sync diagnostic stage=%s endpoint=%s status_code=%s "
+        "error_class=%s description=%s provider_code=%s provider_message=%s",
+        stage,
+        path,
+        status_code if status_code is not None else "unavailable",
+        error_class,
+        description,
+        provider_code or "unavailable",
+        provider_message or "unavailable",
+    )
 
 
 class BrokerAdapterError(Exception):
@@ -71,12 +142,44 @@ def _body(response: httpx.Response) -> Any:
     return payload
 
 
-def _request(method: str, url: str, **kwargs: Any) -> Any:
+def _request(method: str, url: str, *, diagnostic_stage: str | None = None, **kwargs: Any) -> Any:
+    path = urlsplit(url).path
     try:
         response = httpx.request(method, url, timeout=20.0, **kwargs)
-    except httpx.HTTPError:
+    except httpx.HTTPError as error:
+        if diagnostic_stage is not None:
+            _log_dhan_request_failure(
+                diagnostic_stage,
+                path,
+                error_class=type(error).__name__,
+                description="Upstream request did not complete.",
+            )
         raise BrokerAdapterError("Broker is unavailable") from None
-    return _body(response)
+    if diagnostic_stage is not None and response.is_error:
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = None
+        _log_dhan_request_failure(
+            diagnostic_stage,
+            path,
+            status_code=response.status_code,
+            error_class="HTTPStatusError",
+            description="Upstream request returned an HTTP error.",
+            payload=error_payload,
+        )
+    try:
+        return _body(response)
+    except BrokerAdapterError as error:
+        if diagnostic_stage is not None and not response.is_error:
+            _log_dhan_request_failure(
+                diagnostic_stage,
+                path,
+                status_code=response.status_code,
+                error_class=type(error).__name__,
+                description="Upstream response could not be parsed.",
+            )
+        raise
 
 
 def _unwrap(payload: Any) -> Any:
@@ -476,6 +579,35 @@ class DhanAdapter(BrokerAdapter):
             "Accept": "application/json",
         }
 
+    def _get_dhan_account_data(
+        self,
+        path: str,
+        stage: str,
+        access_token: str,
+        tokens: Mapping[str, str],
+    ) -> Any:
+        payload = _request(
+            "GET",
+            f"{self.api_root}{path}",
+            diagnostic_stage=stage,
+            headers=self.account_headers(access_token, tokens),
+        )
+        try:
+            return _unwrap(payload)
+        except BrokerAdapterError as error:
+            provider_code, provider_message = _safe_provider_error(payload)
+            logger.warning(
+                "Dhan sync diagnostic stage=%s endpoint=%s status_code=200 "
+                "error_class=%s description=Provider rejected account request "
+                "provider_code=%s provider_message=%s",
+                stage,
+                path,
+                type(error).__name__,
+                provider_code or "unavailable",
+                provider_message or "unavailable",
+            )
+            raise
+
     def get_profile(self, access_token: str, tokens: Mapping[str, str]) -> Any:
         return {
             "provider": self.display_name,
@@ -486,10 +618,14 @@ class DhanAdapter(BrokerAdapter):
         }
 
     def get_holdings(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
-        return self.get("/v2/holdings", access_token, tokens)
+        return self._get_dhan_account_data(
+            "/v2/holdings", "holdings_api_request", access_token, tokens
+        )
 
     def get_positions(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
-        return self.get("/v2/positions", access_token, tokens)
+        return self._get_dhan_account_data(
+            "/v2/positions", "positions_api_request", access_token, tokens
+        )
 
     def get_order_history(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
         return self.get("/v2/orders", access_token, tokens)

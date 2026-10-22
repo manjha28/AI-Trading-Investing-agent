@@ -4,6 +4,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 import app.models
+import app.models.alerts
 from app.config import settings
 from app.db import Base
 

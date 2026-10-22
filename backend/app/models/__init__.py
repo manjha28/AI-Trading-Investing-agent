@@ -2,7 +2,23 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, JSON, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -190,6 +206,59 @@ class Instrument(Base):
     )
 
 
+class InstrumentFundamental(Base):
+    __tablename__ = "instrument_fundamentals"
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_id", "period_type", "period_end",
+            name="uq_instrument_fundamentals_period",
+        ),
+        CheckConstraint("period_type IN ('annual', 'quarterly')", name="ck_instrument_fundamentals_period_type"),
+        Index("ix_instrument_fundamentals_instrument_period", "instrument_id", "period_type", "period_end"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    period_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    currency: Mapped[str] = mapped_column(String(4), nullable=False)
+    revenue: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    net_income: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    eps: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    operating_margin: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    total_assets: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    total_liabilities: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    total_equity: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    operating_cash_flow: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    free_cash_flow: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    total_debt: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    shares_outstanding: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class InstrumentSnapshot(Base):
+    __tablename__ = "instrument_snapshots"
+    __table_args__ = (
+        UniqueConstraint("instrument_id", name="uq_instrument_snapshots_instrument"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    market_cap: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
+    pe: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    pb: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    dividend_yield: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    sector: Mapped[str | None] = mapped_column(String(200))
+    industry: Mapped[str | None] = mapped_column(String(200))
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WatchlistInstrument(Base):
     __tablename__ = "watchlist_instruments"
     __table_args__ = (
@@ -206,6 +275,71 @@ class WatchlistInstrument(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     instrument: Mapped[Instrument] = relationship(back_populates="watchlist_entries")
+
+
+class CorporateAction(Base):
+    __tablename__ = "corporate_actions"
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('split', 'bonus', 'dividend')",
+            name="ck_corporate_actions_type",
+        ),
+        CheckConstraint(
+            "(action_type IN ('split', 'bonus') AND ratio IS NOT NULL AND ratio > 0 AND amount IS NULL) "
+            "OR (action_type = 'dividend' AND ratio IS NULL AND amount IS NOT NULL AND amount > 0)",
+            name="ck_corporate_actions_values",
+        ),
+        Index("ix_corporate_actions_user_instrument_date", "user_id", "instrument_id", "ex_date"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    action_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    ex_date: Mapped[date] = mapped_column(Date, nullable=False)
+    ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CorporateActionApplication(Base):
+    __tablename__ = "corporate_action_applications"
+    __table_args__ = (
+        Index(
+            "uq_corporate_action_applications_active",
+            "portfolio_id",
+            "corporate_action_id",
+            unique=True,
+            postgresql_where=text("reversed_at IS NULL"),
+            sqlite_where=text("reversed_at IS NULL"),
+        ),
+        Index(
+            "ix_corporate_action_applications_user_portfolio",
+            "user_id",
+            "portfolio_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    portfolio_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False
+    )
+    corporate_action_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("corporate_actions.id", ondelete="CASCADE"), nullable=False
+    )
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    affected_quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    quantity_adjustment: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    cash_adjustment: Mapped[Decimal] = mapped_column(Numeric(24, 2), nullable=False)
 
 
 class InstrumentProviderIdentifier(Base):
@@ -386,3 +520,210 @@ class BrokerMirror(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     average_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
+
+
+class ResearchSource(Base):
+    __tablename__ = "research_sources"
+    __table_args__ = (
+        UniqueConstraint("user_id", "content_hash", name="uq_research_sources_user_hash"),
+        Index("ix_research_sources_user_instrument", "user_id", "instrument_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    instrument_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="SET NULL")
+    )
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    publisher: Mapped[str | None] = mapped_column(String(200))
+    title: Mapped[str | None] = mapped_column(String(500))
+    author: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ResearchNote(Base):
+    __tablename__ = "research_notes"
+    __table_args__ = (
+        CheckConstraint(
+            "confidence IN ('low', 'medium', 'high')", name="ck_research_notes_confidence"
+        ),
+        Index("ix_research_notes_user_instrument", "user_id", "instrument_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    key_facts: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+    source_ids: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+    confidence: Mapped[str] = mapped_column(String(8), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class InstrumentResearchRun(Base):
+    __tablename__ = "instrument_research_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'complete', 'partial', 'failed')",
+            name="ck_instrument_research_runs_status",
+        ),
+        CheckConstraint(
+            "sources_attempted >= 0 AND sources_succeeded >= 0 "
+            "AND sources_succeeded <= sources_attempted",
+            name="ck_instrument_research_runs_source_counts",
+        ),
+        Index(
+            "ix_instrument_research_runs_user_instrument_started",
+            "user_id",
+            "instrument_id",
+            "started_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(12), nullable=False)
+    sources_attempted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sources_succeeded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failures: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False, default=list)
+
+
+class InstrumentResearchBrief(Base):
+    __tablename__ = "instrument_research_briefs"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_instrument_research_briefs_run"),
+        CheckConstraint("renderer IN ('template', 'ai')", name="ck_instrument_research_briefs_renderer"),
+        Index(
+            "ix_instrument_research_briefs_instrument_created",
+            "instrument_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("instrument_research_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    sections: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
+    renderer: Mapped[str] = mapped_column(String(12), nullable=False)
+    data_quality: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class InstrumentSourceLink(Base):
+    __tablename__ = "instrument_source_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "instrument_id",
+            "url",
+            name="uq_instrument_source_links_user_instrument_url",
+        ),
+        Index(
+            "ix_instrument_source_links_user_instrument",
+            "user_id",
+            "instrument_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PositionThesis(Base):
+    __tablename__ = "position_theses"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'invalidated', 'closed')", name="ck_position_theses_status"
+        ),
+        CheckConstraint("conviction BETWEEN 1 AND 5", name="ck_position_theses_conviction"),
+        Index(
+            "uq_position_theses_active",
+            "user_id",
+            "portfolio_id",
+            "instrument_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index("ix_position_theses_user_portfolio", "user_id", "portfolio_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    portfolio_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False
+    )
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="active")
+    entry_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    horizon_days: Mapped[int] = mapped_column(nullable=False)
+    conviction: Mapped[int] = mapped_column(nullable=False)
+    target_levels: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+    stop_level: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    invalidation_conditions: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+    invalidation_notes: Mapped[str | None] = mapped_column(Text)
+    max_loss_pct: Mapped[Decimal | None] = mapped_column(Numeric(7, 4))
+    review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PositionThesisRevision(Base):
+    __tablename__ = "position_thesis_revisions"
+    __table_args__ = (
+        UniqueConstraint("thesis_id", "revision_number", name="uq_position_thesis_revisions_number"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    thesis_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("position_theses.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_number: Mapped[int] = mapped_column(nullable=False)
+    changed_fields: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -10,21 +10,23 @@ from sqlalchemy.orm import Session
 from app.accounting import LedgerError, calculate_ledger
 from app.api.market_data import get_market_data_provider, latest_quote
 from app.config import settings
+from app.corporate_action_service import get_portfolio_corporate_actions
 from app.db import engine
-from app.models import PortfolioTransaction, User, WatchlistInstrument
+from app.models import Portfolio, PortfolioTransaction, User, WatchlistInstrument
 
 logger = logging.getLogger(__name__)
 
 
 def _refresh_quotes() -> None:
     with Session(engine) as db:
-        portfolio_ids = db.scalars(
-            select(PortfolioTransaction.portfolio_id)
+        portfolio_owners = db.execute(
+            select(PortfolioTransaction.portfolio_id, Portfolio.user_id)
+            .join(Portfolio, Portfolio.id == PortfolioTransaction.portfolio_id)
             .where(PortfolioTransaction.instrument_id.is_not(None))
             .distinct()
         ).all()
         instrument_ids = set()
-        for portfolio_id in portfolio_ids:
+        for portfolio_id, user_id in portfolio_owners:
             transactions = list(
                 db.scalars(
                     select(PortfolioTransaction)
@@ -37,7 +39,12 @@ def _refresh_quotes() -> None:
                 ).all()
             )
             try:
-                held_symbols = set(calculate_ledger(transactions).positions)
+                held_symbols = set(
+                    calculate_ledger(
+                        transactions,
+                        get_portfolio_corporate_actions(db, portfolio_id, user_id),
+                    ).positions
+                )
             except LedgerError:
                 logger.warning(
                     "Skipping scheduled refresh for portfolio %s with an invalid ledger",

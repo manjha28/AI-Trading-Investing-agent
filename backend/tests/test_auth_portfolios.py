@@ -418,9 +418,14 @@ def test_weighted_average_cost_and_fees_are_accounted_for(client: TestClient) ->
     assert summary["realized_pnl"] == "22.00"
     assert summary["unrealized_pnl"] is None
     assert summary["market_value"] is None
-    assert summary["positions"] == [
-        {"symbol": "ABC", "quantity": "15.00000000", "cost_basis": "378.15", "average_cost": "25.21"}
-    ]
+    position = summary["positions"][0]
+    assert position.pop("holding_period_start") is not None
+    assert position == {
+        "symbol": "ABC",
+        "quantity": "15.00000000",
+        "cost_basis": "378.15",
+        "average_cost": "25.21",
+    }
 
 
 def test_oversell_is_rejected_without_persisting(client: TestClient) -> None:

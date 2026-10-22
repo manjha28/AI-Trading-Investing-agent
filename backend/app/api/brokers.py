@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -14,8 +15,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
-from app.accounting import LedgerError, calculate_ledger, money
+from app.accounting import LedgerError, money
 from app.api.auth import get_active_session, require_csrf
+from app.api.portfolio_transactions import calculate_portfolio_ledger
 from app.broker_adapters import (
     ADAPTERS,
     BrokerAdapter,
@@ -35,6 +37,8 @@ from app.models import (
     UserSession,
 )
 from app.security import hash_token, new_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/brokers", tags=["read-only brokers"])
 OAUTH_STATE_TTL = timedelta(minutes=10)
@@ -89,6 +93,15 @@ def require_broker_access(
 
 def _broker_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _log_dhan_sync_failure(stage: str, error: Exception, description: str) -> None:
+    logger.warning(
+        "Dhan sync diagnostic stage=%s error_class=%s description=%s",
+        stage,
+        type(error).__name__,
+        description,
+    )
 
 
 def _user_id(active_session: UserSession) -> UUID:
@@ -371,11 +384,8 @@ def _reconciliation(
     if synced_credential is None or synced_credential.last_synced_at is None:
         raise HTTPException(status_code=409, detail="Sync this broker before reconciling holdings")
     mirror = _mirror_rows(db, user_id, slug, "holding")
-    transactions = db.scalars(
-        select(PortfolioTransaction).where(PortfolioTransaction.portfolio_id == portfolio.id)
-    ).all()
     try:
-        manual_positions = calculate_ledger(transactions).positions
+        manual_positions = calculate_portfolio_ledger(db, user_id, portfolio.id).positions
     except LedgerError as error:
         raise HTTPException(status_code=409, detail="Manual portfolio ledger is not reconcilable") from error
 
@@ -623,20 +633,41 @@ def sync_broker(
     tokens = _fresh_tokens(db, adapter, credential)
     now = _now()
     try:
-        holdings = _normalize_rows(
-            adapter.get_holdings(tokens["access_token"], tokens),
-            "holding",
-            now,
-            _user_id(active_session),
-            slug,
-        )
-        positions = _normalize_rows(
-            adapter.get_positions(tokens["access_token"], tokens),
-            "position",
-            now,
-            _user_id(active_session),
-            slug,
-        )
+        raw_holdings = adapter.get_holdings(tokens["access_token"], tokens)
+        try:
+            holdings = _normalize_rows(
+                raw_holdings,
+                "holding",
+                now,
+                _user_id(active_session),
+                slug,
+            )
+        except Exception as error:
+            if slug == "dhan":
+                _log_dhan_sync_failure(
+                    "holdings_response_normalization",
+                    error,
+                    "Holdings response could not be normalized.",
+                )
+            raise
+
+        raw_positions = adapter.get_positions(tokens["access_token"], tokens)
+        try:
+            positions = _normalize_rows(
+                raw_positions,
+                "position",
+                now,
+                _user_id(active_session),
+                slug,
+            )
+        except Exception as error:
+            if slug == "dhan":
+                _log_dhan_sync_failure(
+                    "positions_response_normalization",
+                    error,
+                    "Positions response could not be normalized.",
+                )
+            raise
     except BrokerReconnectRequired as error:
         raise _broker_error(401, "broker_authentication_required", str(error)) from error
     except BrokerAdapterError as error:
@@ -652,17 +683,25 @@ def sync_broker(
     )
     if credential is None:
         raise HTTPException(status_code=409, detail="Broker was disconnected during sync")
-    db.execute(
-        delete(BrokerMirror).where(
-            BrokerMirror.user_id == _user_id(active_session),
-            BrokerMirror.broker == slug,
-        )
-    )
-    db.add_all(holdings + positions)
-    credential.last_synced_at = now
     try:
+        db.execute(
+            delete(BrokerMirror).where(
+                BrokerMirror.user_id == _user_id(active_session),
+                BrokerMirror.broker == slug,
+            )
+        )
+        db.add_all(holdings + positions)
+        credential.last_synced_at = now
         db.commit()
-    except IntegrityError as error:
+    except Exception as error:
+        if slug == "dhan":
+            _log_dhan_sync_failure(
+                "broker_mirror_persistence",
+                error,
+                "Broker mirror transaction failed; database details omitted.",
+            )
+        if not isinstance(error, IntegrityError):
+            raise
         db.rollback()
         raise HTTPException(status_code=502, detail="Broker account sync could not be saved") from error
     return {
@@ -794,13 +833,7 @@ def import_broker_differences(
         db.add(transaction)
         db.flush()
         try:
-            calculate_ledger(
-                db.scalars(
-                    select(PortfolioTransaction).where(
-                        PortfolioTransaction.portfolio_id == portfolio.id
-                    )
-                ).all()
-            )
+            calculate_portfolio_ledger(db, _user_id(active_session), portfolio.id)
         except LedgerError as error:
             db.rollback()
             raise HTTPException(status_code=422, detail=f"Import would violate the manual ledger: {error}") from error

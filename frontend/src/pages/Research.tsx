@@ -1,0 +1,537 @@
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { ApiRequestError, apiRequest } from '../api';
+
+type Instrument = { id: string; symbol: string; display_name: string; venue: string };
+type WatchlistEntry = { instrument_id: string; symbol: string };
+type SourceLink = { id: string; instrument_id: string; url: string; label: string; enabled: boolean; created_at: string };
+type Source = {
+  id: string;
+  instrument_id: string | null;
+  url: string;
+  publisher: string | null;
+  title: string | null;
+  fetched_at: string;
+  deduplicated?: boolean;
+};
+type Fact = { statement: string; as_of: string; source_ids: string[]; stale: boolean };
+type Note = {
+  id: string;
+  instrument_id: string;
+  as_of: string;
+  summary: string;
+  key_facts: Fact[];
+  source_ids: string[];
+  confidence: 'low' | 'medium' | 'high';
+  stale: boolean;
+};
+type FieldValue = { value: string | null; field_path: string };
+type FundamentalPeriod = {
+  period_type: 'annual' | 'quarterly';
+  period_end: string;
+  currency: string;
+  values: Record<string, FieldValue>;
+  source: string;
+  fetched_at: string;
+  stale: boolean;
+};
+type IndicatorValue = {
+  value: string | null;
+  is_synthetic: boolean;
+  bars_required: number;
+  bars_used: number;
+  field_path: string;
+};
+type NewsItem = {
+  headline: string;
+  publisher: string;
+  published_at: string | null;
+  url: string;
+  source_id: string;
+};
+type NewsSource = {
+  source_id: string;
+  title: string;
+  publisher: string;
+  url: string;
+  fetched_at: string;
+};
+type QualityItem = {
+  kind: string;
+  field_path: string;
+  reason: string;
+  stage?: string;
+  url?: string;
+};
+type Brief = {
+  run_id: string;
+  instrument_id: string;
+  status: 'running' | 'complete' | 'partial' | 'failed';
+  started_at: string;
+  finished_at: string | null;
+  sources_attempted: number;
+  sources_succeeded: number;
+  failures: { source: string; stage: string; url: string; reason: string }[];
+  renderer: 'template' | 'ai';
+  created_at: string;
+  data_quality: QualityItem[];
+  sections: {
+    fundamentals: {
+      status: string;
+      snapshot: {
+        status: string;
+        values: Record<string, FieldValue> | null;
+        source?: string;
+        fetched_at?: string;
+        stale?: boolean;
+      };
+      periods: FundamentalPeriod[];
+    };
+    technicals: {
+      status: string;
+      interval: string;
+      source: string | null;
+      latest_bar: string | null;
+      bars_available: number;
+      indicators: Record<string, IndicatorValue>;
+    };
+    financials_trend: {
+      status: string;
+      periods: {
+        period_type: string;
+        period_end: string;
+        currency: string;
+        values: Record<string, { value: string | null; year_on_year_growth_pct: string | null; field_paths: string[] }>;
+      }[];
+    };
+    news: { status: string; items: NewsItem[]; sources: NewsSource[] };
+    data_quality: { status: string; items: QualityItem[] };
+    disclaimer: string;
+  };
+};
+type FactDraft = { statement: string; as_of: string; source_ids: string[] };
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+export function Research({ watchlist, addInstrumentToWatchlist, removeInstrumentFromWatchlist }: {
+  watchlist: WatchlistEntry[];
+  addInstrumentToWatchlist: (instrumentId: string, symbol: string) => Promise<void>;
+  removeInstrumentFromWatchlist: (instrumentId: string) => Promise<void>;
+}) {
+  const [instrumentQuery, setInstrumentQuery] = useState('');
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
+  const [selected, setSelected] = useState<Instrument | null>(null);
+  const [brief, setBrief] = useState<Brief | null>(null);
+  const [sourceLinks, setSourceLinks] = useState<SourceLink[]>([]);
+  const [legacySources, setLegacySources] = useState<Source[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [sourceLabel, setSourceLabel] = useState('');
+  const [legacySourceUrl, setLegacySourceUrl] = useState('');
+  const [noteAsOf, setNoteAsOf] = useState(today());
+  const [noteSummary, setNoteSummary] = useState('');
+  const [noteConfidence, setNoteConfidence] = useState<Note['confidence']>('medium');
+  const [noteFacts, setNoteFacts] = useState<FactDraft[]>([{ statement: '', as_of: today(), source_ids: [] }]);
+  const [editingNote, setEditingNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const refreshNotesAndSources = useCallback(async (instrumentId: string) => {
+    const [detail, links] = await Promise.all([
+      apiRequest<{ notes: Note[]; sources: Source[] }>(`/research/instruments/${instrumentId}`),
+      apiRequest<SourceLink[]>(`/research/instruments/${instrumentId}/source-links`),
+    ]);
+    setNotes(detail.notes);
+    setLegacySources(detail.sources);
+    setSourceLinks(links);
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setBrief(null);
+      setNotes([]);
+      setLegacySources([]);
+      setSourceLinks([]);
+      return;
+    }
+    let active = true;
+    setError('');
+    void Promise.all([
+      apiRequest<Brief>(`/research/instruments/${selected.id}/brief`).catch((requestError: unknown) => {
+        if (requestError instanceof ApiRequestError && requestError.status === 404) return null;
+        throw requestError;
+      }),
+      refreshNotesAndSources(selected.id),
+    ]).then(([latest]) => {
+      if (active) setBrief(latest);
+    }).catch((requestError: Error) => {
+      if (active) setError(requestError.message);
+    });
+    return () => {
+      active = false;
+    };
+  }, [selected?.id, refreshNotesAndSources]);
+
+  async function searchInstruments(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!instrumentQuery.trim()) return;
+    setSearching(true);
+    setError('');
+    try {
+      const query = new URLSearchParams({ query: instrumentQuery.trim(), limit: '30' });
+      setInstruments(await apiRequest<Instrument[]>(`/market-data/instruments?${query}`));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Instrument search failed.');
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function runResearch() {
+    if (!selected) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await apiRequest<Brief>(`/research/instruments/${selected.id}/run`, {
+        method: 'POST',
+        body: '{}',
+      });
+      setBrief(result);
+      setNotice(result.status === 'partial'
+        ? `Brief is partial: ${result.sources_succeeded} of ${result.sources_attempted} sources succeeded. Review failures below.`
+        : result.status === 'failed'
+          ? 'No sources were fetched; the brief shows stored data availability and recorded failures.'
+          : `Research brief updated using ${result.sources_succeeded} fetched source(s).`);
+      await refreshNotesAndSources(selected.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Research run failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addSourceLink(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await apiRequest<SourceLink>(`/research/instruments/${selected.id}/source-links`, {
+        method: 'POST',
+        body: JSON.stringify({ url: sourceUrl.trim(), label: sourceLabel.trim() }),
+      });
+      setSourceUrl('');
+      setSourceLabel('');
+      setNotice('Custom source saved for this instrument.');
+      await refreshNotesAndSources(selected.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not save the source URL.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleSource(link: SourceLink) {
+    if (!selected) return;
+    try {
+      await apiRequest<SourceLink>(`/research/source-links/${link.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: !link.enabled }),
+      });
+      await refreshNotesAndSources(selected.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not update the source.');
+    }
+  }
+
+  async function deleteSourceLink(link: SourceLink) {
+    if (!selected || !window.confirm(`Remove ${link.label} from this instrument's sources?`)) return;
+    try {
+      await apiRequest<void>(`/research/source-links/${link.id}`, { method: 'DELETE' });
+      await refreshNotesAndSources(selected.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not remove the source.');
+    }
+  }
+
+  async function addLegacySource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await apiRequest<Source>('/research/sources', {
+        method: 'POST',
+        body: JSON.stringify({ url: legacySourceUrl.trim(), instrument_id: selected.id }),
+      });
+      setLegacySourceUrl('');
+      setNotice(result.deduplicated ? 'Matching saved source reused.' : 'Source fetched and saved.');
+      await refreshNotesAndSources(selected.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not fetch source.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startNote(note?: Note) {
+    if (!note) {
+      setEditingNote(null);
+      setNoteAsOf(today());
+      setNoteSummary('');
+      setNoteConfidence('medium');
+      setNoteFacts([{ statement: '', as_of: today(), source_ids: [] }]);
+      return;
+    }
+    setEditingNote(note.id);
+    setNoteAsOf(note.as_of);
+    setNoteSummary(note.summary);
+    setNoteConfidence(note.confidence);
+    setNoteFacts(note.key_facts.length > 0
+      ? note.key_facts.map((fact) => ({
+        statement: fact.statement,
+        as_of: fact.as_of,
+        source_ids: fact.source_ids,
+      }))
+      : [{ statement: '', as_of: note.as_of, source_ids: note.source_ids }]);
+  }
+
+  async function saveNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || !noteFacts.length || noteFacts.some((fact) => !fact.statement.trim() || !fact.source_ids.length)) {
+      setError('Add at least one fact and cite a saved source for each fact.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const body = {
+        as_of: noteAsOf,
+        summary: noteSummary.trim(),
+        confidence: noteConfidence,
+        key_facts: noteFacts.map((fact) => ({
+          statement: fact.statement.trim(),
+          as_of: fact.as_of,
+          source_ids: fact.source_ids,
+        })),
+      };
+      await apiRequest<Note>(
+        editingNote ? `/research/notes/${editingNote}` : '/research/notes',
+        {
+          method: editingNote ? 'PATCH' : 'POST',
+          body: JSON.stringify(editingNote ? body : { ...body, instrument_id: selected.id }),
+        },
+      );
+      startNote();
+      setNotice(editingNote ? 'My note updated.' : 'My note saved.');
+      await refreshNotesAndSources(selected.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not save the note.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteNote(note: Note) {
+    if (!selected || !window.confirm('Delete this personal research note?')) return;
+    try {
+      await apiRequest<void>(`/research/notes/${note.id}`, { method: 'DELETE' });
+      await refreshNotesAndSources(selected.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not delete the note.');
+    }
+  }
+
+  const watched = (instrument: Instrument) =>
+    watchlist.some((item) => item.instrument_id === instrument.id);
+  const sourceLabelFor = (id: string) =>
+    legacySources.find((source) => source.id === id)?.title
+    || legacySources.find((source) => source.id === id)?.publisher
+    || legacySources.find((source) => source.id === id)?.url
+    || 'Saved source';
+
+  return (
+    <div className="backfill-page research-pipeline-page">
+      <p className="decision-disclaimer">Decision support, not investment advice. The template brief uses stored data and cited sources; it does not use AI to calculate or invent figures.</p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {notice && <p className="alerts-notice" role="status">{notice}</p>}
+
+      <section className="data-section research-search-panel">
+        <div className="section-heading"><div><p className="eyebrow">INSTRUMENT RESEARCH</p><h2>Find an instrument</h2></div></div>
+        <form className="market-search" onSubmit={searchInstruments}>
+          <label>Symbol or company name<input value={instrumentQuery} onChange={(event) => setInstrumentQuery(event.target.value)} placeholder="AAPL, RELIANCE, company name" required /></label>
+          <button className="primary-button" type="submit" disabled={searching}>{searching ? 'Searching…' : 'Search instruments'}</button>
+        </form>
+        {instruments.length > 0 && <div className="research-instrument-results">
+          {instruments.map((instrument) => <article className="research-instrument-choice" key={instrument.id}>
+            <button className="market-instrument" type="button" onClick={() => setSelected(instrument)}>
+              <span><strong>{instrument.symbol}</strong><small>{instrument.display_name}</small></span>
+              <span className="market-instrument-meta">{instrument.venue}</span>
+            </button>
+            <button className="secondary-button" type="button" onClick={() => void (watched(instrument) ? removeInstrumentFromWatchlist(instrument.id) : addInstrumentToWatchlist(instrument.id, instrument.symbol))}>
+              {watched(instrument) ? 'Remove from watchlist' : 'Add to watchlist'}
+            </button>
+          </article>)}
+        </div>}
+      </section>
+
+      {selected && <>
+        <section className="data-section research-selected-panel">
+          <div className="section-heading">
+            <div><p className="eyebrow">SELECTED INSTRUMENT</p><h2>{selected.symbol} · {selected.display_name}</h2></div>
+            <button className="primary-button" type="button" onClick={() => void runResearch()} disabled={busy}>{busy ? 'Researching…' : 'Run research'}</button>
+          </div>
+          <p className="research-subtitle">{selected.venue} · Template renderer · Reads stored fundamentals and OHLCV; never fetches or stores full page bodies.</p>
+        </section>
+
+        <section className="entry-section research-source-manager">
+          <div className="section-heading"><div><p className="eyebrow">SOURCE REGISTRY</p><h2>Custom source URLs</h2></div><span className="section-count">{sourceLinks.length}</span></div>
+          <form className="research-source-form" onSubmit={addSourceLink}>
+            <label>HTTPS source URL<input type="url" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://company.example/investors" required /></label>
+            <label>Label<input value={sourceLabel} onChange={(event) => setSourceLabel(event.target.value)} maxLength={200} placeholder="Investor relations" required /></label>
+            <button className="secondary-button" type="submit" disabled={busy}>Add source</button>
+          </form>
+          {sourceLinks.length === 0 ? <p className="table-empty">No custom sources. Add investor-relations or other trusted URLs.</p> : sourceLinks.map((link) => (
+            <article className="research-link-row" key={link.id}>
+              <div><strong>{link.label}</strong><a href={link.url} target="_blank" rel="noreferrer">{link.url}</a></div>
+              <div className="backfill-actions">
+                <button className="secondary-button" type="button" onClick={() => void toggleSource(link)}>{link.enabled ? 'Disable' : 'Enable'}</button>
+                <button className="text-button" type="button" onClick={() => void deleteSourceLink(link)}>Remove</button>
+              </div>
+            </article>
+          ))}
+        </section>
+
+        {brief && <ResearchBriefView brief={brief} />}
+
+        <details className="data-section my-notes-section">
+          <summary><span><span className="eyebrow">OPTIONAL</span><strong>My notes</strong></span><small>Personal, source-cited notes</small></summary>
+          <div className="my-notes-content">
+            <form className="form-stack" onSubmit={addLegacySource}>
+              <label>Add a source for my notes<input type="url" value={legacySourceUrl} onChange={(event) => setLegacySourceUrl(event.target.value)} placeholder="https://…" required /></label>
+              <button className="secondary-button" type="submit" disabled={busy}>{busy ? 'Fetching…' : 'Fetch source'}</button>
+            </form>
+            {legacySources.map((source) => <article className="backfill-card" key={source.id}>
+              <strong>{source.title || source.publisher || source.url}</strong>
+              <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
+              <span>{source.publisher || 'Publisher not identified'} · fetched {new Date(source.fetched_at).toLocaleString()}</span>
+            </article>)}
+            <form className="form-stack research-note-form" onSubmit={saveNote}>
+              <div className="section-heading"><h3>{editingNote ? 'Edit personal note' : 'Add personal note'}</h3></div>
+              <label>As of<input type="date" value={noteAsOf} onChange={(event) => setNoteAsOf(event.target.value)} required /></label>
+              <label>Summary<textarea value={noteSummary} onChange={(event) => setNoteSummary(event.target.value)} maxLength={4000} rows={3} required /></label>
+              <label>Confidence<select value={noteConfidence} onChange={(event) => setNoteConfidence(event.target.value as Note['confidence'])}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+              <fieldset>
+                <legend>Each fact requires a source and an as-of date</legend>
+                {noteFacts.map((fact, index) => <div className="research-fact" key={index}>
+                  <label>Fact<textarea value={fact.statement} onChange={(event) => setNoteFacts(noteFacts.map((item, i) => i === index ? { ...item, statement: event.target.value } : item))} maxLength={1000} required /></label>
+                  <label>Fact as of<input type="date" value={fact.as_of} onChange={(event) => setNoteFacts(noteFacts.map((item, i) => i === index ? { ...item, as_of: event.target.value } : item))} required /></label>
+                  <label>Cited sources<select multiple value={fact.source_ids} onChange={(event) => setNoteFacts(noteFacts.map((item, i) => i === index ? { ...item, source_ids: Array.from(event.target.selectedOptions, (option) => option.value) } : item))} required>{legacySources.map((source) => <option key={source.id} value={source.id}>{source.title || source.publisher || source.url}</option>)}</select></label>
+                  {noteFacts.length > 1 && <button className="text-button" type="button" onClick={() => setNoteFacts(noteFacts.filter((_, i) => i !== index))}>Remove fact</button>}
+                </div>)}
+                <button className="secondary-button" type="button" onClick={() => setNoteFacts([...noteFacts, { statement: '', as_of: today(), source_ids: [] }])}>Add fact</button>
+              </fieldset>
+              <div className="backfill-actions"><button className="primary-button" type="submit" disabled={busy || legacySources.length === 0}>{editingNote ? 'Save note' : 'Create note'}</button>{editingNote && <button className="secondary-button" type="button" onClick={() => startNote()}>Cancel</button>}</div>
+            </form>
+            {notes.map((note) => <article className="backfill-card research-personal-note" key={note.id}>
+              <header><strong>{note.as_of}</strong>{note.stale && <span className="stale-marker">STALE</span>}</header>
+              <p>{note.summary}</p>
+              <ul>{note.key_facts.map((fact, index) => <li key={`${fact.as_of}-${index}`}>{fact.statement} · {fact.source_ids.map(sourceLabelFor).join(', ')}{fact.stale ? ' · stale' : ''}</li>)}</ul>
+              <div className="backfill-actions"><button className="secondary-button" type="button" onClick={() => startNote(note)}>Edit</button><button className="text-button" type="button" onClick={() => void deleteNote(note)}>Delete</button></div>
+            </article>)}
+            {notes.length === 0 && <p className="table-empty">No personal notes saved for this instrument.</p>}
+          </div>
+        </details>
+      </>}
+    </div>
+  );
+}
+
+function ResearchBriefView({ brief }: { brief: Brief }) {
+  const { fundamentals, technicals, financials_trend: trend, news, data_quality: quality } = brief.sections;
+  const displayValue = (value: string | null) => value === null
+    ? 'Unavailable'
+    : Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return <section className="data-section research-brief">
+    <div className="section-heading"><div><p className="eyebrow">RESEARCH BRIEF · {brief.renderer.toUpperCase()}</p><h2>Evidence and data</h2></div><span className={`research-run-status research-status-${brief.status}`}>{brief.status}</span></div>
+    <p className="research-subtitle">Sources succeeded: {brief.sources_succeeded}/{brief.sources_attempted} · generated {new Date(brief.created_at).toLocaleString()}</p>
+    {brief.failures.length > 0 && <section className="research-failures" aria-label="Source failures">
+      <h3>Sources that failed</h3>
+      {brief.failures.map((failure, index) => <article key={`${failure.source}-${index}`}>
+        <strong>{failure.source} · {failure.stage}</strong><span>{failure.reason}</span><small>{failure.url}</small>
+      </article>)}
+    </section>}
+
+    <section className="research-brief-section">
+      <h3>Fundamentals</h3>
+      <p className="research-status-line">{fundamentals.status === 'unavailable' ? 'Unavailable from stored providers.' : 'Stored M5.3 fundamentals; values are not estimated.'}</p>
+      {fundamentals.snapshot.status === 'available' && fundamentals.snapshot.values && <>
+        <div className="research-snapshot-grid">{Object.entries(fundamentals.snapshot.values).map(([name, item]) => <article key={name}>
+          <small>{name.replaceAll('_', ' ')}</small><strong>{item.value === null ? 'Unavailable' : item.value}</strong><code>{item.field_path}</code>
+        </article>)}</div>
+        <p className="research-subtitle">Source: {fundamentals.snapshot.source} · fetched {new Date(fundamentals.snapshot.fetched_at ?? '').toLocaleString()} {fundamentals.snapshot.stale && <span className="stale-marker">STALE</span>}</p>
+      </>}
+      {fundamentals.periods.length > 0 && <div className="research-period-list">
+        {fundamentals.periods.map((period) => <article className="research-period-card" key={`${period.period_type}-${period.period_end}`}>
+          <header><strong>{period.period_type} · {period.period_end}</strong><span>{period.currency} · {period.source}{period.stale && <span className="stale-marker">STALE</span>}</span></header>
+          <div className="research-value-grid">{Object.entries(period.values).map(([name, item]) => <span key={name}><small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(item.value)}</strong><code>{item.field_path}</code></span>)}</div>
+          <small>Fetched {new Date(period.fetched_at).toLocaleString()}</small>
+        </article>)}
+      </div>}
+    </section>
+
+    <section className="research-brief-section">
+      <h3>Technicals · stored daily OHLCV</h3>
+      {technicals.status === 'unavailable' && <p className="research-status-line">Unavailable: no stored daily bars.</p>}
+      <div className="research-value-grid">{Object.entries(technicals.indicators).map(([name, item]) => <span key={name}>
+        <small>{name.replaceAll('_', ' ')}</small>
+        <strong>{item.value === null ? 'Insufficient history' : displayValue(item.value)}</strong>
+        <code>{item.field_path}</code>
+        <small>{item.bars_used}/{item.bars_required} bars{item.is_synthetic ? ' · synthetic' : ''}</small>
+      </span>)}</div>
+      {technicals.source && <small>Source {technicals.source} · latest bar {technicals.latest_bar ? new Date(technicals.latest_bar).toLocaleString() : 'unavailable'}</small>}
+    </section>
+
+    <section className="research-brief-section">
+      <h3>Financials trend · year-on-year from stored periods</h3>
+      {trend.status === 'unavailable' && <p className="research-status-line">Unavailable: no comparable stored periods.</p>}
+      {trend.periods.map((period) => <article className="research-period-card" key={`${period.period_type}-${period.period_end}`}>
+        <header><strong>{period.period_type} · {period.period_end}</strong><span>{period.currency}</span></header>
+        <div className="research-value-grid">{Object.entries(period.values).map(([name, item]) => <span key={name}>
+          <small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(item.value)}</strong>
+          <small>YoY {item.year_on_year_growth_pct === null ? 'Unavailable' : `${displayValue(item.year_on_year_growth_pct)}%`}</small>
+          <code>{item.field_paths.join(' · ')}</code>
+        </span>)}</div>
+      </article>)}
+    </section>
+
+    <section className="research-brief-section">
+      <h3>News and source citations</h3>
+      {news.status === 'unavailable' && <p className="research-status-line">Unavailable: no parseable news headlines were returned.</p>}
+      {news.items.map((item, index) => {
+        const citation = news.sources.find((source) => source.source_id === item.source_id);
+        return <article className="backfill-card research-news-item" key={`${item.source_id}-${index}`}>
+          <strong>{item.headline}</strong>
+          <a href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
+          <span>{item.publisher} · {item.published_at ? new Date(item.published_at).toLocaleString() : 'publication time unavailable'}</span>
+          {citation && <small>Source: {citation.publisher} · fetched {new Date(citation.fetched_at).toLocaleString()} · <a href={citation.url} target="_blank" rel="noreferrer">view cited feed</a></small>}
+        </article>;
+      })}
+      {news.sources.map((source) => <article className="research-source-citation" key={source.source_id}>
+        <strong>{source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
+        <span>{source.publisher} · fetched {new Date(source.fetched_at).toLocaleString()}</span>
+      </article>)}
+    </section>
+
+    <section className="research-brief-section research-quality-section">
+      <h3>Data quality</h3>
+      {quality.items.length === 0 ? <p>No stale, unavailable, failed-fetch, or synthetic items recorded.</p> : quality.items.map((item, index) => <article key={`${item.field_path}-${index}`}>
+        <span className={`research-quality-kind research-quality-${item.kind}`}>{item.kind.replaceAll('_', ' ')}</span><strong>{item.field_path}</strong><p>{item.reason}</p>{item.url && <small>{item.url}</small>}
+      </article>)}
+    </section>
+    <p className="decision-disclaimer">{brief.sections.disclaimer}</p>
+  </section>;
+}

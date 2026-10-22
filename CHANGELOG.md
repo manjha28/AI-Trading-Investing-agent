@@ -1,0 +1,7 @@
+- M6.3: add deterministic, evidence-backed alert rules and event inbox with manual evaluation.
+- M6.2: extract shared stored-OHLCV indicators and add ledger-derived portfolio risk metrics.
+- Frontend structure: add frontend/src/pages/Activity.tsx, frontend/src/pages/Auth.tsx, frontend/src/pages/Journal.tsx, frontend/src/pages/MarketData.tsx, frontend/src/pages/Overview.tsx, frontend/src/pages/PortfolioSetup.tsx, frontend/src/pages/BrokersPage.tsx, frontend/src/components/useWorkspace.ts; move frontend/src/CandleChart.tsx and frontend/src/ThesisEditor.tsx to frontend/src/components/.
+- Frontend view split: add frontend/src/components/PortfolioSummary.tsx and frontend/src/components/TransactionEntry.tsx; extract the Overview and Activity views into their own page modules.
+- UI backfill: add Corporate Actions and Research pages; expose thesis coverage/revisions and watchlist add/remove controls across instrument views.
+- M5.3: persist yfinance company fundamentals and snapshots with explicit unavailable/null and 95-day freshness states; add authenticated sync/read routes and an instrument-detail Fundamentals tab.
+- M5.4: add stored, source-provenanced instrument research runs and template briefs; add robots-aware custom source management and a primary research UI with optional personal notes.

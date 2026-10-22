@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
 from app.api import health
@@ -23,19 +23,64 @@ def test_health_is_live_without_database(monkeypatch) -> None:
     assert response.json() == {"status": "ok", "service": "trading-copilot-api"}
 
 
-def test_readiness_succeeds_with_database(monkeypatch) -> None:
-    test_engine = create_engine(
+def _sqlite_engine():
+    return create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+
+def test_readiness_succeeds_when_migrations_current(monkeypatch) -> None:
+    test_engine = _sqlite_engine()
+    head = next(iter(health.expected_migration_heads()))
+    with test_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version VALUES (:v)"), {"v": head})
     monkeypatch.setattr(health, "engine", test_engine)
 
     response = client.get("/api/v1/ready")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "database": "available"}
+    assert response.json() == {
+        "status": "ready",
+        "database": "available",
+        "migrations": "current",
+    }
     test_engine.dispose()
+
+
+def test_readiness_fails_when_migrations_behind(monkeypatch) -> None:
+    test_engine = _sqlite_engine()
+    with test_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version VALUES ('0013_app_two_factor')"))
+    monkeypatch.setattr(health, "engine", test_engine)
+
+    response = client.get("/api/v1/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "database": "available",
+        "migrations": "pending",
+    }
+    test_engine.dispose()
+
+
+def test_readiness_fails_when_database_is_unmigrated(monkeypatch) -> None:
+    test_engine = _sqlite_engine()
+    monkeypatch.setattr(health, "engine", test_engine)
+
+    response = client.get("/api/v1/ready")
+
+    assert response.status_code == 503
+    assert response.json()["migrations"] == "pending"
+    test_engine.dispose()
+
+
+def test_expected_head_is_single() -> None:
+    assert len(health.expected_migration_heads()) == 1
 
 
 def test_readiness_reports_database_outage(monkeypatch) -> None:

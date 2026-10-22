@@ -7,9 +7,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.alerts import router as alerts_router
 from app.api.brokers import router as brokers_router
+from app.api.corporate_actions import router as corporate_actions_router
+from app.api.position_theses import router as position_theses_router
+from app.api.research import router as research_router
 from app.api.health import router as health_router
-from app.api.market_data import router as market_data_router
+from app.api.market_data import indicators_router, router as market_data_router
 from app.api.portfolios import router as portfolios_router
 from app.api.portfolio_transactions import router as portfolio_transactions_router
 from app.api.trades import router as trades_router
@@ -63,11 +67,16 @@ app.add_middleware(
 
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(alerts_router, prefix="/api/v1")
 app.include_router(portfolios_router, prefix="/api/v1")
 app.include_router(portfolio_transactions_router, prefix="/api/v1")
 app.include_router(trades_router, prefix="/api/v1")
 app.include_router(market_data_router, prefix="/api/v1")
+app.include_router(indicators_router, prefix="/api/v1")
 app.include_router(brokers_router, prefix="/api/v1")
+app.include_router(corporate_actions_router, prefix="/api/v1")
+app.include_router(research_router, prefix="/api/v1")
+app.include_router(position_theses_router, prefix="/api/v1")
 
 
 @app.get("/")

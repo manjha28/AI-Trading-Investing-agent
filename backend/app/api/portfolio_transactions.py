@@ -12,8 +12,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
-from app.accounting import LedgerError, calculate_ledger, money
-from app.api.auth import get_current_user, require_csrf
+from app.accounting import (
+    CorporateActionAdjustment,
+    LedgerError,
+    PortfolioLedger,
+    calculate_ledger,
+    money,
+)
+from app.api.auth import get_active_session, get_current_user, require_csrf
+from app.corporate_action_service import get_portfolio_corporate_actions
 from app.db import get_db
 from app.models import Portfolio, PortfolioTransaction, User, UserSession
 from app.models import Instrument
@@ -126,6 +133,7 @@ class PositionResponse(BaseModel):
     quantity: Decimal
     cost_basis: Decimal
     average_cost: Decimal
+    holding_period_start: datetime | None
 
 
 class PortfolioSummary(BaseModel):
@@ -179,6 +187,22 @@ class PortfolioValuationResponse(BaseModel):
     positions: list[ValuationPositionResponse]
 
 
+class RiskMetricsResponse(BaseModel):
+    portfolio_id: UUID
+    as_of: datetime
+    currency: str
+    position_weights: list[dict]
+    top_three_concentration_pct: Decimal | None
+    hhi: Decimal | None
+    cash_balance: Decimal
+    cash_pct: Decimal | None
+    currency_exposure: list[dict]
+    ltcg_boundary_positions: list[dict]
+    tax_disclaimer: str
+    concentration_unavailable_reason: str | None
+    disclaimer: str
+
+
 def get_owned_portfolio(
     db: Session, user_id: UUID, portfolio_id: UUID, *, lock: bool = False
 ) -> Portfolio:
@@ -205,6 +229,43 @@ def get_transactions(db: Session, portfolio_id: UUID) -> list[PortfolioTransacti
                 PortfolioTransaction.id,
             )
         ).all()
+    )
+
+
+def calculate_portfolio_ledger(
+    db: Session,
+    user_id: UUID,
+    portfolio_id: UUID,
+    transactions: list[PortfolioTransaction] | None = None,
+) -> PortfolioLedger:
+    ledger_transactions = (
+        transactions if transactions is not None else get_transactions(db, portfolio_id)
+    )
+    return calculate_ledger(
+        ledger_transactions,
+        get_portfolio_corporate_actions(db, portfolio_id, user_id),
+    )
+
+
+@router.get("/risk-metrics", response_model=RiskMetricsResponse)
+def portfolio_risk_metrics(
+    portfolio_id: UUID,
+    active_session: UserSession = Depends(get_active_session),
+    db: Session = Depends(get_db),
+) -> RiskMetricsResponse:
+    if not active_session.user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "email_verification_required",
+                "message": "Verify your email address before viewing risk metrics.",
+            },
+        )
+    portfolio = get_owned_portfolio(db, active_session.user_id, portfolio_id)
+    from app.services.risk_metrics import build_risk_metrics
+
+    return RiskMetricsResponse.model_validate(
+        build_risk_metrics(db, active_session.user_id, portfolio)
     )
 
 
@@ -240,7 +301,9 @@ def _safe_csv_text(value: str | None) -> str:
 
 
 def _parse_csv_import(
-    content: str, existing: list[PortfolioTransaction]
+    content: str,
+    existing: list[PortfolioTransaction],
+    corporate_actions: list[CorporateActionAdjustment] | None = None,
 ) -> tuple[CsvImportPreview, list[TransactionCreate]]:
     rows: list[CsvImportRow] = []
     candidates: list[TransactionCreate] = []
@@ -357,7 +420,7 @@ def _parse_csv_import(
             for index, payload in enumerate(candidates)
         ]
         try:
-            calculate_ledger([*existing, *provisional])
+            calculate_ledger([*existing, *provisional], corporate_actions or [])
         except LedgerError as error:
             rows = [
                 row.model_copy(
@@ -406,7 +469,7 @@ def add_transaction(
     db.add(transaction)
     db.flush()
     try:
-        calculate_ledger(get_transactions(db, portfolio.id))
+        calculate_portfolio_ledger(db, user.id, portfolio.id)
     except LedgerError as error:
         db.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -445,7 +508,7 @@ def update_transaction(
     transaction.fee = payload.fee
     transaction.occurred_at = _as_utc(payload.occurred_at)
     try:
-        calculate_ledger(get_transactions(db, portfolio.id))
+        calculate_portfolio_ledger(db, user.id, portfolio.id)
     except LedgerError as error:
         db.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -504,7 +567,11 @@ def preview_transaction_import(
     db: Session = Depends(get_db),
 ):
     portfolio = get_owned_portfolio(db, user.id, portfolio_id)
-    preview, _ = _parse_csv_import(payload.csv_content, get_transactions(db, portfolio.id))
+    preview, _ = _parse_csv_import(
+        payload.csv_content,
+        get_transactions(db, portfolio.id),
+        get_portfolio_corporate_actions(db, portfolio.id, user.id),
+    )
     return preview
 
 
@@ -518,7 +585,8 @@ def import_transactions(
 ):
     portfolio = get_owned_portfolio(db, user.id, portfolio_id, lock=True)
     existing = get_transactions(db, portfolio.id)
-    preview, candidates = _parse_csv_import(payload.csv_content, existing)
+    actions = get_portfolio_corporate_actions(db, portfolio.id, user.id)
+    preview, candidates = _parse_csv_import(payload.csv_content, existing, actions)
     if preview.invalid_count:
         raise HTTPException(status_code=422, detail=preview.model_dump(mode="json"))
 
@@ -548,7 +616,7 @@ def import_transactions(
     db.add_all(imported)
     try:
         db.flush()
-        calculate_ledger([*existing, *imported])
+        calculate_ledger([*existing, *imported], actions)
         db.commit()
     except LedgerError as error:
         db.rollback()
@@ -579,7 +647,7 @@ def delete_transaction(
     db.delete(transaction)
     db.flush()
     try:
-        calculate_ledger(get_transactions(db, portfolio.id))
+        calculate_portfolio_ledger(db, user.id, portfolio.id)
     except LedgerError as error:
         db.rollback()
         raise HTTPException(
@@ -596,13 +664,14 @@ def portfolio_summary(
     db: Session = Depends(get_db),
 ):
     portfolio = get_owned_portfolio(db, user.id, portfolio_id)
-    ledger = calculate_ledger(get_transactions(db, portfolio.id))
+    ledger = calculate_portfolio_ledger(db, user.id, portfolio.id)
     positions = [
         PositionResponse(
             symbol=symbol,
             quantity=position.quantity,
             cost_basis=money(position.cost_basis),
             average_cost=money(position.cost_basis / position.quantity),
+            holding_period_start=position.holding_period_start,
         )
         for symbol, position in sorted(ledger.positions.items())
     ]
@@ -629,7 +698,7 @@ def attach_instrument_to_position(
 ):
     portfolio = get_owned_portfolio(db, user.id, portfolio_id, lock=True)
     normalized_symbol = symbol.strip().upper()
-    ledger = calculate_ledger(get_transactions(db, portfolio.id))
+    ledger = calculate_portfolio_ledger(db, user.id, portfolio.id)
     if normalized_symbol not in ledger.positions:
         raise HTTPException(status_code=404, detail="Open portfolio position not found")
     instrument = db.get(Instrument, payload.instrument_id)
@@ -672,7 +741,7 @@ def portfolio_valuation(
     db: Session = Depends(get_db),
 ):
     portfolio = get_owned_portfolio(db, user.id, portfolio_id)
-    ledger = calculate_ledger(get_transactions(db, portfolio.id))
+    ledger = calculate_portfolio_ledger(db, user.id, portfolio.id)
     linked_transactions = db.scalars(
         select(PortfolioTransaction)
         .where(

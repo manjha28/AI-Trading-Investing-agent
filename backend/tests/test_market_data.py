@@ -64,6 +64,46 @@ def test_market_data_endpoints_require_authentication(client: TestClient) -> Non
     assert response.status_code == 401
 
 
+def test_watchlist_is_user_scoped_and_reports_cached_quote_provenance(
+    client: TestClient,
+) -> None:
+    register(client)
+    instrument = client.get("/api/v1/market-data/instruments?query=ALPHA").json()[0]
+    instrument_id = instrument["id"]
+
+    added = client.post(
+        f"/api/v1/market-data/watchlist/{instrument_id}",
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
+    )
+    assert added.status_code == 204, added.text
+    assert client.get("/api/v1/market-data/watchlist").json() == [
+        {
+            "instrument_id": instrument_id,
+            "symbol": "ALPHA",
+            "display_name": instrument["display_name"],
+            "asset_class": instrument["asset_class"],
+            "venue": instrument["venue"],
+            "currency": instrument["currency"],
+            "is_synthetic": True,
+            "relink_required": False,
+            "quote": None,
+        }
+    ]
+
+    quote = client.get(f"/api/v1/market-data/instruments/{instrument_id}/quote")
+    assert quote.status_code == 200, quote.text
+    entry = client.get("/api/v1/market-data/watchlist").json()[0]
+    assert entry["quote"]["source"] == "mock"
+    assert entry["quote"]["is_synthetic"] is True
+    assert entry["quote"]["is_verified"] is False
+    assert entry["quote"]["close"] == quote.json()["bar"]["close"]
+
+    with TestClient(app) as other_client:
+        register(other_client, "other-market@example.com")
+        assert other_client.get("/api/v1/market-data/watchlist").json() == []
+    assert len(client.get("/api/v1/market-data/watchlist").json()) == 1
+
+
 def test_search_keeps_same_symbol_in_different_venues_distinct(client: TestClient) -> None:
     register(client)
 
