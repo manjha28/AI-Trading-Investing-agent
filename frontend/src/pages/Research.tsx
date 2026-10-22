@@ -109,8 +109,14 @@ type Brief = {
   };
 };
 type FactDraft = { statement: string; as_of: string; source_ids: string[] };
+type BatchRunResult = {
+  instrument: Instrument;
+  brief: Brief | null;
+  error: string | null;
+};
 
 const today = () => new Date().toISOString().slice(0, 10);
+const MAX_BATCH_INSTRUMENTS = 5;
 
 export function Research({ watchlist, addInstrumentToWatchlist, removeInstrumentFromWatchlist }: {
   watchlist: WatchlistEntry[];
@@ -119,6 +125,8 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
 }) {
   const [instrumentQuery, setInstrumentQuery] = useState('');
   const [instruments, setInstruments] = useState<Instrument[]>([]);
+  const [batchSelection, setBatchSelection] = useState<Instrument[]>([]);
+  const [batchResults, setBatchResults] = useState<BatchRunResult[]>([]);
   const [selected, setSelected] = useState<Instrument | null>(null);
   const [brief, setBrief] = useState<Brief | null>(null);
   const [sourceLinks, setSourceLinks] = useState<SourceLink[]>([]);
@@ -190,26 +198,56 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
 
   async function runResearch() {
     if (!selected) return;
+    await runResearchBatch([selected]);
+  }
+
+  function toggleBatchInstrument(instrument: Instrument) {
+    setBatchResults([]);
+    setBatchSelection((current) => {
+      if (current.some((item) => item.id === instrument.id)) {
+        return current.filter((item) => item.id !== instrument.id);
+      }
+      if (current.length >= MAX_BATCH_INSTRUMENTS) {
+        setError(`Select up to ${MAX_BATCH_INSTRUMENTS} instruments per research batch.`);
+        return current;
+      }
+      return [...current, instrument];
+    });
+  }
+
+  async function runResearchBatch(instrumentsToRun: Instrument[]) {
+    if (instrumentsToRun.length === 0) return;
     setBusy(true);
     setError('');
     setNotice('');
-    try {
-      const result = await apiRequest<Brief>(`/research/instruments/${selected.id}/run`, {
-        method: 'POST',
-        body: '{}',
-      });
-      setBrief(result);
-      setNotice(result.status === 'partial'
-        ? `Brief is partial: ${result.sources_succeeded} of ${result.sources_attempted} sources succeeded. Review failures below.`
-        : result.status === 'failed'
-          ? 'No sources were fetched; the brief shows stored data availability and recorded failures.'
-          : `Research brief updated using ${result.sources_succeeded} fetched source(s).`);
-      await refreshNotesAndSources(selected.id);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Research run failed.');
-    } finally {
-      setBusy(false);
+    setBatchResults([]);
+    let successCount = 0;
+    for (const instrument of instrumentsToRun.slice(0, MAX_BATCH_INSTRUMENTS)) {
+      try {
+        const result = await apiRequest<Brief>(`/research/instruments/${instrument.id}/run`, {
+          method: 'POST',
+          body: '{}',
+        });
+        successCount += 1;
+        setBatchResults((current) => [...current, { instrument, brief: result, error: null }]);
+        if (selected?.id === instrument.id) {
+          setBrief(result);
+          try {
+            await refreshNotesAndSources(instrument.id);
+          } catch (refreshError) {
+            setError(refreshError instanceof Error ? refreshError.message : 'Research sources saved, but the page could not refresh its source list.');
+          }
+        }
+      } catch (requestError) {
+        const message = requestError instanceof Error ? requestError.message : 'Research run failed.';
+        setBatchResults((current) => [...current, { instrument, brief: null, error: message }]);
+      }
     }
+    const failureCount = instrumentsToRun.length - successCount;
+    setNotice(failureCount
+      ? `Research finished for ${successCount} of ${instrumentsToRun.length} instruments. Failed instruments are listed below.`
+      : `Research finished for all ${successCount} selected instrument(s).`);
+    setBusy(false);
   }
 
   async function addSourceLink(event: FormEvent<HTMLFormElement>) {
@@ -367,16 +405,34 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
         </form>
         {instruments.length > 0 && <div className="research-instrument-results">
           {instruments.map((instrument) => <article className="research-instrument-choice" key={instrument.id}>
-            <button className="market-instrument" type="button" onClick={() => setSelected(instrument)}>
-              <span><strong>{instrument.symbol}</strong><small>{instrument.display_name}</small></span>
-              <span className="market-instrument-meta">{instrument.venue}</span>
-            </button>
-            <button className="secondary-button" type="button" onClick={() => void (watched(instrument) ? removeInstrumentFromWatchlist(instrument.id) : addInstrumentToWatchlist(instrument.id, instrument.symbol))}>
-              {watched(instrument) ? 'Remove from watchlist' : 'Add to watchlist'}
-            </button>
+            <div className="research-batch-choice">
+              <label className="research-batch-checkbox">
+                <input type="checkbox" checked={batchSelection.some((item) => item.id === instrument.id)} onChange={() => toggleBatchInstrument(instrument)} disabled={busy || (!batchSelection.some((item) => item.id === instrument.id) && batchSelection.length >= MAX_BATCH_INSTRUMENTS)} />
+                <span>Add to batch</span>
+              </label>
+              <button className="market-instrument" type="button" onClick={() => { setBatchResults([]); setSelected(instrument); }}>
+                <span><strong>{instrument.symbol}</strong><small>{instrument.display_name}</small></span>
+                <span className="market-instrument-meta">{instrument.venue}</span>
+              </button>
+              <button className="secondary-button" type="button" onClick={() => void (watched(instrument) ? removeInstrumentFromWatchlist(instrument.id) : addInstrumentToWatchlist(instrument.id, instrument.symbol))}>
+                {watched(instrument) ? 'Remove from watchlist' : 'Add to watchlist'}
+              </button>
+            </div>
           </article>)}
+          <div className="research-batch-actions">
+            <span>{batchSelection.length}/{MAX_BATCH_INSTRUMENTS} selected</span>
+            <button className="primary-button" type="button" onClick={() => void runResearchBatch(batchSelection)} disabled={busy || batchSelection.length === 0}>{busy ? 'Running selected research…' : `Run research for ${batchSelection.length} selected`}</button>
+          </div>
         </div>}
       </section>
+
+      {batchResults.length > 0 && <section className="research-batch-results">
+        <div className="section-heading"><div><p className="eyebrow">BATCH RESULTS</p><h2>Research runs</h2></div><span className="section-count">{batchResults.length}</span></div>
+        {batchResults.map(({ instrument, brief: result, error: resultError }) => <details className="data-section research-batch-result" key={instrument.id} open={batchResults.length === 1}>
+          <summary><strong>{instrument.symbol} · {instrument.display_name}</strong><span className={resultError ? 'research-run-status research-status-failed' : `research-run-status research-status-${result?.status ?? 'failed'}`}>{resultError ? 'request failed' : result?.status}</span></summary>
+          {resultError ? <p className="form-error" role="alert">{resultError}</p> : result && <ResearchBriefView brief={result} />}
+        </details>)}
+      </section>}
 
       {selected && <>
         <section className="data-section research-selected-panel">
@@ -405,7 +461,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
           ))}
         </section>
 
-        {brief && <ResearchBriefView brief={brief} />}
+        {brief && batchResults.length === 0 && <ResearchBriefView brief={brief} />}
 
         <details className="data-section my-notes-section">
           <summary><span><span className="eyebrow">OPTIONAL</span><strong>My notes</strong></span><small>Personal, source-cited notes</small></summary>

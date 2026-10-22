@@ -26,6 +26,7 @@ from app.models import Portfolio, PortfolioTransaction, User, UserSession
 from app.models import Instrument
 from app.api.market_data import get_market_data_provider, latest_quote
 from app.market_data import MarketDataProvider
+from app.services.price_freshness import classify_quote
 
 router = APIRouter(prefix="/portfolios/{portfolio_id}", tags=["portfolio accounting"])
 CSV_COLUMNS = (
@@ -709,7 +710,13 @@ def attach_instrument_to_position(
             status_code=422,
             detail="Selected instrument symbol does not match the portfolio holding",
         )
-    if instrument.currency != portfolio.base_currency:
+    _, currency_reason, _currency_evidence = classify_quote(
+        None,
+        instrument,
+        portfolio.base_currency,
+        datetime.now(timezone.utc),
+    )
+    if currency_reason == "foreign_currency_no_fx":
         raise HTTPException(
             status_code=422,
             detail="Instrument currency must match the portfolio currency; FX conversion is not supported",
@@ -832,6 +839,12 @@ def portfolio_valuation(
         except HTTPException as error:
             if error.status_code != 503:
                 raise
+            _, _quote_reason, _freshness_evidence = classify_quote(
+                None,
+                instrument,
+                portfolio.base_currency,
+                datetime.now(timezone.utc),
+            )
             message = "No provider returned a quote for this instrument."
             reasons.append(f"{symbol}: {message}")
             positions.append(
@@ -864,15 +877,22 @@ def portfolio_valuation(
             if quote.bar.open > 0
             else None
         )
+        _quote_usable, quote_reason, freshness_evidence = classify_quote(
+            quote,
+            instrument,
+            portfolio.base_currency,
+            datetime.now(timezone.utc),
+        )
         market_value_total += position_value
         unrealized_total += position_pnl
         day_change_total += day_change
         quote_time = _as_utc(quote.retrieved_at)
         last_updated = max(last_updated, quote_time) if last_updated else quote_time
-        if quote.freshness == "stale":
+        if quote_reason == "stale_price":
             reasons.append(f"{symbol}: quote is stale.")
-        if quote.is_synthetic:
+        if quote_reason == "synthetic_price":
             reasons.append(f"{symbol}: quote is synthetic fallback data.")
+        quote_freshness = "fresh" if freshness_evidence["quote_age_within_limit"] else "stale"
         positions.append(
             ValuationPositionResponse(
                 symbol=symbol,
@@ -885,7 +905,7 @@ def portfolio_valuation(
                 weight_percent=None,
                 day_change=day_change,
                 day_change_percent=day_change_percent,
-                freshness=quote.freshness,
+                freshness=quote_freshness,
                 is_synthetic=quote.is_synthetic,
                 source=quote.source,
                 retrieved_at=quote_time,

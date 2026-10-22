@@ -5,3 +5,6 @@
 - UI backfill: add Corporate Actions and Research pages; expose thesis coverage/revisions and watchlist add/remove controls across instrument views.
 - M5.3: persist yfinance company fundamentals and snapshots with explicit unavailable/null and 95-day freshness states; add authenticated sync/read routes and an instrument-detail Fundamentals tab.
 - M5.4: add stored, source-provenanced instrument research runs and template briefs; add robots-aware custom source management and a primary research UI with optional personal notes.
+- M5.4 follow-up: fix the research migration version-length blocker and add sequential batch research for up to five instruments with per-instrument results.
+- M6.3a: correct alert price freshness, per-instrument cooldowns, indicator lookbacks, drawdown evidence, and one-time LTCG crossing alerts.
+- M6.3b: centralize quote usability freshness, align indicator lookbacks, report complete currency exposure and lot-age ranges, and guard growth from non-positive bases.

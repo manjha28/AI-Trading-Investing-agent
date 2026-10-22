@@ -21,7 +21,13 @@ from app.models import (
     PositionThesis,
 )
 from app.models.alerts import AlertEvent, AlertRule
-from app.services.indicators import rsi as calculate_rsi, sma as calculate_sma
+from app.services.indicators import (
+    drawdown_from_trailing_peak as calculate_drawdown,
+    pct_change as calculate_pct_change,
+    rsi as calculate_rsi,
+    sma as calculate_sma,
+)
+from app.services.price_freshness import classify_quote
 
 PRICE_RULES = {
     "price_above",
@@ -36,6 +42,7 @@ PRICE_RULES = {
     "ma_cross",
 }
 ACTION_IMPLYING_RULES = PRICE_RULES
+DAILY_BAR_RULES = {"pct_move_nd", "trailing_drawdown_pct", "rsi_threshold", "ma_cross"}
 RULE_TYPES = PRICE_RULES | {"holding_period_crosses_365d", "data_stale"}
 RULE_TYPE_PARAMS: dict[str, set[str]] = {
     "price_above": {"price"},
@@ -62,10 +69,22 @@ def _utc(value: datetime) -> datetime:
 
 
 def _bars(db: Session, instrument_id: UUID, limit: int) -> list[MarketBar]:
+    latest_source = db.scalar(
+        select(MarketBar.source)
+        .where(MarketBar.instrument_id == instrument_id, MarketBar.interval == "1d")
+        .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
+        .limit(1)
+    )
+    if latest_source is None:
+        return []
     rows = list(
         db.scalars(
             select(MarketBar)
-            .where(MarketBar.instrument_id == instrument_id, MarketBar.interval == "1d")
+            .where(
+                MarketBar.instrument_id == instrument_id,
+                MarketBar.interval == "1d",
+                MarketBar.source == latest_source,
+            )
             .order_by(MarketBar.timestamp.desc())
             .limit(limit)
         )
@@ -84,15 +103,13 @@ def _rule_match(
     now: datetime,
     params: dict[str, Any],
 ) -> tuple[bool, dict[str, Any], str | None]:
-    quote_age = None
-    quote_fresh = False
+    portfolio_currency = params.get("_portfolio_currency")
+    quote_usable, quote_reason, quote_evidence = classify_quote(
+        quote, instrument, portfolio_currency, now
+    )
+    quote_age = quote_evidence["quote_retrieved_age_seconds"]
     price = None
     if quote is not None:
-        quote_age = max(
-            (now - _utc(quote.retrieved_at)).total_seconds(),
-            (now - _utc(quote.timestamp)).total_seconds(),
-        )
-        quote_fresh = 0 <= quote_age <= settings.market_data_quote_freshness_seconds
         price = quote.close
     market_inputs: dict[str, Any] = {
         "instrument_id": str(instrument.id),
@@ -107,7 +124,8 @@ def _rule_match(
         "quote_retrieved_at": _utc(quote.retrieved_at).isoformat() if quote else None,
         "quote_age_seconds": quote_age,
         "quote_is_synthetic": quote.is_synthetic if quote else None,
-        "quote_is_fresh": quote_fresh,
+        "quote_is_fresh": quote_evidence["quote_age_within_limit"],
+        **quote_evidence,
         "rule_params": rule.params,
     }
     result: bool = False
@@ -130,27 +148,24 @@ def _rule_match(
         if start is not None:
             start = _utc(start)
             crossed_at = start + timedelta(days=365)
-            result = start <= now and crossed_at.date() == now.date()
+            result = start <= now and now >= crossed_at
         else:
             crossed_at = None
         return result, {
             **market_inputs,
             "holding_period_start": start.isoformat() if start else None,
             "crossed_at": crossed_at.isoformat() if crossed_at else None,
+            "days_since_crossing": (now - crossed_at).days if result and crossed_at else None,
             "as_of": now.isoformat(),
         }, None
 
-    if quote is None or price is None:
-        return False, market_inputs, "quote_unavailable"
-    if quote.is_synthetic:
-        return False, market_inputs, "synthetic_price"
-    if not quote_fresh:
-        return False, market_inputs, "stale_price"
     if rule.portfolio_id is not None:
-        # The evaluator inserts portfolio currency into rule params at call time.
-        portfolio_currency = params.get("_portfolio_currency")
-        if portfolio_currency and instrument.currency != portfolio_currency:
+        if quote_reason == "foreign_currency_no_fx":
             return False, market_inputs, "foreign_currency"
+
+    if rule.rule_type not in DAILY_BAR_RULES:
+        if not quote_usable:
+            return False, market_inputs, quote_reason
 
     if rule.rule_type == "price_above":
         threshold = _decimal(params["price"])
@@ -160,24 +175,21 @@ def _rule_match(
         threshold = _decimal(params["price"])
         result = price <= threshold
         market_inputs["threshold_price"] = str(threshold)
-    elif rule.rule_type in {"pct_move_nd", "trailing_drawdown_pct", "rsi_threshold", "ma_cross"}:
-        periods = (
-            int(params.get("days", 1)) + 1
-            if rule.rule_type in {"pct_move_nd", "trailing_drawdown_pct"}
-            else int(params.get("period", 2)) + 1
+    elif rule.rule_type in DAILY_BAR_RULES:
+        required_bars = (
+            int(params["days"]) + 1
+            if rule.rule_type == "pct_move_nd"
+            else int(params["days"])
+            if rule.rule_type == "trailing_drawdown_pct"
+            else int(params["period"]) + 1
             if rule.rule_type == "rsi_threshold"
-            else int(params.get("slow_period", 2)) + 1
+            else int(params["slow_period"]) + 1
         )
-        history = bars[-(periods + 1) :]
-        closes = [_decimal(bar.close) for bar in history]
-        if len(closes) < periods:
+        if len(bars) < required_bars:
             return False, {
                 **market_inputs,
-                "bars": [
-                    {"timestamp": _utc(bar.timestamp).isoformat(), "close": str(bar.close),
-                     "is_synthetic": bar.is_synthetic}
-                    for bar in history
-                ],
+                "bars_used": len(bars),
+                "required_bars": required_bars,
             }, "insufficient_history"
         bar_data = [
             {
@@ -186,59 +198,95 @@ def _rule_match(
                 "source": bar.source,
                 "is_synthetic": bar.is_synthetic,
             }
-            for bar in history
+            for bar in bars
         ]
-        if any(bar.is_synthetic for bar in history):
+        latest_bar = bars[-1]
+        latest_bar_age = (now - _utc(latest_bar.timestamp)).total_seconds()
+        daily_bar_max_age = settings.daily_close_price_max_age_seconds
+        market_inputs.update(
+            price_freshness_basis="daily_bar_close",
+            daily_close_price_max_age_seconds=daily_bar_max_age,
+            price_freshness_timestamp=_utc(latest_bar.timestamp).isoformat(),
+            price_age_seconds=latest_bar_age,
+            price_is_fresh=0 <= latest_bar_age <= daily_bar_max_age,
+            bars_used=len(bars),
+        )
+        if any(bar.is_synthetic for bar in bars):
             return False, {**market_inputs, "bars": bar_data}, "synthetic_history"
-        latest_bar_age = (now - _utc(history[-1].timestamp)).total_seconds()
-        if latest_bar_age < 0 or latest_bar_age > max(
-            settings.market_data_quote_freshness_seconds, 3 * 24 * 60 * 60
-        ):
-            return False, {**market_inputs, "bars": bar_data, "latest_bar_age_seconds": latest_bar_age}, "stale_history"
+        if latest_bar_age < 0 or latest_bar_age > daily_bar_max_age:
+            return False, {
+                **market_inputs, "bars": bar_data,
+                "latest_bar_age_seconds": latest_bar_age,
+            }, "stale_history"
         if rule.rule_type == "pct_move_nd":
             days = int(params["days"])
-            origin, latest = closes[-days - 1], closes[-1]
-            change = (latest - origin) * Decimal("100") / origin
+            indicator_result = calculate_pct_change(bars, days)
+            change = indicator_result.value
+            if change is None:
+                return False, {**market_inputs, "bars": bar_data}, "insufficient_history"
+            origin, latest = bars[-days - 1].close, bars[-1].close
             direction = params["direction"]
             threshold = _decimal(params["threshold_pct"])
             result = change >= threshold if direction == "above" else change <= -threshold
             market_inputs.update(
                 days=days, start_close=str(origin), end_close=str(latest),
                 pct_change=str(change), direction=direction, threshold_pct=str(threshold),
+                indicator_bars_used=indicator_result.bars_used,
                 bars=bar_data,
             )
         elif rule.rule_type == "trailing_drawdown_pct":
             days = int(params["days"])
-            window = closes[-days:]
-            peak = max(window)
-            drawdown = (peak - window[-1]) * Decimal("100") / peak
+            indicator_result = calculate_drawdown(bars, days)
+            drawdown = indicator_result.value
+            if drawdown is None:
+                return False, {**market_inputs, "bars": bar_data}, "insufficient_history"
+            window = bars[-days:]
+            peak = max(bar.close for bar in window)
             threshold = _decimal(params["threshold_pct"])
             result = drawdown >= threshold
             market_inputs.update(
-                days=days, peak_close=str(peak), end_close=str(window[-1]),
-                drawdown_pct=str(drawdown), threshold_pct=str(threshold), bars=bar_data,
+                days=days, peak_close=str(peak), end_close=str(window[-1].close),
+                drawdown_pct=str(drawdown), threshold_pct=str(threshold),
+                indicator_bars_used=indicator_result.bars_used, bars=bar_data,
             )
         elif rule.rule_type == "rsi_threshold":
             period = int(params["period"])
             indicator_result = calculate_rsi(bars, period)
             indicator = indicator_result.value
             if indicator is None or indicator_result.is_synthetic:
-                return False, {**market_inputs, "bars": bar_data}, "insufficient_history"
+                return False, {
+                    **market_inputs, "indicator_bars_used": indicator_result.bars_used,
+                    "bars": bar_data,
+                }, "insufficient_history"
             direction = params["direction"]
             threshold = _decimal(params["threshold"])
             result = indicator >= threshold if direction == "above" else indicator <= threshold
             market_inputs.update(
                 period=period, rsi=str(indicator), threshold=str(threshold),
-                direction=direction, bars=bar_data,
+                direction=direction, indicator_bars_used=indicator_result.bars_used,
+                bars=bar_data,
             )
         else:
             fast, slow = int(params["fast_period"]), int(params["slow_period"])
-            current_fast = calculate_sma(bars, fast).value
-            previous_fast = calculate_sma(bars[:-1], fast).value
-            current_slow = calculate_sma(bars, slow).value
-            previous_slow = calculate_sma(bars[:-1], slow).value
+            current_fast_result = calculate_sma(bars, fast)
+            previous_fast_result = calculate_sma(bars[:-1], fast)
+            current_slow_result = calculate_sma(bars, slow)
+            previous_slow_result = calculate_sma(bars[:-1], slow)
+            current_fast = current_fast_result.value
+            previous_fast = previous_fast_result.value
+            current_slow = current_slow_result.value
+            previous_slow = previous_slow_result.value
             if None in (current_fast, previous_fast, current_slow, previous_slow):
-                return False, {**market_inputs, "bars": bar_data}, "insufficient_history"
+                return False, {
+                    **market_inputs,
+                    "indicator_bars_used": max(
+                        current_fast_result.bars_used,
+                        previous_fast_result.bars_used,
+                        current_slow_result.bars_used,
+                        previous_slow_result.bars_used,
+                    ),
+                    "bars": bar_data,
+                }, "insufficient_history"
             direction = params["direction"]
             result = (
                 previous_fast <= previous_slow and current_fast > current_slow
@@ -248,7 +296,14 @@ def _rule_match(
             market_inputs.update(
                 fast_period=fast, slow_period=slow, direction=direction,
                 previous_fast_ma=str(previous_fast), previous_slow_ma=str(previous_slow),
-                current_fast_ma=str(current_fast), current_slow_ma=str(current_slow), bars=bar_data,
+                current_fast_ma=str(current_fast), current_slow_ma=str(current_slow),
+                indicator_bars_used=max(
+                    current_fast_result.bars_used,
+                    previous_fast_result.bars_used,
+                    current_slow_result.bars_used,
+                    previous_slow_result.bars_used,
+                ),
+                bars=bar_data,
             )
     elif rule.rule_type in {"thesis_target_hit", "thesis_stop_hit"}:
         if thesis is None:
@@ -411,22 +466,13 @@ def evaluate_rules(
                         quotes_by_instrument[linked_id] = linked_quote
                     linked_position = ledger.positions[linked_symbol]
                     linked_instrument = db.get(Instrument, linked_id)
-                    linked_age = (
-                        max(
-                            (evaluated_at - _utc(linked_quote.retrieved_at)).total_seconds(),
-                            (evaluated_at - _utc(linked_quote.timestamp)).total_seconds(),
-                        )
-                        if linked_quote
-                        else None
+                    usable, quote_reason, freshness_evidence = classify_quote(
+                        linked_quote,
+                        linked_instrument,
+                        portfolio.base_currency,
+                        evaluated_at,
                     )
-                    reliable = bool(
-                        linked_quote
-                        and not linked_quote.is_synthetic
-                        and linked_age is not None
-                        and 0 <= linked_age <= settings.market_data_quote_freshness_seconds
-                        and linked_instrument is not None
-                        and linked_instrument.currency == portfolio.base_currency
-                    )
+                    reliable = usable and linked_instrument is not None
                     if reliable and linked_quote is not None:
                         price_inputs[linked_symbol] = (
                             str(linked_quote.close), str(linked_position.quantity)
@@ -439,20 +485,16 @@ def evaluate_rules(
                         "currency": linked_instrument.currency if linked_instrument else None,
                         "quantity": str(linked_position.quantity),
                         "price": str(linked_quote.close) if linked_quote else None,
-                        "quote_age_seconds": linked_age,
+                        **freshness_evidence,
+                        "unusable_reason": quote_reason,
                         "is_synthetic": linked_quote.is_synthetic if linked_quote else None,
                         "included": reliable,
                     })
                 params["_portfolio_prices"] = price_inputs
                 params["_portfolio_price_inputs"] = price_input_evidence
                 params["_portfolio_prices_complete"] = prices_complete
-            bar_limit = max(
-                int(params.get("days", 0)) + 2,
-                int(params.get("period", 0)) + 2,
-                int(params.get("slow_period", 0)) + 2,
-                2,
-            )
-            bars = _bars(db, instrument.id, min(bar_limit, 1000))
+            bar_limit = settings.indicator_lookback_bars if rule.rule_type in DAILY_BAR_RULES else 2
+            bars = _bars(db, instrument.id, bar_limit)
             matched, evidence, suppressed = _rule_match(
                 rule, instrument, quote, bars, ledger, symbol, thesis, evaluated_at, params
             )
@@ -465,6 +507,16 @@ def evaluate_rules(
                 continue
             if not matched:
                 continue
+            if rule.rule_type == "holding_period_crosses_365d":
+                prior_event = db.scalar(
+                    select(AlertEvent.id).where(
+                        AlertEvent.rule_id == rule.id,
+                        AlertEvent.instrument_id == instrument.id,
+                    ).limit(1)
+                )
+                if prior_event is not None:
+                    result["deduplicated"].append(str(rule.id))
+                    continue
             params_hash = hashlib.sha256(
                 json.dumps(rule.params, sort_keys=True, default=str).encode()
             ).hexdigest()[:16]
@@ -472,6 +524,7 @@ def evaluate_rules(
             recent = db.scalar(
                 select(AlertEvent).where(
                     AlertEvent.rule_id == rule.id,
+                    AlertEvent.instrument_id == instrument.id,
                     AlertEvent.fired_at >= evaluated_at - timedelta(seconds=rule.cooldown_seconds),
                 ).order_by(AlertEvent.fired_at.desc()).limit(1)
             ) if rule.cooldown_seconds > 0 else None

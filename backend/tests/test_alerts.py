@@ -13,9 +13,11 @@ from app.db import Base, get_db
 from app.main import app
 from app.models import (
     Instrument,
+    MarketBar,
     MarketQuote,
     PositionThesis,
     Portfolio,
+    PortfolioTransaction,
     User,
 )
 from app.models.alerts import AlertEvent, AlertRule
@@ -98,6 +100,29 @@ def add_quote(test_engine, instrument_id: str, *, age: timedelta = timedelta(0),
                 close=Decimal("100"), volume=Decimal("1000"), source="test",
                 retrieved_at=now, is_synthetic=synthetic,
             )
+        )
+        db.commit()
+
+
+def add_daily_bars(test_engine, instrument_id: str, closes: list[Decimal]) -> None:
+    retrieved_at = datetime.now(timezone.utc)
+    latest_timestamp = retrieved_at - timedelta(days=1)
+    with Session(test_engine) as db:
+        db.add_all(
+            MarketBar(
+                instrument_id=UUID(instrument_id),
+                interval="1d",
+                timestamp=latest_timestamp - timedelta(days=len(closes) - index - 1),
+                open=close,
+                high=close + Decimal("50"),
+                low=close - Decimal("1"),
+                close=close,
+                volume=Decimal("1000"),
+                source="test",
+                retrieved_at=retrieved_at,
+                is_synthetic=False,
+            )
+            for index, close in enumerate(closes)
         )
         db.commit()
 
@@ -263,3 +288,198 @@ def test_rule_validation_and_email_verification(client, test_engine):
     response = client.get("/api/v1/alerts/rules")
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "email_verification_required"
+
+
+def test_quote_freshness_uses_retrieved_at_and_alert_age_limit(client, test_engine):
+    register(client, test_engine, "freshness@example.com")
+    portfolio, instrument = portfolio_and_instrument(client)
+    add_quote(test_engine, instrument["id"], age=timedelta(minutes=10))
+    with Session(test_engine) as db:
+        quote = db.scalar(select(MarketQuote).where(
+            MarketQuote.instrument_id == UUID(instrument["id"])
+        ))
+        quote.timestamp = datetime.now(timezone.utc) - timedelta(hours=2)
+        db.commit()
+    create_rule(client, portfolio, instrument)
+
+    fresh_response = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
+    assert fresh_response.status_code == 200, fresh_response.text
+    fired = fresh_response.json()["fired"]
+    assert len(fired) == 1
+    evidence = fired[0]["evidence"]
+    assert evidence["quote_age_seconds"] < 900
+    assert evidence["quote_timestamp_age_seconds"] >= 2 * 60 * 60
+
+    with Session(test_engine) as db:
+        quote = db.scalar(select(MarketQuote).where(
+            MarketQuote.instrument_id == UUID(instrument["id"])
+        ))
+        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        quote.timestamp = old_time
+        quote.retrieved_at = old_time
+        db.commit()
+    stale_response = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
+    assert stale_response.status_code == 200, stale_response.text
+    assert stale_response.json()["fired"] == []
+    assert stale_response.json()["suppressed"][0]["reason"] == "stale_price"
+
+
+def test_portfolio_rule_cooldown_is_scoped_per_instrument(client, test_engine):
+    register(client, test_engine, "portfolio-cooldown@example.com")
+    portfolio, first_instrument = portfolio_and_instrument(client)
+    now = datetime.now(timezone.utc)
+    more_instruments: list[tuple[str, UUID]] = []
+    with Session(test_engine) as db:
+        for symbol in ("BETA", "GAMMA"):
+            instrument = Instrument(
+                symbol=symbol,
+                display_name=f"{symbol} Test Corporation",
+                asset_class="equity",
+                venue="TEST",
+                currency="USD",
+                country="US",
+                timezone="UTC",
+                created_at=now,
+            )
+            db.add(instrument)
+            db.commit()
+            db.refresh(instrument)
+            more_instruments.append((instrument.symbol, instrument.id))
+    for symbol, instrument_id in more_instruments:
+        transaction_response = client.post(
+            f"/api/v1/portfolios/{portfolio['id']}/transactions",
+            headers=csrf(client),
+            json={
+                "transaction_type": "buy",
+                "symbol": symbol,
+                "quantity": "1",
+                "unit_price": "100",
+                "occurred_at": "2026-01-03T00:00:00Z",
+            },
+        )
+        assert transaction_response.status_code == 201, transaction_response.text
+        assert client.post(
+            f"/api/v1/portfolios/{portfolio['id']}/positions/{symbol}/instrument",
+            headers=csrf(client),
+            json={"instrument_id": str(instrument_id)},
+        ).status_code == 200
+        add_quote(test_engine, str(instrument_id))
+    add_quote(test_engine, first_instrument["id"])
+    rule = create_rule(
+        client,
+        portfolio,
+        first_instrument,
+        scope="portfolio",
+        instrument_id=None,
+        cooldown_seconds=3600,
+    )
+
+    response = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
+    assert response.status_code == 200, response.text
+    fired = response.json()["fired"]
+    assert len(fired) == 3
+    assert {event["instrument_id"] for event in fired} == {
+        first_instrument["id"],
+        *(str(instrument_id) for _, instrument_id in more_instruments),
+    }
+    assert all(event["rule_id"] == rule["id"] for event in fired)
+
+
+def test_alert_rsi_matches_instrument_indicators_endpoint(client, test_engine):
+    register(client, test_engine, "rsi-match@example.com")
+    portfolio, instrument = portfolio_and_instrument(client)
+    closes = [Decimal("100") + Decimal(index) / Decimal("10") for index in range(250)]
+    add_daily_bars(test_engine, instrument["id"], closes)
+    add_quote(test_engine, instrument["id"])
+    create_rule(
+        client,
+        portfolio,
+        instrument,
+        rule_type="rsi_threshold",
+        params={"period": 14, "threshold": 0, "direction": "above"},
+    )
+
+    alert_response = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
+    assert alert_response.status_code == 200, alert_response.text
+    assert len(alert_response.json()["fired"]) == 1
+    alert_evidence = alert_response.json()["fired"][0]["evidence"]
+    indicators_response = client.get(
+        f"/api/v1/instruments/{instrument['id']}/indicators?interval=1d"
+    )
+    assert indicators_response.status_code == 200, indicators_response.text
+    indicator_rsi = indicators_response.json()["indicators"]["rsi_14"]["value"]
+    assert alert_evidence["rsi"] == indicator_rsi
+    assert alert_evidence["bars_used"] == 250
+
+
+def test_ltcg_crossing_five_days_ago_fires_once(client, test_engine):
+    register(client, test_engine, "ltcg-crossing@example.com")
+    portfolio, instrument = portfolio_and_instrument(client)
+    now = datetime.now(timezone.utc)
+    create_rule(
+        client,
+        portfolio,
+        instrument,
+        rule_type="holding_period_crosses_365d",
+        params={},
+    )
+    with Session(test_engine) as db:
+        transactions = list(
+            db.scalars(
+                select(PortfolioTransaction).where(
+                    PortfolioTransaction.portfolio_id == UUID(portfolio["id"]),
+                    PortfolioTransaction.transaction_type == "buy",
+                )
+            )
+        )
+        transaction = transactions[0]
+        transaction.occurred_at = now - timedelta(days=370)
+        deposit = db.scalar(
+            select(PortfolioTransaction).where(
+                PortfolioTransaction.portfolio_id == UUID(portfolio["id"]),
+                PortfolioTransaction.transaction_type == "deposit",
+            )
+        )
+        deposit.occurred_at = now - timedelta(days=371)
+        db.commit()
+        user = db.scalar(select(User).where(User.email == "ltcg-crossing@example.com"))
+        first = evaluate_rules(db, user.id, now=now)
+        assert len(first["fired"]) == 1
+        assert first["fired"][0].evidence["days_since_crossing"] == 5
+        assert first["fired"][0].evidence["crossed_at"]
+
+        second = evaluate_rules(db, user.id, now=now + timedelta(days=1))
+        assert second["fired"] == []
+        assert len(second["deduplicated"]) == 1
+        assert db.scalar(select(func.count()).select_from(AlertEvent)) == 1
+
+
+def test_drawdown_sign_matches_indicators_and_alert_evidence(client, test_engine):
+    register(client, test_engine, "drawdown-match@example.com")
+    portfolio, instrument = portfolio_and_instrument(client)
+    closes = [Decimal("100")] * 249 + [Decimal("90")]
+    add_daily_bars(test_engine, instrument["id"], closes)
+    add_quote(test_engine, instrument["id"])
+    create_rule(
+        client,
+        portfolio,
+        instrument,
+        rule_type="trailing_drawdown_pct",
+        params={"days": 20, "threshold_pct": "5"},
+    )
+
+    alert_response = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
+    assert alert_response.status_code == 200, alert_response.text
+    assert len(alert_response.json()["fired"]) == 1
+    alert_drawdown = Decimal(
+        alert_response.json()["fired"][0]["evidence"]["drawdown_pct"]
+    )
+    indicators_response = client.get(
+        f"/api/v1/instruments/{instrument['id']}/indicators?interval=1d"
+    )
+    assert indicators_response.status_code == 200, indicators_response.text
+    indicator_drawdown = Decimal(
+        indicators_response.json()["indicators"]["drawdown_from_20d_peak"]["value"]
+    )
+    assert alert_drawdown > 0
+    assert alert_drawdown == indicator_drawdown == Decimal("10")

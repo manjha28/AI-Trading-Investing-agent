@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     market_data_quote_freshness_seconds: int = 60
     market_data_daily_freshness_seconds: int = 172800
     market_data_intraday_freshness_seconds: int = 3600
+    price_usable_max_age_seconds: int = Field(default=900, gt=0)
+    daily_close_price_max_age_seconds: int = Field(default=172800, gt=0)
+    indicator_lookback_bars: int = Field(default=500, gt=0)
     market_data_refresh_seconds: int = Field(default=300, gt=0)
     market_data_scheduler_enabled: bool = False
     broker_encryption_key: SecretStr | None = None

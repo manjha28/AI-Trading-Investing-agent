@@ -26,7 +26,6 @@ from app.services.source_registry import FetchedSource, fetch_instrument_sources
 
 logger = logging.getLogger(__name__)
 DISCLAIMER = "Decision support, not investment advice."
-MAX_DAILY_BARS = 500
 
 
 def _number(value: Decimal | None) -> str | None:
@@ -192,7 +191,7 @@ def _financial_trend_section(
             prior_value = getattr(previous, metric) if previous else None
             prior_path = f"{_date_path(previous)}.{metric}" if previous else None
             growth = None
-            if current_value is not None and prior_value not in (None, Decimal("0")):
+            if current_value is not None and prior_value is not None and prior_value > 0:
                 growth = (current_value - prior_value) / abs(prior_value) * Decimal("100")
             field_path = f"{current_path}.{metric}"
             values[metric] = {
@@ -205,6 +204,15 @@ def _financial_trend_section(
                     "kind": "unavailable",
                     "field_path": field_path,
                     "reason": "No stored comparable period exists for year-on-year growth.",
+                })
+            elif prior_value <= 0:
+                quality.append({
+                    "kind": "not_meaningful",
+                    "field_path": field_path,
+                    "reason": (
+                        "Year-on-year growth from a non-positive prior-period base "
+                        "is not meaningful."
+                    ),
                 })
             elif current_value is None or prior_value is None:
                 quality.append({
@@ -270,7 +278,7 @@ def _technicals_section(
                     MarketBar.source == latest.source,
                 )
                 .order_by(MarketBar.timestamp.desc())
-                .limit(MAX_DAILY_BARS)
+                .limit(settings.indicator_lookback_bars)
             )
         )
         bars.reverse()
@@ -308,16 +316,17 @@ def _technicals_section(
         })
     else:
         now = datetime.now(timezone.utc)
-        retrieved_at = latest.retrieved_at
-        if retrieved_at.tzinfo is None:
-            retrieved_at = retrieved_at.replace(tzinfo=timezone.utc)
-        freshness_limit = settings.market_data_daily_freshness_seconds
-        if (now - retrieved_at).total_seconds() > freshness_limit:
+        freshness_limit = settings.daily_close_price_max_age_seconds
+        latest_bar_timestamp = latest.timestamp
+        if latest_bar_timestamp.tzinfo is None:
+            latest_bar_timestamp = latest_bar_timestamp.replace(tzinfo=timezone.utc)
+        close_age = (now - latest_bar_timestamp).total_seconds()
+        if close_age < 0 or close_age > freshness_limit:
             quality.append({
                 "kind": "stale",
                 "field_path": "market_bars[interval=1d]",
                 "reason": (
-                    "The latest stored daily bars exceed the configured freshness "
+                    "The latest daily close exceeds the configured freshness "
                     f"limit of {freshness_limit} seconds."
                 ),
             })

@@ -157,17 +157,30 @@ def realized_volatility_20d(bars: Iterable[OHLCVBar]) -> IndicatorValue:
 
 
 def drawdown_from_trailing_peak(bars: Iterable[OHLCVBar], period: int = 20) -> IndicatorValue:
+    """Return the positive percent decline from the trailing peak close."""
     values = list(bars)
     window = values[-period:]
     if period <= 0:
         raise ValueError("period must be positive")
     if len(window) < period:
         return _result(None, window, period)
-    peak = max(bar.high for bar in window)
+    peak = max(bar.close for bar in window)
     if peak <= 0:
         return _result(None, window, period)
-    value = (window[-1].close - peak) * HUNDRED / peak
+    value = (peak - window[-1].close) * HUNDRED / peak
     return _result(value, window, period)
+
+
+def pct_change(bars: Iterable[OHLCVBar], period: int) -> IndicatorValue:
+    values = list(bars)
+    if period <= 0:
+        raise ValueError("period must be positive")
+    required = period + 1
+    window = values[-required:]
+    if len(window) < required or window[0].close <= 0:
+        return _result(None, window, required)
+    value = (window[-1].close - window[0].close) * HUNDRED / window[0].close
+    return _result(value, window, required)
 
 
 def distance_to_52w_high(bars: Iterable[OHLCVBar]) -> IndicatorValue:

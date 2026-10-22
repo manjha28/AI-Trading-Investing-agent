@@ -9,9 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.accounting import PortfolioLedger
-from app.config import settings
-from app.corporate_action_service import get_portfolio_corporate_actions
 from app.models import Instrument, MarketQuote, Portfolio, PortfolioTransaction
+from app.services.price_freshness import classify_quote
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
@@ -45,26 +44,24 @@ def position_currency_exposure(
             bucket["stale_positions"] += 1
             continue
         quote = quote_by_instrument.get(instrument.id)
-        if quote is None:
-            bucket["stale_positions"] += 1
-            continue
-        age = max(
-            (now - _utc(quote.retrieved_at)).total_seconds(),
-            (now - _utc(quote.timestamp)).total_seconds(),
+        usable, reason, _evidence = classify_quote(
+            quote, instrument, currency, now
         )
-        if quote.is_synthetic:
+        if reason == "synthetic_price":
             bucket["synthetic_positions"] += 1
-        elif not 0 <= age <= settings.market_data_quote_freshness_seconds:
+        elif not usable:
             bucket["stale_positions"] += 1
         else:
+            assert quote is not None
             bucket["market_value"] += quote.close * position.quantity
             bucket["valued_positions"] += 1
     return [
         {
             **bucket,
-            "market_value": (
-                str(bucket["market_value"]) if bucket["valued_positions"] else None
-            ),
+            "complete": bucket["valued_positions"] == bucket["position_count"],
+            "market_value": str(bucket["market_value"])
+            if bucket["valued_positions"] == bucket["position_count"]
+            else None,
         }
         for bucket in grouped.values()
     ]
@@ -120,20 +117,11 @@ def build_risk_metrics(
         value = None
         if instrument is None:
             reason = "instrument_not_linked"
-        elif instrument.currency != portfolio.base_currency:
-            reason = "foreign_currency_no_fx"
-        elif quote is None:
-            reason = "quote_unavailable"
         else:
-            age = max(
-                (now - _utc(quote.retrieved_at)).total_seconds(),
-                (now - _utc(quote.timestamp)).total_seconds(),
+            usable, reason, _evidence = classify_quote(
+                quote, instrument, portfolio.base_currency, now
             )
-            if quote.is_synthetic:
-                reason = "synthetic_price"
-            elif not 0 <= age <= settings.market_data_quote_freshness_seconds:
-                reason = "stale_price"
-            else:
+            if usable and quote is not None:
                 value = quote.close * position.quantity
                 base_values[symbol] = value
         if reason is not None:
@@ -153,7 +141,7 @@ def build_risk_metrics(
             })
             if -LTCG_WINDOW_DAYS <= days_to_boundary <= LTCG_WINDOW_DAYS:
                 boundary_lots.append(lot_details[-1])
-        earliest = min((lot["days_held"] for lot in lot_details), default=None)
+        held_days = [lot["days_held"] for lot in lot_details]
         metrics_by_symbol[symbol] = {
             "symbol": symbol,
             "instrument_id": str(instrument.id) if instrument else None,
@@ -162,7 +150,8 @@ def build_risk_metrics(
             "market_value": str(value) if value is not None else None,
             "weight_pct": None,
             "valuation_unavailable_reason": reason,
-            "days_held": earliest,
+            "days_held_min": min(held_days, default=None),
+            "days_held_max": max(held_days, default=None),
             "lots": lot_details,
             "ltcg_boundary_flag": bool(boundary_lots),
             "ltcg_boundary_lots": boundary_lots,
