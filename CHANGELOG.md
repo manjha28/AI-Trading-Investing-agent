@@ -1,3 +1,4 @@
+- Research: backfill uncovered real daily history, exclude synthetic bars from real analysis, and show partial-source and unavailable-data states clearly.
 - M6.3: add deterministic, evidence-backed alert rules and event inbox with manual evaluation.
 - M6.2: extract shared stored-OHLCV indicators and add ledger-derived portfolio risk metrics.
 - Frontend structure: add frontend/src/pages/Activity.tsx, frontend/src/pages/Auth.tsx, frontend/src/pages/Journal.tsx, frontend/src/pages/MarketData.tsx, frontend/src/pages/Overview.tsx, frontend/src/pages/PortfolioSetup.tsx, frontend/src/pages/BrokersPage.tsx, frontend/src/components/useWorkspace.ts; move frontend/src/CandleChart.tsx and frontend/src/ThesisEditor.tsx to frontend/src/components/.

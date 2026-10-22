@@ -831,6 +831,25 @@ def sync_instrument_fundamentals(
             fundamentals_count=0,
             message="Fundamentals are unavailable from providers. No synthetic fallback was used.",
         )
+    snapshot_fields = ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
+    has_values = any(getattr(snapshot, field) is not None for field in snapshot_fields) or any(
+        getattr(row, field) is not None
+        for row in rows
+        for field in (
+            "revenue", "net_income", "eps", "operating_margin", "total_assets",
+            "total_liabilities", "total_equity", "operating_cash_flow",
+            "free_cash_flow", "total_debt", "shares_outstanding",
+        )
+    )
+    if not has_values:
+        return FundamentalsSyncResponse(
+            instrument_id=instrument.id,
+            status="unavailable",
+            source=snapshot.source,
+            fetched_at=_utc(snapshot.fetched_at),
+            fundamentals_count=len(rows),
+            message="The provider returned no non-null fundamentals. No values were estimated.",
+        )
     return FundamentalsSyncResponse(
         instrument_id=instrument.id,
         status="available",
@@ -875,16 +894,30 @@ def get_instrument_fundamentals(
         stale=fundamentals_service.is_stale(snapshot.fetched_at),
     )
     rows = _fundamental_period_responses(fundamentals)
+    snapshot_has_values = snapshot is not None and any(
+        getattr(snapshot, field) is not None
+        for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
+    )
+    period_has_values = any(
+        getattr(row, field) is not None
+        for row in fundamentals
+        for field in (
+            "revenue", "net_income", "eps", "operating_margin", "total_assets",
+            "total_liabilities", "total_equity", "operating_cash_flow",
+            "free_cash_flow", "total_debt", "shares_outstanding",
+        )
+    )
+    unavailable = not snapshot_has_values and not period_has_values
     return FundamentalsResponse(
         instrument_id=instrument.id,
         symbol=instrument.symbol,
         currency=instrument.currency,
         snapshot=snapshot_response,
         fundamentals=rows,
-        unavailable=snapshot_response is None and not rows,
+        unavailable=unavailable,
         message=(
             "Fundamentals are unavailable from providers."
-            if snapshot_response is None and not rows
+            if unavailable
             else "Provider-reported fundamentals are shown with source and freshness."
         ),
     )
@@ -1275,18 +1308,34 @@ def sync_history(
 ):
     instrument = _get_instrument(db, instrument_id)
     start_utc, end_utc = _validate_range(interval, start, end)
-    cached_range = db.scalar(
-        select(MarketBar.id)
-        .where(
-            MarketBar.instrument_id == instrument.id,
-            MarketBar.interval == interval,
-            MarketBar.is_synthetic.is_(True if instrument.is_synthetic else False),
-            MarketBar.timestamp >= start_utc,
-            MarketBar.timestamp < end_utc,
+    cached_bars = list(
+        db.scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.instrument_id == instrument.id,
+                MarketBar.interval == interval,
+                MarketBar.is_synthetic.is_(instrument.is_synthetic),
+                MarketBar.timestamp >= start_utc,
+                MarketBar.timestamp < end_utc,
+            )
+            .order_by(MarketBar.timestamp)
         )
-        .limit(1)
     )
-    if cached_range is not None:
+    missing_ranges: list[tuple[datetime, datetime]] = []
+    if interval == "1d" and cached_bars:
+        cached_timestamps = sorted({_utc(bar.timestamp) for bar in cached_bars})
+        if start_utc < cached_timestamps[0]:
+            missing_ranges.append((start_utc, cached_timestamps[0]))
+        for previous, current in zip(cached_timestamps, cached_timestamps[1:]):
+            if current - previous > timedelta(days=3):
+                missing_ranges.append(
+                    (previous + timedelta(days=1), current)
+                )
+        if cached_timestamps[-1] + timedelta(days=1) < end_utc:
+            missing_ranges.append(
+                (cached_timestamps[-1] + timedelta(days=1), end_utc)
+            )
+    elif cached_bars:
         db.commit()
         return get_history(
             instrument_id=instrument_id,
@@ -1298,6 +1347,22 @@ def sync_history(
             _user=_user,
             db=db,
         )
+    else:
+        missing_ranges.append((start_utc, end_utc))
+
+    if not missing_ranges:
+        db.commit()
+        return get_history(
+            instrument_id=instrument_id,
+            interval=interval,
+            start=start_utc,
+            end=end_utc,
+            offset=0,
+            limit=limit,
+            _user=_user,
+            db=db,
+        )
+
     selected_provider: MarketDataProvider | None = None
     selected_candidate: InstrumentCandidate | None = None
     validated_bars: list[HistoricalBar] = []
@@ -1307,17 +1372,34 @@ def sync_history(
             continue
         try:
             candidate, _mapping = _resolve_provider_candidate(db, instrument, active_provider)
-            bars = active_provider.get_historical_bars(
-                candidate, interval, start_utc, end_utc, limit
-            )
-            candidate_bars = [HistoricalBar.model_validate(bar) for bar in bars]
-            if len(candidate_bars) > limit:
-                raise MarketDataProviderError("provider_exceeded_bar_limit")
-            if any(not start_utc <= bar.timestamp < end_utc for bar in candidate_bars):
-                raise MarketDataProviderError("provider_returned_out_of_range_bar")
+            provider_bars: list[HistoricalBar] = []
+            for range_start, range_end in missing_ranges:
+                remaining = limit - len(provider_bars)
+                if remaining <= 0:
+                    break
+                try:
+                    bars = active_provider.get_historical_bars(
+                        candidate, interval, range_start, range_end, remaining
+                    )
+                    candidate_bars = [HistoricalBar.model_validate(bar) for bar in bars]
+                    if len(candidate_bars) > remaining:
+                        raise MarketDataProviderError("provider_exceeded_bar_limit")
+                    if any(
+                        not range_start <= bar.timestamp < range_end
+                        for bar in candidate_bars
+                    ):
+                        raise MarketDataProviderError("provider_returned_out_of_range_bar")
+                    provider_bars.extend(candidate_bars)
+                except MarketDataProviderError:
+                    raise
+            if not provider_bars:
+                raise MarketDataProviderError("provider_no_history_for_range")
             selected_provider = active_provider
             selected_candidate = candidate
-            validated_bars = candidate_bars
+            validated_bars = sorted(
+                {bar.timestamp: bar for bar in provider_bars}.values(),
+                key=lambda bar: bar.timestamp,
+            )
             break
         except MarketDataProviderError as error:
             if error.code.startswith("yfinance_") and "lookback_exceeded" in error.code:
@@ -1346,10 +1428,23 @@ def sync_history(
     if selected_provider is None or selected_candidate is None:
         db.commit()
         if yfinance_lookback_error:
-            max_days = {"1m": 7, "15m": 60, "1h": 730}[interval]
+            max_days = {"1m": 7, "15m": 60, "1h": 730}.get(interval, 0)
             raise HTTPException(
                 status_code=422,
-                detail=f"Yahoo Finance {interval} history is limited to the most recent {max_days} days.",
+                detail=f"Yahoo Finance {interval} history is limited to the most recent {max_days} days."
+                if max_days
+                else "Yahoo Finance history is unavailable for the requested range.",
+            )
+        if cached_bars:
+            return get_history(
+                instrument_id=instrument_id,
+                interval=interval,
+                start=start_utc,
+                end=end_utc,
+                offset=0,
+                limit=limit,
+                _user=_user,
+                db=db,
             )
         raise HTTPException(status_code=503, detail="Historical market data is temporarily unavailable")
 

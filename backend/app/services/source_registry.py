@@ -4,7 +4,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import quote_plus, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 from uuid import UUID
 
@@ -18,7 +18,6 @@ from app.models import (
     InstrumentSourceLink,
     ResearchSource,
 )
-from app.provider_adapters import canonical_provider_symbol
 
 MAX_SOURCES_PER_RUN = 10
 REQUESTS_PER_HOST_PER_SECOND = 1
@@ -63,66 +62,17 @@ def _reserve_host_request(host: str) -> None:
         time.sleep(delay)
 
 
-def _provider_symbol(instrument: Instrument) -> str:
-    mapped = next(
-        (
-            item.provider_symbol
-            for item in instrument.provider_identifiers
-            if item.provider == "yfinance"
-        ),
-        None,
-    )
-    return mapped or canonical_provider_symbol(
-        instrument.symbol, instrument.venue, instrument.country
-    )
-
-
 def build_source_candidates(
-    instrument: Instrument, links: list[InstrumentSourceLink]
+    _instrument: Instrument, links: list[InstrumentSourceLink]
 ) -> list[SourceCandidate]:
-    symbol = _provider_symbol(instrument)
-    news_query = quote_plus(f'"{symbol}"')
-    candidates = [
-        SourceCandidate(
-            url=(
-                "https://query1.finance.yahoo.com/v1/finance/search?"
-                f"q={quote_plus(symbol)}&newsCount=5"
-            ),
-            label="Yahoo Finance news",
-            publisher="Yahoo Finance",
-            kind="news",
-        ),
-        SourceCandidate(
-            url=(
-                "https://news.google.com/rss/search?"
-                f"q={quote_plus(instrument.display_name)}+{news_query}&hl=en-US&gl=US&ceid=US:en"
-            ),
-            label="Google News",
-            publisher="Google News",
-            kind="news",
-        ),
-    ]
-
     investor_links = [
         link for link in links
         if "investor" in link.label.casefold() or link.label.casefold() in {"ir", "ir site"}
     ]
-    candidates.extend(
+    candidates = [
         SourceCandidate(link.url, link.label, "User-provided source", "investor_relations")
         for link in investor_links
-    )
-
-    venue = instrument.venue.upper()
-    if instrument.country.upper() == "IN" or venue in {"NSE", "XNSE", "BSE", "XBOM", "BOM"}:
-        if venue in {"BSE", "XBOM", "BOM", "BSE_EQ"}:
-            exchange_url = "https://www.bseindia.com/corporates/ann.html"
-            exchange_name = "BSE announcements"
-        else:
-            exchange_url = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
-            exchange_name = "NSE announcements"
-        candidates.append(
-            SourceCandidate(exchange_url, exchange_name, exchange_name, "exchange")
-        )
+    ]
 
     investor_ids = {link.id for link in investor_links}
     candidates.extend(

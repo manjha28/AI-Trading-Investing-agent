@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
 
-type Instrument = { id: string; symbol: string; display_name: string; venue: string };
+type Instrument = { id: string; symbol: string; display_name: string; venue: string; is_synthetic: boolean };
 type WatchlistEntry = { instrument_id: string; symbol: string };
 type SourceLink = { id: string; instrument_id: string; url: string; label: string; enabled: boolean; created_at: string };
 type Source = {
@@ -88,6 +88,7 @@ type Brief = {
     };
     technicals: {
       status: string;
+      message: string | null;
       interval: string;
       source: string | null;
       latest_bar: string | null;
@@ -103,7 +104,7 @@ type Brief = {
         values: Record<string, { value: string | null; year_on_year_growth_pct: string | null; field_paths: string[] }>;
       }[];
     };
-    news: { status: string; items: NewsItem[]; sources: NewsSource[] };
+    news: { status: string; message: string | null; items: NewsItem[]; sources: NewsSource[] };
     data_quality: { status: string; items: QualityItem[] };
     disclaimer: string;
   };
@@ -117,6 +118,23 @@ type BatchRunResult = {
 
 const today = () => new Date().toISOString().slice(0, 10);
 const MAX_BATCH_INSTRUMENTS = 5;
+
+function sourceFailureSummary(failure: Brief['failures'][number]): string {
+  const reason = failure.reason.toLowerCase();
+  if (reason.includes('robots.txt')) {
+    return 'The site does not permit this URL to be fetched. Choose an authorized RSS or investor-relations feed.';
+  }
+  if (reason.includes('429') || reason.includes('rate limit')) {
+    return 'The source is rate-limiting requests. Retry later or use a permitted feed endpoint.';
+  }
+  if (reason.includes('timed out') || reason.includes('timeout')) {
+    return 'The source did not respond in time. Verify the feed URL or try again later.';
+  }
+  if (reason.includes('connection')) {
+    return 'The source could not be reached. Verify the URL and provider availability.';
+  }
+  return 'This source could not be fetched. Verify that the URL is a public, permitted feed.';
+}
 
 export function Research({ watchlist, addInstrumentToWatchlist, removeInstrumentFromWatchlist }: {
   watchlist: WatchlistEntry[];
@@ -222,8 +240,40 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
     setNotice('');
     setBatchResults([]);
     let successCount = 0;
+    const syncWarnings: string[] = [];
     for (const instrument of instrumentsToRun.slice(0, MAX_BATCH_INSTRUMENTS)) {
       try {
+        if (!instrument.is_synthetic) {
+          const now = new Date();
+          const start = new Date(now);
+          start.setUTCFullYear(start.getUTCFullYear() - 2);
+          const syncQuery = new URLSearchParams({
+            start: start.toISOString(),
+            end: now.toISOString(),
+            interval: '1d',
+            limit: '500',
+          });
+          const [historyResult, fundamentalsResult] = await Promise.allSettled([
+            apiRequest<{ bars: unknown[] }>(
+              `/market-data/instruments/${instrument.id}/history/sync?${syncQuery}`,
+              { method: 'POST' },
+            ),
+            apiRequest<{ status: 'available' | 'unavailable'; message: string }>(
+              `/market-data/instruments/${instrument.id}/fundamentals/sync`,
+              { method: 'POST' },
+            ),
+          ]);
+          if (historyResult.status === 'rejected') {
+            syncWarnings.push(`${instrument.symbol}: historical data sync failed.`);
+          } else if (historyResult.value.bars.length === 0) {
+            syncWarnings.push(`${instrument.symbol}: no real daily bars were returned.`);
+          }
+          if (fundamentalsResult.status === 'rejected') {
+            syncWarnings.push(`${instrument.symbol}: fundamentals sync failed.`);
+          } else if (fundamentalsResult.value.status === 'unavailable') {
+            syncWarnings.push(`${instrument.symbol}: ${fundamentalsResult.value.message}`);
+          }
+        }
         const result = await apiRequest<Brief>(`/research/instruments/${instrument.id}/run`, {
           method: 'POST',
           body: '{}',
@@ -244,9 +294,13 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
       }
     }
     const failureCount = instrumentsToRun.length - successCount;
-    setNotice(failureCount
+    const runNotice = failureCount
       ? `Research finished for ${successCount} of ${instrumentsToRun.length} instruments. Failed instruments are listed below.`
-      : `Research finished for all ${successCount} selected instrument(s).`);
+      : `Research finished for all ${successCount} selected instrument(s).`;
+    const uniqueSyncWarnings = [...new Set(syncWarnings)];
+    setNotice(uniqueSyncWarnings.length
+      ? `${runNotice} Data sync notes: ${uniqueSyncWarnings.join(' ')}`
+      : runNotice);
     setBusy(false);
   }
 
@@ -506,18 +560,50 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
   );
 }
 
-function ResearchBriefView({ brief }: { brief: Brief }) {
+export function ResearchBriefView({ brief }: { brief: Brief }) {
   const { fundamentals, technicals, financials_trend: trend, news, data_quality: quality } = brief.sections;
+  const qualityGroups = new Map<string, QualityItem>();
+  quality.items.forEach((item) => qualityGroups.set(`${item.kind}|${item.reason}`, item));
+  const groupedQuality = Array.from(qualityGroups.values()).map((item) => ({
+    ...item,
+    count: quality.items.filter((candidate) =>
+      candidate.kind === item.kind && candidate.reason === item.reason
+    ).length,
+  }));
+  const provenance = new Map<string, string>();
+  Object.entries(fundamentals.snapshot.values ?? {}).forEach(([name, item]) => {
+    provenance.set(item.field_path, `Snapshot · ${name.replaceAll('_', ' ')}`);
+  });
+  fundamentals.periods.forEach((period) => Object.entries(period.values).forEach(([name, item]) => {
+    provenance.set(item.field_path, `${period.period_type} ${period.period_end} · ${name.replaceAll('_', ' ')}`);
+  }));
+  Object.entries(technicals.indicators).forEach(([name, item]) => {
+    provenance.set(item.field_path, `Daily indicator · ${name.replaceAll('_', ' ')}`);
+  });
+  trend.periods.forEach((period) => Object.entries(period.values).forEach(([name, item]) => {
+    item.field_paths.forEach((path) => provenance.set(path, `${period.period_type} trend · ${name.replaceAll('_', ' ')}`));
+  }));
+  quality.items.forEach((item) => provenance.set(item.field_path, item.reason));
   const displayValue = (value: string | null) => value === null
     ? 'Unavailable'
     : Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
   return <section className="data-section research-brief">
     <div className="section-heading"><div><p className="eyebrow">RESEARCH BRIEF · {brief.renderer.toUpperCase()}</p><h2>Evidence and data</h2></div><span className={`research-run-status research-status-${brief.status}`}>{brief.status}</span></div>
     <p className="research-subtitle">Sources succeeded: {brief.sources_succeeded}/{brief.sources_attempted} · generated {new Date(brief.created_at).toLocaleString()}</p>
+    <div className="research-section-status-grid">
+      {[
+        ['Fundamentals', fundamentals.status, fundamentals.status === 'available' ? `${fundamentals.periods.length} stored periods` : 'No non-null provider values'],
+        ['Technicals', technicals.status, technicals.message ?? `${technicals.bars_available} stored daily bars · ${technicals.source ?? 'source unavailable'}`],
+        ['News', news.status, news.message ?? `${news.items.length} cited headlines`],
+      ].map(([title, status, detail]) => <article key={title}>
+        <small>{title}</small><strong>{status}</strong><span>{detail}</span>
+      </article>)}
+    </div>
     {brief.failures.length > 0 && <section className="research-failures" aria-label="Source failures">
       <h3>Sources that failed</h3>
       {brief.failures.map((failure, index) => <article key={`${failure.source}-${index}`}>
-        <strong>{failure.source} · {failure.stage}</strong><span>{failure.reason}</span><small>{failure.url}</small>
+        <strong>{failure.source}</strong><span>{sourceFailureSummary(failure)}</span>
+        <details><summary>Fetch details</summary><small>{failure.stage} · {failure.reason}</small><a href={failure.url} target="_blank" rel="noreferrer">{failure.url}</a></details>
       </article>)}
     </section>}
 
@@ -526,14 +612,14 @@ function ResearchBriefView({ brief }: { brief: Brief }) {
       <p className="research-status-line">{fundamentals.status === 'unavailable' ? 'Unavailable from stored providers.' : 'Stored M5.3 fundamentals; values are not estimated.'}</p>
       {fundamentals.snapshot.status === 'available' && fundamentals.snapshot.values && <>
         <div className="research-snapshot-grid">{Object.entries(fundamentals.snapshot.values).map(([name, item]) => <article key={name}>
-          <small>{name.replaceAll('_', ' ')}</small><strong>{item.value === null ? 'Unavailable' : item.value}</strong><code>{item.field_path}</code>
+          <small>{name.replaceAll('_', ' ')}</small><strong>{item.value === null ? 'Unavailable' : item.value}</strong>
         </article>)}</div>
         <p className="research-subtitle">Source: {fundamentals.snapshot.source} · fetched {new Date(fundamentals.snapshot.fetched_at ?? '').toLocaleString()} {fundamentals.snapshot.stale && <span className="stale-marker">STALE</span>}</p>
       </>}
       {fundamentals.periods.length > 0 && <div className="research-period-list">
         {fundamentals.periods.map((period) => <article className="research-period-card" key={`${period.period_type}-${period.period_end}`}>
           <header><strong>{period.period_type} · {period.period_end}</strong><span>{period.currency} · {period.source}{period.stale && <span className="stale-marker">STALE</span>}</span></header>
-          <div className="research-value-grid">{Object.entries(period.values).map(([name, item]) => <span key={name}><small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(item.value)}</strong><code>{item.field_path}</code></span>)}</div>
+          <div className="research-value-grid">{Object.entries(period.values).map(([name, item]) => <span key={name}><small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(item.value)}</strong></span>)}</div>
           <small>Fetched {new Date(period.fetched_at).toLocaleString()}</small>
         </article>)}
       </div>}
@@ -541,11 +627,10 @@ function ResearchBriefView({ brief }: { brief: Brief }) {
 
     <section className="research-brief-section">
       <h3>Technicals · stored daily OHLCV</h3>
-      {technicals.status === 'unavailable' && <p className="research-status-line">Unavailable: no stored daily bars.</p>}
+      {technicals.message && <p className="research-status-line">{technicals.message}</p>}
       <div className="research-value-grid">{Object.entries(technicals.indicators).map(([name, item]) => <span key={name}>
         <small>{name.replaceAll('_', ' ')}</small>
         <strong>{item.value === null ? 'Insufficient history' : displayValue(item.value)}</strong>
-        <code>{item.field_path}</code>
         <small>{item.bars_used}/{item.bars_required} bars{item.is_synthetic ? ' · synthetic' : ''}</small>
       </span>)}</div>
       {technicals.source && <small>Source {technicals.source} · latest bar {technicals.latest_bar ? new Date(technicals.latest_bar).toLocaleString() : 'unavailable'}</small>}
@@ -559,14 +644,13 @@ function ResearchBriefView({ brief }: { brief: Brief }) {
         <div className="research-value-grid">{Object.entries(period.values).map(([name, item]) => <span key={name}>
           <small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(item.value)}</strong>
           <small>YoY {item.year_on_year_growth_pct === null ? 'Unavailable' : `${displayValue(item.year_on_year_growth_pct)}%`}</small>
-          <code>{item.field_paths.join(' · ')}</code>
         </span>)}</div>
       </article>)}
     </section>
 
     <section className="research-brief-section">
       <h3>News and source citations</h3>
-      {news.status === 'unavailable' && <p className="research-status-line">Unavailable: no parseable news headlines were returned.</p>}
+      {news.status === 'unavailable' && <p className="research-status-line">{news.message ?? 'No permitted configured news feeds returned parseable headlines. Add an issuer investor-relations or exchange feed URL.'}</p>}
       {news.items.map((item, index) => {
         const citation = news.sources.find((source) => source.source_id === item.source_id);
         return <article className="backfill-card research-news-item" key={`${item.source_id}-${index}`}>
@@ -584,10 +668,14 @@ function ResearchBriefView({ brief }: { brief: Brief }) {
 
     <section className="research-brief-section research-quality-section">
       <h3>Data quality</h3>
-      {quality.items.length === 0 ? <p>No stale, unavailable, failed-fetch, or synthetic items recorded.</p> : quality.items.map((item, index) => <article key={`${item.field_path}-${index}`}>
-        <span className={`research-quality-kind research-quality-${item.kind}`}>{item.kind.replaceAll('_', ' ')}</span><strong>{item.field_path}</strong><p>{item.reason}</p>{item.url && <small>{item.url}</small>}
+      {groupedQuality.length === 0 ? <p>No stale, unavailable, failed-fetch, or synthetic items recorded.</p> : groupedQuality.map((item) => <article key={`${item.kind}-${item.reason}`}>
+        <span className={`research-quality-kind research-quality-${item.kind}`}>{item.kind.replaceAll('_', ' ')}</span><strong>{item.reason}</strong>{item.count > 1 && <small>Repeated across {item.count} fields</small>}
       </article>)}
     </section>
+    <details className="research-provenance">
+      <summary>Technical provenance · database paths and provider evidence</summary>
+      <ul>{Array.from(provenance, ([path, label]) => <li key={path}><strong>{label}</strong><code>{path}</code></li>)}</ul>
+    </details>
     <p className="decision-disclaimer">{brief.sections.disclaimer}</p>
   </section>;
 }

@@ -1,5 +1,6 @@
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID
 import pytest
@@ -11,7 +12,15 @@ from sqlalchemy.pool import StaticPool
 from app import research_service
 from app.db import Base, get_db
 from app.main import app
-from app.models import InstrumentResearchBrief, InstrumentResearchRun, ResearchSource, User
+from app.models import (
+    Instrument,
+    InstrumentFundamental,
+    InstrumentResearchBrief,
+    InstrumentResearchRun,
+    MarketBar,
+    ResearchSource,
+    User,
+)
 from app.services import source_registry
 
 
@@ -79,6 +88,35 @@ def get_instrument_id(client: TestClient) -> str:
     return response.json()[0]["id"]
 
 
+def set_instrument_real(test_engine, instrument_id: str) -> None:
+    with Session(test_engine) as db:
+        instrument = db.get(Instrument, UUID(instrument_id))
+        assert instrument is not None
+        instrument.is_synthetic = False
+        db.commit()
+
+
+def add_daily_bars(test_engine, instrument_id: str, count: int, *, synthetic: bool) -> None:
+    now = datetime.now(timezone.utc)
+    with Session(test_engine) as db:
+        for offset in range(count):
+            close = Decimal("100") + Decimal(count - offset) / Decimal("10")
+            db.add(MarketBar(
+                instrument_id=UUID(instrument_id),
+                interval="1d",
+                timestamp=now - timedelta(days=offset),
+                open=close,
+                high=close + Decimal("1"),
+                low=close - Decimal("1"),
+                close=close,
+                volume=Decimal("1000"),
+                source="mock" if synthetic else "yfinance",
+                retrieved_at=now,
+                is_synthetic=synthetic,
+            ))
+        db.commit()
+
+
 def fake_document(url: str, *, body: str = "recorded source", news_items=None):
     return research_service.FetchedDocument(
         url=url,
@@ -88,6 +126,27 @@ def fake_document(url: str, *, body: str = "recorded source", news_items=None):
         fetched_at=datetime.now(timezone.utc),
         news_items=news_items or [],
     )
+
+
+def test_atom_feed_preserves_article_link_and_publication_time() -> None:
+    body = b"""<?xml version="1.0"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <title>Quarterly results published</title>
+        <link rel="alternate" href="https://issuer.example/news/results"/>
+        <published>2026-10-01T03:00:00+05:30</published>
+        <source><title>Issuer IR</title></source>
+      </entry>
+    </feed>"""
+
+    items = research_service._news_items(body, "application/atom+xml")
+
+    assert items == [{
+        "headline": "Quarterly results published",
+        "publisher": "Issuer IR",
+        "published_at": "2026-09-30T21:30:00+00:00",
+        "url": "https://issuer.example/news/results",
+    }]
 
 
 def set_candidates(monkeypatch, *urls: str) -> None:
@@ -246,6 +305,119 @@ def test_empty_brief_marks_sections_unavailable(
     assert sections["data_quality"]["items"]
     with Session(test_engine) as db:
         assert db.scalar(select(func.count()).select_from(InstrumentResearchBrief)) == 1
+
+
+def test_failed_news_source_keeps_usable_technical_report_partial(
+    client, test_engine, monkeypatch, network_fixtures
+) -> None:
+    register(client, test_engine, "usable-partial@example.com")
+    instrument_id = get_instrument_id(client)
+    set_instrument_real(test_engine, instrument_id)
+    add_daily_bars(test_engine, instrument_id, 30, synthetic=False)
+    set_candidates(monkeypatch, "https://example.com/news.xml")
+    monkeypatch.setattr(
+        research_service,
+        "fetch_document",
+        lambda _url, **_kwargs: (_ for _ in ()).throw(
+            research_service.ResearchError("The source responded with HTTP 503.")
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/research/instruments/{instrument_id}/run",
+        headers=csrf(client),
+    )
+
+    assert response.status_code == 200, response.text
+    brief = response.json()
+    assert brief["status"] == "partial"
+    assert brief["sections"]["technicals"]["status"] == "available"
+    assert brief["sections"]["news"]["status"] == "unavailable"
+    assert brief["failures"][0]["reason"] == "The source responded with HTTP 503."
+
+
+def test_synthetic_bars_are_not_used_for_real_instrument_technicals(
+    client, test_engine, monkeypatch, network_fixtures
+) -> None:
+    register(client, test_engine, "synthetic-bars@example.com")
+    instrument_id = get_instrument_id(client)
+    set_instrument_real(test_engine, instrument_id)
+    add_daily_bars(test_engine, instrument_id, 15, synthetic=True)
+    with Session(test_engine) as db:
+        instrument = db.get(Instrument, UUID(instrument_id))
+        synthetic_count = db.scalar(
+            select(func.count()).select_from(MarketBar).where(
+                MarketBar.instrument_id == UUID(instrument_id),
+                MarketBar.is_synthetic.is_(True),
+            )
+        )
+        assert instrument is not None and not instrument.is_synthetic
+        assert synthetic_count == 15
+    set_candidates(monkeypatch)
+
+    response = client.post(
+        f"/api/v1/research/instruments/{instrument_id}/run",
+        headers=csrf(client),
+    )
+
+    assert response.status_code == 200, response.text
+    technicals = response.json()["sections"]["technicals"]
+    assert technicals["status"] == "unavailable"
+    assert technicals["bars_available"] == 0
+    assert "Only synthetic daily bars are stored" in technicals["message"]
+
+
+def test_insufficient_real_history_is_reported_without_fabricating_bars(
+    client, test_engine, monkeypatch, network_fixtures
+) -> None:
+    register(client, test_engine, "short-history@example.com")
+    instrument_id = get_instrument_id(client)
+    set_instrument_real(test_engine, instrument_id)
+    add_daily_bars(test_engine, instrument_id, 1, synthetic=False)
+    set_candidates(monkeypatch)
+
+    response = client.post(
+        f"/api/v1/research/instruments/{instrument_id}/run",
+        headers=csrf(client),
+    )
+
+    assert response.status_code == 200, response.text
+    technicals = response.json()["sections"]["technicals"]
+    assert technicals["status"] == "insufficient_history"
+    assert technicals["bars_available"] == 1
+    assert all(item["bars_used"] == 1 for item in technicals["indicators"].values())
+
+
+def test_all_null_fundamentals_are_unavailable(
+    client, test_engine, monkeypatch, network_fixtures
+) -> None:
+    register(client, test_engine, "null-fundamentals@example.com")
+    instrument_id = get_instrument_id(client)
+    set_instrument_real(test_engine, instrument_id)
+    with Session(test_engine) as db:
+        db.add(InstrumentFundamental(
+            instrument_id=UUID(instrument_id),
+            period_type="annual",
+            period_end=date(2025, 12, 31),
+            currency="USD",
+            source="yfinance",
+            fetched_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+    set_candidates(monkeypatch)
+
+    response = client.post(
+        f"/api/v1/research/instruments/{instrument_id}/run",
+        headers=csrf(client),
+    )
+
+    assert response.status_code == 200, response.text
+    fundamentals = response.json()["sections"]["fundamentals"]
+    assert fundamentals["status"] == "unavailable"
+    assert any(
+        item["reason"] == "No non-null provider fundamentals are stored."
+        for item in response.json()["data_quality"]
+    )
 
 
 def test_source_links_are_owner_scoped(client, test_engine, monkeypatch) -> None:

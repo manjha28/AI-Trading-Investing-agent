@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -49,6 +49,10 @@ def _fundamentals_section(
     snapshot = db.scalar(
         select(InstrumentSnapshot).where(InstrumentSnapshot.instrument_id == instrument_id)
     )
+    snapshot_has_values = snapshot is not None and any(
+        getattr(snapshot, field) is not None
+        for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
+    )
     if snapshot is None:
         quality.append({
             "kind": "unavailable",
@@ -87,7 +91,7 @@ def _fundamentals_section(
                 })
         stale = fundamentals_service.is_stale(snapshot.fetched_at)
         snapshot_section = {
-            "status": "available",
+            "status": "available" if snapshot_has_values else "unavailable",
             "values": snapshot_values,
             "source": snapshot.source,
             "fetched_at": snapshot.fetched_at.isoformat(),
@@ -107,6 +111,14 @@ def _fundamentals_section(
             "reason": "No stored M5.3 financial periods are available.",
         })
     period_values: list[dict[str, Any]] = []
+    period_fields = (
+        "revenue", "net_income", "eps", "operating_margin", "total_assets",
+        "total_liabilities", "total_equity", "operating_cash_flow",
+        "free_cash_flow", "total_debt", "shares_outstanding",
+    )
+    periods_have_values = any(
+        getattr(row, field) is not None for row in rows for field in period_fields
+    )
     for row in rows:
         row_path = _date_path(row)
         values: dict[str, Any] = {}
@@ -148,8 +160,15 @@ def _fundamentals_section(
                 "field_path": row_path,
                 "reason": "The stored financial period was fetched more than 95 days ago.",
             })
+    has_fundamental_values = snapshot_has_values or periods_have_values
+    if not has_fundamental_values:
+        quality.append({
+            "kind": "unavailable",
+            "field_path": "instrument_fundamentals",
+            "reason": "No non-null provider fundamentals are stored.",
+        })
     return {
-        "status": "available" if snapshot is not None or rows else "unavailable",
+        "status": "available" if has_fundamental_values else "unavailable",
         "snapshot": snapshot_section,
         "periods": period_values,
     }, rows
@@ -158,19 +177,21 @@ def _fundamentals_section(
 def _financial_trend_section(
     rows: list[InstrumentFundamental], quality: list[dict[str, str]]
 ) -> dict[str, Any]:
-    if not rows:
+    metrics = ("revenue", "net_income", "eps", "free_cash_flow")
+    if not rows or not any(
+        getattr(row, metric) is not None for row in rows for metric in metrics
+    ):
         quality.append({
             "kind": "unavailable",
             "field_path": "instrument_fundamentals.financial_trend",
-            "reason": "No stored periods are available for year-on-year comparison.",
+            "reason": "No non-null stored values are available for year-on-year comparison.",
         })
         return {
             "status": "unavailable",
             "periods": [],
-            "reason": "No stored financial periods are available.",
+            "reason": "No non-null stored financial values are available.",
         }
 
-    metrics = ("revenue", "net_income", "eps", "free_cash_flow")
     trends: list[dict[str, Any]] = []
     for row in rows:
         prior = [
@@ -205,6 +226,12 @@ def _financial_trend_section(
                     "field_path": field_path,
                     "reason": "No stored comparable period exists for year-on-year growth.",
                 })
+            elif current_value is None or prior_value is None:
+                quality.append({
+                    "kind": "unavailable",
+                    "field_path": field_path,
+                    "reason": "A current or prior stored value is unavailable.",
+                })
             elif prior_value <= 0:
                 quality.append({
                     "kind": "not_meaningful",
@@ -213,12 +240,6 @@ def _financial_trend_section(
                         "Year-on-year growth from a non-positive prior-period base "
                         "is not meaningful."
                     ),
-                })
-            elif current_value is None or prior_value is None:
-                quality.append({
-                    "kind": "unavailable",
-                    "field_path": field_path,
-                    "reason": "A current or prior stored value is unavailable.",
                 })
         trends.append({
             "period_type": row.period_type,
@@ -239,14 +260,18 @@ def _technicals_section(
             "field_path": "instruments.is_synthetic",
             "reason": "This instrument is marked as synthetic in the instrument master.",
         })
-    latest_sync = db.scalar(
-        select(MarketDataSync)
-        .where(
+    sync_query = select(MarketDataSync).where(
             MarketDataSync.instrument_id == instrument_id,
             MarketDataSync.interval == "1d",
         )
-        .order_by(MarketDataSync.attempted_at.desc())
-        .limit(1)
+    if instrument is not None:
+        sync_query = sync_query.where(
+            MarketDataSync.source == "mock"
+            if instrument.is_synthetic
+            else MarketDataSync.source != "mock"
+        )
+    latest_sync = db.scalar(
+        sync_query.order_by(MarketDataSync.attempted_at.desc()).limit(1)
     )
     if latest_sync is not None and latest_sync.status != "success":
         quality.append({
@@ -261,13 +286,42 @@ def _technicals_section(
                 )
             ),
         })
+    bar_query = select(MarketBar).where(
+        MarketBar.instrument_id == instrument_id,
+        MarketBar.interval == "1d",
+    )
+    if instrument is not None:
+        bar_query = bar_query.where(
+            MarketBar.is_synthetic.is_(instrument.is_synthetic)
+        )
+    else:
+        bar_query = bar_query.where(MarketBar.is_synthetic.is_(False))
     latest = db.scalar(
-        select(MarketBar)
-        .where(MarketBar.instrument_id == instrument_id, MarketBar.interval == "1d")
+        bar_query
         .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
         .limit(1)
     )
     bars: list[MarketBar] = []
+    synthetic_bars_excluded = 0
+    if instrument is not None and not instrument.is_synthetic:
+        synthetic_bars_excluded = int(
+            db.scalar(
+                select(func.count(MarketBar.id)).where(
+                    MarketBar.instrument_id == instrument_id,
+                    MarketBar.interval == "1d",
+                    MarketBar.is_synthetic.is_(True),
+                )
+            ) or 0
+        )
+        if synthetic_bars_excluded:
+            quality.append({
+                "kind": "synthetic",
+                "field_path": "market_bars[interval=1d].is_synthetic",
+                "reason": (
+                    f"Excluded {synthetic_bars_excluded} synthetic daily bars from "
+                    "technical indicators."
+                ),
+            })
     if latest is not None:
         bars = list(
             db.scalars(
@@ -276,6 +330,7 @@ def _technicals_section(
                     MarketBar.instrument_id == instrument_id,
                     MarketBar.interval == "1d",
                     MarketBar.source == latest.source,
+                    MarketBar.is_synthetic.is_(latest.is_synthetic),
                 )
                 .order_by(MarketBar.timestamp.desc())
                 .limit(settings.indicator_lookback_bars)
@@ -308,11 +363,16 @@ def _technicals_section(
                 "field_path": field_path,
                 "reason": "The indicator includes synthetic stored market bars.",
             })
+    latest_is_stale = False
     if latest is None:
         quality.append({
             "kind": "unavailable",
             "field_path": "market_bars[interval=1d]",
-            "reason": "No stored daily OHLCV bars are available.",
+            "reason": (
+                "Only synthetic daily bars are stored; they were excluded."
+                if synthetic_bars_excluded
+                else "No stored daily OHLCV bars are available."
+            ),
         })
     else:
         now = datetime.now(timezone.utc)
@@ -321,7 +381,8 @@ def _technicals_section(
         if latest_bar_timestamp.tzinfo is None:
             latest_bar_timestamp = latest_bar_timestamp.replace(tzinfo=timezone.utc)
         close_age = (now - latest_bar_timestamp).total_seconds()
-        if close_age < 0 or close_age > freshness_limit:
+        latest_is_stale = close_age < 0 or close_age > freshness_limit
+        if latest_is_stale:
             quality.append({
                 "kind": "stale",
                 "field_path": "market_bars[interval=1d]",
@@ -336,8 +397,36 @@ def _technicals_section(
                 "field_path": "market_bars[interval=1d]",
                 "reason": "The latest stored daily bar is synthetic.",
             })
+    has_indicator_values = any(item.value is not None for item in calculated.__dict__.values())
+    technical_status = (
+        "unavailable"
+        if not bars
+        else "illustrative"
+        if instrument is not None and instrument.is_synthetic
+        else "stale"
+        if latest_is_stale
+        else "available"
+        if has_indicator_values
+        else "insufficient_history"
+    )
     return {
-        "status": "available" if bars else "unavailable",
+        "status": technical_status,
+        "message": (
+            "Illustrative synthetic data; not a real market signal."
+            if technical_status == "illustrative"
+            else "Stored daily bars are stale; do not use for current decisions."
+            if technical_status == "stale"
+            else (
+                "Only synthetic daily bars are stored; they were excluded. "
+                "Sync history from a configured provider."
+                if synthetic_bars_excluded
+                else "No real daily bars are available. Sync history from a configured provider."
+            )
+            if technical_status == "unavailable"
+            else "Real stored bars do not yet meet the minimum history for any indicator."
+            if technical_status == "insufficient_history"
+            else None
+        ),
         "interval": "1d",
         "source": latest.source if latest else None,
         "latest_bar": latest.timestamp.isoformat() if latest else None,
@@ -379,10 +468,18 @@ def _source_sections(
         quality.append({
             "kind": "unavailable",
             "field_path": "research_sources.news",
-            "reason": "No source returned a parseable news headline.",
+            "reason": (
+                "No authorized configured source returned a parseable headline. "
+                "Add an issuer investor-relations or exchange feed URL."
+            ),
         })
     return {
         "status": "available" if news_items else "unavailable",
+        "message": (
+            None
+            if news_items
+            else "No authorized news feeds are configured. Add an issuer investor-relations or exchange feed URL."
+        ),
         "items": news_items,
         "sources": source_refs,
     }
@@ -444,9 +541,18 @@ def run_instrument_research(
             db, instrument, fetched_result.sources, fetched_result.failures
         )
         succeeded = len(fetched_result.sources)
-        if succeeded == 0:
+        usable_sections = (
+            sections["technicals"]["status"] == "available"
+            or sections["fundamentals"]["status"] == "available"
+            or sections["news"]["status"] == "available"
+        )
+        all_sections_available = all(
+            sections[name]["status"] == "available"
+            for name in ("technicals", "fundamentals", "news")
+        )
+        if not usable_sections:
             status = "failed"
-        elif fetched_result.failures:
+        elif fetched_result.failures or not all_sections_available or quality:
             status = "partial"
         else:
             status = "complete"

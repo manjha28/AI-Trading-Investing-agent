@@ -139,6 +139,39 @@ def _news_items(body: bytes, content_type: str) -> list[dict[str, str | None]]:
             root = ET.fromstring(body)
         except ET.ParseError:
             return items
+        if root.tag.rsplit("}", 1)[-1].casefold() == "feed":
+            entries = root.findall(".//{*}entry")[:10]
+            for entry in entries:
+                title = (entry.findtext("{*}title") or "").strip()[:500]
+                link = next(
+                    (
+                        item.get("href", "").strip()
+                        for item in entry.findall("{*}link")
+                        if item.get("rel", "alternate") == "alternate"
+                    ),
+                    "",
+                )
+                if not title or urlsplit(link).scheme != "https":
+                    continue
+                publisher = entry.findtext("{*}source/{*}title")
+                published_at = (
+                    entry.findtext("{*}published")
+                    or entry.findtext("{*}updated")
+                )
+                if published_at:
+                    try:
+                        published_at = datetime.fromisoformat(
+                            published_at.replace("Z", "+00:00")
+                        ).astimezone(timezone.utc).isoformat()
+                    except (TypeError, ValueError, OverflowError):
+                        published_at = None
+                items.append({
+                    "headline": title,
+                    "publisher": publisher.strip()[:200] if publisher else None,
+                    "published_at": published_at,
+                    "url": link[:2048],
+                })
+            return items
         for item in root.findall(".//item")[:10]:
             title = (item.findtext("title") or "").strip()[:500]
             url = (item.findtext("link") or "").strip()
@@ -207,6 +240,10 @@ def _fetch_body(
                     if not content_type.startswith(ALLOWED_CONTENT_TYPES):
                         raise ResearchError("The source content type is not supported.")
                     return normalized, content_type, _read_limited(response)
+        except httpx.TimeoutException as exc:
+            raise ResearchError("The source request timed out.") from exc
+        except httpx.ConnectError as exc:
+            raise ResearchError("The source connection could not be established.") from exc
         except httpx.HTTPError as exc:
             raise ResearchError("The source could not be fetched.") from exc
     raise ResearchError("The source redirected too many times.")

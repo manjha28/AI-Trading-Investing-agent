@@ -263,6 +263,38 @@ def test_provider_failure_returns_unavailable_without_fallback(
     assert result.json()["unavailable"] is True
 
 
+def test_provider_response_with_no_fundamental_values_is_unavailable(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    login_verified(client, test_engine)
+    instrument = add_real_instrument(test_engine)
+    empty = provider_fixture()
+    empty["info"] = {"currency": "USD"}
+    for key in (
+        "annual_income",
+        "quarterly_income",
+        "annual_balance",
+        "quarterly_balance",
+        "annual_cashflow",
+        "quarterly_cashflow",
+    ):
+        empty[key] = pd.DataFrame()
+    patch_provider_fixture(monkeypatch, empty)
+
+    response = client.post(
+        f"/api/v1/market-data/instruments/{instrument}/fundamentals/sync",
+        headers=csrf(client),
+        json={},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "unavailable"
+    assert response.json()["fundamentals_count"] == 0
+    assert "no non-null fundamentals" in response.json()["message"]
+    data = client.get(f"/api/v1/market-data/instruments/{instrument}/fundamentals")
+    assert data.json()["unavailable"] is True
+
+
 def test_resync_updates_period_rows_without_duplicates(
     client: TestClient, test_engine, monkeypatch
 ) -> None:

@@ -21,7 +21,12 @@ from app.api.market_data import (
 from app.config import settings
 from app.db import Base, get_db
 from app.main import app
-from app.market_data import InstrumentCandidate, MarketDataProviderError, MockMarketDataProvider
+from app.market_data import (
+    HistoricalBar,
+    InstrumentCandidate,
+    MarketDataProviderError,
+    MockMarketDataProvider,
+)
 from app.models import Instrument, MarketBar, MarketDataSync, MarketQuote, PortfolioTransaction
 from app.provider_adapters import (
     BinanceProvider,
@@ -89,6 +94,28 @@ class DeadFinnhub(MockMarketDataProvider):
         raise MarketDataProviderError("provider_network_error")
 
 
+class RecordingHistoryProvider(MockMarketDataProvider):
+    name = "yfinance"
+    is_mock = False
+
+    def __init__(self):
+        self.ranges: list[tuple[datetime, datetime]] = []
+
+    def get_historical_bars(self, instrument, interval, start, end, limit):
+        self.ranges.append((start, end))
+        timestamp = start + timedelta(seconds=1)
+        if timestamp >= end or limit == 0:
+            return []
+        return [HistoricalBar(
+            timestamp=timestamp,
+            open=Decimal("10"),
+            high=Decimal("11"),
+            low=Decimal("9"),
+            close=Decimal("10"),
+            volume=Decimal("100"),
+        )]
+
+
 def test_provider_chain_falls_back_for_search_quotes_and_history(client: TestClient) -> None:
     register(client)
     chain = MarketDataProviderChain([DeadFinnhub(), MockMarketDataProvider()])
@@ -112,6 +139,54 @@ def test_provider_chain_falls_back_for_search_quotes_and_history(client: TestCli
     assert history.status_code == 200, history.text
     assert history.json()["freshness"]["source"] == "mock"
     assert all(bar["is_synthetic"] for bar in history.json()["bars"])
+
+
+def test_partial_daily_cache_backfills_uncovered_ranges(client: TestClient, test_engine) -> None:
+    register(client)
+    instrument_id = client.get("/api/v1/market-data/instruments?query=ALPHA").json()[0]["id"]
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=30)
+    end = now
+    with Session(test_engine) as db:
+        instrument = db.get(Instrument, UUID(instrument_id))
+        assert instrument is not None
+        instrument.is_synthetic = False
+        for days_ago in (20, 10):
+            timestamp = now - timedelta(days=days_ago)
+            db.add(MarketBar(
+                instrument_id=instrument.id,
+                interval="1d",
+                timestamp=timestamp,
+                open=Decimal("10"),
+                high=Decimal("11"),
+                low=Decimal("9"),
+                close=Decimal("10"),
+                volume=Decimal("100"),
+                source="yfinance",
+                retrieved_at=now,
+                is_synthetic=False,
+            ))
+        db.commit()
+
+    provider = RecordingHistoryProvider()
+    app.dependency_overrides[get_market_data_provider] = lambda: provider
+    response = client.post(
+        f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
+        headers=csrf_headers(client),
+        params={
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "interval": "1d",
+            "limit": 100,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider.ranges) >= 2
+    assert provider.ranges[0][0] == start
+    assert provider.ranges[-1][1] == end
+    assert len(response.json()["bars"]) > 2
+    assert all(not bar["is_synthetic"] for bar in response.json()["bars"])
 
 
 def test_missing_provider_credentials_degrade_to_mock(monkeypatch) -> None:
@@ -731,7 +806,7 @@ def test_valuation_flags_mixed_fresh_stale_and_synthetic_prices(
     now = datetime.now(timezone.utc)
     with Session(test_engine) as db:
         for symbol, instrument_id in instrument_ids.items():
-            retrieved_at = now - timedelta(minutes=5) if symbol == "ORCL" else now
+            retrieved_at = now - timedelta(hours=2) if symbol == "ORCL" else now
             db.add(
                 MarketQuote(
                     instrument_id=instrument_id,
