@@ -264,14 +264,14 @@ def test_provider_factory_missing_credentials_falls_through_to_unkeyed_provider(
         ("twelve_data", "finnhub", "yfinance", "mock")
     )
 
-    assert [item.name for item in provider.providers] == ["yfinance", "mock"]
+    assert [item.name for item in provider.providers] == ["yfinance"]
 
 
-def test_provider_factory_keeps_mock_as_explicit_default(monkeypatch) -> None:
+def test_provider_factory_does_not_select_mock(monkeypatch) -> None:
     provider = get_market_data_provider()
 
-    assert provider.name == "mock"
-    assert provider.is_mock is True
+    assert "mock" not in [item.name for item in provider.providers]
+    assert provider.is_mock is False
 
 
 def test_provider_factory_selects_twelve_data_with_server_key(monkeypatch) -> None:

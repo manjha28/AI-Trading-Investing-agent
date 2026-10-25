@@ -8,6 +8,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    BigInteger,
     Index,
     Integer,
     JSON,
@@ -35,7 +36,7 @@ class User(Base):
     email_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
     two_factor_secret_encrypted: Mapped[str | None] = mapped_column(Text)
     two_factor_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
-    two_factor_last_counter: Mapped[int | None] = mapped_column()
+    two_factor_last_counter: Mapped[int | None] = mapped_column(BigInteger)
     two_factor_failed_attempts: Mapped[int] = mapped_column(default=0, nullable=False)
     two_factor_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sessions: Mapped[list["UserSession"]] = relationship(
@@ -384,6 +385,7 @@ class MarketBar(Base):
             name="ck_market_bars_positive_prices",
         ),
         CheckConstraint("volume >= 0", name="ck_market_bars_nonnegative_volume"),
+        CheckConstraint("is_synthetic = false", name="ck_market_bars_real_only"),
         Index("ix_market_bars_instrument_interval_time", "instrument_id", "interval", "timestamp"),
     )
 
@@ -421,6 +423,7 @@ class MarketQuote(Base):
             name="ck_market_quotes_positive_prices",
         ),
         CheckConstraint("volume >= 0", name="ck_market_quotes_nonnegative_volume"),
+        CheckConstraint("is_synthetic = false", name="ck_market_quotes_real_only"),
         Index("ix_market_quotes_instrument_retrieved", "instrument_id", "retrieved_at"),
     )
 
@@ -459,6 +462,37 @@ class MarketDataSync(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     rows_received: Mapped[int] = mapped_column(default=0, nullable=False)
     safe_error_code: Mapped[str | None] = mapped_column(String(48))
+    requested_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requested_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requested_limit: Mapped[int | None] = mapped_column(Integer)
+    rows_written: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    response_status: Mapped[int | None] = mapped_column(Integer)
+    safe_reason: Mapped[str | None] = mapped_column(String(200))
+
+
+class MarketDataSyncAttempt(Base):
+    __tablename__ = "market_data_sync_attempts"
+    __table_args__ = (
+        CheckConstraint("interval IN ('1d', '1h', '15m', '1m')", name="ck_market_sync_attempt_interval"),
+        CheckConstraint("outcome IN ('success', 'unavailable', 'partial', 'unchanged')", name="ck_market_sync_attempt_outcome"),
+        Index("ix_market_sync_attempt_instrument_attempted", "instrument_id", "attempted_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    interval: Mapped[str] = mapped_column(String(8), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    requested_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    requested_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_status: Mapped[int | None] = mapped_column(Integer)
+    rows_returned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_written: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(200))
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class BrokerCredential(Base):

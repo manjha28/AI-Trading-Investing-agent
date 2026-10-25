@@ -49,6 +49,7 @@ RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
 class TwelveDataProvider:
     name = "twelve_data"
+    _base_url = API_BASE_URL
     is_mock = False
 
     def __init__(

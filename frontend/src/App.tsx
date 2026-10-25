@@ -1,4 +1,5 @@
-import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, Landmark, LogOut, ReceiptText, ShieldCheck, Wallet } from 'lucide-react';
+import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ReceiptText, ShieldCheck, Wallet } from 'lucide-react';
+import { useState } from 'react';
 import { useWorkspace } from './components/useWorkspace';
 import { ActivityPage } from './pages/Activity';
 import { Alerts } from './pages/Alerts';
@@ -13,6 +14,7 @@ import { Research } from './pages/Research';
 
 export default function App() {
   const workspace = useWorkspace();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const {
     user,
     checkingSession,
@@ -116,22 +118,33 @@ export default function App() {
               : 'Transactions';
 
   return (
-    <div className="app-frame">
+    <div className={sidebarCollapsed ? 'app-frame sidebar-collapsed' : 'app-frame'}>
       <aside className="sidebar">
         <div className="brand-lockup"><span className="brand-symbol"><Activity size={20} /></span><span>Trading Copilot</span></div>
+        <button
+          className="sidebar-collapse"
+          type="button"
+          onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-expanded={!sidebarCollapsed}
+          aria-controls="primary-navigation"
+        >
+          {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          <span>{sidebarCollapsed ? 'Expand' : 'Collapse'}</span>
+        </button>
         <p className="nav-label">WORKSPACE</p>
-        <nav className="primary-nav" aria-label="Workspace">
-          <button className={activeView === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('overview')}><Wallet size={17} /> Overview</button>
-          <button className={activeView === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('activity')}><ReceiptText size={17} /> Transactions</button>
-          <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={17} /> Trade journal</button>
-          <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={17} /> Market data</button>
-          <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={17} /> Brokers</button>
-          <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={17} /> Alerts</button>
-          <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={17} /> Corporate actions</button>
-          <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={17} /> Research</button>
+        <nav className="primary-nav" id="primary-navigation" aria-label="Workspace">
+          <button className={activeView === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('overview')}><Wallet size={17} /><span>Overview</span></button>
+          <button className={activeView === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('activity')}><ReceiptText size={17} /><span>Transactions</span></button>
+          <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={17} /><span>Trade journal</span></button>
+          <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={17} /><span>Market data</span></button>
+          <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={17} /><span>Brokers</span></button>
+          <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={17} /><span>Alerts</span></button>
+          <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={17} /><span>Corporate actions</span></button>
+          <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={17} /><span>Research</span></button>
         </nav>
-        <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /> Paper ledger only<span>Market data: {marketDataStatus}</span></div>
-        <button className="signout-button" onClick={signOut}><LogOut size={16} /> Sign out</button>
+        <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span>Paper ledger only</span><span>Market data: {marketDataStatus}</span></div>
+        <button className="signout-button" onClick={signOut}><LogOut size={16} /><span>Sign out</span></button>
       </aside>
 
       <main className="workspace">

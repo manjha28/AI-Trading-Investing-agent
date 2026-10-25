@@ -81,8 +81,10 @@ class _HttpProvider:
 
     def __init__(self, *, transport: httpx.BaseTransport | None = None):
         self._transport = transport
+        self.last_response_status: int | None = None
 
     def _get_json_payload(self, url: str, params: dict[str, Any]) -> Any:
+        self.last_response_status = None
         try:
             with httpx.Client(
                 timeout=REQUEST_TIMEOUT,
@@ -91,14 +93,28 @@ class _HttpProvider:
                 headers={"User-Agent": "TradingCopilot/1.0 (market data)"},
             ) as client:
                 with client.stream("GET", url, params=params) as response:
+                    self.last_response_status = response.status_code
                     if response.status_code == 429:
-                        raise MarketDataProviderError("provider_rate_limit_exceeded")
+                        raise MarketDataProviderError(
+                            "provider_rate_limit_exceeded",
+                            status_code=response.status_code,
+                            retry_after=response.headers.get("Retry-After"),
+                        )
                     if response.status_code in {401, 403}:
-                        raise MarketDataProviderError("provider_authentication_failed")
+                        raise MarketDataProviderError(
+                            "provider_authentication_failed",
+                            status_code=response.status_code,
+                        )
                     if response.status_code >= 500:
-                        raise MarketDataProviderError("provider_server_error")
+                        raise MarketDataProviderError(
+                            "provider_server_error",
+                            status_code=response.status_code,
+                        )
                     if response.status_code >= 400:
-                        raise MarketDataProviderError("provider_request_failed")
+                        raise MarketDataProviderError(
+                            "provider_request_failed",
+                            status_code=response.status_code,
+                        )
                     content = bytearray()
                     for chunk in response.iter_bytes():
                         if len(content) + len(chunk) > MAX_RESPONSE_BYTES:
@@ -987,9 +1003,11 @@ def candidate_for_instrument(
     strike: Decimal | None = None,
     option_type: str | None = None,
 ) -> InstrumentCandidate:
+    if provider_name == "mock":
+        raise MarketDataProviderError("synthetic_market_data_disabled")
     if asset_class not in {"equity", "etf", "index", "future", "option", "crypto"}:
         raise MarketDataProviderError("unsupported_provider_asset_class")
-    if provider_name != "mock" and asset_class in {"future", "option"}:
+    if asset_class in {"future", "option"}:
         raise MarketDataProviderError("unsupported_provider_asset_class")
     return InstrumentCandidate(
         provider=provider_name,

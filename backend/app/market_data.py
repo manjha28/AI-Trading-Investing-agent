@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -8,9 +8,17 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class MarketDataProviderError(Exception):
-    def __init__(self, code: str):
+    def __init__(
+        self,
+        code: str,
+        *,
+        status_code: int | None = None,
+        retry_after: str | None = None,
+    ):
         super().__init__(code)
         self.code = code
+        self.status_code = status_code
+        self.retry_after = retry_after
 
 
 class InstrumentCandidate(BaseModel):
@@ -120,113 +128,3 @@ class MarketDataProvider(Protocol):
     def get_latest_quote(self, instrument: InstrumentCandidate) -> HistoricalBar: ...
 
     def health(self) -> ProviderHealth: ...
-
-
-class MockMarketDataProvider:
-    name = "mock"
-    is_mock = True
-    _catalog = (
-        InstrumentCandidate(
-            provider="mock",
-            provider_instrument_id="DEMO-US-ALPHA-EQ-001",
-            provider_symbol="DEMO_US:ALPHA",
-            symbol="ALPHA",
-            display_name="Alpha Demo Corporation",
-            asset_class="equity",
-            venue="DEMO_US",
-            currency="USD",
-            country="US",
-            timezone="America/New_York",
-            is_synthetic=True,
-        ),
-        InstrumentCandidate(
-            provider="mock",
-            provider_instrument_id="DEMO-IN-ALPHA-EQ-001",
-            provider_symbol="DEMO_IN:ALPHA",
-            symbol="ALPHA",
-            display_name="Alpha India Demo Limited",
-            asset_class="equity",
-            venue="DEMO_IN",
-            currency="INR",
-            country="IN",
-            timezone="Asia/Kolkata",
-            is_synthetic=True,
-        ),
-    )
-
-    def search_instruments(self, query: str, limit: int) -> list[InstrumentCandidate]:
-        normalized = query.casefold().strip()
-        if not normalized:
-            raise MarketDataProviderError("search_query_required")
-        matches = [
-            item
-            for item in self._catalog
-            if normalized in item.symbol.casefold()
-            or normalized in item.display_name.casefold()
-            or normalized in item.provider_symbol.casefold()
-        ]
-        return matches[:limit]
-
-    def get_instrument(self, provider_instrument_id: str) -> InstrumentCandidate:
-        for item in self._catalog:
-            if item.provider_instrument_id == provider_instrument_id:
-                return item
-        raise MarketDataProviderError("instrument_not_found")
-
-    def get_historical_bars(
-        self,
-        instrument: InstrumentCandidate,
-        interval: str,
-        start: datetime,
-        end: datetime,
-        limit: int,
-    ) -> list[HistoricalBar]:
-        if interval not in {"1d", "1h", "15m", "1m", "5m"}:
-            raise MarketDataProviderError("unsupported_interval")
-        if start.utcoffset() is None or end.utcoffset() is None or start >= end:
-            raise MarketDataProviderError("invalid_time_range")
-        step = {
-            "1d": timedelta(days=1),
-            "1h": timedelta(hours=1),
-            "15m": timedelta(minutes=15),
-            "5m": timedelta(minutes=5),
-            "1m": timedelta(minutes=1),
-        }[interval]
-        cursor = start.astimezone(timezone.utc)
-        end_utc = end.astimezone(timezone.utc)
-        offset = sum(instrument.provider_instrument_id.encode("utf-8")) % 37
-        bars: list[HistoricalBar] = []
-        index = 0
-        while cursor < end_utc and len(bars) < limit:
-            baseline = Decimal("50") + Decimal(offset) + Decimal(index) / Decimal("10")
-            opening = baseline
-            closing = baseline + Decimal("0.25")
-            bars.append(
-                HistoricalBar(
-                    timestamp=cursor,
-                    open=opening,
-                    high=closing + Decimal("0.75"),
-                    low=opening - Decimal("0.5"),
-                    close=closing,
-                    volume=Decimal(1000 + (index * 17) % 5000),
-                )
-            )
-            cursor += step
-            index += 1
-        return bars
-
-    def get_latest_quote(self, instrument: InstrumentCandidate) -> HistoricalBar:
-        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-        bar = self.get_historical_bars(
-            instrument, "1h", now - timedelta(hours=1), now, 1
-        )[0]
-        return bar.model_copy(update={"timestamp": datetime.now(timezone.utc)})
-
-    def health(self) -> ProviderHealth:
-        return ProviderHealth(
-            name=self.name,
-            healthy=True,
-            is_mock=True,
-            capabilities=("instrument_search", "instrument_lookup", "historical_ohlcv", "latest_quote"),
-            status="deterministic_synthetic_fixture",
-        )

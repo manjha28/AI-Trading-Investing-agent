@@ -6,6 +6,15 @@ import { apiRequest } from '../api';
 import { CandleChart } from '../components/CandleChart';
 import { ThesisEditor } from '../components/ThesisEditor';
 import {
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Panel,
+  Skeleton,
+  StatusDot,
+  type DataTableColumn,
+} from '../components/ui';
+import {
   formatMoney, formatQuantity, localDateTime, marketRangeParams, indicatorLabels,
   type WorkspaceState,
 } from '../components/useWorkspace';
@@ -54,6 +63,25 @@ type FundamentalsData = {
   message: string;
 };
 type FundamentalsSync = { status: 'available' | 'unavailable'; message: string };
+type CoverageInstrument = {
+  instrument_id: string;
+  symbol: string;
+  display_name: string;
+  venue: string;
+  bars_stored: number;
+  oldest_bar: string | null;
+  newest_bar: string | null;
+  last_sync_status: string | null;
+  last_sync_reason: string | null;
+  freshness_status: 'fresh' | 'stale' | 'failed' | 'never-synced';
+};
+type CoverageResponse = { instruments: CoverageInstrument[] };
+type BackfillResponse = {
+  status: 'success' | 'partial' | 'unchanged';
+  instruments?: { status: string; symbol: string; chunks_failed: number }[];
+  symbol?: string;
+  chunks_failed?: number;
+};
 
 export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 'addInstrumentToWatchlist' | 'addSelectedInstrumentToWatchlist' | 'attachSelectedInstrument' | 'currency' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadingMarketHistory' | 'loadingMarketIndicators' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'removeInstrumentFromWatchlist' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation' | 'watchlist'> }) {
   const {
@@ -95,6 +123,143 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   const [fundamentalsSyncing, setFundamentalsSyncing] = useState(false);
   const [fundamentalsMessage, setFundamentalsMessage] = useState('');
   const [fundamentalPeriodType, setFundamentalPeriodType] = useState<'annual' | 'quarterly'>('annual');
+  const [coverage, setCoverage] = useState<CoverageInstrument[]>([]);
+  const [coverageLoading, setCoverageLoading] = useState(true);
+  const [coverageError, setCoverageError] = useState('');
+  const [coverageMessage, setCoverageMessage] = useState('');
+  const [coverageRunning, setCoverageRunning] = useState<string | null>(null);
+  const [coverageBatchRunning, setCoverageBatchRunning] = useState(false);
+
+  async function loadCoverage() {
+    setCoverageLoading(true);
+    setCoverageError('');
+    try {
+      const response = await apiRequest<CoverageResponse>('/market-data/coverage');
+      setCoverage(response.instruments);
+    } catch (error) {
+      setCoverageError(error instanceof Error ? error.message : 'Coverage could not be loaded.');
+    } finally {
+      setCoverageLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadCoverage();
+  }, []);
+
+  async function runBackfill(instrumentId?: string) {
+    setCoverageMessage('');
+    if (instrumentId) setCoverageRunning(instrumentId);
+    else setCoverageBatchRunning(true);
+    try {
+      const path = instrumentId
+        ? `/market-data/instruments/${instrumentId}/history/backfill?years=2`
+        : '/market-data/backfill/holdings?years=2';
+      const response = await apiRequest<BackfillResponse>(path, { method: 'POST' });
+      const partial = response.status === 'partial'
+        || response.chunks_failed
+        || response.instruments?.some((item) => item.status === 'partial' || item.status === 'unavailable');
+      setCoverageMessage(partial
+        ? 'Backfill completed partially. Review each row’s status and last result.'
+        : 'Backfill completed. Coverage has been refreshed.');
+      await loadCoverage();
+    } catch (error) {
+      setCoverageMessage(error instanceof Error ? error.message : 'Backfill failed.');
+    } finally {
+      setCoverageRunning(null);
+      setCoverageBatchRunning(false);
+    }
+  }
+
+  function displayCoverageDate(value: string | null): string {
+    return value ? new Date(value).toISOString().slice(0, 10) : '—';
+  }
+
+  function displaySyncReason(value: string | null): string {
+    if (!value) return '—';
+    const messages: Record<string, string> = {
+      provider_data_already_stored: 'No new bars',
+      provider_no_history_for_range: 'No bars returned for this range',
+      provider_rate_limit_exceeded: 'Rate limited; retry later',
+      provider_request_cap_reached: 'Request cap reached',
+      provider_request_failed: 'Provider request failed',
+      no_real_provider_available: 'No real provider configured',
+      no_new_bars_written: 'No new bars',
+    };
+    return messages[value] ?? value.replaceAll('_', ' ');
+  }
+
+  const coverageColumns: DataTableColumn<CoverageInstrument>[] = [
+    {
+      key: 'symbol',
+      label: 'Instrument',
+      render: (instrument) => (
+        <span className="coverage-symbol" title={instrument.display_name}>
+          {instrument.symbol} · {instrument.venue}
+        </span>
+      ),
+      sortValue: (instrument) => instrument.symbol,
+      className: 'coverage-symbol',
+    },
+    {
+      key: 'bars',
+      label: 'Real bars',
+      render: (instrument) => instrument.bars_stored.toLocaleString(),
+      sortValue: (instrument) => instrument.bars_stored,
+      align: 'right',
+    },
+    {
+      key: 'oldest',
+      label: 'Oldest',
+      render: (instrument) => displayCoverageDate(instrument.oldest_bar),
+      sortValue: (instrument) => instrument.oldest_bar ?? '',
+      align: 'right',
+    },
+    {
+      key: 'newest',
+      label: 'Newest',
+      render: (instrument) => displayCoverageDate(instrument.newest_bar),
+      sortValue: (instrument) => instrument.newest_bar ?? '',
+      align: 'right',
+    },
+    {
+      key: 'status',
+      label: 'Status',
+      render: (instrument) => {
+        const status = instrument.freshness_status;
+        const labels = {
+          fresh: 'fresh',
+          stale: 'stale',
+          failed: 'failed',
+          'never-synced': 'never-synced',
+        };
+        return <StatusDot status={status} label={labels[status]} />;
+      },
+      sortValue: (instrument) => instrument.freshness_status,
+    },
+    {
+      key: 'reason',
+      label: 'Last result',
+      render: (instrument) => displaySyncReason(instrument.last_sync_reason),
+      sortValue: (instrument) => instrument.last_sync_reason ?? '',
+      className: 'coverage-reason',
+    },
+    {
+      key: 'action',
+      label: 'Action',
+      render: (instrument) => (
+        <button
+          type="button"
+          onClick={() => void runBackfill(instrument.instrument_id)}
+          disabled={coverageBatchRunning || coverageRunning !== null}
+          aria-label={`Backfill ${instrument.symbol} history`}
+        >
+          {coverageRunning === instrument.instrument_id ? 'Backfilling…' : 'Backfill'}
+        </button>
+      ),
+      className: 'coverage-action',
+    },
+  ];
 
   useEffect(() => {
     if (!selectedInstrument) {
@@ -144,6 +309,36 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   return (
               <section className="market-page">
                 <div className="data-note"><CircleDollarSign size={17} /><span>Market data provenance and freshness are shown for each result. Provider mappings are not verified exchange listings unless explicitly marked; market data is not used for portfolio valuation.</span></div>
+                <Panel
+                  title="Market data coverage"
+                  description="Stored real daily bars and the latest synchronization result for holdings and watchlist instruments."
+                  className="market-coverage-panel"
+                  action={(
+                    <button
+                      type="button"
+                      onClick={() => void runBackfill()}
+                      disabled={coverageBatchRunning || coverageRunning !== null || coverage.length === 0}
+                    >
+                      {coverageBatchRunning ? 'Backfilling…' : 'Backfill All Holdings'}
+                    </button>
+                  )}
+                >
+                  {coverageMessage && <p className="coverage-message" role="status">{coverageMessage}</p>}
+                  {coverageLoading ? <Skeleton rows={4} /> : coverageError ? (
+                    <ErrorState title="Coverage unavailable" message={coverageError} onRetry={() => void loadCoverage()} />
+                  ) : coverage.length === 0 ? (
+                    <EmptyState
+                      title="No linked instruments"
+                      message="Add an instrument to a portfolio holding or watchlist to track its history."
+                    />
+                  ) : (
+                    <DataTable
+                      columns={coverageColumns}
+                      rows={coverage}
+                      getRowKey={(instrument) => instrument.instrument_id}
+                    />
+                  )}
+                </Panel>
                 <div className="content-grid market-grid">
                   <section className="data-section">
                     <div className="section-heading"><div><p className="eyebrow">INSTRUMENT MASTER</p><h2>Search instruments</h2></div><Search size={18} /></div>
@@ -271,12 +466,15 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                 </section>}
                 {marketHistory && selectedInstrument && <section className="data-section market-history">
                   <div className="section-heading"><div><p className="eyebrow">PROVENANCE &amp; FRESHNESS</p><h2>{selectedInstrument.symbol} history</h2></div><span className={`freshness-badge freshness-${marketHistory.freshness.status}`}>{marketHistory.freshness.status.replace('_', ' ')}</span></div>
-                  <p className="market-provenance">{marketHistory.freshness.message} Source: {marketHistory.freshness.source ?? '—'} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Latest bar: {marketHistory.freshness.latest_bar_timestamp ? new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'}</p>
+                  <p className="market-provenance">{marketHistory.freshness.message} Source: {marketHistory.freshness.source ?? '—'} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Latest bar: {marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'}</p>
                   {marketHistory.bars.length === 0 ? <div className="table-empty">No bars are available for that date range.</div> : <>
                     <CandleChart bars={marketHistory.bars} currency={selectedInstrument.currency} interval={marketInterval} />
-                    <div className="table-scroll"><table><thead><tr><th>Timestamp (UTC)</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody>{marketHistory.bars.map((bar) => {
+                    <div className="table-scroll"><table><thead><tr><th>{marketInterval === '1d' ? 'Session date' : 'Timestamp (UTC)'}</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody>{marketHistory.bars.map((bar) => {
                       const verified = selectedInstrument.provider_identifiers.find((mapping) => mapping.provider === bar.source)?.is_verified === true;
-                      return <tr key={`${bar.timestamp}-${bar.source}`}><td>{new Date(bar.timestamp).toISOString().replace('T', ' ').replace('.000Z', 'Z')}</td><td>{Number(bar.open).toFixed(2)}</td><td>{Number(bar.high).toFixed(2)}</td><td>{Number(bar.low).toFixed(2)}</td><td>{Number(bar.close).toFixed(2)}</td><td>{bar.volume}</td><td>{bar.is_synthetic ? 'Synthetic · ' : ''}{bar.is_synthetic || !verified ? 'Unverified · ' : 'Verified · '}{bar.source}</td></tr>;
+                      const displayedTimestamp = marketInterval === '1d'
+                        ? new Date(bar.timestamp).toISOString().slice(0, 10)
+                        : new Date(bar.timestamp).toISOString().replace('T', ' ').replace('.000Z', 'Z');
+                      return <tr key={`${bar.timestamp}-${bar.source}`}><td>{displayedTimestamp}</td><td>{Number(bar.open).toFixed(2)}</td><td>{Number(bar.high).toFixed(2)}</td><td>{Number(bar.low).toFixed(2)}</td><td>{Number(bar.close).toFixed(2)}</td><td>{bar.volume}</td><td>{bar.is_synthetic ? 'Synthetic · ' : ''}{bar.is_synthetic || !verified ? 'Unverified · ' : 'Verified · '}{bar.source}</td></tr>;
                     })}</tbody></table></div>
                   </>}
                 </section>}

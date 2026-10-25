@@ -53,24 +53,24 @@ export function CandleChart({ bars, currency, interval }: Props) {
     const chart = createChart(container, {
       autoSize: true,
       height: 340,
-      layout: { background: { type: ColorType.Solid, color: '#fbfcfa' }, textColor: '#5d6c62' },
-      grid: { vertLines: { color: '#edf0eb' }, horzLines: { color: '#edf0eb' } },
+      layout: { background: { type: ColorType.Solid, color: '#0b0f16' }, textColor: '#94a1ad' },
+      grid: { vertLines: { color: '#171e29' }, horzLines: { color: '#171e29' } },
       rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.25 } },
-      timeScale: { timeVisible: interval !== '1d', secondsVisible: false, borderColor: '#dfe5dc' },
+      timeScale: { timeVisible: interval !== '1d', secondsVisible: false, borderColor: '#222b36' },
       crosshair: { mode: 0 },
       localization: { priceFormatter: (value: number) => price(value, currency) },
     });
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#17674d',
-      downColor: '#bd5547',
-      borderUpColor: '#17674d',
-      borderDownColor: '#bd5547',
-      wickUpColor: '#17674d',
-      wickDownColor: '#bd5547',
+      upColor: '#3fd99a',
+      downColor: '#ef7777',
+      borderUpColor: '#3fd99a',
+      borderDownColor: '#ef7777',
+      wickUpColor: '#3fd99a',
+      wickDownColor: '#ef7777',
       visible: chartMode === 'candles',
     });
     const lineSeries = chart.addSeries(LineSeries, {
-      color: '#17674d',
+      color: '#3fd99a',
       lineWidth: 2,
       visible: chartMode === 'line',
     });
@@ -98,7 +98,7 @@ export function CandleChart({ bars, currency, interval }: Props) {
       sorted.map((bar, index) => ({
         time: data[index].time,
         value: Number(bar.volume),
-        color: Number(bar.close) >= Number(bar.open) ? '#17674d66' : '#bd554766',
+        color: Number(bar.close) >= Number(bar.open) ? '#3fd99a66' : '#ef777766',
       })),
     );
     chart.timeScale().fitContent();

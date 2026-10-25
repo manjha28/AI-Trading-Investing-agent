@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import patch
 from uuid import UUID
 
 import httpx
@@ -18,6 +19,7 @@ from app.api.market_data import (
     create_market_data_provider_chain,
     get_market_data_provider,
 )
+from app.api import auth
 from app.config import settings
 from app.db import Base, get_db
 from app.main import app
@@ -25,8 +27,8 @@ from app.market_data import (
     HistoricalBar,
     InstrumentCandidate,
     MarketDataProviderError,
-    MockMarketDataProvider,
 )
+from market_data_fixtures import RecordedMarketDataProvider
 from app.models import Instrument, MarketBar, MarketDataSync, MarketQuote, PortfolioTransaction
 from app.provider_adapters import (
     BinanceProvider,
@@ -58,17 +60,22 @@ def client(test_engine) -> Iterator[TestClient]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_market_data_provider] = RecordedMarketDataProvider
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
 
 
 def register(client: TestClient, email: str = "m1-market@example.com") -> None:
-    response = client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": "correct-horse-battery"},
-    )
-    assert response.status_code == 202, response.text
+    delivered: list[str] = []
+    with patch.object(auth, "send_verification_email", lambda _email, token: delivered.append(token)):
+        response = client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "correct-horse-battery"},
+        )
+        assert response.status_code == 202, response.text
+        verified = client.post("/api/v1/auth/verify-email", json={"token": delivered[0]})
+        assert verified.status_code == 200, verified.text
     login_response = client.post(
         "/api/v1/auth/login",
         json={"email": email, "password": "correct-horse-battery"},
@@ -80,7 +87,7 @@ def csrf_headers(client: TestClient) -> dict[str, str]:
     return {"X-CSRF-Token": client.cookies.get("csrf_token", "")}
 
 
-class DeadFinnhub(MockMarketDataProvider):
+class DeadFinnhub(RecordedMarketDataProvider):
     name = "finnhub"
     is_mock = False
 
@@ -94,7 +101,7 @@ class DeadFinnhub(MockMarketDataProvider):
         raise MarketDataProviderError("provider_network_error")
 
 
-class RecordingHistoryProvider(MockMarketDataProvider):
+class RecordingHistoryProvider(RecordedMarketDataProvider):
     name = "yfinance"
     is_mock = False
 
@@ -118,7 +125,7 @@ class RecordingHistoryProvider(MockMarketDataProvider):
 
 def test_provider_chain_falls_back_for_search_quotes_and_history(client: TestClient) -> None:
     register(client)
-    chain = MarketDataProviderChain([DeadFinnhub(), MockMarketDataProvider()])
+    chain = MarketDataProviderChain([DeadFinnhub(), RecordedMarketDataProvider()])
     assert [item.symbol for item in chain.search_instruments("ALPHA", 10)] == ["ALPHA", "ALPHA"]
     app.dependency_overrides[get_market_data_provider] = lambda: chain
     instrument_id = client.get("/api/v1/market-data/instruments?query=ALPHA").json()[0]["id"]
@@ -134,11 +141,11 @@ def test_provider_chain_falls_back_for_search_quotes_and_history(client: TestCli
     )
 
     assert quote.status_code == 200, quote.text
-    assert quote.json()["source"] == "mock"
-    assert quote.json()["is_synthetic"] is True
+    assert quote.json()["source"] == "recorded"
+    assert quote.json()["is_synthetic"] is False
     assert history.status_code == 200, history.text
-    assert history.json()["freshness"]["source"] == "mock"
-    assert all(bar["is_synthetic"] for bar in history.json()["bars"])
+    assert history.json()["freshness"]["source"] == "recorded"
+    assert all(not bar["is_synthetic"] for bar in history.json()["bars"])
 
 
 def test_partial_daily_cache_backfills_uncovered_ranges(client: TestClient, test_engine) -> None:
@@ -189,17 +196,13 @@ def test_partial_daily_cache_backfills_uncovered_ranges(client: TestClient, test
     assert all(not bar["is_synthetic"] for bar in response.json()["bars"])
 
 
-def test_missing_provider_credentials_degrade_to_mock(monkeypatch) -> None:
+def test_missing_provider_credentials_do_not_add_mock(monkeypatch) -> None:
     monkeypatch.setattr(settings, "twelve_data_api_key", SecretStr(""))
     monkeypatch.setattr(settings, "finnhub_api_key", SecretStr(""))
 
     chain = create_market_data_provider_chain(("twelve_data", "finnhub", "yfinance", "mock"))
 
-    assert [provider.name for provider in chain.providers] == [
-        "yfinance",
-        "mock",
-    ]
-    assert chain.providers[-1].is_mock is True
+    assert [provider.name for provider in chain.providers] == ["yfinance"]
 
 
 def test_upstox_is_skipped_until_a_connected_account_token_is_supplied() -> None:
@@ -209,8 +212,8 @@ def test_upstox_is_skipped_until_a_connected_account_token_is_supplied() -> None
         upstox_access_token="connected-account-token",
     )
 
-    assert [provider.name for provider in without_account.providers] == ["mock"]
-    assert [provider.name for provider in with_account.providers] == ["upstox", "mock"]
+    assert [provider.name for provider in without_account.providers] == []
+    assert [provider.name for provider in with_account.providers] == ["upstox"]
 
 
 def test_finnhub_rate_limit_is_normalized_without_retry() -> None:
@@ -253,7 +256,6 @@ def test_default_chain_is_free_first_and_does_not_read_paid_keys(monkeypatch) ->
         "delta_exchange",
         "binance",
         "yfinance",
-        "mock",
     ]
 
 
@@ -269,7 +271,6 @@ def test_default_chain_skips_optional_paid_providers_without_credentials(monkeyp
         "delta_exchange",
         "binance",
         "yfinance",
-        "mock",
     ]
 
 
@@ -283,15 +284,14 @@ def test_optional_paid_providers_are_enabled_only_when_named_and_credentialed(mo
         "twelve_data",
         "finnhub",
         "yfinance",
-        "mock",
     ]
 
 
 @pytest.mark.parametrize(
     ("twelve_key", "finnhub_key", "expected"),
     (
-        ("twelve-key", "", ["twelve_data", "yfinance", "mock"]),
-        ("", "finnhub-key", ["finnhub", "yfinance", "mock"]),
+        ("twelve-key", "", ["twelve_data", "yfinance"]),
+        ("", "finnhub-key", ["finnhub", "yfinance"]),
     ),
 )
 def test_paid_chain_providers_require_their_own_credentials(
@@ -487,8 +487,8 @@ def test_yfinance_interval_lookback_errors_instead_of_truncating(interval, days)
         )
 
 
-def test_mock_catalog_is_limited_to_two_demo_instruments() -> None:
-    provider = MockMarketDataProvider()
+def test_recorded_fixture_catalog_is_limited_to_two_test_instruments() -> None:
+    provider = RecordedMarketDataProvider()
 
     demo_instruments = provider.search_instruments("ALPHA", 50)
 
@@ -517,39 +517,10 @@ def test_real_instruments_never_expose_legacy_synthetic_quote_or_history(
         db.add(instrument)
         db.flush()
         db.add(
-            MarketQuote(
-                instrument_id=instrument.id,
-                timestamp=now,
-                open=Decimal("9"),
-                high=Decimal("12"),
-                low=Decimal("8"),
-                close=Decimal("11"),
-                volume=Decimal("100"),
-                source="mock",
-                retrieved_at=now,
-                is_synthetic=True,
-            )
-        )
-        db.add(
-            MarketBar(
-                instrument_id=instrument.id,
-                interval="1d",
-                timestamp=now - timedelta(days=1),
-                open=Decimal("9"),
-                high=Decimal("12"),
-                low=Decimal("8"),
-                close=Decimal("11"),
-                volume=Decimal("100"),
-                source="mock",
-                retrieved_at=now,
-                is_synthetic=True,
-            )
-        )
-        db.add(
             MarketDataSync(
                 instrument_id=instrument.id,
                 interval="1d",
-                source="mock",
+                source="yfinance",
                 attempted_at=now,
                 succeeded_at=now,
                 status="success",
@@ -559,7 +530,7 @@ def test_real_instruments_never_expose_legacy_synthetic_quote_or_history(
         instrument_id = instrument.id
         db.commit()
 
-    class UnavailableProvider(MockMarketDataProvider):
+    class UnavailableProvider(RecordedMarketDataProvider):
         name = "yfinance"
         is_mock = False
 
@@ -573,7 +544,7 @@ def test_real_instruments_never_expose_legacy_synthetic_quote_or_history(
             raise MarketDataProviderError("provider_network_error")
 
     app.dependency_overrides[get_market_data_provider] = lambda: MarketDataProviderChain(
-        [UnavailableProvider(), MockMarketDataProvider()]
+        [UnavailableProvider()]
     )
     quote = client.get(f"/api/v1/market-data/instruments/{instrument_id}/quote")
     history = client.get(
@@ -634,7 +605,7 @@ def test_stored_candle_range_is_not_refetched(
         )
         db.commit()
 
-    class MustNotFetch(MockMarketDataProvider):
+    class MustNotFetch(RecordedMarketDataProvider):
         name = "yfinance"
         is_mock = False
 
@@ -642,7 +613,7 @@ def test_stored_candle_range_is_not_refetched(
             raise AssertionError("a stored date range must not be fetched again")
 
     app.dependency_overrides[get_market_data_provider] = lambda: MarketDataProviderChain(
-        [MustNotFetch(), MockMarketDataProvider()]
+        [MustNotFetch(), RecordedMarketDataProvider()]
     )
     response = client.post(
         f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
@@ -773,6 +744,9 @@ def test_valuation_flags_mixed_fresh_stale_and_synthetic_prices(
         headers=csrf_headers(client),
     )
     assert attached.status_code == 200, attached.text
+    with Session(test_engine) as db:
+        db.get(Instrument, UUID(alpha["id"])).is_synthetic = True
+        db.commit()
 
     instrument_ids: dict[str, UUID] = {}
     for symbol in ("MSFT", "ORCL"):
@@ -823,7 +797,7 @@ def test_valuation_flags_mixed_fresh_stale_and_synthetic_prices(
             )
         db.commit()
 
-    class UnavailableProvider(MockMarketDataProvider):
+    class UnavailableProvider(RecordedMarketDataProvider):
         name = "yfinance"
         is_mock = False
 
@@ -834,7 +808,7 @@ def test_valuation_flags_mixed_fresh_stale_and_synthetic_prices(
             raise MarketDataProviderError("provider_network_error")
 
     app.dependency_overrides[get_market_data_provider] = lambda: MarketDataProviderChain(
-        [UnavailableProvider(), MockMarketDataProvider()]
+        [UnavailableProvider(), RecordedMarketDataProvider()]
     )
     response = client.get(f"/api/v1/portfolios/{portfolio_id}/valuation")
 
@@ -881,7 +855,7 @@ def test_valuation_does_not_convert_foreign_currency(client: TestClient, test_en
 
 
 def test_synthetic_cleanup_preserves_linked_rows_and_marks_for_relinking(
-    client: TestClient,
+    client: TestClient, test_engine
 ) -> None:
     register(client, "cleanup-synthetic@example.com")
     portfolio_id = _create_portfolio(client)
@@ -897,6 +871,16 @@ def test_synthetic_cleanup_preserves_linked_rows_and_marks_for_relinking(
         headers=csrf_headers(client),
     )
     assert response.status_code == 200, response.text
+    unlinked = next(candidate for candidate in candidates if candidate["id"] != linked["id"])
+    added_to_watchlist = client.post(
+        f"/api/v1/market-data/watchlist/{unlinked['id']}",
+        headers=csrf_headers(client),
+    )
+    assert added_to_watchlist.status_code == 204, added_to_watchlist.text
+    with Session(test_engine) as db:
+        for candidate in candidates:
+            db.get(Instrument, UUID(candidate["id"])).is_synthetic = True
+        db.commit()
 
     cleanup = client.post(
         "/api/v1/market-data/instruments/cleanup-synthetic",

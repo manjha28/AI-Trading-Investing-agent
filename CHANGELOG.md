@@ -1,3 +1,5 @@
+- Frontend: add a collapsible dark trading-workstation shell, compact portfolio overview, and matching chart styling.
+- A1: remove runtime synthetic market data, add diagnostic real-history backfill, and expose linked-instrument coverage.
 - Research: backfill uncovered real daily history, exclude synthetic bars from real analysis, and show partial-source and unavailable-data states clearly.
 - M6.3: add deterministic, evidence-backed alert rules and event inbox with manual evaluation.
 - M6.2: extract shared stored-OHLCV indicators and add ledger-derived portfolio risk metrics.
@@ -9,3 +11,4 @@
 - M5.4 follow-up: fix the research migration version-length blocker and add sequential batch research for up to five instruments with per-instrument results.
 - M6.3a: correct alert price freshness, per-instrument cooldowns, indicator lookbacks, drawdown evidence, and one-time LTCG crossing alerts.
 - M6.3b: centralize quote usability freshness, align indicator lookbacks, report complete currency exposure and lot-age ranges, and guard growth from non-positive bases.
+- Journal: redesign the existing trade journal with terminal styling, API-backed KPIs and strategy results, activity calendar, sortable filtered history, and compact trade entry.

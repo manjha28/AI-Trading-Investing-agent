@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr | None = None
     resend_from_email: str = ""
     email_verification_url: str = "http://localhost:5173/"
-    market_data_providers: str = "delta_exchange,binance,yfinance,upstox,mock"
+    market_data_providers: str = "delta_exchange,binance,yfinance,upstox"
     twelve_data_api_key: SecretStr | None = None
     finnhub_api_key: SecretStr | None = None
     market_data_quote_freshness_seconds: int = 60

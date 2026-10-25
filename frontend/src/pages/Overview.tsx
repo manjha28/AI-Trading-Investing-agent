@@ -62,10 +62,12 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     ?? null;
 
   return (
-    <>
-      <PortfolioSummary {...workspace} showRisk />
+    <div className="overview-page">
+      <div className="overview-summary">
+        <PortfolioSummary {...workspace} showRisk />
+      </div>
       {!loadingPortfolio && summary && <>
-        <div className="content-grid">
+        <div className="content-grid overview-workspace-grid">
           <section className="data-section">
             <div className="section-heading"><div><p className="eyebrow">CURRENT EXPOSURE</p><h2>Open positions</h2></div><span className="section-count">{summary.positions.length} records</span></div>
             {summary.positions.length === 0 ? <div className="table-empty">No open positions recorded.</div> : (
@@ -128,6 +130,6 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           <div className="valuation-footnote">Cached quote data only; this overview does not request a fresh quote. Synthetic data is clearly labeled.</div>
         </section>
       </>}
-    </>
+    </div>
   );
 }

@@ -1,12 +1,18 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-import os
+from email.utils import parsedate_to_datetime
+import logging
+import random
+import threading
+import time
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, selectinload
@@ -19,7 +25,6 @@ from app.market_data import (
     InstrumentCandidate,
     MarketDataProvider,
     MarketDataProviderError,
-    MockMarketDataProvider,
     ProviderHealth,
 )
 from app.models import (
@@ -30,7 +35,14 @@ from app.models import (
     MarketBar,
     MarketQuote,
     MarketDataSync,
+    MarketDataSyncAttempt,
     PortfolioTransaction,
+    Portfolio,
+    ResearchNote,
+    ResearchSource,
+    InstrumentResearchBrief,
+    InstrumentResearchRun,
+    InstrumentSourceLink,
     User,
     UserSession,
     WatchlistInstrument,
@@ -53,15 +65,39 @@ router = APIRouter(prefix="/market-data", tags=["market data"])
 indicators_router = APIRouter(tags=["market data indicators"])
 BarInterval = Literal["1d", "1h", "15m", "1m"]
 MAX_BARS = 500
+MAX_BACKFILL_CHUNKS = 20
+MAX_BACKFILL_REQUESTS = 24
+BACKFILL_CHUNK_DAYS = 450
+RETRY_AFTER_CAP_SECONDS = 8
+logger = logging.getLogger(__name__)
+_provider_rate_lock = threading.Lock()
+_provider_next_request: dict[str, float] = {}
+
+
+def _log_market_data_failure(
+    message: str, error: Exception, safe_reason: str, *context: object
+) -> None:
+    sanitized_error = RuntimeError(f"{type(error).__name__}: {safe_reason}")
+    logger.error(
+        message,
+        *context,
+        exc_info=(
+            type(sanitized_error),
+            sanitized_error,
+            error.__traceback__,
+        ),
+    )
 
 
 class MarketDataProviderChain:
     def __init__(self, providers: list[MarketDataProvider]):
         self.providers = providers
-        self.name = providers[0].name
-        self.is_mock = providers[0].is_mock
+        self.name = providers[0].name if providers else "unavailable"
+        self.is_mock = False
 
     def search_instruments(self, query: str, limit: int) -> list[InstrumentCandidate]:
+        if not self.providers:
+            raise MarketDataProviderError("no_market_data_provider_configured")
         last_error: MarketDataProviderError | None = None
         for provider in self.providers:
             try:
@@ -76,11 +112,19 @@ class MarketDataProviderChain:
         return []
 
     def health(self) -> ProviderHealth:
+        if not self.providers:
+            return ProviderHealth(
+                name="unavailable",
+                healthy=False,
+                is_mock=False,
+                capabilities=(),
+                status="no_real_provider_configured",
+            )
         primary = self.providers[0].health()
         return ProviderHealth(
             name=",".join(provider.name for provider in self.providers),
             healthy=primary.healthy,
-            is_mock=all(provider.is_mock for provider in self.providers),
+            is_mock=False,
             capabilities=primary.capabilities,
             status=f"provider_chain:{primary.status}",
         )
@@ -168,16 +212,12 @@ def create_market_data_provider_chain(
         elif name == "upstox":
             if upstox_access_token and upstox_access_token.strip():
                 providers.append(UpstoxProvider(upstox_access_token))
-        elif name == "mock":
-            providers.append(MockMarketDataProvider())
-    if not any(provider.name == "mock" for provider in providers):
-        providers.append(MockMarketDataProvider())
+    providers = [provider for provider in providers if not provider.is_mock]
     return MarketDataProviderChain(providers)
 
 
 def get_market_data_provider() -> MarketDataProvider:
-    names = ("mock",) if os.environ.get("PYTEST_CURRENT_TEST") else None
-    return create_market_data_provider_chain(names)
+    return create_market_data_provider_chain()
 
 
 def _providers(provider: MarketDataProvider) -> list[MarketDataProvider]:
@@ -261,27 +301,6 @@ def _resolve_provider_candidate(
             currency=instrument.currency,
             country=instrument.country,
             timezone_name=instrument.timezone,
-            multiplier=instrument.multiplier,
-            expiry=instrument.expiry,
-            strike=instrument.strike,
-            option_type=instrument.option_type,
-        )
-    elif provider.name == "mock":
-        if not instrument.is_synthetic:
-            raise MarketDataProviderError("synthetic_fallback_disabled_for_real_instrument")
-        provider_id = f"SYNTHETIC|{instrument.id}"
-        candidate = candidate_for_instrument(
-            provider.name,
-            provider_id,
-            instrument.symbol,
-            symbol=instrument.symbol,
-            display_name=instrument.display_name,
-            asset_class=instrument.asset_class,
-            venue=instrument.venue,
-            currency=instrument.currency,
-            country=instrument.country,
-            timezone_name=instrument.timezone,
-            is_synthetic=True,
             multiplier=instrument.multiplier,
             expiry=instrument.expiry,
             strike=instrument.strike,
@@ -486,12 +505,16 @@ def _validated_candidate(
     validated = InstrumentCandidate.model_validate(candidate)
     if validated.provider != provider.name:
         raise MarketDataProviderError("provider_identity_mismatch")
+    if validated.is_synthetic or provider.is_mock:
+        raise MarketDataProviderError("synthetic_market_data_disabled")
     return validated
 
 
 def _upsert_provider_instrument(
     db: Session, candidate: InstrumentCandidate, observed_at: datetime
 ) -> Instrument:
+    if candidate.is_synthetic:
+        raise MarketDataProviderError("synthetic_market_data_disabled")
     mapping = db.scalar(
         select(InstrumentProviderIdentifier)
         .where(
@@ -643,6 +666,12 @@ def _sync_record(
     status: str,
     rows_received: int,
     safe_error_code: str | None,
+    requested_start: datetime | None = None,
+    requested_end: datetime | None = None,
+    requested_limit: int | None = None,
+    rows_written: int = 0,
+    response_status: int | None = None,
+    safe_reason: str | None = None,
 ) -> MarketDataSync:
     sync = db.scalar(
         select(MarketDataSync).where(
@@ -661,6 +690,12 @@ def _sync_record(
             status=status,
             rows_received=rows_received,
             safe_error_code=safe_error_code,
+            requested_start=requested_start,
+            requested_end=requested_end,
+            requested_limit=requested_limit,
+            rows_written=rows_written,
+            response_status=response_status,
+            safe_reason=safe_reason,
         )
         db.add(sync)
     else:
@@ -669,7 +704,186 @@ def _sync_record(
         sync.status = status
         sync.rows_received = rows_received
         sync.safe_error_code = safe_error_code
+        sync.requested_start = requested_start
+        sync.requested_end = requested_end
+        sync.requested_limit = requested_limit
+        sync.rows_written = rows_written
+        sync.response_status = response_status
+        sync.safe_reason = safe_reason
     return sync
+
+
+def _record_sync_attempt(
+    db: Session,
+    *,
+    instrument_id: UUID,
+    interval: str,
+    provider: str,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    response_status: int | None,
+    rows_returned: int,
+    rows_written: int,
+    outcome: str,
+    reason: str | None,
+    attempted_at: datetime,
+) -> None:
+    db.add(MarketDataSyncAttempt(
+        instrument_id=instrument_id,
+        interval=interval,
+        provider=provider,
+        requested_start=start,
+        requested_end=end,
+        requested_limit=limit,
+        response_status=response_status,
+        rows_returned=rows_returned,
+        rows_written=rows_written,
+        outcome=outcome,
+        reason=reason[:200] if reason else None,
+        attempted_at=attempted_at,
+    ))
+
+
+def _normalize_bar_timestamp(
+    bar: HistoricalBar, candidate: InstrumentCandidate, interval: str
+) -> HistoricalBar:
+    if interval != "1d":
+        return bar
+    # Daily candles are keyed by their exchange-local session date, stored at UTC midnight.
+    session_date = bar.timestamp.astimezone(ZoneInfo(candidate.timezone)).date()
+    return bar.model_copy(update={
+        "timestamp": datetime.combine(session_date, datetime.min.time(), tzinfo=timezone.utc)
+    })
+
+
+def _persist_real_bars(
+    db: Session,
+    instrument: Instrument,
+    provider: MarketDataProvider,
+    candidate: InstrumentCandidate,
+    interval: str,
+    bars: list[HistoricalBar],
+    retrieved_at: datetime,
+) -> int:
+    if provider.is_mock or candidate.is_synthetic:
+        raise MarketDataProviderError("synthetic_market_data_disabled")
+    values: list[dict] = []
+    for bar in bars:
+        values.append({
+            "id": uuid4(),
+            "instrument_id": instrument.id,
+            "interval": interval,
+            "timestamp": bar.timestamp,
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "source": provider.name,
+            "retrieved_at": retrieved_at,
+            "is_synthetic": False,
+        })
+    if not values:
+        return 0
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        statement = pg_insert(MarketBar).values(values).on_conflict_do_nothing(
+            index_elements=["instrument_id", "interval", "timestamp", "source"]
+        )
+        result = db.execute(statement)
+        return max(0, result.rowcount or 0)
+    if dialect_name == "sqlite":
+        statement = sqlite_insert(MarketBar).values(values).on_conflict_do_nothing(
+            index_elements=["instrument_id", "interval", "timestamp", "source"]
+        )
+        result = db.execute(statement)
+        return max(0, result.rowcount or 0)
+    written = 0
+    for value in values:
+        existing = db.scalar(
+            select(MarketBar.id).where(
+                MarketBar.instrument_id == instrument.id,
+                MarketBar.interval == interval,
+                MarketBar.timestamp == value["timestamp"],
+                MarketBar.source == provider.name,
+            )
+        )
+        if existing is None:
+            db.add(MarketBar(**value))
+            written += 1
+    return written
+
+
+def _provider_host(provider: MarketDataProvider) -> str:
+    base_url = str(getattr(provider, "_base_url", "https://query1.finance.yahoo.com"))
+    return urlsplit(base_url).hostname or provider.name
+
+
+def _wait_for_provider(host: str) -> None:
+    with _provider_rate_lock:
+        now = time.monotonic()
+        next_allowed = _provider_next_request.get(host, now)
+        scheduled = max(now, next_allowed)
+        _provider_next_request[host] = scheduled + 1.0
+    if scheduled > now:
+        time.sleep(scheduled - now)
+
+
+def _retry_after_seconds(value: str | None, attempt: int) -> float:
+    try:
+        requested = float(value) if value is not None else 0.0
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            requested = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            requested = 0.0
+    backoff = min(RETRY_AFTER_CAP_SECONDS, max(0.5, requested or (2 ** attempt)))
+    return min(RETRY_AFTER_CAP_SECONDS, backoff + random.uniform(0, 0.2))
+
+
+def _fetch_provider_history(
+    active_provider: MarketDataProvider,
+    candidate: InstrumentCandidate,
+    interval: str,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    request_budget: list[int] | None = None,
+    rows_returned: list[int] | None = None,
+) -> list[HistoricalBar]:
+    if active_provider.is_mock or candidate.is_synthetic:
+        raise MarketDataProviderError("synthetic_market_data_disabled")
+    for attempt in range(2):
+        if request_budget is not None:
+            if request_budget[0] <= 0:
+                raise MarketDataProviderError("provider_request_cap_reached")
+            request_budget[0] -= 1
+        _wait_for_provider(_provider_host(active_provider))
+        try:
+            returned = active_provider.get_historical_bars(
+                candidate, interval, start, end, limit
+            )
+            if rows_returned is not None:
+                rows_returned[0] += len(returned)
+            bars = [
+                _normalize_bar_timestamp(HistoricalBar.model_validate(bar), candidate, interval)
+                for bar in returned
+            ]
+            if len(bars) > limit:
+                raise MarketDataProviderError("provider_exceeded_bar_limit")
+            if any(not start <= bar.timestamp < end for bar in bars):
+                raise MarketDataProviderError("provider_returned_out_of_range_bar")
+            return bars
+        except MarketDataProviderError as error:
+            if error.status_code == 429 and attempt == 0:
+                time.sleep(_retry_after_seconds(error.retry_after, attempt))
+                continue
+            raise
+    raise MarketDataProviderError("provider_rate_limit_exceeded", status_code=429)
 
 
 @router.get("/provider", response_model=ProviderResponse)
@@ -692,6 +906,8 @@ def provider_status(
         configuration=(
             "synthetic fixture provider"
             if health.is_mock
+            else "no real market-data provider configured"
+            if health.status == "no_real_provider_configured"
             else "public providers; no API credentials required"
             if health.status.startswith("provider_chain:public_provider")
             else "credentials configured; live connectivity is not verified"
@@ -1049,31 +1265,139 @@ def get_watchlist(
 def cleanup_synthetic_instruments(
     provider: MarketDataProvider = Depends(get_market_data_provider),
     _: UserSession = Depends(require_csrf),
-    _user: User = Depends(get_current_user),
+    active_session: UserSession = Depends(require_verified_market_session),
     db: Session = Depends(get_db),
 ):
+    owned_instrument_ids = set(db.scalars(
+        select(PortfolioTransaction.instrument_id)
+        .join(Portfolio, Portfolio.id == PortfolioTransaction.portfolio_id)
+        .where(
+            Portfolio.user_id == active_session.user_id,
+            PortfolioTransaction.instrument_id.is_not(None),
+        )
+    ))
+    owned_instrument_ids.update(db.scalars(
+        select(WatchlistInstrument.instrument_id).where(
+            WatchlistInstrument.user_id == active_session.user_id
+        )
+    ))
+    if not owned_instrument_ids:
+        return {
+            "deleted_unlinked": 0,
+            "marked_for_relink": 0,
+            "deleted_ids": [],
+            "relink_ids": [],
+            "cleared_transaction_ids": {},
+            "resolved_replacements": {},
+            "resolution_failures": {},
+            "message": "No owned synthetic demo instruments were found.",
+        }
     synthetic_instruments = db.scalars(
         select(Instrument).where(
             Instrument.is_synthetic.is_(True),
+            Instrument.symbol == "ALPHA",
             Instrument.venue.like("DEMO%"),
+            Instrument.id.in_(owned_instrument_ids),
         )
     ).all()
     deleted = 0
     marked_for_relink = 0
     deleted_ids: list[str] = []
     relink_ids: list[str] = []
+    cleared_transaction_ids: dict[str, list[str]] = {}
     resolved_replacements: dict[str, list[str]] = {}
     resolution_failures: dict[str, str] = {}
     for instrument in synthetic_instruments:
-        linked = db.scalar(
+        linked_ids = db.scalars(
             select(PortfolioTransaction.id)
-            .where(PortfolioTransaction.instrument_id == instrument.id)
+            .join(Portfolio, Portfolio.id == PortfolioTransaction.portfolio_id)
+            .where(
+                PortfolioTransaction.instrument_id == instrument.id,
+                Portfolio.user_id == active_session.user_id,
+            )
+        ).all()
+        other_owner_transaction = db.scalar(
+            select(PortfolioTransaction.id)
+            .join(Portfolio, Portfolio.id == PortfolioTransaction.portfolio_id)
+            .where(
+                PortfolioTransaction.instrument_id == instrument.id,
+                Portfolio.user_id != active_session.user_id,
+            )
             .limit(1)
         )
-        if linked is not None:
+        other_owner_watchlist = db.scalar(
+            select(WatchlistInstrument.id)
+            .where(
+                WatchlistInstrument.instrument_id == instrument.id,
+                WatchlistInstrument.user_id != active_session.user_id,
+            )
+            .limit(1)
+        )
+        if other_owner_transaction is not None or other_owner_watchlist is not None:
+            resolution_failures[str(instrument.id)] = "linked_to_another_user"
+            continue
+        if linked_ids:
+            db.execute(
+                PortfolioTransaction.__table__.update()
+                .where(PortfolioTransaction.id.in_(linked_ids))
+                .values(instrument_id=None)
+            )
             instrument.relink_required = True
             marked_for_relink += 1
             relink_ids.append(str(instrument.id))
+            cleared_transaction_ids[str(instrument.id)] = [
+                str(transaction_id) for transaction_id in linked_ids
+            ]
+            for table_model in (
+                MarketBar,
+                MarketQuote,
+                MarketDataSync,
+                MarketDataSyncAttempt,
+                InstrumentFundamental,
+                InstrumentSnapshot,
+                InstrumentProviderIdentifier,
+            ):
+                db.execute(delete(table_model).where(table_model.instrument_id == instrument.id))
+            db.execute(
+                delete(InstrumentSourceLink).where(
+                    InstrumentSourceLink.instrument_id == instrument.id,
+                    InstrumentSourceLink.user_id == active_session.user_id,
+                )
+            )
+            owned_run_ids = select(InstrumentResearchRun.id).where(
+                InstrumentResearchRun.instrument_id == instrument.id,
+                InstrumentResearchRun.user_id == active_session.user_id,
+            )
+            db.execute(
+                delete(InstrumentResearchBrief).where(
+                    InstrumentResearchBrief.instrument_id == instrument.id,
+                    InstrumentResearchBrief.run_id.in_(owned_run_ids),
+                )
+            )
+            db.execute(
+                delete(InstrumentResearchRun).where(
+                    InstrumentResearchRun.instrument_id == instrument.id,
+                    InstrumentResearchRun.user_id == active_session.user_id,
+                )
+            )
+            db.execute(
+                delete(ResearchNote).where(
+                    ResearchNote.instrument_id == instrument.id,
+                    ResearchNote.user_id == active_session.user_id,
+                )
+            )
+            db.execute(
+                delete(ResearchSource).where(
+                    ResearchSource.instrument_id == instrument.id,
+                    ResearchSource.user_id == active_session.user_id,
+                )
+            )
+            db.execute(
+                delete(WatchlistInstrument).where(
+                    WatchlistInstrument.instrument_id == instrument.id,
+                    WatchlistInstrument.user_id == active_session.user_id,
+                )
+            )
             replacements = []
             try:
                 candidates = provider.search_instruments(instrument.symbol, 50)
@@ -1091,6 +1415,62 @@ def cleanup_synthetic_instruments(
             if replacements:
                 resolved_replacements[str(instrument.id)] = replacements
         else:
+            any_transaction = db.scalar(
+                select(PortfolioTransaction.id)
+                .where(PortfolioTransaction.instrument_id == instrument.id)
+                .limit(1)
+            )
+            if any_transaction is not None:
+                resolution_failures[str(instrument.id)] = "linked_to_another_user"
+                continue
+            other_owner_research = any(
+                db.scalar(
+                    select(model.id)
+                    .where(
+                        model.instrument_id == instrument.id,
+                        model.user_id != active_session.user_id,
+                    )
+                    .limit(1)
+                )
+                is not None
+                for model in (
+                    ResearchSource,
+                    ResearchNote,
+                    InstrumentResearchRun,
+                    InstrumentSourceLink,
+                )
+            )
+            other_owner_brief = db.scalar(
+                select(InstrumentResearchBrief.id)
+                .join(
+                    InstrumentResearchRun,
+                    InstrumentResearchRun.id == InstrumentResearchBrief.run_id,
+                )
+                .where(
+                    InstrumentResearchBrief.instrument_id == instrument.id,
+                    InstrumentResearchRun.user_id != active_session.user_id,
+                )
+                .limit(1)
+            )
+            if other_owner_research or other_owner_brief is not None:
+                resolution_failures[str(instrument.id)] = "linked_to_another_user"
+                continue
+            for table_model in (
+                MarketBar,
+                MarketQuote,
+                MarketDataSync,
+                MarketDataSyncAttempt,
+                InstrumentFundamental,
+                InstrumentSnapshot,
+                InstrumentProviderIdentifier,
+                InstrumentSourceLink,
+                InstrumentResearchBrief,
+                InstrumentResearchRun,
+                ResearchNote,
+                ResearchSource,
+                WatchlistInstrument,
+            ):
+                db.execute(delete(table_model).where(table_model.instrument_id == instrument.id))
             db.delete(instrument)
             deleted += 1
             deleted_ids.append(str(instrument.id))
@@ -1100,10 +1480,183 @@ def cleanup_synthetic_instruments(
         "marked_for_relink": marked_for_relink,
         "deleted_ids": deleted_ids,
         "relink_ids": relink_ids,
+        "cleared_transaction_ids": cleared_transaction_ids,
         "resolved_replacements": resolved_replacements,
         "resolution_failures": resolution_failures,
-        "message": "Synthetic holdings were retained and marked for relinking.",
+        "message": "Linked ALPHA instruments were retained, unlinked from transactions, and marked for relinking.",
     }
+
+
+def _user_market_data_instrument_ids(db: Session, user_id: UUID) -> set[UUID]:
+    instrument_ids = set(db.scalars(
+        select(WatchlistInstrument.instrument_id).where(
+            WatchlistInstrument.user_id == user_id
+        )
+    ))
+    portfolios = list(db.scalars(select(Portfolio).where(Portfolio.user_id == user_id)))
+    from app.api.portfolio_transactions import calculate_portfolio_ledger
+
+    for portfolio in portfolios:
+        ledger = calculate_portfolio_ledger(db, user_id, portfolio.id)
+        open_symbols = {
+            symbol
+            for symbol, position in ledger.positions.items()
+            if position.quantity > 0
+        }
+        if not open_symbols:
+            continue
+        rows = db.execute(
+            select(PortfolioTransaction.symbol, PortfolioTransaction.instrument_id)
+            .where(
+                PortfolioTransaction.portfolio_id == portfolio.id,
+                PortfolioTransaction.instrument_id.is_not(None),
+                PortfolioTransaction.transaction_type.in_(("buy", "sell")),
+            )
+            .order_by(
+                PortfolioTransaction.occurred_at.desc(),
+                PortfolioTransaction.created_at.desc(),
+                PortfolioTransaction.id.desc(),
+            )
+        ).all()
+        linked: dict[str, UUID] = {}
+        for symbol, instrument_id in rows:
+            if symbol in open_symbols and symbol not in linked:
+                linked[symbol] = instrument_id
+        instrument_ids.update(linked.values())
+    return instrument_ids
+
+
+@router.post("/purge-synthetic")
+def purge_synthetic_market_data(
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        select(MarketBar.instrument_id, func.count(MarketBar.id))
+        .where(MarketBar.is_synthetic.is_(True))
+        .group_by(MarketBar.instrument_id)
+    ).all()
+    quote_rows = db.execute(
+        select(MarketQuote.instrument_id, func.count(MarketQuote.id))
+        .where(MarketQuote.is_synthetic.is_(True))
+        .group_by(MarketQuote.instrument_id)
+    ).all()
+    counts = {
+        instrument_id: {"bars_deleted": count, "quotes_deleted": 0}
+        for instrument_id, count in rows
+    }
+    for instrument_id, count in quote_rows:
+        counts.setdefault(instrument_id, {"bars_deleted": 0, "quotes_deleted": 0})
+        counts[instrument_id]["quotes_deleted"] = count
+    db.execute(delete(MarketBar).where(MarketBar.is_synthetic.is_(True)))
+    db.execute(delete(MarketQuote).where(MarketQuote.is_synthetic.is_(True)))
+    db.commit()
+    return {
+        "deleted_by_instrument": [
+            {
+                "instrument_id": str(instrument_id),
+                **values,
+            }
+            for instrument_id, values in counts.items()
+        ],
+        "bars_deleted": sum(item["bars_deleted"] for item in counts.values()),
+        "quotes_deleted": sum(item["quotes_deleted"] for item in counts.values()),
+    }
+
+
+@router.get("/syncs")
+def get_market_data_syncs(
+    active_session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+):
+    instrument_ids = _user_market_data_instrument_ids(db, active_session.user_id)
+    if not instrument_ids:
+        return {"attempts": []}
+    attempts = db.execute(
+        select(MarketDataSyncAttempt, Instrument.symbol)
+        .join(Instrument, Instrument.id == MarketDataSyncAttempt.instrument_id)
+        .where(MarketDataSyncAttempt.instrument_id.in_(instrument_ids))
+        .order_by(MarketDataSyncAttempt.attempted_at.desc())
+        .limit(20)
+    ).all()
+    return {
+        "attempts": [
+            {
+                "instrument_id": attempt.instrument_id,
+                "symbol": symbol,
+                "provider": attempt.provider,
+                "interval": attempt.interval,
+                "requested_start": _utc(attempt.requested_start),
+                "requested_end": _utc(attempt.requested_end),
+                "requested_limit": attempt.requested_limit,
+                "response_status": attempt.response_status,
+                "rows_returned": attempt.rows_returned,
+                "rows_written": attempt.rows_written,
+                "outcome": attempt.outcome,
+                "reason": attempt.reason,
+                "attempted_at": _utc(attempt.attempted_at),
+            }
+            for attempt, symbol in attempts
+        ]
+    }
+
+
+@router.get("/coverage")
+def get_market_data_coverage(
+    active_session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+):
+    instrument_ids = _user_market_data_instrument_ids(db, active_session.user_id)
+    if not instrument_ids:
+        return {"instruments": []}
+    instruments = db.scalars(
+        select(Instrument)
+        .where(Instrument.id.in_(instrument_ids))
+        .order_by(Instrument.symbol, Instrument.venue)
+    ).all()
+    result = []
+    for instrument in instruments:
+        bars = db.execute(
+            select(func.count(MarketBar.id), func.min(MarketBar.timestamp), func.max(MarketBar.timestamp))
+            .where(
+                MarketBar.instrument_id == instrument.id,
+                MarketBar.interval == "1d",
+                MarketBar.is_synthetic.is_(False),
+            )
+        ).one()
+        sync = db.scalar(
+            select(MarketDataSync)
+            .where(
+                MarketDataSync.instrument_id == instrument.id,
+                MarketDataSync.interval == "1d",
+            )
+            .order_by(MarketDataSync.attempted_at.desc())
+            .limit(1)
+        )
+        if sync is None:
+            freshness_status = "never-synced"
+        elif sync.status != "success":
+            freshness_status = "failed"
+        elif bars[2] is None or (
+            datetime.now(timezone.utc) - _utc(bars[2])
+        ).total_seconds() > settings.market_data_daily_freshness_seconds:
+            freshness_status = "stale"
+        else:
+            freshness_status = "fresh"
+        result.append({
+            "instrument_id": instrument.id,
+            "symbol": instrument.symbol,
+            "display_name": instrument.display_name,
+            "venue": instrument.venue,
+            "bars_stored": bars[0],
+            "oldest_bar": _utc(bars[1]) if bars[1] else None,
+            "newest_bar": _utc(bars[2]) if bars[2] else None,
+            "last_sync_status": sync.status if sync else None,
+            "last_sync_reason": sync.safe_reason or sync.safe_error_code if sync else None,
+            "freshness_status": freshness_status,
+        })
+    return {"instruments": result}
 
 
 @router.post("/watchlist/{instrument_id}", status_code=204)
@@ -1212,6 +1765,8 @@ def latest_quote(
             bar = HistoricalBar.model_validate(active_provider.get_latest_quote(candidate))
         except (MarketDataProviderError, TimeoutError, ValueError):
             continue
+        if active_provider.is_mock or candidate.is_synthetic:
+            continue
 
         retrieved_at = datetime.now(timezone.utc)
         if cached_quote is None:
@@ -1308,13 +1863,15 @@ def sync_history(
 ):
     instrument = _get_instrument(db, instrument_id)
     start_utc, end_utc = _validate_range(interval, start, end)
+    if instrument.is_synthetic:
+        raise HTTPException(status_code=409, detail="Synthetic instruments cannot sync market history.")
     cached_bars = list(
         db.scalars(
             select(MarketBar)
             .where(
                 MarketBar.instrument_id == instrument.id,
                 MarketBar.interval == interval,
-                MarketBar.is_synthetic.is_(instrument.is_synthetic),
+                MarketBar.is_synthetic.is_(False),
                 MarketBar.timestamp >= start_utc,
                 MarketBar.timestamp < end_utc,
             )
@@ -1328,9 +1885,7 @@ def sync_history(
             missing_ranges.append((start_utc, cached_timestamps[0]))
         for previous, current in zip(cached_timestamps, cached_timestamps[1:]):
             if current - previous > timedelta(days=3):
-                missing_ranges.append(
-                    (previous + timedelta(days=1), current)
-                )
+                missing_ranges.append((previous + timedelta(days=1), current))
         if cached_timestamps[-1] + timedelta(days=1) < end_utc:
             missing_ranges.append(
                 (cached_timestamps[-1] + timedelta(days=1), end_utc)
@@ -1351,7 +1906,6 @@ def sync_history(
         missing_ranges.append((start_utc, end_utc))
 
     if not missing_ranges:
-        db.commit()
         return get_history(
             instrument_id=instrument_id,
             interval=interval,
@@ -1368,8 +1922,10 @@ def sync_history(
     validated_bars: list[HistoricalBar] = []
     yfinance_lookback_error: str | None = None
     for active_provider in _providers(provider):
-        if active_provider.is_mock and not instrument.is_synthetic:
-            continue
+        attempted_at = datetime.now(timezone.utc)
+        response_status = None
+        safe_error = None
+        provider_rows_returned = [0]
         try:
             candidate, _mapping = _resolve_provider_candidate(db, instrument, active_provider)
             provider_bars: list[HistoricalBar] = []
@@ -1377,21 +1933,15 @@ def sync_history(
                 remaining = limit - len(provider_bars)
                 if remaining <= 0:
                     break
-                try:
-                    bars = active_provider.get_historical_bars(
-                        candidate, interval, range_start, range_end, remaining
-                    )
-                    candidate_bars = [HistoricalBar.model_validate(bar) for bar in bars]
-                    if len(candidate_bars) > remaining:
-                        raise MarketDataProviderError("provider_exceeded_bar_limit")
-                    if any(
-                        not range_start <= bar.timestamp < range_end
-                        for bar in candidate_bars
-                    ):
-                        raise MarketDataProviderError("provider_returned_out_of_range_bar")
-                    provider_bars.extend(candidate_bars)
-                except MarketDataProviderError:
-                    raise
+                provider_bars.extend(_fetch_provider_history(
+                    active_provider,
+                    candidate,
+                    interval,
+                    range_start,
+                    range_end,
+                    remaining,
+                    rows_returned=provider_rows_returned,
+                ))
             if not provider_bars:
                 raise MarketDataProviderError("provider_no_history_for_range")
             selected_provider = active_provider
@@ -1400,31 +1950,65 @@ def sync_history(
                 {bar.timestamp: bar for bar in provider_bars}.values(),
                 key=lambda bar: bar.timestamp,
             )
-            break
         except MarketDataProviderError as error:
+            _log_market_data_failure(
+                "Market history provider failed (provider=%s instrument_id=%s interval=%s)",
+                error,
+                error.code,
+                active_provider.name,
+                instrument.id,
+                interval,
+            )
             if error.code.startswith("yfinance_") and "lookback_exceeded" in error.code:
                 yfinance_lookback_error = error.code
+            response_status = error.status_code or getattr(
+                active_provider, "last_response_status", None
+            )
+            safe_error = error.code
+        except Exception as error:
+            _log_market_data_failure(
+                "Unexpected market history failure (provider=%s instrument_id=%s interval=%s)",
+                error,
+                "provider_unavailable_or_invalid_response",
+                active_provider.name,
+                instrument.id,
+                interval,
+            )
+            safe_error = "provider_unavailable_or_invalid_response"
+            response_status = getattr(active_provider, "last_response_status", None)
+        if selected_provider is not active_provider:
             _sync_record(
                 db,
                 instrument.id,
                 interval,
                 source=active_provider.name,
-                attempted_at=datetime.now(timezone.utc),
+                attempted_at=attempted_at,
                 status="unavailable",
-                rows_received=0,
-                safe_error_code=error.code[:48],
+                rows_received=provider_rows_returned[0],
+                safe_error_code=(safe_error or "provider_unavailable")[:48],
+                requested_start=start_utc,
+                requested_end=end_utc,
+                requested_limit=limit,
+                response_status=response_status,
+                safe_reason=safe_error or "provider_unavailable",
             )
-        except (TimeoutError, ValueError):
-            _sync_record(
+            _record_sync_attempt(
                 db,
-                instrument.id,
-                interval,
-                source=active_provider.name,
-                attempted_at=datetime.now(timezone.utc),
-                status="unavailable",
-                rows_received=0,
-                safe_error_code="provider_unavailable_or_invalid_response",
+                instrument_id=instrument.id,
+                interval=interval,
+                provider=active_provider.name,
+                start=start_utc,
+                end=end_utc,
+                limit=limit,
+                response_status=response_status,
+                rows_returned=provider_rows_returned[0],
+                rows_written=0,
+                outcome="unavailable",
+                reason=safe_error or "provider_unavailable",
+                attempted_at=attempted_at,
             )
+            continue
+        break
     if selected_provider is None or selected_candidate is None:
         db.commit()
         if yfinance_lookback_error:
@@ -1449,47 +2033,15 @@ def sync_history(
         raise HTTPException(status_code=503, detail="Historical market data is temporarily unavailable")
 
     retrieved_at = datetime.now(timezone.utc)
-    values = [
-        {
-            "id": uuid4(),
-            "instrument_id": instrument.id,
-            "interval": interval,
-            "timestamp": bar.timestamp,
-            "open": bar.open,
-            "high": bar.high,
-            "low": bar.low,
-            "close": bar.close,
-            "volume": bar.volume,
-            "source": selected_provider.name,
-            "retrieved_at": retrieved_at,
-            "is_synthetic": selected_provider.is_mock or selected_candidate.is_synthetic,
-        }
-        for bar in validated_bars
-    ]
-    if values:
-        dialect_name = db.get_bind().dialect.name
-        if dialect_name == "postgresql":
-            statement = pg_insert(MarketBar).values(values).on_conflict_do_nothing(
-                index_elements=["instrument_id", "interval", "timestamp", "source"]
-            )
-            db.execute(statement)
-        elif dialect_name == "sqlite":
-            statement = sqlite_insert(MarketBar).values(values).on_conflict_do_nothing(
-                index_elements=["instrument_id", "interval", "timestamp", "source"]
-            )
-            db.execute(statement)
-        else:
-            for value in values:
-                existing = db.scalar(
-                    select(MarketBar.id).where(
-                        MarketBar.instrument_id == instrument.id,
-                        MarketBar.interval == interval,
-                        MarketBar.timestamp == value["timestamp"],
-                        MarketBar.source == selected_provider.name,
-                    )
-                )
-                if existing is None:
-                    db.add(MarketBar(**value))
+    rows_written = _persist_real_bars(
+        db,
+        instrument,
+        selected_provider,
+        selected_candidate,
+        interval,
+        validated_bars,
+        retrieved_at,
+    )
 
     _sync_record(
         db,
@@ -1498,8 +2050,29 @@ def sync_history(
         source=selected_provider.name,
         attempted_at=retrieved_at,
         status="success",
-        rows_received=len(validated_bars),
+        rows_received=provider_rows_returned[0],
         safe_error_code=None,
+        requested_start=start_utc,
+        requested_end=end_utc,
+        requested_limit=limit,
+        rows_written=rows_written,
+        response_status=getattr(selected_provider, "last_response_status", None),
+        safe_reason=None if rows_written else "provider_data_already_stored",
+    )
+    _record_sync_attempt(
+        db,
+        instrument_id=instrument.id,
+        interval=interval,
+        provider=selected_provider.name,
+        start=start_utc,
+        end=end_utc,
+        limit=limit,
+        response_status=getattr(selected_provider, "last_response_status", None),
+        rows_returned=provider_rows_returned[0],
+        rows_written=rows_written,
+        outcome="success" if rows_written else "unavailable",
+        reason=None if rows_written else "provider_data_already_stored",
+        attempted_at=retrieved_at,
     )
     db.commit()
     return get_history(
@@ -1512,6 +2085,328 @@ def sync_history(
         _user=_user,
         db=db,
     )
+
+
+def _count_real_daily_bars(
+    db: Session, instrument_id: UUID, start: datetime, end: datetime
+) -> int:
+    return int(db.scalar(
+        select(func.count(MarketBar.id)).where(
+            MarketBar.instrument_id == instrument_id,
+            MarketBar.interval == "1d",
+            MarketBar.is_synthetic.is_(False),
+            MarketBar.timestamp >= start,
+            MarketBar.timestamp < end,
+        )
+    ) or 0)
+
+
+def _backfill_instrument(
+    db: Session,
+    instrument: Instrument,
+    provider: MarketDataProvider,
+    *,
+    years: int,
+    request_budget: list[int],
+) -> dict:
+    if instrument.is_synthetic:
+        return {
+            "instrument_id": str(instrument.id),
+            "symbol": instrument.symbol,
+            "status": "unavailable",
+            "bars_before": 0,
+            "bars_after": 0,
+            "chunks_attempted": 0,
+            "chunks_failed": 0,
+            "chunks": [],
+            "reason": "synthetic_instrument_requires_relink",
+        }
+    end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = (end - timedelta(days=365 * years)).replace(hour=0)
+    bars_before = _count_real_daily_bars(db, instrument.id, start, end)
+    chunks: list[dict] = []
+    chunks_failed = 0
+    chunk_start = start
+    while chunk_start < end and len(chunks) < MAX_BACKFILL_CHUNKS:
+        chunk_end = min(chunk_start + timedelta(days=BACKFILL_CHUNK_DAYS), end)
+        detail = {
+            "start": chunk_start,
+            "end": chunk_end,
+            "provider": None,
+            "response_status": None,
+            "rows_returned": 0,
+            "rows_written": 0,
+            "outcome": "unavailable",
+            "reason": None,
+        }
+        succeeded = False
+        rate_limited = False
+        for active_provider in _providers(provider):
+            attempted_at = datetime.now(timezone.utc)
+            detail["provider"] = active_provider.name
+            provider_rows_returned = [0]
+            try:
+                candidate, _mapping = _resolve_provider_candidate(db, instrument, active_provider)
+                bars = _fetch_provider_history(
+                    active_provider,
+                    candidate,
+                    "1d",
+                    chunk_start,
+                    chunk_end,
+                    MAX_BARS,
+                    request_budget,
+                    rows_returned=provider_rows_returned,
+                )
+                if not bars:
+                    raise MarketDataProviderError("provider_no_history_for_range")
+                detail["rows_returned"] = len(bars)
+                detail["response_status"] = getattr(active_provider, "last_response_status", None)
+                detail["rows_written"] = _persist_real_bars(
+                    db,
+                    instrument,
+                    active_provider,
+                    candidate,
+                    "1d",
+                    bars,
+                    attempted_at,
+                )
+                detail["outcome"] = (
+                    "success" if detail["rows_written"] else "unchanged"
+                )
+                detail["reason"] = (
+                    None if detail["rows_written"] else "no_new_bars_written"
+                )
+                _sync_record(
+                    db,
+                    instrument.id,
+                    "1d",
+                    source=active_provider.name,
+                    attempted_at=attempted_at,
+                    status="success",
+                    rows_received=len(bars),
+                    safe_error_code=None,
+                    requested_start=chunk_start,
+                    requested_end=chunk_end,
+                    requested_limit=MAX_BARS,
+                    rows_written=detail["rows_written"],
+                    response_status=detail["response_status"],
+                    safe_reason=detail["reason"],
+                )
+                _record_sync_attempt(
+                    db,
+                    instrument_id=instrument.id,
+                    interval="1d",
+                    provider=active_provider.name,
+                    start=chunk_start,
+                    end=chunk_end,
+                    limit=MAX_BARS,
+                    response_status=detail["response_status"],
+                    rows_returned=len(bars),
+                    rows_written=detail["rows_written"],
+                    outcome=detail["outcome"],
+                    reason=detail["reason"],
+                    attempted_at=attempted_at,
+                )
+                succeeded = True
+                break
+            except MarketDataProviderError as error:
+                _log_market_data_failure(
+                    "Market history backfill chunk failed (provider=%s instrument_id=%s)",
+                    error,
+                    error.code,
+                    active_provider.name,
+                    instrument.id,
+                )
+                detail["response_status"] = error.status_code or getattr(
+                    active_provider, "last_response_status", None
+                )
+                detail["rows_returned"] = provider_rows_returned[0]
+                detail["reason"] = error.code
+                _sync_record(
+                    db,
+                    instrument.id,
+                    "1d",
+                    source=active_provider.name,
+                    attempted_at=attempted_at,
+                    status="unavailable",
+                    rows_received=provider_rows_returned[0],
+                    safe_error_code=error.code[:48],
+                    requested_start=chunk_start,
+                    requested_end=chunk_end,
+                    requested_limit=MAX_BARS,
+                    response_status=detail["response_status"],
+                    safe_reason=error.code,
+                )
+                _record_sync_attempt(
+                    db,
+                    instrument_id=instrument.id,
+                    interval="1d",
+                    provider=active_provider.name,
+                    start=chunk_start,
+                    end=chunk_end,
+                    limit=MAX_BARS,
+                    response_status=detail["response_status"],
+                    rows_returned=provider_rows_returned[0],
+                    rows_written=0,
+                    outcome="unavailable",
+                    reason=error.code,
+                    attempted_at=attempted_at,
+                )
+                if error.status_code == 429:
+                    rate_limited = True
+                    break
+                if error.code == "provider_request_cap_reached":
+                    break
+            except Exception as error:
+                _log_market_data_failure(
+                    "Unexpected market history backfill failure (provider=%s instrument_id=%s)",
+                    error,
+                    "provider_unavailable_or_invalid_response",
+                    active_provider.name,
+                    instrument.id,
+                )
+                safe_reason = "provider_unavailable_or_invalid_response"
+                detail["reason"] = safe_reason
+                detail["rows_returned"] = provider_rows_returned[0]
+                detail["response_status"] = getattr(
+                    active_provider, "last_response_status", None
+                )
+                _sync_record(
+                    db,
+                    instrument.id,
+                    "1d",
+                    source=active_provider.name,
+                    attempted_at=attempted_at,
+                    status="unavailable",
+                    rows_received=provider_rows_returned[0],
+                    safe_error_code=safe_reason,
+                    requested_start=chunk_start,
+                    requested_end=chunk_end,
+                    requested_limit=MAX_BARS,
+                    response_status=detail["response_status"],
+                    safe_reason=safe_reason,
+                )
+                _record_sync_attempt(
+                    db,
+                    instrument_id=instrument.id,
+                    interval="1d",
+                    provider=active_provider.name,
+                    start=chunk_start,
+                    end=chunk_end,
+                    limit=MAX_BARS,
+                    response_status=detail["response_status"],
+                    rows_returned=provider_rows_returned[0],
+                    rows_written=0,
+                    outcome="unavailable",
+                    reason=safe_reason,
+                    attempted_at=attempted_at,
+                )
+        if not succeeded:
+            chunks_failed += 1
+            if detail["reason"] is None:
+                detail["reason"] = (
+                    "provider_request_cap_reached"
+                    if request_budget[0] <= 0
+                    else "no_real_provider_available"
+                )
+            if rate_limited:
+                detail["outcome"] = "partial"
+            if request_budget[0] <= 0 or rate_limited:
+                chunks.append(detail)
+                db.commit()
+                break
+        chunks.append(detail)
+        db.commit()
+        chunk_start = chunk_end
+    bars_after = _count_real_daily_bars(db, instrument.id, start, end)
+    written = bars_after - bars_before
+    status = (
+        "partial" if chunks_failed
+        else "success" if written > 0
+        else "unchanged"
+    )
+    return {
+        "instrument_id": str(instrument.id),
+        "symbol": instrument.symbol,
+        "status": status,
+        "bars_before": bars_before,
+        "bars_after": bars_after,
+        "chunks_attempted": len(chunks),
+        "chunks_failed": chunks_failed,
+        "chunks": chunks,
+    }
+
+
+@router.post("/instruments/{instrument_id}/history/backfill")
+def backfill_instrument_history(
+    instrument_id: UUID,
+    years: int = Query(default=2, ge=1, le=10),
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    provider: MarketDataProvider = Depends(get_market_data_provider),
+    db: Session = Depends(get_db),
+):
+    instrument = _get_instrument(db, instrument_id)
+    if instrument_id not in _user_market_data_instrument_ids(
+        db, active_session.user_id
+    ):
+        raise HTTPException(status_code=404, detail="Instrument is not linked to this user's holdings or watchlist.")
+    budget = [MAX_BACKFILL_REQUESTS]
+    return _backfill_instrument(
+        db, instrument, provider, years=years, request_budget=budget
+    )
+
+
+@router.post("/backfill/holdings")
+def backfill_open_holdings(
+    years: int = Query(default=2, ge=1, le=10),
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    provider: MarketDataProvider = Depends(get_market_data_provider),
+    db: Session = Depends(get_db),
+):
+    instrument_ids = sorted(
+        _user_market_data_instrument_ids(db, active_session.user_id),
+        key=str,
+    )
+    instruments = [
+        instrument for instrument_id in instrument_ids
+        if (instrument := db.get(Instrument, instrument_id)) is not None
+    ]
+    request_budget = [MAX_BACKFILL_REQUESTS]
+    results = []
+    for instrument in instruments:
+        if request_budget[0] <= 0:
+            results.append({
+                "instrument_id": str(instrument.id),
+                "symbol": instrument.symbol,
+                "status": "partial",
+                "bars_before": None,
+                "bars_after": None,
+                "chunks_attempted": 0,
+                "chunks_failed": 0,
+                "chunks": [],
+                "reason": "provider_request_cap_reached",
+            })
+            continue
+        results.append(_backfill_instrument(
+            db,
+            instrument,
+            provider,
+            years=years,
+            request_budget=request_budget,
+        ))
+    return {
+        "instruments": results,
+        "provider_requests_remaining": request_budget[0],
+        "status": (
+            "partial"
+            if any(result["status"] in {"partial", "unavailable"} for result in results)
+            else "success"
+            if any(result["status"] == "success" for result in results)
+            else "unchanged"
+        ),
+    }
 
 
 @router.get("/instruments/{instrument_id}/history", response_model=HistoryResponse)

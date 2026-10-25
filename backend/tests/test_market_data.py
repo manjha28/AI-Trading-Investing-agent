@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,15 +11,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api.market_data import get_market_data_provider
+from app.api import auth
 from app.db import Base, get_db
 from app.main import app
 from app.market_data import (
     HistoricalBar,
     InstrumentCandidate,
     MarketDataProviderError,
-    MockMarketDataProvider,
 )
 from app.models import MarketBar, MarketDataSync, MarketQuote
+from market_data_fixtures import RecordedMarketDataProvider
 
 
 @pytest.fixture
@@ -41,17 +43,22 @@ def client(test_engine) -> Iterator[TestClient]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_market_data_provider] = RecordedMarketDataProvider
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
 
 
 def register(client: TestClient, email: str = "market@example.com") -> None:
-    response = client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": "correct-horse-battery"},
-    )
-    assert response.status_code == 202, response.text
+    delivered: list[str] = []
+    with patch.object(auth, "send_verification_email", lambda _email, token: delivered.append(token)):
+        response = client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "correct-horse-battery"},
+        )
+        assert response.status_code == 202, response.text
+        verified = client.post("/api/v1/auth/verify-email", json={"token": delivered[0]})
+        assert verified.status_code == 200, verified.text
     login_response = client.post(
         "/api/v1/auth/login",
         json={"email": email, "password": "correct-horse-battery"},
@@ -84,7 +91,7 @@ def test_watchlist_is_user_scoped_and_reports_cached_quote_provenance(
             "asset_class": instrument["asset_class"],
             "venue": instrument["venue"],
             "currency": instrument["currency"],
-            "is_synthetic": True,
+            "is_synthetic": False,
             "relink_required": False,
             "quote": None,
         }
@@ -93,8 +100,8 @@ def test_watchlist_is_user_scoped_and_reports_cached_quote_provenance(
     quote = client.get(f"/api/v1/market-data/instruments/{instrument_id}/quote")
     assert quote.status_code == 200, quote.text
     entry = client.get("/api/v1/market-data/watchlist").json()[0]
-    assert entry["quote"]["source"] == "mock"
-    assert entry["quote"]["is_synthetic"] is True
+    assert entry["quote"]["source"] == "recorded"
+    assert entry["quote"]["is_synthetic"] is False
     assert entry["quote"]["is_verified"] is False
     assert entry["quote"]["close"] == quote.json()["bar"]["close"]
 
@@ -115,20 +122,20 @@ def test_search_keeps_same_symbol_in_different_venues_distinct(client: TestClien
     assert {item["symbol"] for item in instruments} == {"ALPHA"}
     assert {item["venue"] for item in instruments} == {"DEMO_US", "DEMO_IN"}
     assert len({item["id"] for item in instruments}) == 2
-    assert all(item["is_synthetic"] for item in instruments)
+    assert all(not item["is_synthetic"] for item in instruments)
     assert all(item["provider_identifiers"][0]["is_verified"] is False for item in instruments)
 
 
-def test_mock_provider_reports_capabilities_and_synthetic_status(client: TestClient) -> None:
+def test_recorded_fixture_reports_real_data_capabilities(client: TestClient) -> None:
     register(client)
 
     response = client.get("/api/v1/market-data/provider")
 
     assert response.status_code == 200
     assert response.json()["provider"]["healthy"] is True
-    assert response.json()["provider"]["is_mock"] is True
+    assert response.json()["provider"]["is_mock"] is False
     assert "historical_ohlcv" in response.json()["provider"]["capabilities"]
-    assert response.json()["configuration"] == "synthetic fixture provider"
+    assert response.json()["provider"]["status"] == "recorded_test_fixture"
 
 
 def test_history_sync_is_idempotent_and_returns_provenance_and_freshness(
@@ -150,8 +157,8 @@ def test_history_sync_is_idempotent_and_returns_provenance_and_freshness(
     assert len(first.json()["bars"]) == 3
     assert second.json()["bars"] == first.json()["bars"]
     assert first.json()["freshness"]["status"] == "fresh"
-    assert first.json()["freshness"]["source"] == "mock"
-    assert first.json()["freshness"]["is_synthetic"] is True
+    assert first.json()["freshness"]["source"] == "recorded"
+    assert first.json()["freshness"]["is_synthetic"] is False
     assert first.json()["freshness"]["latest_bar_timestamp"] == "2026-01-03T00:00:00Z"
     with Session(test_engine) as session:
         assert session.scalar(select(func.count()).select_from(MarketBar)) == 3
@@ -218,7 +225,7 @@ def test_stored_history_is_unavailable_before_fetch_and_supports_pagination(
 def test_provider_failure_is_safely_reported_and_freshness_unavailable(client: TestClient) -> None:
     register(client)
 
-    class FailingProvider(MockMarketDataProvider):
+    class FailingProvider(RecordedMarketDataProvider):
         def get_historical_bars(self, instrument, interval, start, end, limit):
             raise MarketDataProviderError("secret_token_must_not_be_returned")
 
@@ -247,7 +254,7 @@ def test_malformed_provider_bars_are_rejected_without_partial_storage(
 ) -> None:
     register(client, "malformed-market@example.com")
 
-    class MalformedProvider(MockMarketDataProvider):
+    class MalformedProvider(RecordedMarketDataProvider):
         def get_historical_bars(self, instrument, interval, start, end, limit):
             return [
                 {
@@ -290,7 +297,7 @@ def test_provider_mapping_lookup_and_quote_are_instrument_specific(client: TestC
     assert response.status_code == 200, response.text
     assert response.json()["symbol"] == "ALPHA"
     assert response.json()["currency"] == "USD"
-    assert response.json()["is_synthetic"] is True
+    assert response.json()["is_synthetic"] is False
     assert response.json()["freshness"] == "fresh"
     assert response.json()["is_cached"] is False
     assert response.json()["is_verified"] is False
@@ -301,7 +308,7 @@ def test_quote_endpoint_uses_fresh_cache_without_requerying_provider(
 ) -> None:
     register(client, "cached-quote@example.com")
 
-    class CountingProvider(MockMarketDataProvider):
+    class CountingProvider(RecordedMarketDataProvider):
         quote_requests = 0
 
         def get_latest_quote(self, instrument):
@@ -341,7 +348,7 @@ def test_quote_refresh_failure_returns_cached_quote_as_stale(
         quote.retrieved_at = datetime.now(timezone.utc) - timedelta(minutes=5)
         session.commit()
 
-    class FailingProvider(MockMarketDataProvider):
+    class FailingProvider(RecordedMarketDataProvider):
         def get_latest_quote(self, instrument):
             raise MarketDataProviderError("upstream failure with private details")
 
@@ -357,7 +364,6 @@ def test_quote_refresh_failure_returns_cached_quote_as_stale(
 
 
 def test_instrument_and_bar_models_reject_invalid_contracts_and_ohlc() -> None:
-    provider = MockMarketDataProvider()
     option = InstrumentCandidate(
         provider="mock",
         provider_instrument_id="OPTION-TEST",
