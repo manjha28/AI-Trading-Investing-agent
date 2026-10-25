@@ -5,7 +5,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from app.api.market_data import create_market_data_provider_chain, get_market_data_provider
+from app.api.market_data import create_market_data_provider_chain
 from app.config import settings
 from app.market_data import InstrumentCandidate, MarketDataProviderError
 from app.twelve_data import TwelveDataProvider
@@ -268,7 +268,7 @@ def test_provider_factory_missing_credentials_falls_through_to_unkeyed_provider(
 
 
 def test_provider_factory_does_not_select_mock(monkeypatch) -> None:
-    provider = get_market_data_provider()
+    provider = create_market_data_provider_chain(("yfinance",))
 
     assert "mock" not in [item.name for item in provider.providers]
     assert provider.is_mock is False

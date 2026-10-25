@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
 import '../brokers.css';
 
@@ -12,6 +12,14 @@ type Broker = {
   integration_status: 'available' | 'setup_required' | 'pending' | 'synthetic';
   expires_at: string | null;
   last_synced_at: string | null;
+};
+type AngelOneMarketSource = {
+  available: boolean;
+  status: string;
+  expires_at: string | null;
+};
+type AngelOneMarketSettings = {
+  sources: { name: string; label: string; available: boolean; status: string; expires_at?: string | null }[];
 };
 
 type Difference = {
@@ -28,6 +36,15 @@ type BrokerAccount = {
   profile: Record<string, unknown>;
   funds: unknown;
   order_history: unknown[];
+  synthetic: boolean;
+};
+
+type SyncResult = {
+  sync_status: 'successful' | 'partial';
+  authentication_status: 'connected' | 'expired';
+  endpoint_results: Record<string, { status: 'succeeded' | 'failed'; reason?: string }>;
+  holdings_count: number;
+  positions_count: number;
   synthetic: boolean;
 };
 
@@ -62,12 +79,31 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
   const [differences, setDifferences] = useState<Record<string, Difference[]>>({});
   const [accounts, setAccounts] = useState<Record<string, BrokerAccount>>({});
   const [accountErrors, setAccountErrors] = useState<Record<string, string>>({});
+  const [syncResults, setSyncResults] = useState<Record<string, SyncResult>>({});
+  const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
   const [clientId, setClientId] = useState('');
   const [busy, setBusy] = useState('');
   const [failedBroker, setFailedBroker] = useState('');
   const [error, setError] = useState('');
   const [brokerApiUnavailable, setBrokerApiUnavailable] = useState(false);
   const [notice, setNotice] = useState('');
+  const [angelOneSource, setAngelOneSource] = useState<AngelOneMarketSource | null>(null);
+  const [angelOneClientCode, setAngelOneClientCode] = useState('');
+  const [angelOnePin, setAngelOnePin] = useState('');
+  const [angelOneTotp, setAngelOneTotp] = useState('');
+  const [angelOneBusy, setAngelOneBusy] = useState(false);
+  const [angelOneError, setAngelOneError] = useState('');
+  const [angelOneReconnectMode, setAngelOneReconnectMode] = useState(false);
+
+  const refreshAngelOneStatus = useCallback(async () => {
+    const settings = await apiRequest<AngelOneMarketSettings>('/market-data/settings');
+    const source = settings.sources.find((item) => item.name === 'angel_one');
+    setAngelOneSource(source ? {
+      available: source.available,
+      status: source.status,
+      expires_at: source.expires_at ?? null,
+    } : null);
+  }, []);
 
   const refresh = useCallback(async () => {
     const nextBrokers = await apiRequest<Broker[]>('/brokers');
@@ -115,6 +151,59 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
     });
   }, [refresh]);
 
+  useEffect(() => {
+    void refreshAngelOneStatus().catch((requestError: Error) => {
+      setAngelOneError(brokerErrorMessage(requestError));
+    });
+  }, [refreshAngelOneStatus]);
+
+  async function connectAngelOne(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAngelOneBusy(true);
+    setAngelOneError('');
+    setError('');
+    setNotice('');
+    try {
+      await apiRequest('/market-data/settings/angel-one/connect', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_code: angelOneClientCode,
+          pin: angelOnePin,
+          totp: angelOneTotp,
+        }),
+      });
+      setAngelOnePin('');
+      setAngelOneTotp('');
+      await refreshAngelOneStatus();
+      setAngelOneReconnectMode(false);
+      setNotice('Angel One SmartAPI connected for market data. Credentials remain backend-only.');
+    } catch (requestError) {
+      setAngelOneError(brokerErrorMessage(requestError));
+    } finally {
+      setAngelOnePin('');
+      setAngelOneTotp('');
+      setAngelOneBusy(false);
+    }
+  }
+
+  async function disconnectAngelOne() {
+    if (!window.confirm('Disconnect Angel One SmartAPI market-data access?')) return;
+    setAngelOneBusy(true);
+    setAngelOneError('');
+    try {
+      await apiRequest('/market-data/settings/angel-one/disconnect', {
+        method: 'POST',
+        body: '{}',
+      });
+      await refreshAngelOneStatus();
+      setNotice('Angel One SmartAPI disconnected.');
+    } catch (requestError) {
+      setAngelOneError(brokerErrorMessage(requestError));
+    } finally {
+      setAngelOneBusy(false);
+    }
+  }
+
   async function connect(broker: Broker) {
     setError('');
     setNotice('');
@@ -144,19 +233,28 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
     setError('');
     setNotice('');
     setFailedBroker('');
+    setSyncErrors((current) => ({ ...current, [broker.slug]: '' }));
     setBusy(broker.slug);
     try {
-      const result = await apiRequest<{ holdings_count: number; positions_count: number; synthetic: boolean }>(
+      const result = await apiRequest<SyncResult>(
         `/brokers/${broker.slug}/sync`,
         { method: 'POST', body: '{}' },
       );
+      setSyncResults((current) => ({ ...current, [broker.slug]: result }));
       await refresh();
-      setNotice(
-        `${broker.name}: synced ${result.holdings_count} holding(s) and ${result.positions_count} position(s).${result.synthetic ? ' These values are synthetic demo data.' : ''}`,
-      );
+      if (result.sync_status === 'successful') {
+        setNotice(
+          `${broker.name}: synced ${result.holdings_count} holding(s) and ${result.positions_count} position(s).${result.synthetic ? ' These values are synthetic demo data.' : ''}`,
+        );
+      }
     } catch (requestError) {
-      setFailedBroker(broker.slug);
-      setError(brokerErrorMessage(requestError));
+      setSyncErrors((current) => ({
+        ...current,
+        [broker.slug]: brokerErrorMessage(requestError),
+      }));
+      if (requestError instanceof ApiRequestError && requestError.code === 'broker_authentication_required') {
+        void refresh().catch((refreshError: Error) => setError(brokerErrorMessage(refreshError)));
+      }
     } finally {
       setBusy('');
     }
@@ -238,7 +336,61 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
       )}
 
       {!brokerApiUnavailable && <div className="broker-card-grid">
-        {brokers.map((broker) => (
+        <article className="broker-card">
+          <div className="broker-card-heading">
+            <span className="broker-logo" aria-hidden="true">AO</span>
+            <div>
+              <h2>Angel One SmartAPI</h2>
+              <p className={angelOneSource?.available ? 'broker-status connected' : 'broker-status'}>
+                {angelOneSource?.status === 'session_expired'
+                  ? 'Session expired — reconnect required'
+                  : angelOneSource?.available
+                    ? 'Connected for market data'
+                    : angelOneSource?.status === 'provider_configuration_required'
+                      ? 'Backend setup required'
+                      : 'Not connected'}
+              </p>
+            </div>
+          </div>
+          {angelOneSource?.expires_at && (
+            <p className="broker-sync-time">
+              Session expiry: {new Date(angelOneSource.expires_at).toLocaleString()}
+            </p>
+          )}
+          {(
+            !angelOneSource?.available
+            || angelOneSource.status === 'session_expired'
+            || angelOneReconnectMode
+          ) && (
+            <form className="broker-form" onSubmit={(event) => void connectAngelOne(event)}>
+              <label className="broker-secret-field">
+                Client code
+                <input value={angelOneClientCode} onChange={(event) => setAngelOneClientCode(event.target.value)} autoComplete="username" required />
+              </label>
+              <label className="broker-secret-field">
+                PIN
+                <input type="password" value={angelOnePin} onChange={(event) => setAngelOnePin(event.target.value)} autoComplete="current-password" required />
+              </label>
+              <label className="broker-secret-field">
+                Authenticator code
+                <input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={angelOneTotp} onChange={(event) => setAngelOneTotp(event.target.value)} autoComplete="one-time-code" required />
+              </label>
+              <button className="primary-button" type="submit" disabled={angelOneBusy}>
+                {angelOneBusy ? 'Connecting…' : angelOneSource?.status === 'session_expired' ? 'Reconnect' : 'Connect'}
+              </button>
+            </form>
+          )}
+          {angelOneSource?.available
+            && angelOneSource.status !== 'session_expired'
+            && !angelOneReconnectMode && (
+            <div className="broker-actions">
+              <button className="secondary-button" type="button" onClick={() => void disconnectAngelOne()} disabled={angelOneBusy}>Disconnect</button>
+              <button className="secondary-button" type="button" onClick={() => setAngelOneReconnectMode(true)} disabled={angelOneBusy}>Reconnect</button>
+            </div>
+          )}
+          {angelOneError && <p className="broker-sync-time" role="alert">{angelOneError}</p>}
+        </article>
+        {brokers.filter((broker) => broker.slug !== 'angel_one').map((broker) => (
           <article className="broker-card" key={broker.slug}>
             <div className="broker-card-heading">
               <span className="broker-logo" aria-hidden="true">{broker.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2)}</span>
@@ -247,12 +399,12 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
                 <p className={broker.connected ? 'broker-status connected' : 'broker-status'}>
                       {busy === broker.slug
                             ? broker.connected ? 'Syncing…' : 'Connecting…'
-                        : failedBroker === broker.slug
-                          ? 'Connection failed'
-                          : broker.connection_status === 'connected'
+                        : broker.connection_status === 'connected'
                         ? 'Connected'
                         : broker.connection_status === 'expired'
-                          ? 'Connection expired — reconnect required'
+                        ? 'Connection expired — reconnect required'
+                        : failedBroker === broker.slug
+                          ? 'Connection attempt failed'
                           : broker.integration_status === 'pending'
                             ? 'Pending — official redirect flow required'
                             : broker.enabled
@@ -265,6 +417,14 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
             </div>
             {broker.synthetic && <p className="broker-synthetic">SYNTHETIC DEMO DATA — NOT A REAL ACCOUNT</p>}
             {broker.last_synced_at && <p className="broker-sync-time">Last sync: {new Date(broker.last_synced_at).toLocaleString()}</p>}
+            {syncResults[broker.slug] && (
+              <p className="broker-sync-time" role="status">
+                Account sync: {syncResults[broker.slug].sync_status}. {Object.entries(syncResults[broker.slug].endpoint_results)
+                  .map(([endpoint, result]) => `${endpoint}: ${result.status}`).join(' · ')}
+              </p>
+            )}
+            {syncErrors[broker.slug] && <p className="broker-sync-time" role="alert">Account sync failed: {syncErrors[broker.slug]} Authentication status is shown separately above. Retry with Sync.</p>}
+            <p className="broker-sync-time">Market data is separate from account sync; check the Markets page for quote freshness and feed status.</p>
             {broker.expires_at && <p className="broker-sync-time">Session expiry: {new Date(broker.expires_at).toLocaleString()}</p>}
             {broker.last_synced_at && (
               <p className="broker-sync-time">

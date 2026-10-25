@@ -158,6 +158,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .freshness-fresh { color: #266449; background: #e8f3e9; }
 .freshness-stale { color: #8a5d23; background: #fff2d9; }
 .freshness-synthetic { color: #80551f; background: #fff2d9; }
+.freshness-historical, .freshness-unverified, .freshness-future_dated { color: #8c4943; background: #f8ece7; }
 .freshness-unavailable, .freshness-never_fetched { color: #8c4943; background: #f8ece7; }
 .market-provenance { margin: -3px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .market-quote { margin: 12px 0 16px; padding: 12px; border: 1px solid var(--line); border-radius: 5px; background: #fbfcfa; }
@@ -171,6 +172,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .candlestick-toggle button.selected { color: var(--green-dark); border-color: #c8d8ca; background: #eff5ee; }
 .crosshair-readout { overflow: hidden; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .candlestick-panel .ohlc-chart { min-height: 340px; }
+.historical-bars-details { margin-top: 12px; }
+.historical-bars-details summary { width: fit-content; color: var(--muted); cursor: pointer; font-size: 10px; }
+.historical-bars-details[open] summary { margin-bottom: 10px; }
 .relink-warning { display: block; padding: 7px 9px; color: #805316; border: 1px solid #ead5ae; border-radius: 4px; background: #fff8e9; font-size: 10px; }
 .journal-grid { grid-template-columns: minmax(0, 1.55fr) minmax(270px, .85fr); }
 .journal-currency { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; white-space: nowrap; }
@@ -626,7 +630,27 @@ tbody tr:last-child td { border-bottom: 0; }
 .candlestick-toggle button.selected { color: #8debc2; border-color: #28523f; background: #10251d; }
 .crosshair-readout { color: #aab6c4; }
 .candlestick-panel .ohlc-chart { background: #0b0f16; }
+.historical-bars-details summary { color: #a0acb9; }
 .coverage-panel { --market-panel: #0b0f16; --market-panel-raised: #0e131b; --market-border: #222b36; --market-text: #e4eaf0; --market-muted: #94a1ad; }
+.market-source-panel { color: #e4eaf0; border-color: #222b36; background: #0b0f16; }
+.market-source-panel > p, .market-source-panel label, .market-source-panel .panel-description { color: #94a1ad; }
+.market-source-toolbar { display: flex; align-items: end; gap: 12px; }
+.market-source-toolbar label { display: grid; min-width: min(100%, 280px); gap: 6px; font-size: 10px; }
+.market-source-toolbar select, .angel-connect-form input { min-width: 0; min-height: 36px; padding: 0 10px; color: #e4eaf0; border: 1px solid #2b3540; border-radius: 4px; background: #0e131b; font-size: 10px; }
+.market-source-toolbar option { background: #0e131b; }
+.market-source-status { padding-bottom: 9px; color: #aab6c4; font-family: var(--mono); font-size: 9px; text-transform: uppercase; }
+.market-source-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.market-source-actions p { margin: 0; color: #94a1ad; font-size: 10px; }
+.market-source-panel .secondary-button { color: #aab6c4; border-color: #2b3540; background: #0e131b; }
+.angel-connect-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: 9px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #222b36; }
+.angel-connect-form > label { display: grid; min-width: 0; gap: 5px; font-size: 9px; }
+.angel-connect-heading { grid-column: 1 / -1; }
+.angel-connect-heading strong, .angel-connect-heading span { display: block; }
+.angel-connect-heading strong { color: #e4eaf0; font-size: 11px; }
+.angel-connect-heading span { margin-top: 5px; color: #94a1ad; font-size: 9px; line-height: 1.5; }
+.angel-connect-form .primary-button { min-height: 36px; white-space: nowrap; }
+.market-source-message { margin: 10px 0 0; color: #8debc2; font-size: 10px; }
+.market-source-message.error { color: #ef9999; }
 
 @media (max-width: 1180px) {
   .overview-summary { grid-template-columns: minmax(0, 1fr); grid-template-areas: "toolbar" "metrics" "risk"; gap: 0; }
@@ -646,7 +670,13 @@ tbody tr:last-child td { border-bottom: 0; }
   .overview-summary .portfolio-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-summary .risk-summary { grid-template-columns: 1fr; }
   .overview-workspace-grid { grid-template-columns: minmax(0, 1fr); }
+  .candlestick-toolbar { flex-wrap: wrap; justify-content: flex-start; }
+  .candlestick-panel .ohlc-chart { min-height: 300px; }
   .auth-panel { padding: 24px; }
+  .angel-connect-form { grid-template-columns: 1fr 1fr; }
+  .angel-connect-form .primary-button { grid-column: 1 / -1; }
+  .market-source-toolbar, .market-source-actions { align-items: stretch; flex-direction: column; }
+  .market-source-status { padding-bottom: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

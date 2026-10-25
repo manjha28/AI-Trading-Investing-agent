@@ -10,11 +10,19 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.api.market_data import get_market_data_provider
 from app.db import Base, get_db
 from app.main import app
-from app.models import MarketBar, MarketQuote, PortfolioTransaction, User
+from app.models import (
+    InstrumentProviderIdentifier,
+    MarketBar,
+    MarketQuote,
+    PortfolioTransaction,
+    User,
+)
 from app.services.price_freshness import classify_quote
 from app.services.research_pipeline import _financial_trend_section, _technicals_section
+from market_data_fixtures import RecordedMarketDataProvider
 
 
 @pytest.fixture
@@ -35,6 +43,7 @@ def client(test_engine) -> Iterator[TestClient]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_market_data_provider] = RecordedMarketDataProvider
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -112,6 +121,14 @@ def add_quote(
 ) -> None:
     now = datetime.now(timezone.utc)
     with Session(test_engine) as db:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.instrument_id == UUID(instrument_id),
+                InstrumentProviderIdentifier.provider == "recorded",
+            )
+        )
+        if mapping is not None:
+            mapping.is_verified = True
         db.add(
             MarketQuote(
                 instrument_id=UUID(instrument_id),
@@ -121,7 +138,7 @@ def add_quote(
                 low=Decimal("98"),
                 close=Decimal("100"),
                 volume=Decimal("1000"),
-                source="test",
+                source="recorded",
                 retrieved_at=now - retrieved_age,
                 is_synthetic=synthetic,
             )
@@ -137,8 +154,8 @@ def test_ten_minute_quote_is_usable_and_portfolio_risk_is_available(
     add_quote(
         test_engine,
         instrument["id"],
-        retrieved_age=timedelta(minutes=10),
-        timestamp_age=timedelta(hours=2),
+        retrieved_age=timedelta(seconds=10),
+        timestamp_age=timedelta(seconds=10),
     )
 
     response = client.get(
@@ -159,29 +176,78 @@ def test_ten_minute_quote_is_usable_and_portfolio_risk_is_available(
     assert exposure["market_value"] is not None
 
 
+def test_portfolio_valuation_suppresses_unverified_provider_mapping(
+    client, test_engine
+):
+    register(client, test_engine, "unverified-valuation@example.com")
+    portfolio, instrument = create_holding(client)
+    add_quote(test_engine, instrument["id"])
+    with Session(test_engine) as db:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.instrument_id == UUID(instrument["id"]),
+                InstrumentProviderIdentifier.provider == "recorded",
+            )
+        )
+        assert mapping is not None
+        mapping.is_verified = False
+        db.commit()
+
+    response = client.get(f"/api/v1/portfolios/{portfolio['id']}/valuation")
+
+    assert response.status_code == 200, response.text
+    position = response.json()["positions"][0]
+    assert position["last_price"] is None
+    assert position["market_value"] is None
+    assert position["freshness"] == "stale"
+    assert "mapping is unverified" in position["message"]
+
+
 def test_quote_classification_uses_age_synthetic_and_currency_reasons():
     now = datetime.now(timezone.utc)
     instrument = SimpleNamespace(currency="USD")
     fresh_quote = SimpleNamespace(
-        retrieved_at=now - timedelta(minutes=10),
-        timestamp=now - timedelta(hours=2),
+        retrieved_at=now - timedelta(seconds=10),
+        timestamp=now - timedelta(seconds=10),
+        source="test",
         is_synthetic=False,
     )
+    instrument.provider_identifiers = [SimpleNamespace(provider="test", is_verified=True)]
     usable, reason, evidence = classify_quote(fresh_quote, instrument, "USD", now)
     assert usable is True and reason is None
-    assert evidence["price_freshness_basis"] == "retrieved_at"
-    assert evidence["quote_timestamp_age_seconds"] >= 2 * 60 * 60
+    assert evidence["price_freshness_basis"] == "market_timestamp_and_retrieved_at"
+    assert evidence["quote_timestamp_age_seconds"] < 60
 
     stale_quote = SimpleNamespace(
-        retrieved_at=now - timedelta(hours=2),
-        timestamp=now,
+        retrieved_at=now - timedelta(seconds=5),
+        timestamp=now - timedelta(minutes=2),
+        source="test",
         is_synthetic=False,
     )
     assert classify_quote(stale_quote, instrument, "USD", now)[1] == "stale_price"
 
+    future_quote = SimpleNamespace(
+        retrieved_at=now,
+        timestamp=now + timedelta(minutes=1),
+        source="test",
+        is_synthetic=False,
+    )
+    assert classify_quote(future_quote, instrument, "USD", now)[1] == "future_dated_price"
+
+    historical_quote = SimpleNamespace(
+        retrieved_at=now,
+        timestamp=now,
+        source="yfinance",
+        is_synthetic=False,
+    )
+    assert classify_quote(historical_quote, instrument, "USD", now)[1] == (
+        "historical_close_not_current"
+    )
+
     synthetic_quote = SimpleNamespace(
         retrieved_at=now - timedelta(days=20),
         timestamp=now,
+        source="test",
         is_synthetic=True,
     )
     assert classify_quote(synthetic_quote, instrument, "USD", now)[1] == "synthetic_price"
@@ -190,6 +256,42 @@ def test_quote_classification_uses_age_synthetic_and_currency_reasons():
     assert classify_quote(fresh_quote, foreign_instrument, "USD", now)[1] == (
         "foreign_currency_no_fx"
     )
+
+
+def test_angel_one_live_ticks_use_verified_mapping_and_staleness_limits():
+    now = datetime.now(timezone.utc)
+    instrument = SimpleNamespace(
+        currency="INR",
+        provider_identifiers=[
+            SimpleNamespace(provider="angel_one", is_verified=True)
+        ],
+    )
+    tick = SimpleNamespace(
+        retrieved_at=now,
+        timestamp=now,
+        source="angel_one_ws",
+        is_synthetic=False,
+    )
+
+    usable, reason, evidence = classify_quote(tick, instrument, "INR", now)
+
+    assert usable is True
+    assert reason is None
+    assert evidence["quote_data_type"] == "live_tick"
+    assert evidence["quote_mapping_verified"] is True
+
+    stale_tick = SimpleNamespace(
+        retrieved_at=now,
+        timestamp=now - timedelta(minutes=2),
+        source="angel_one_ws",
+        is_synthetic=False,
+    )
+    stale_usable, stale_reason, stale_evidence = classify_quote(
+        stale_tick, instrument, "INR", now
+    )
+    assert stale_usable is False
+    assert stale_reason == "stale_price"
+    assert stale_evidence["quote_freshness_status"] == "stale"
 
 
 def test_currency_exposure_is_incomplete_when_any_position_is_unvalued():

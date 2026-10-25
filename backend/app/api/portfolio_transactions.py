@@ -868,6 +868,37 @@ def portfolio_valuation(
             )
             continue
 
+        quote_usable, _quote_reason, _freshness_evidence = classify_quote(
+            quote,
+            instrument,
+            portfolio.base_currency,
+            datetime.now(timezone.utc),
+        )
+        quote_time = _as_utc(quote.retrieved_at)
+        if not quote_usable:
+            message = quote.freshness_message
+            reasons.append(f"{symbol}: {message}")
+            positions.append(
+                ValuationPositionResponse(
+                    symbol=symbol,
+                    instrument_id=instrument.id,
+                    quantity=position.quantity,
+                    cost_basis=money(position.cost_basis),
+                    last_price=None,
+                    market_value=None,
+                    unrealized_pnl=None,
+                    weight_percent=None,
+                    day_change=None,
+                    day_change_percent=None,
+                    freshness="stale",
+                    is_synthetic=quote.is_synthetic,
+                    source=quote.source,
+                    retrieved_at=quote_time,
+                    message=message,
+                )
+            )
+            continue
+
         last_price = quote.bar.close
         position_value = money(last_price * position.quantity)
         position_pnl = money(position_value - position.cost_basis)
@@ -877,22 +908,10 @@ def portfolio_valuation(
             if quote.bar.open > 0
             else None
         )
-        _quote_usable, quote_reason, freshness_evidence = classify_quote(
-            quote,
-            instrument,
-            portfolio.base_currency,
-            datetime.now(timezone.utc),
-        )
         market_value_total += position_value
         unrealized_total += position_pnl
         day_change_total += day_change
-        quote_time = _as_utc(quote.retrieved_at)
         last_updated = max(last_updated, quote_time) if last_updated else quote_time
-        if quote_reason == "stale_price":
-            reasons.append(f"{symbol}: quote is stale.")
-        if quote_reason == "synthetic_price":
-            reasons.append(f"{symbol}: quote is synthetic fallback data.")
-        quote_freshness = "fresh" if freshness_evidence["quote_age_within_limit"] else "stale"
         positions.append(
             ValuationPositionResponse(
                 symbol=symbol,
@@ -905,7 +924,7 @@ def portfolio_valuation(
                 weight_percent=None,
                 day_change=day_change,
                 day_change_percent=day_change_percent,
-                freshness=quote_freshness,
+                freshness="fresh",
                 is_synthetic=quote.is_synthetic,
                 source=quote.source,
                 retrieved_at=quote_time,

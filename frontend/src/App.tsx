@@ -1,5 +1,6 @@
 import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ReceiptText, ShieldCheck, Wallet } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { apiRequest } from './api';
 import { useWorkspace } from './components/useWorkspace';
 import { ActivityPage } from './pages/Activity';
 import { Alerts } from './pages/Alerts';
@@ -15,6 +16,8 @@ import { Research } from './pages/Research';
 export default function App() {
   const workspace = useWorkspace();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [hasConnectedBroker, setHasConnectedBroker] = useState(false);
+  const [brokerStatusChecked, setBrokerStatusChecked] = useState(false);
   const {
     user,
     checkingSession,
@@ -42,6 +45,33 @@ export default function App() {
     resendVerificationEmail,
     signOut,
   } = workspace;
+
+  useEffect(() => {
+    const userId = user?.id;
+    if (!userId) {
+      setHasConnectedBroker(false);
+      setBrokerStatusChecked(false);
+      return;
+    }
+    let active = true;
+    setBrokerStatusChecked(false);
+    void apiRequest<{ connected: boolean }>('/brokers/connection-status')
+      .then((status) => {
+        if (active) {
+          setHasConnectedBroker(status.connected);
+          setBrokerStatusChecked(true);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setHasConnectedBroker(false);
+          setBrokerStatusChecked(true);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [user?.id, activeView]);
 
   if (workspace.verificationToken) {
     return <AuthPage workspace={{error: workspace.error, registering: workspace.registering, setError: workspace.setError, setRegistering: workspace.setRegistering, submitAuth: workspace.submitAuth, verificationStatus: workspace.verificationStatus, verificationToken: workspace.verificationToken}} />;
@@ -160,7 +190,7 @@ export default function App() {
         {error && <p className="error-banner" role="alert"><CircleAlert size={17} />{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error">×</button></p>}
         {notice && <p className="success-banner" role="status"><ShieldCheck size={17} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss notice">×</button></p>}
 
-        {!onboardingDismissed && (
+        {activeView !== 'market-data' && !onboardingDismissed && brokerStatusChecked && !hasConnectedBroker && (
           <section className="data-note" aria-label="Broker onboarding">
             <div>
               <strong>Connect your broker account.</strong>
@@ -189,7 +219,41 @@ export default function App() {
             <BrokersPage portfolioId={portfolioId} />
           </>
         ) : activeView === 'market-data' ? (
-          <MarketDataPage workspace={{addInstrumentToWatchlist: workspace.addInstrumentToWatchlist, addSelectedInstrumentToWatchlist: workspace.addSelectedInstrumentToWatchlist, attachSelectedInstrument: workspace.attachSelectedInstrument, currency: workspace.currency, loadInstrumentIndicators: workspace.loadInstrumentIndicators, loadMarketHistory: workspace.loadMarketHistory, loadMarketQuote: workspace.loadMarketQuote, loadingMarketHistory: workspace.loadingMarketHistory, loadingMarketIndicators: workspace.loadingMarketIndicators, loadingMarketQuote: workspace.loadingMarketQuote, marketEnd: workspace.marketEnd, marketHistory: workspace.marketHistory, marketIndicators: workspace.marketIndicators, marketInstruments: workspace.marketInstruments, marketInterval: workspace.marketInterval, marketQuery: workspace.marketQuery, marketQuote: workspace.marketQuote, marketStart: workspace.marketStart, removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist, searchMarketInstruments: workspace.searchMarketInstruments, searchingMarket: workspace.searchingMarket, selectMarketInstrument: workspace.selectMarketInstrument, selectedInstrument: workspace.selectedInstrument, setMarketEnd: workspace.setMarketEnd, setMarketHistory: workspace.setMarketHistory, setMarketInterval: workspace.setMarketInterval, setMarketQuery: workspace.setMarketQuery, setMarketStart: workspace.setMarketStart, summary: workspace.summary, valuation: workspace.valuation, watchlist: workspace.watchlist}} />
+          <MarketDataPage workspace={{
+            addInstrumentToWatchlist: workspace.addInstrumentToWatchlist,
+            addSelectedInstrumentToWatchlist: workspace.addSelectedInstrumentToWatchlist,
+            attachSelectedInstrument: workspace.attachSelectedInstrument,
+            currency: workspace.currency,
+            hasOlderMarketHistory: workspace.hasOlderMarketHistory,
+            loadInstrumentIndicators: workspace.loadInstrumentIndicators,
+            loadMarketHistory: workspace.loadMarketHistory,
+            loadMarketQuote: workspace.loadMarketQuote,
+            loadOlderMarketHistory: workspace.loadOlderMarketHistory,
+            loadingMarketHistory: workspace.loadingMarketHistory,
+            loadingOlderMarketHistory: workspace.loadingOlderMarketHistory,
+            loadingMarketQuote: workspace.loadingMarketQuote,
+            marketEnd: workspace.marketEnd,
+            marketHistory: workspace.marketHistory,
+            marketIndicators: workspace.marketIndicators,
+            marketInstruments: workspace.marketInstruments,
+            marketInterval: workspace.marketInterval,
+            marketQuery: workspace.marketQuery,
+            marketQuote: workspace.marketQuote,
+            marketStart: workspace.marketStart,
+            removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist,
+            searchMarketInstruments: workspace.searchMarketInstruments,
+            searchingMarket: workspace.searchingMarket,
+            selectMarketInstrument: workspace.selectMarketInstrument,
+            selectedInstrument: workspace.selectedInstrument,
+            setMarketEnd: workspace.setMarketEnd,
+            setMarketHistory: workspace.setMarketHistory,
+            setMarketInterval: workspace.setMarketInterval,
+            setMarketQuery: workspace.setMarketQuery,
+            setMarketStart: workspace.setMarketStart,
+            summary: workspace.summary,
+            valuation: workspace.valuation,
+            watchlist: workspace.watchlist,
+          }} />
         ) : activeView === 'journal' ? (
           <JournalPage workspace={{cancelEditingTrade: workspace.cancelEditingTrade, currency: workspace.currency, editingTrade: workspace.editingTrade, journalAnalytics: workspace.journalAnalytics, journalAssetClass: workspace.journalAssetClass, journalBreakdown: workspace.journalBreakdown, journalCurrency: workspace.journalCurrency, journalHasExit: workspace.journalHasExit, journalTrades: workspace.journalTrades, removeJournalTrade: workspace.removeJournalTrade, setJournalAssetClass: workspace.setJournalAssetClass, setJournalCurrency: workspace.setJournalCurrency, setJournalHasExit: workspace.setJournalHasExit, startEditingTrade: workspace.startEditingTrade, submitJournalTrade: workspace.submitJournalTrade, valuation: workspace.valuation}} />
         ) : portfolios.length === 0 ? (

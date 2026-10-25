@@ -374,7 +374,7 @@ class MarketBar(Base):
             "source",
             name="uq_market_bars_instrument_interval_time_source",
         ),
-        CheckConstraint("interval IN ('1d', '1h', '15m', '1m')", name="ck_market_bars_interval"),
+        CheckConstraint("interval IN ('1d', '1h', '15m', '5m', '1m')", name="ck_market_bars_interval"),
         CheckConstraint(
             "low <= high AND low <= open AND low <= close "
             "AND high >= open AND high >= close",
@@ -446,7 +446,7 @@ class MarketDataSync(Base):
     __tablename__ = "market_data_syncs"
     __table_args__ = (
         UniqueConstraint("instrument_id", "interval", "source", name="uq_market_sync_instrument"),
-        CheckConstraint("interval IN ('1d', '1h', '15m', '1m')", name="ck_market_sync_interval"),
+        CheckConstraint("interval IN ('1d', '1h', '15m', '5m', '1m')", name="ck_market_sync_interval"),
         CheckConstraint("status IN ('success', 'unavailable')", name="ck_market_sync_status"),
         Index("ix_market_sync_instrument_interval", "instrument_id", "interval"),
     )
@@ -473,7 +473,7 @@ class MarketDataSync(Base):
 class MarketDataSyncAttempt(Base):
     __tablename__ = "market_data_sync_attempts"
     __table_args__ = (
-        CheckConstraint("interval IN ('1d', '1h', '15m', '1m')", name="ck_market_sync_attempt_interval"),
+        CheckConstraint("interval IN ('1d', '1h', '15m', '5m', '1m')", name="ck_market_sync_attempt_interval"),
         CheckConstraint("outcome IN ('success', 'unavailable', 'partial', 'unchanged')", name="ck_market_sync_attempt_outcome"),
         Index("ix_market_sync_attempt_instrument_attempted", "instrument_id", "attempted_at"),
     )
@@ -492,7 +492,27 @@ class MarketDataSyncAttempt(Base):
     rows_written: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(200))
+    reason_category: Mapped[str | None] = mapped_column(String(64))
+    http_diagnostics: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserMarketDataSettings(Base):
+    __tablename__ = "user_market_data_settings"
+
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    selected_provider: Mapped[str | None] = mapped_column(String(32))
+    disabled_providers: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    encrypted_angel_tokens: Mapped[str | None] = mapped_column(Text)
+    angel_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    angel_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class BrokerCredential(Base):
@@ -551,8 +571,96 @@ class BrokerMirror(Base):
     symbol: Mapped[str] = mapped_column(String(64), nullable=False)
     exchange: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     product: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    security_id: Mapped[str | None] = mapped_column(String(64))
+    isin: Mapped[str | None] = mapped_column(String(16))
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     average_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BrokerAccountMirror(Base):
+    __tablename__ = "broker_account_mirror"
+    __table_args__ = (
+        UniqueConstraint("user_id", "broker", name="uq_broker_account_mirror_user_broker"),
+        Index("ix_broker_account_mirror_user_broker", "user_id", "broker"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    broker: Mapped[str] = mapped_column(String(32), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    available_balance: Mapped[Decimal] = mapped_column(Numeric(24, 2), nullable=False)
+    sod_limit: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    collateral_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    receivable_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    utilized_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    blocked_payout_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    withdrawable_balance: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DhanTradeMirror(Base):
+    __tablename__ = "dhan_trade_mirror"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "source", "trade_id",
+            name="uq_dhan_trade_mirror_user_source_trade",
+        ),
+        Index("ix_dhan_trade_mirror_user_time", "user_id", "trade_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="dhan", server_default="dhan"
+    )
+    trade_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    order_id: Mapped[str | None] = mapped_column(String(64))
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    security_id: Mapped[str | None] = mapped_column(String(64))
+    exchange_segment: Mapped[str | None] = mapped_column(String(32))
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    charges: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, default="INR", server_default="INR"
+    )
+    trade_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DhanLedgerMirror(Base):
+    __tablename__ = "dhan_ledger_mirror"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "source", "entry_id",
+            name="uq_dhan_ledger_mirror_user_source_entry",
+        ),
+        Index("ix_dhan_ledger_mirror_user_date", "user_id", "entry_date"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="dhan", server_default="dhan"
+    )
+    entry_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_entry_id: Mapped[str | None] = mapped_column(String(64))
+    entry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    debit: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    credit: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    running_balance: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, default="INR", server_default="INR"
+    )
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -760,4 +868,8 @@ class PositionThesisRevision(Base):
     revision_number: Mapped[int] = mapped_column(nullable=False)
     changed_fields: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
     snapshot: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+from app.models.alerts import AlertEvent, AlertRule  # noqa: F401

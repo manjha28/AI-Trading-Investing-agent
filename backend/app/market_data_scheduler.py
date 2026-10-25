@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.accounting import LedgerError, calculate_ledger
-from app.api.market_data import get_market_data_provider, latest_quote
+from app.api.market_data import latest_quote, market_data_provider_for_user
 from app.config import settings
 from app.corporate_action_service import get_portfolio_corporate_actions
 from app.db import engine
@@ -66,7 +66,15 @@ def _refresh_quotes() -> None:
         user = db.scalar(select(User).order_by(User.created_at).limit(1))
         if user is None:
             return
-        provider = get_market_data_provider()
+        try:
+            provider = market_data_provider_for_user(db, user.id)
+        except HTTPException as error:
+            logger.warning(
+                "Scheduled market-data refresh skipped for user %s (HTTP %s)",
+                user.id,
+                error.status_code,
+            )
+            return
         for instrument_id in sorted(instrument_ids, key=str):
             try:
                 latest_quote(

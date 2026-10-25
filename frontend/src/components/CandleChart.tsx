@@ -5,6 +5,8 @@ import {
   createChart,
   HistogramSeries,
   LineSeries,
+  type IChartApi,
+  type ISeriesApi,
   type MouseEventParams,
   type Time,
 } from 'lightweight-charts';
@@ -16,15 +18,61 @@ type Candle = {
   low: string;
   close: string;
   volume: string;
+  source?: string;
 };
+
+type IndicatorPoint = { timestamp: string; value: string };
+type IndicatorSeries = Record<string, IndicatorPoint[]>;
 
 type Props = {
   bars: Candle[];
   currency: string;
   interval: string;
+  preferredSource?: string | null;
+  indicatorSeries?: IndicatorSeries;
+  indicatorBarsAvailable?: number;
+  onLoadOlder?: () => void;
+  loadingOlder?: boolean;
+  hasOlder?: boolean;
 };
 
 type Readout = { time: string; open: number; high: number; low: number; close: number } | null;
+
+const INDICATORS = [
+  { key: 'sma_20', label: 'SMA 20', color: '#f4b860', pane: 0, kind: 'line' },
+  { key: 'sma_50', label: 'SMA 50', color: '#b4a0ff', pane: 0, kind: 'line' },
+  { key: 'sma_200', label: 'SMA 200', color: '#e783ce', pane: 0, kind: 'line' },
+  { key: 'ema_20', label: 'EMA 20', color: '#49c5d4', pane: 0, kind: 'line' },
+  { key: 'ema_50', label: 'EMA 50', color: '#70a6ff', pane: 0, kind: 'line' },
+  { key: 'ema_200', label: 'EMA 200', color: '#fa8f6f', pane: 0, kind: 'line' },
+  { key: 'vwap', label: 'VWAP', color: '#fff176', pane: 0, kind: 'line' },
+  { key: 'bb_upper', label: 'Bollinger upper', color: '#7a9eaa', pane: 0, kind: 'line' },
+  { key: 'bb_middle', label: 'Bollinger middle', color: '#8296a4', pane: 0, kind: 'line' },
+  { key: 'bb_lower', label: 'Bollinger lower', color: '#7a9eaa', pane: 0, kind: 'line' },
+  { key: 'rsi_14', label: 'RSI 14', color: '#91a6ff', pane: 1, kind: 'line' },
+  { key: 'macd', label: 'MACD', color: '#70d6c1', pane: 2, kind: 'line' },
+  { key: 'macd_signal', label: 'MACD signal', color: '#f4b860', pane: 2, kind: 'line' },
+  { key: 'atr_14', label: 'ATR 14', color: '#f494b4', pane: 3, kind: 'line' },
+] as const;
+
+const INITIAL_INDICATORS = ['sma_20', 'volume', 'rsi_14'];
+const INDICATOR_WARMUP_BARS: Record<string, number> = {
+  sma_20: 19,
+  sma_50: 49,
+  sma_200: 199,
+  ema_20: 19,
+  ema_50: 49,
+  ema_200: 199,
+  vwap: 0,
+  bb_upper: 19,
+  bb_middle: 19,
+  bb_lower: 19,
+  rsi_14: 14,
+  macd: 25,
+  macd_signal: 33,
+  macd_histogram: 33,
+  atr_14: 14,
+};
 
 function price(value: number, currency: string) {
   if (currency.length !== 3) {
@@ -41,18 +89,43 @@ function price(value: number, currency: string) {
   }).format(value);
 }
 
-export function CandleChart({ bars, currency, interval }: Props) {
+export function CandleChart({
+  bars,
+  currency,
+  interval,
+  preferredSource,
+  indicatorSeries = {},
+  indicatorBarsAvailable,
+  onLoadOlder,
+  loadingOlder = false,
+  hasOlder = false,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const lineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const macdHistogramRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
+  const olderCallbackRef = useRef(onLoadOlder);
+  const loadingOlderRef = useRef(loadingOlder);
+  const hasOlderRef = useRef(hasOlder);
+  const userNavigatedRef = useRef(false);
   const [chartMode, setChartMode] = useState<'candles' | 'line'>('candles');
+  const [enabledIndicators, setEnabledIndicators] = useState<string[]>(INITIAL_INDICATORS);
+  const [indicatorsOpen, setIndicatorsOpen] = useState(false);
   const [readout, setReadout] = useState<Readout>(null);
+
+  olderCallbackRef.current = onLoadOlder;
+  loadingOlderRef.current = loadingOlder;
+  hasOlderRef.current = hasOlder;
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || bars.length === 0) return;
-
+    if (!container) return;
     const chart = createChart(container, {
       autoSize: true,
-      height: 340,
+      height: 430,
       layout: { background: { type: ColorType.Solid, color: '#0b0f16' }, textColor: '#94a1ad' },
       grid: { vertLines: { color: '#171e29' }, horzLines: { color: '#171e29' } },
       rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.25 } },
@@ -67,25 +140,215 @@ export function CandleChart({ bars, currency, interval }: Props) {
       borderDownColor: '#ef7777',
       wickUpColor: '#3fd99a',
       wickDownColor: '#ef7777',
-      visible: chartMode === 'candles',
     });
-    const lineSeries = chart.addSeries(LineSeries, {
-      color: '#3fd99a',
-      lineWidth: 2,
-      visible: chartMode === 'line',
-    });
+    const lineSeries = chart.addSeries(LineSeries, { color: '#3fd99a', lineWidth: 2 });
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceScaleId: 'volume',
       priceFormat: { type: 'volume' },
       lastValueVisible: false,
       priceLineVisible: false,
     });
+    const indicatorSeries = new Map<string, ISeriesApi<'Line'>>();
+    INDICATORS.forEach((indicator) => {
+      if (indicator.pane !== 0) return;
+      indicatorSeries.set(
+        indicator.key,
+        chart.addSeries(
+          LineSeries,
+          {
+            color: indicator.color,
+            lineWidth: indicator.key.startsWith('bb_') ? 1 : 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          },
+          0,
+        ),
+      );
+    });
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    chartRef.current = chart;
+    candleSeriesRef.current = candleSeries;
+    lineSeriesRef.current = lineSeries;
+    volumeSeriesRef.current = volumeSeries;
+    macdHistogramRef.current = null;
+    indicatorSeriesRef.current = indicatorSeries;
+
+    const onCrosshairMove = (event: MouseEventParams<Time>) => {
+      const candle = event.seriesData.get(candleSeries);
+      if (!candle || !('open' in candle) || typeof event.time === 'undefined') {
+        setReadout(null);
+        return;
+      }
+      setReadout({
+        time: typeof event.time === 'number'
+          ? new Date(event.time * 1000).toLocaleString()
+          : String(event.time),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+      });
+    };
+    const onVisibleRangeChange = () => {
+      const visibleRange = chart.timeScale().getVisibleLogicalRange();
+      if (
+        userNavigatedRef.current
+        && visibleRange
+        && visibleRange.from <= 3
+        && hasOlderRef.current
+        && !loadingOlderRef.current
+      ) olderCallbackRef.current?.();
+    };
+    const markUserNavigation = () => {
+      userNavigatedRef.current = true;
+    };
+    chart.subscribeCrosshairMove(onCrosshairMove);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+    container.addEventListener('wheel', markUserNavigation, { passive: true });
+    container.addEventListener('mousedown', markUserNavigation);
+    return () => {
+      chart.unsubscribeCrosshairMove(onCrosshairMove);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+      container.removeEventListener('wheel', markUserNavigation);
+      container.removeEventListener('mousedown', markUserNavigation);
+      chart.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      lineSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      macdHistogramRef.current = null;
+      indicatorSeriesRef.current.clear();
+    };
+  }, [currency, interval]);
+
+  const inferredSeriesBars = Math.max(
+    0,
+    ...Object.entries(indicatorSeries).map(([key, points]) => (
+      points.length + (INDICATOR_WARMUP_BARS[key] ?? 0)
+    )),
+  );
+  const fullSeriesBarsAvailable = Math.max(
+    indicatorBarsAvailable ?? 0,
+    inferredSeriesBars,
+    bars.length,
+  );
+  const availableIndicators = [
+    { key: 'sma_20', label: 'SMA 20', period: 20, available: Boolean(indicatorSeries.sma_20?.length) },
+    { key: 'sma_50', label: 'SMA 50', period: 50, available: Boolean(indicatorSeries.sma_50?.length) },
+    { key: 'sma_200', label: 'SMA 200', period: 200, available: Boolean(indicatorSeries.sma_200?.length) },
+    { key: 'ema_20', label: 'EMA 20', period: 20, available: Boolean(indicatorSeries.ema_20?.length) },
+    { key: 'ema_50', label: 'EMA 50', period: 50, available: Boolean(indicatorSeries.ema_50?.length) },
+    { key: 'ema_200', label: 'EMA 200', period: 200, available: Boolean(indicatorSeries.ema_200?.length) },
+    { key: 'vwap', label: 'VWAP', period: 1, available: Boolean(indicatorSeries.vwap?.length) },
+    {
+      key: 'bb_upper',
+      label: 'Bollinger Bands',
+      period: 20,
+      available: Boolean(indicatorSeries.bb_upper?.length),
+    },
+    { key: 'rsi_14', label: 'RSI 14', period: 15, available: Boolean(indicatorSeries.rsi_14?.length) },
+    {
+      key: 'macd',
+      label: 'MACD',
+      period: 34,
+      available: Boolean(
+        indicatorSeries.macd?.length
+        && indicatorSeries.macd_signal?.length
+        && indicatorSeries.macd_histogram?.length,
+      ),
+    },
+    { key: 'atr_14', label: 'ATR 14', period: 15, available: Boolean(indicatorSeries.atr_14?.length) },
+    { key: 'volume', label: 'Volume', period: 1, available: bars.length > 0 },
+  ].map((indicator) => ({
+    ...indicator,
+    available: fullSeriesBarsAvailable >= indicator.period,
+  }));
+  const activeIndicatorCount = availableIndicators.filter(
+    (indicator) => indicator.available && enabledIndicators.includes(indicator.key),
+  ).length;
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const series = indicatorSeriesRef.current;
+    const activeOscillators = [
+      { key: 'rsi_14', enabled: enabledIndicators.includes('rsi_14') && Boolean(indicatorSeries.rsi_14?.length) },
+      { key: 'macd', enabled: enabledIndicators.includes('macd') && Boolean(indicatorSeries.macd?.length && indicatorSeries.macd_signal?.length && indicatorSeries.macd_histogram?.length) },
+      { key: 'atr_14', enabled: enabledIndicators.includes('atr_14') && Boolean(indicatorSeries.atr_14?.length) },
+    ].filter((item) => item.enabled);
+    for (const key of ['rsi_14', 'macd', 'macd_signal', 'atr_14']) {
+      const existing = series.get(key);
+      if (existing) {
+        chart.removeSeries(existing);
+        series.delete(key);
+      }
+    }
+    if (macdHistogramRef.current) {
+      chart.removeSeries(macdHistogramRef.current);
+      macdHistogramRef.current = null;
+    }
+    activeOscillators.forEach(({ key }, index) => {
+      const paneIndex = index + 1;
+      const addLine = (seriesKey: string) => {
+        if (series.has(seriesKey)) return;
+        const indicator = INDICATORS.find((item) => item.key === seriesKey);
+        if (!indicator) return;
+        const line = chart.addSeries(LineSeries, {
+          color: indicator.color,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        }, paneIndex);
+        line.setData((indicatorSeries[seriesKey] ?? []).map((point) => ({
+          time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
+          value: Number(point.value),
+        })));
+        series.set(seriesKey, line);
+      };
+      if (key === 'macd') {
+        addLine('macd');
+        addLine('macd_signal');
+        if (!macdHistogramRef.current) {
+          const histogram = chart.addSeries(
+            HistogramSeries,
+            { priceLineVisible: false, lastValueVisible: false },
+            paneIndex,
+          );
+          histogram.setData((indicatorSeries.macd_histogram ?? []).map((point) => ({
+            time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
+            value: Number(point.value),
+            color: Number(point.value) >= 0 ? '#3fd99a99' : '#ef777799',
+          })));
+          macdHistogramRef.current = histogram;
+        }
+      } else {
+        addLine(key);
+      }
+    });
+    chart.panes().forEach((pane, index) => pane.setStretchFactor(index === 0 ? 3 : 1));
+  }, [enabledIndicators, indicatorSeries]);
+
+  useEffect(() => {
+    const candleSeries = candleSeriesRef.current;
+    const lineSeries = lineSeriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+    const chart = chartRef.current;
+    if (!candleSeries || !lineSeries || !volumeSeries || !chart || bars.length === 0) return;
 
     const sorted = [...bars].sort(
       (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
     );
-    const data = sorted.map((bar) => ({
+    const barsByTimestamp = new Map<string, Candle>();
+    sorted.forEach((bar) => {
+      const previous = barsByTimestamp.get(bar.timestamp);
+      if (
+        !previous
+        || (bar.source === preferredSource && previous.source !== preferredSource)
+        || (!preferredSource && bar.source === 'dhan' && previous.source !== 'dhan')
+      ) barsByTimestamp.set(bar.timestamp, bar);
+    });
+    const uniqueBars = [...barsByTimestamp.values()];
+    const data = uniqueBars.map((bar) => ({
       time: Math.floor(new Date(bar.timestamp).getTime() / 1000) as Time,
       open: Number(bar.open),
       high: Number(bar.high),
@@ -95,39 +358,44 @@ export function CandleChart({ bars, currency, interval }: Props) {
     candleSeries.setData(data);
     lineSeries.setData(data.map(({ time, close }) => ({ time, value: close })));
     volumeSeries.setData(
-      sorted.map((bar, index) => ({
+      uniqueBars.map((bar, index) => ({
         time: data[index].time,
         value: Number(bar.volume),
         color: Number(bar.close) >= Number(bar.open) ? '#3fd99a66' : '#ef777766',
       })),
     );
-    chart.timeScale().fitContent();
-    const onCrosshairMove = (event: MouseEventParams<Time>) => {
-      const candle = event.seriesData.get(candleSeries);
-      const time = event.time;
-      const source = candle && 'open' in candle
-        ? candle
-        : typeof time === 'number'
-          ? data.find((item) => item.time === time)
-          : undefined;
-      if (!source || typeof time === 'undefined') {
-        setReadout(null);
-        return;
-      }
-      setReadout({
-        time: typeof time === 'number' ? new Date(time * 1000).toLocaleString() : String(time),
-        open: source.open,
-        high: source.high,
-        low: source.low,
-        close: source.close,
+    indicatorSeriesRef.current.forEach((series, key) => {
+      series.setData((indicatorSeries[key] ?? []).map((point) => ({
+        time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
+        value: Number(point.value),
+      })));
+    });
+    macdHistogramRef.current?.setData((indicatorSeries.macd_histogram ?? []).map((point) => ({
+      time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
+      value: Number(point.value),
+      color: Number(point.value) >= 0 ? '#3fd99a99' : '#ef777799',
+    })));
+    chart.timeScale().setVisibleRange({
+      from: data[0].time,
+      to: data[data.length - 1].time,
+    });
+  }, [bars, indicatorSeries, preferredSource]);
+
+  useEffect(() => {
+    candleSeriesRef.current?.applyOptions({ visible: chartMode === 'candles' });
+    lineSeriesRef.current?.applyOptions({ visible: chartMode === 'line' });
+    volumeSeriesRef.current?.applyOptions({ visible: enabledIndicators.includes('volume') });
+    indicatorSeriesRef.current.forEach((series, key) => {
+      series.applyOptions({
+        visible: enabledIndicators.includes(key)
+          || (key.startsWith('bb_') && enabledIndicators.includes('bb_upper'))
+          || (key === 'macd_signal' && enabledIndicators.includes('macd')),
       });
-    };
-    chart.subscribeCrosshairMove(onCrosshairMove);
-    return () => {
-      chart.unsubscribeCrosshairMove(onCrosshairMove);
-      chart.remove();
-    };
-  }, [bars, chartMode, currency, interval]);
+    });
+    macdHistogramRef.current?.applyOptions({
+      visible: enabledIndicators.includes('macd'),
+    });
+  }, [chartMode, enabledIndicators]);
 
   return (
     <div className="candlestick-panel">
@@ -136,13 +404,73 @@ export function CandleChart({ bars, currency, interval }: Props) {
           <button type="button" className={chartMode === 'candles' ? 'selected' : ''} onClick={() => setChartMode('candles')}>Candles</button>
           <button type="button" className={chartMode === 'line' ? 'selected' : ''} onClick={() => setChartMode('line')}>Line</button>
         </div>
+        <div style={{ position: 'relative' }}>
+          <button
+            type="button"
+            aria-expanded={indicatorsOpen}
+            aria-haspopup="true"
+            onClick={() => setIndicatorsOpen((open) => !open)}
+          >
+            Indicators <span aria-label={`${activeIndicatorCount} enabled`}>{activeIndicatorCount}</span>
+          </button>
+          {indicatorsOpen && (
+            <div
+              role="group"
+              aria-label="Chart indicators"
+              style={{
+                position: 'absolute',
+                zIndex: 10,
+                top: 'calc(100% + 6px)',
+                left: 0,
+                display: 'grid',
+                gap: 8,
+                minWidth: 210,
+                padding: 12,
+                border: '1px solid #303b49',
+                borderRadius: 6,
+                background: '#111821',
+                boxShadow: '0 10px 24px #0008',
+              }}
+            >
+              {availableIndicators.map((indicator) => (
+                <label
+                  key={indicator.key}
+                  title={!indicator.available
+                    ? `Insufficient stored history: ${indicator.label} requires ${indicator.period} bars; ${fullSeriesBarsAvailable} available.`
+                    : undefined}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    color: indicator.available ? '#d3dce6' : '#7d8996',
+                    fontSize: 11,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={indicator.available && enabledIndicators.includes(indicator.key)}
+                    disabled={!indicator.available}
+                    onChange={() => setEnabledIndicators((current) => (
+                      current.includes(indicator.key)
+                        ? current.filter((key) => key !== indicator.key)
+                        : [...current, indicator.key]
+                    ))}
+                  />
+                  <span>{indicator.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="crosshair-readout" aria-live="polite">
           {readout
             ? `${readout.time} · O ${price(readout.open, currency)} H ${price(readout.high, currency)} L ${price(readout.low, currency)} C ${price(readout.close, currency)}`
             : 'Move crosshair over chart for OHLC'}
         </div>
       </div>
-      <div className="ohlc-chart" ref={containerRef} aria-label={`${interval} candlestick chart with volume`} />
+      <div className="ohlc-chart" ref={containerRef} aria-label={`${interval} chart with price, volume, and indicator panes`} />
+      {loadingOlder && <p className="loading-inline">Loading earlier candles…</p>}
+      {!hasOlder && bars.length > 0 && <p className="market-provenance">No earlier candles are available from the selected provider.</p>}
     </div>
   );
 }

@@ -1,22 +1,36 @@
+import base64
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, localcontext
+import json
 from email.utils import parsedate_to_datetime
 import logging
 import random
+import asyncio
+import re
 import threading
 import time
-from typing import Literal
+from enum import Enum
+from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.orm import Session, selectinload
+from websockets.exceptions import InvalidStatus, WebSocketException
 
+from app.broker_adapters import (
+    BrokerAdapterError,
+    BrokerRateLimited,
+    BrokerReconnectRequired,
+    DhanAdapter,
+    get_broker_adapter,
+)
 from app.api.auth import get_active_session, get_current_user, require_csrf
 from app.config import settings
 from app.db import get_db
@@ -43,16 +57,21 @@ from app.models import (
     InstrumentResearchBrief,
     InstrumentResearchRun,
     InstrumentSourceLink,
+    BrokerCredential,
+    UserMarketDataSettings,
     User,
     UserSession,
     WatchlistInstrument,
 )
-from app.services.indicators import IndicatorValue, compute_indicators
+from app.services.indicators import IndicatorValue, atr, compute_indicators, ema, rsi, sma
 from app.services import fundamentals as fundamentals_service
+from app.services.price_freshness import classify_quote
 from app.provider_adapters import (
     BinanceProvider,
     DeltaExchangeProvider,
     FinnhubProvider,
+    AngelOneProvider,
+    DhanV2Adapter,
     UpstoxProvider,
     YahooFinanceProvider,
     binance_provider_symbol,
@@ -60,18 +79,82 @@ from app.provider_adapters import (
     canonical_provider_symbol,
 )
 from app.twelve_data import TwelveDataProvider
+from app.security import hash_token
 
 router = APIRouter(prefix="/market-data", tags=["market data"])
 indicators_router = APIRouter(tags=["market data indicators"])
-BarInterval = Literal["1d", "1h", "15m", "1m"]
+BarInterval = Literal["1d", "1h", "25m", "15m", "5m", "1m"]
 MAX_BARS = 500
 MAX_BACKFILL_CHUNKS = 20
 MAX_BACKFILL_REQUESTS = 24
 BACKFILL_CHUNK_DAYS = 450
 RETRY_AFTER_CAP_SECONDS = 8
+MARKET_DATA_FALLBACK_PRIORITY = ("dhan", "angel_one", "yfinance")
+INSTRUMENT_SEARCH_PRIORITY = ("angel_one", "dhan", "yfinance")
 logger = logging.getLogger(__name__)
 _provider_rate_lock = threading.Lock()
 _provider_next_request: dict[str, float] = {}
+
+
+class ReasonCategory(str, Enum):
+    CIRCUIT_BREAKER_OPEN = "circuit_breaker_open"
+    CIRCUIT_BREAKER_PROBE_IN_PROGRESS = "circuit_breaker_probe_in_progress"
+    CLOSED_SESSION_NO_NEW_BARS = "closed_session_no_new_bars"
+    INSTRUMENT_NOT_FOUND = "instrument_not_found"
+    INSTRUMENT_MAPPING_FAILED = "instrument_mapping_failed"
+    INVALID_INSTRUMENT_MAPPING = "invalid_instrument_mapping"
+    INVALID_PROVIDER_INSTRUMENT = "invalid_provider_instrument"
+    INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
+    INTERNAL_ERROR = "internal_error"
+    INVALID_TIME_RANGE = "invalid_time_range"
+    MARKET_TIMESTAMP_UNAVAILABLE = "market_timestamp_unavailable"
+    NO_MARKET_DATA_PROVIDER_CONFIGURED = "no_market_data_provider_configured"
+    PROVIDER_AUTHENTICATION_FAILED = "provider_authentication_failed"
+    PROVIDER_DATA_ALREADY_STORED = "provider_data_already_stored"
+    PROVIDER_EXCEEDED_BAR_LIMIT = "provider_exceeded_bar_limit"
+    PROVIDER_EXCEEDED_SEARCH_LIMIT = "provider_exceeded_search_limit"
+    PROVIDER_IDENTITY_MISMATCH = "provider_identity_mismatch"
+    PROVIDER_INSTRUMENT_MASTER_UNAVAILABLE = "provider_instrument_master_unavailable"
+    PROVIDER_MAPPING_CONFLICT = "provider_mapping_conflict"
+    PROVIDER_NETWORK_ERROR = "provider_network_error"
+    PROVIDER_NO_HISTORY_FOR_RANGE = "provider_no_history_for_range"
+    PROVIDER_INVALID_RESPONSE = "provider_invalid_response"
+    PROVIDER_QUOTE_TIMESTAMP_UNAVAILABLE = "provider_quote_timestamp_unavailable"
+    PROVIDER_QUOTE_UNAVAILABLE = "provider_quote_unavailable"
+    PROVIDER_RATE_LIMIT_EXCEEDED = "provider_rate_limit_exceeded"
+    PROVIDER_RATE_LIMITED = "rate_limited"
+    PROVIDER_REQUEST_CAP_REACHED = "provider_request_cap_reached"
+    PROVIDER_REQUEST_FAILED = "provider_request_failed"
+    PROVIDER_RESPONSE_TOO_LARGE = "provider_response_too_large"
+    PROVIDER_RETURNED_DUPLICATE_OR_UNSORTED_BARS = "provider_returned_duplicate_or_unsorted_bars"
+    PROVIDER_RETURNED_OUT_OF_RANGE_BAR = "provider_returned_out_of_range_bar"
+    PROVIDER_SERVER_ERROR = "provider_server_error"
+    PROVIDER_SUBSCRIPTION_REQUIRED = "provider_subscription_required"
+    PROVIDER_SYMBOL_UNAVAILABLE = "provider_symbol_unavailable"
+    PROVIDER_TIMEOUT = "provider_timeout"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    PROVIDER_UNAVAILABLE_OR_INVALID_RESPONSE = "provider_unavailable_or_invalid_response"
+    PROVIDER_UNEXPECTED_ERROR = "provider_unexpected_error"
+    SEARCH_QUERY_REQUIRED = "search_query_required"
+    STALE = "stale"
+    SYNTHETIC_MARKET_DATA_DISABLED = "synthetic_market_data_disabled"
+    UNVERIFIED_INSTRUMENT_MAPPING = "unverified_instrument_mapping"
+    UNSUPPORTED_INTERVAL = "unsupported_interval"
+    UNSUPPORTED_INTERVAL_OR_LOOKBACK = "unsupported_interval_or_lookback"
+    UNSUPPORTED_PROVIDER_ASSET_CLASS = "unsupported_provider_asset_class"
+    UNAVAILABLE = "unavailable"
+    YFINANCE_COOLDOWN_ACTIVE = "yfinance_cooldown_active"
+
+
+def _reason_category(value: str | None) -> ReasonCategory | None:
+    if value is None:
+        return None
+    if value.startswith("internal_error:"):
+        return ReasonCategory.INTERNAL_ERROR
+    try:
+        return ReasonCategory(value)
+    except ValueError:
+        return ReasonCategory.PROVIDER_REQUEST_FAILED
 
 
 def _log_market_data_failure(
@@ -89,11 +172,40 @@ def _log_market_data_failure(
     )
 
 
+def _safe_provider_error_code(code: str) -> str:
+    if (
+        not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", code)
+        or any(
+            marker in code
+            for marker in ("secret", "token", "jwt", "password", "pin", "feed")
+        )
+    ):
+        return "provider_request_failed"
+    return code
+
+
+def _user_market_data_settings(db: Session, user_id: UUID) -> UserMarketDataSettings | None:
+    try:
+        return db.get(UserMarketDataSettings, user_id)
+    except ProgrammingError as error:
+        if getattr(error.orig, "sqlstate", None) != "42P01":
+            raise
+        logger.error("Market-data settings table is missing; database migrations are pending.")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "database_migration_required",
+                "message": "Database migrations are pending. Run `alembic upgrade head` from the backend directory.",
+            },
+        ) from None
+
+
 class MarketDataProviderChain:
     def __init__(self, providers: list[MarketDataProvider]):
         self.providers = providers
         self.name = providers[0].name if providers else "unavailable"
         self.is_mock = False
+        self.unavailable_providers: list[dict[str, str]] = []
 
     def search_instruments(self, query: str, limit: int) -> list[InstrumentCandidate]:
         if not self.providers:
@@ -130,6 +242,170 @@ class MarketDataProviderChain:
         )
 
 
+class MarketDataSourceOption(BaseModel):
+    name: str
+    label: str
+    available: bool
+    status: str
+    enabled: bool = True
+    expires_at: datetime | None = None
+
+
+class DhanMarketDataProvider:
+    name = "dhan"
+    is_mock = False
+    _base_url = "https://api.dhan.co/v2"
+
+    def __init__(self, adapter: DhanAdapter, tokens: dict[str, str]):
+        self.adapter = adapter
+        self.tokens = tokens
+        self.market_data_adapter = DhanV2Adapter(tokens)
+
+    @property
+    def last_response_status(self) -> int | None:
+        return self.market_data_adapter.last_response_status
+
+    @property
+    def last_http_diagnostics(self) -> list[dict[str, Any]]:
+        return self.market_data_adapter.last_http_diagnostics
+
+    def _candidate(self, row: dict[str, str]) -> InstrumentCandidate:
+        exchange = row["EXCH_ID"].upper()
+        if exchange not in {"NSE", "BSE"}:
+            raise MarketDataProviderError("provider_symbol_unavailable")
+        segment = "NSE_EQ" if exchange == "NSE" else "BSE_EQ"
+        symbol = (
+            row.get("UNDERLYING_SYMBOL", "").strip()
+            or row.get("SYMBOL_NAME", "").strip().removesuffix("-EQ")
+        )
+        return candidate_for_instrument(
+            self.name,
+            f"{row['SECURITY_ID']}|{segment}",
+            symbol,
+            symbol=symbol,
+            display_name=row.get("DISPLAY_NAME") or symbol,
+            asset_class="equity",
+            venue=exchange,
+            currency="INR",
+            country="IN",
+            timezone_name="Asia/Kolkata",
+        ).model_copy(update={"is_verified": True})
+
+    def search_instruments(self, query: str, limit: int) -> list[InstrumentCandidate]:
+        needle = query.strip().casefold()
+        if not needle:
+            raise MarketDataProviderError("search_query_required")
+        rows = list({
+            id(row): row
+            for (exchange, symbol), row in self.adapter._equity_index().items()
+            if needle in symbol.casefold()
+            and row.get("EXCH_ID", "").upper() == exchange
+        }.values())
+        return [self._candidate(row) for row in rows[:limit]]
+
+    def get_instrument(self, provider_instrument_id: str) -> InstrumentCandidate:
+        security_id, separator, segment = provider_instrument_id.partition("|")
+        if not separator or segment not in {"NSE_EQ", "BSE_EQ"} or not security_id.isdigit():
+            raise MarketDataProviderError("invalid_instrument_mapping")
+        row = next(
+            (
+                item for item in self.adapter._equity_index().values()
+                if item.get("SECURITY_ID") == security_id
+                and item.get("EXCH_ID", "").upper()
+                == ("NSE" if segment == "NSE_EQ" else "BSE")
+            ),
+            None,
+        )
+        if row is None:
+            raise MarketDataProviderError("instrument_not_found")
+        return self._candidate(row)
+
+    def _mapping(self, instrument: InstrumentCandidate) -> tuple[str, str]:
+        expected_segment = {
+            "NSE": "NSE_EQ",
+            "XNSE": "NSE_EQ",
+            "NSI": "NSE_EQ",
+            "NSE_EQ": "NSE_EQ",
+            "BSE": "BSE_EQ",
+            "XBOM": "BSE_EQ",
+            "BOM": "BSE_EQ",
+            "BSE_EQ": "BSE_EQ",
+        }.get(instrument.venue.upper())
+        if expected_segment is None:
+            raise MarketDataProviderError("provider_symbol_unavailable")
+        security_id, separator, mapped_segment = instrument.provider_instrument_id.partition("|")
+        if not security_id.isdigit() or (
+            separator and mapped_segment != expected_segment
+        ):
+            raise MarketDataProviderError("invalid_instrument_mapping")
+        if not separator:
+            indexed = self.adapter.find_verified_equity_mapping(
+                instrument.symbol, instrument.venue
+            )
+            if indexed is None or indexed != (security_id, expected_segment):
+                raise MarketDataProviderError("invalid_instrument_mapping")
+        return security_id, expected_segment
+
+    def get_latest_quote(self, instrument: InstrumentCandidate) -> HistoricalBar:
+        security_id, segment = self._mapping(instrument)
+        try:
+            return self.adapter.get_market_quote(
+                self.tokens["access_token"], self.tokens, segment, security_id
+            )
+        except BrokerAdapterError as error:
+            raise MarketDataProviderError(
+                error.category, status_code=error.status_code
+            ) from None
+
+    def get_historical_bars(
+        self,
+        instrument: InstrumentCandidate,
+        interval: str,
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> list[HistoricalBar]:
+        if interval not in {"1d", "1h", "25m", "15m", "5m", "1m"}:
+            raise MarketDataProviderError("unsupported_interval")
+        if start.utcoffset() is None or end.utcoffset() is None or start >= end:
+            raise MarketDataProviderError("invalid_time_range")
+        security_id, segment = self._mapping(instrument)
+        bars: dict[datetime, HistoricalBar] = {}
+        chunk_end = end
+        chunk_days = 365 if interval == "1d" else 90
+        for _ in range(24):
+            if chunk_end <= start or len(bars) >= limit:
+                break
+            chunk_start = max(start, chunk_end - timedelta(days=chunk_days))
+            try:
+                returned = self.market_data_adapter.get_historical_bars(
+                    segment,
+                    security_id,
+                    interval,
+                    chunk_start,
+                    chunk_end,
+                )
+            except BrokerAdapterError as error:
+                raise MarketDataProviderError(
+                    error.category, status_code=error.status_code
+                ) from None
+            for bar in returned:
+                bars[bar.timestamp] = bar
+            chunk_end = chunk_start
+        if chunk_end > start and len(bars) < limit:
+            raise MarketDataProviderError("provider_request_cap_reached")
+        return sorted(bars.values(), key=lambda bar: bar.timestamp)[-limit:]
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth(
+            name=self.name,
+            healthy=True,
+            is_mock=False,
+            capabilities=("instrument_search", "instrument_lookup", "historical_ohlcv", "latest_quote", "stream"),
+            status="authenticated_session",
+        )
+
+
 class FundamentalSnapshotResponse(BaseModel):
     market_cap: Decimal | None
     pe: Decimal | None
@@ -157,6 +433,8 @@ class FundamentalPeriodResponse(BaseModel):
     operating_cash_flow: Decimal | None
     free_cash_flow: Decimal | None
     total_debt: Decimal | None
+    return_on_equity_pct: Decimal | None
+    debt_to_equity: Decimal | None
     shares_outstanding: Decimal | None
     source: str
     fetched_at: datetime
@@ -191,11 +469,17 @@ def create_market_data_provider_chain(
     names: tuple[str, ...] | None = None,
     *,
     upstox_access_token: str | None = None,
+    angel_one_provider: AngelOneProvider | None = None,
+    dhan_provider: DhanMarketDataProvider | None = None,
 ) -> MarketDataProviderChain:
     providers: list[MarketDataProvider] = []
     selected_names = names or settings.market_data_provider_names
     for name in selected_names:
-        if name == "twelve_data":
+        if name == "angel_one" and angel_one_provider is not None:
+            providers.append(angel_one_provider)
+        elif name == "dhan" and dhan_provider is not None:
+            providers.append(dhan_provider)
+        elif name == "twelve_data":
             key = settings.twelve_data_api_key.get_secret_value() if settings.twelve_data_api_key else ""
             if key.strip():
                 providers.append(TwelveDataProvider(key))
@@ -216,12 +500,483 @@ def create_market_data_provider_chain(
     return MarketDataProviderChain(providers)
 
 
-def get_market_data_provider() -> MarketDataProvider:
-    return create_market_data_provider_chain()
+def _market_data_credentials(
+    db: Session,
+    user_id: UUID,
+    provider_name: str,
+) -> tuple[AngelOneProvider | None, DhanMarketDataProvider | None, str | None]:
+    from app.api.brokers import _fresh_tokens, decrypt_tokens
+
+    angel_provider = None
+    dhan_provider = None
+    upstox_token = None
+    if provider_name == "angel_one":
+        row = _user_market_data_settings(db, user_id)
+        api_key = (
+            settings.angel_one_api_key.get_secret_value()
+            if settings.angel_one_api_key
+            else ""
+        )
+        if (
+            row is None
+            or not row.encrypted_angel_tokens
+            or not api_key.strip()
+            or not settings.angel_one_client_public_ip.strip()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Angel One market-data authentication is required.",
+            )
+        tokens = decrypt_tokens(row.encrypted_angel_tokens)
+        expiry = row.angel_expires_at
+        if expiry is not None and expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry is None or expiry <= datetime.now(timezone.utc) + timedelta(minutes=1):
+            try:
+                tokens, expiry = AngelOneProvider.refresh_session(api_key, tokens)
+            except MarketDataProviderError:
+                row.angel_expires_at = datetime.now(timezone.utc)
+                db.commit()
+                raise HTTPException(
+                    status_code=401,
+                    detail="Angel One session expired. Reconnect to restore market data.",
+                ) from None
+            row.encrypted_angel_tokens = _encrypt_market_tokens(tokens)
+            row.angel_expires_at = expiry
+            row.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        angel_provider = AngelOneProvider(api_key, tokens)
+    elif provider_name == "dhan":
+        credential = db.scalar(
+            select(BrokerCredential).where(
+                BrokerCredential.user_id == user_id,
+                BrokerCredential.broker == "dhan",
+            )
+        )
+        if credential is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "not_configured", "message": "Connect Dhan before requesting Dhan market data."},
+            )
+        tokens, blocker = _validated_dhan_tokens(credential)
+        if blocker is not None:
+            raise HTTPException(status_code=409, detail={
+                "code": "config_blocker",
+                "message": blocker,
+            })
+        dhan_provider = DhanMarketDataProvider(DhanAdapter(), tokens)
+    elif provider_name == "upstox":
+        credential = db.scalar(
+            select(BrokerCredential).where(
+                BrokerCredential.user_id == user_id,
+                BrokerCredential.broker == "upstox",
+            )
+        )
+        if credential is None:
+            raise HTTPException(
+                status_code=409,
+                detail="upstox broker authentication is required.",
+            )
+        adapter = get_broker_adapter("upstox")
+        tokens = _fresh_tokens(db, adapter, credential)
+        upstox_token = tokens["access_token"]
+    return angel_provider, dhan_provider, upstox_token
+
+
+def _validated_dhan_tokens(
+    credential: BrokerCredential,
+    *,
+    now: datetime | None = None,
+) -> tuple[dict[str, str], str | None]:
+    from app.api.brokers import decrypt_tokens
+
+    try:
+        tokens = decrypt_tokens(credential.encrypted_tokens)
+    except HTTPException:
+        return {}, "Dhan credentials cannot be decrypted; reconnect Dhan."
+    access_token = tokens.get("access_token", "")
+    client_id = tokens.get("client_id", "")
+    if not access_token or not client_id:
+        return {}, "Dhan access token or client ID is missing; reconnect Dhan."
+    try:
+        encoded = access_token.split(".")[1]
+        payload = base64.urlsafe_b64decode(
+            encoded + "=" * (-len(encoded) % 4)
+        )
+        claims = json.loads(payload)
+        expiry_value = claims.get("exp") if isinstance(claims, dict) else None
+        if not isinstance(expiry_value, (int, float)) or isinstance(expiry_value, bool):
+            raise ValueError
+        jwt_expiry = datetime.fromtimestamp(expiry_value, timezone.utc)
+    except (IndexError, ValueError, TypeError, OverflowError, json.JSONDecodeError):
+        return {}, "Dhan access token expiry could not be verified; reconnect Dhan."
+    current = now or datetime.now(timezone.utc)
+    persisted_expiry = credential.expires_at
+    if persisted_expiry.tzinfo is None:
+        persisted_expiry = persisted_expiry.replace(tzinfo=timezone.utc)
+    if min(jwt_expiry, persisted_expiry) <= current:
+        return {}, "Dhan access token has expired; reconnect Dhan before retrying."
+    return tokens, None
+
+
+def _encrypt_market_tokens(tokens: dict[str, str]) -> str:
+    from app.api.brokers import encrypt_tokens
+
+    return encrypt_tokens(tokens)
+
+
+def _available_market_data_sources(
+    db: Session, user_id: UUID
+) -> list[MarketDataSourceOption]:
+    labels = {
+        "angel_one": "Angel One SmartAPI",
+        "dhan": "Dhan",
+        "yfinance": "Yahoo Finance",
+        "twelve_data": "Twelve Data",
+        "finnhub": "Finnhub",
+        "delta_exchange": "Delta Exchange",
+        "binance": "Binance",
+        "upstox": "Upstox",
+    }
+    configured = set(settings.market_data_provider_names)
+    market_settings = _user_market_data_settings(db, user_id)
+    angel_api_key = (
+        settings.angel_one_api_key.get_secret_value()
+        if settings.angel_one_api_key
+        else ""
+    )
+    angel_configured = bool(
+        angel_api_key.strip() and settings.angel_one_client_public_ip.strip()
+    )
+    angel_connected = bool(
+        market_settings
+        and market_settings.encrypted_angel_tokens
+        and angel_configured
+    )
+    broker_credentials = {
+        credential.broker: credential
+        for credential in db.scalars(
+            select(BrokerCredential).where(
+                BrokerCredential.user_id == user_id,
+                BrokerCredential.broker.in_(("dhan", "upstox")),
+            )
+        )
+    }
+    result: list[MarketDataSourceOption] = []
+    disabled_providers = set(
+        market_settings.disabled_providers if market_settings else []
+    )
+    for name in MARKET_DATA_FALLBACK_PRIORITY:
+        if name not in labels:
+            continue
+        if name not in configured:
+            result.append(MarketDataSourceOption(
+                name=name,
+                label=labels[name],
+                available=False,
+                status="provider_disabled_by_configuration",
+            ))
+            continue
+        if name == "angel_one":
+            angel_expiry = (
+                market_settings.angel_expires_at
+                if market_settings is not None
+                else None
+            )
+            if angel_expiry is not None and angel_expiry.tzinfo is None:
+                angel_expiry = angel_expiry.replace(tzinfo=timezone.utc)
+            angel_session_valid = bool(
+                angel_connected
+                and angel_expiry is not None
+                and angel_expiry > datetime.now(timezone.utc)
+            )
+            result.append(MarketDataSourceOption(
+                name=name,
+                label=labels[name],
+                available=angel_connected,
+                status=(
+                    "connected"
+                    if angel_session_valid
+                    else "session_expired"
+                    if angel_connected
+                    else "needs_connection"
+                    if angel_configured
+                    else "provider_configuration_required"
+                ),
+                expires_at=angel_expiry,
+            ))
+        elif name in {"dhan", "upstox"}:
+            credential = broker_credentials.get(name)
+            enabled = (
+                settings.broker_dhan_enabled
+                and bool(
+                    settings.dhan_api_key
+                    and settings.dhan_api_key.get_secret_value().strip()
+                    and settings.dhan_api_secret
+                    and settings.dhan_api_secret.get_secret_value().strip()
+                )
+                if name == "dhan"
+                else settings.broker_upstox_enabled
+                and bool(
+                    settings.upstox_client_id
+                    and settings.upstox_client_id.get_secret_value().strip()
+                    and settings.upstox_client_secret
+                    and settings.upstox_client_secret.get_secret_value().strip()
+                )
+            )
+            dhan_blocker = None
+            if name == "dhan" and credential is not None and enabled:
+                _, dhan_blocker = _validated_dhan_tokens(credential)
+            connected = bool(credential and enabled and dhan_blocker is None)
+            result.append(MarketDataSourceOption(
+                name=name,
+                label=labels[name],
+                available=connected,
+                status=(
+                    "connected"
+                    if connected
+                    else "config_blocker"
+                    if dhan_blocker
+                    else "needs_connection"
+                ),
+            ))
+        elif name == "twelve_data":
+            available = bool(settings.twelve_data_api_key)
+            result.append(MarketDataSourceOption(
+                name=name,
+                label=labels[name],
+                available=available,
+                status="configured" if available else "provider_configuration_required",
+            ))
+        elif name == "finnhub":
+            available = bool(settings.finnhub_api_key)
+            result.append(MarketDataSourceOption(
+                name=name,
+                label=labels[name],
+                available=available,
+                status="configured" if available else "provider_configuration_required",
+            ))
+        elif name == "yfinance":
+            result.append(MarketDataSourceOption(
+                name=name,
+                label=labels[name],
+                available=True,
+                status="configured_connectivity_unverified",
+            ))
+    for source in result:
+        source.enabled = source.name not in disabled_providers
+    return result
+
+
+def _default_market_data_source(
+    db: Session, user_id: UUID
+) -> str | None:
+    sources = {
+        option.name: option
+        for option in _available_market_data_sources(db, user_id)
+    }
+    return next(
+        (
+            name for name in MARKET_DATA_FALLBACK_PRIORITY
+            if (
+                sources.get(name) is not None
+                and sources[name].available
+                and sources[name].enabled
+            )
+        ),
+        None,
+    )
+
+
+def _selected_market_data_source(
+    db: Session, user_id: UUID, sources: list[MarketDataSourceOption]
+) -> str | None:
+    preference = _user_market_data_settings(db, user_id)
+    selected = preference.selected_provider if preference is not None else None
+    indexed = {source.name: source for source in sources}
+    if (
+        selected is not None
+        and selected in indexed
+        and indexed[selected].available
+        and indexed[selected].enabled
+    ):
+        return selected
+    return _default_market_data_source(db, user_id)
+
+
+def get_market_data_provider(
+    active_session: UserSession = Depends(get_active_session),
+    db: Session = Depends(get_db),
+) -> MarketDataProvider:
+    if not active_session.user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "email_verification_required",
+                "message": "Verify your email address before accessing market data.",
+            },
+        )
+    return market_data_provider_for_user(db, active_session.user_id)
+
+
+def market_data_provider_for_user(db: Session, user_id: UUID) -> MarketDataProvider:
+    configured = set(settings.market_data_provider_names)
+    source_options = {
+        option.name: option
+        for option in _available_market_data_sources(db, user_id)
+    }
+    providers: list[MarketDataProvider] = []
+    unavailable: list[dict[str, str]] = []
+    for name in INSTRUMENT_SEARCH_PRIORITY:
+        option = source_options.get(name)
+        if option is not None and not option.enabled:
+            unavailable.append({
+                "provider": name,
+                "reason": "provider_disabled_by_user",
+            })
+            continue
+        if name not in configured or option is None or not option.available:
+            unavailable.append({
+                "provider": name,
+                "reason": (
+                    "provider_not_enabled_by_configuration"
+                    if name not in configured or option is None
+                    else "config_blocker"
+                    if option.status == "config_blocker"
+                    else "not_configured_or_authenticated"
+                ),
+            })
+            continue
+        try:
+            angel_provider, dhan_provider, upstox_token = (
+                _market_data_credentials(db, user_id, name)
+                if name in {"angel_one", "dhan", "upstox"}
+                else (None, None, None)
+            )
+        except HTTPException as error:
+            logger.info("Skipping unavailable market-data provider %s for user %s.", name, user_id)
+            detail = error.detail
+            unavailable.append({
+                "provider": name,
+                "reason": (
+                    "config_blocker"
+                    if isinstance(detail, dict)
+                    and detail.get("code") == "config_blocker"
+                    else "authentication_expired"
+                    if error.status_code == 401
+                    else "authentication_required"
+                    if error.status_code == 409
+                    else "provider_unavailable"
+                ),
+            })
+            continue
+        providers.extend(create_market_data_provider_chain(
+            (name,),
+            upstox_access_token=upstox_token,
+            angel_one_provider=angel_provider,
+            dhan_provider=dhan_provider,
+        ).providers)
+    chain = MarketDataProviderChain(providers)
+    chain.unavailable_providers = unavailable
+    return chain
 
 
 def _providers(provider: MarketDataProvider) -> list[MarketDataProvider]:
-    return list(getattr(provider, "providers", [provider]))
+    providers = list(getattr(provider, "providers", [provider]))
+    if not any(item.name in MARKET_DATA_FALLBACK_PRIORITY for item in providers):
+        return providers
+    indexed = {item.name: item for item in providers}
+    ordered = [
+        indexed[name]
+        for name in MARKET_DATA_FALLBACK_PRIORITY
+        if name in indexed
+    ]
+    ordered.extend(
+        item for item in providers
+        if item.name not in MARKET_DATA_FALLBACK_PRIORITY
+    )
+    return ordered
+
+
+class ProviderCircuitBreaker:
+    def __init__(
+        self,
+        *,
+        threshold: int = 3,
+        cooldown_seconds: float = 30,
+        clock=time.monotonic,
+    ) -> None:
+        self.threshold = threshold
+        self.cooldown_seconds = cooldown_seconds
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._failures: dict[str, int] = {}
+        self._blocked_until: dict[str, float] = {}
+        self._half_open: set[str] = set()
+
+    def before_attempt(self, provider: str) -> str | None:
+        with self._lock:
+            now = self.clock()
+            blocked_until = self._blocked_until.get(provider)
+            if blocked_until is None:
+                return None
+            if now < blocked_until:
+                return "circuit_breaker_open"
+            if provider in self._half_open:
+                return "circuit_breaker_probe_in_progress"
+            self._half_open.add(provider)
+            return None
+
+    def record_success(self, provider: str) -> None:
+        with self._lock:
+            self._failures.pop(provider, None)
+            self._blocked_until.pop(provider, None)
+            self._half_open.discard(provider)
+
+    def reset(self, provider: str) -> None:
+        self.record_success(provider)
+
+    def record_failure(
+        self, provider: str, *, cooldown_seconds: float | None = None
+    ) -> None:
+        with self._lock:
+            failures = self._failures.get(provider, 0) + 1
+            self._failures[provider] = failures
+            self._half_open.discard(provider)
+            if failures >= self.threshold or cooldown_seconds is not None:
+                cooldown = self.cooldown_seconds
+                if cooldown_seconds is not None:
+                    cooldown = max(0.0, min(cooldown_seconds, 300.0))
+                self._blocked_until[provider] = self.clock() + cooldown
+
+
+_provider_circuit_breaker = ProviderCircuitBreaker()
+
+
+def reset_provider_circuit_breaker(provider: str) -> None:
+    _provider_circuit_breaker.reset(provider)
+
+
+def _market_session_state(
+    instrument: Instrument | InstrumentCandidate | None,
+    now: datetime | None = None,
+) -> Literal["open", "closed", "unknown"]:
+    if instrument is None:
+        return "unknown"
+    country = instrument.country.upper()
+    if country == "IN":
+        zone = ZoneInfo("Asia/Kolkata")
+        opening, closing = (9, 15), (15, 30)
+    elif country == "US":
+        zone = ZoneInfo("America/New_York")
+        opening, closing = (9, 30), (16, 0)
+    else:
+        return "unknown"
+    local = (now or datetime.now(timezone.utc)).astimezone(zone)
+    if local.weekday() >= 5:
+        return "closed"
+    clock = (local.hour, local.minute)
+    return "open" if opening <= clock < closing else "closed"
 
 
 def _venue_matches(instrument: Instrument, candidate: InstrumentCandidate) -> bool:
@@ -241,6 +996,13 @@ def _resolve_provider_candidate(
         (item for item in instrument.provider_identifiers if item.provider == provider.name),
         None,
     )
+    if mapping is None:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.instrument_id == instrument.id,
+                InstrumentProviderIdentifier.provider == provider.name,
+            )
+        )
     if mapping is not None:
         candidate = candidate_for_instrument(
             provider.name,
@@ -259,11 +1021,18 @@ def _resolve_provider_candidate(
             strike=instrument.strike,
             option_type=instrument.option_type,
         )
+        candidate = candidate.model_copy(update={"is_verified": mapping.is_verified})
         return _validated_candidate(provider, candidate), mapping
 
     candidate: InstrumentCandidate | None = None
-    if provider.name == "twelve_data":
-        matches = provider.search_instruments(instrument.symbol, 50)
+    if provider.name in {"twelve_data", "angel_one", "dhan"}:
+        matches = (
+            provider.search_instruments_for_exchange(
+                instrument.symbol, instrument.venue, 50
+            )
+            if isinstance(provider, AngelOneProvider)
+            else provider.search_instruments(instrument.symbol, 50)
+        )
         candidate = next(
             (
                 item for item in matches
@@ -309,6 +1078,21 @@ def _resolve_provider_candidate(
 
     if candidate is None:
         raise MarketDataProviderError("provider_symbol_unavailable")
+    existing_mapping = db.scalar(
+        select(InstrumentProviderIdentifier).where(
+            InstrumentProviderIdentifier.provider == provider.name,
+            InstrumentProviderIdentifier.provider_instrument_id
+            == candidate.provider_instrument_id,
+        )
+    )
+    if existing_mapping is not None:
+        if existing_mapping.instrument_id != instrument.id:
+            raise MarketDataProviderError("provider_mapping_conflict")
+        mapping = existing_mapping
+        if mapping not in instrument.provider_identifiers:
+            instrument.provider_identifiers.append(mapping)
+        return _validated_candidate(provider, candidate), mapping
+
     mapping = InstrumentProviderIdentifier(
         instrument_id=instrument.id,
         provider=provider.name,
@@ -317,10 +1101,46 @@ def _resolve_provider_candidate(
         is_verified=candidate.is_verified,
         last_seen_at=datetime.now(timezone.utc),
     )
-    db.add(mapping)
-    db.flush()
-    instrument.provider_identifiers.append(mapping)
+    try:
+        with db.begin_nested():
+            db.add(mapping)
+            db.flush()
+    except IntegrityError:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.provider == provider.name,
+                InstrumentProviderIdentifier.provider_instrument_id
+                == candidate.provider_instrument_id,
+            )
+        )
+        if mapping is None or mapping.instrument_id != instrument.id:
+            raise MarketDataProviderError("provider_mapping_conflict")
+    if mapping not in instrument.provider_identifiers:
+        instrument.provider_identifiers.append(mapping)
     return _validated_candidate(provider, candidate), mapping
+
+
+def _provider_history_limitation(
+    provider_name: str, interval: str, start: datetime
+) -> str | None:
+    supported = {
+        "angel_one": {"1d", "1h", "15m", "5m", "1m"},
+        "dhan": {"1d", "1m", "5m", "15m", "25m", "1h"},
+        "twelve_data": {"1d", "1h", "15m"},
+        "finnhub": {"1d", "1h", "15m"},
+        "yfinance": {"1d", "1h", "15m", "1m"},
+        "delta_exchange": {"1d", "1h", "15m", "5m", "1m"},
+        "binance": {"1d", "1h", "15m", "5m", "1m"},
+        "upstox": {"1d", "1h", "15m", "1m"},
+    }
+    intervals = supported.get(provider_name)
+    if intervals is not None and interval not in intervals:
+        return "unsupported_interval"
+    if provider_name == "yfinance":
+        lookback_days = {"1m": 7, "15m": 60, "1h": 730}.get(interval)
+        if lookback_days is not None and start < datetime.now(timezone.utc) - timedelta(days=lookback_days):
+            return f"yfinance_{interval}_lookback_exceeded_{lookback_days}_days"
+    return None
 
 
 class ProviderHealthResponse(BaseModel):
@@ -334,6 +1154,40 @@ class ProviderHealthResponse(BaseModel):
 class ProviderResponse(BaseModel):
     provider: ProviderHealthResponse
     configuration: str
+
+
+class MarketDataSettingsResponse(BaseModel):
+    selected_provider: str | None
+    sources: list[MarketDataSourceOption]
+
+
+class MarketDataSourceRequest(BaseModel):
+    provider: Literal[
+        "angel_one", "dhan", "yfinance", "twelve_data", "finnhub",
+        "delta_exchange", "binance", "upstox",
+    ]
+
+
+class MarketDataProviderEnableRequest(BaseModel):
+    enabled: bool
+
+
+class ProviderBreakerResetResponse(BaseModel):
+    provider: str
+    state: Literal["closed"]
+    consecutive_failures: int
+
+
+class AngelOneConnectRequest(BaseModel):
+    client_code: str = Field(min_length=1, max_length=64)
+    pin: str = Field(min_length=4, max_length=32)
+    totp: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class AngelOneConnectResponse(BaseModel):
+    connected: bool
+    expires_at: datetime
+    message: str
 
 
 class ProviderIdentifierResponse(BaseModel):
@@ -382,6 +1236,30 @@ class FreshnessResponse(BaseModel):
     message: str
 
 
+class ProviderAttemptResponse(BaseModel):
+    provider: str
+    outcome: Literal[
+        "used", "unavailable", "unsupported", "stale", "skipped",
+        "rate_limited", "no_new_bars", "config_blocker",
+    ]
+    reason: str | None = None
+    reason_category: ReasonCategory | None = None
+    http_status: int | None = None
+    latency_ms: float | None = None
+    bars: int = 0
+
+
+class BackfillChunkDetail(TypedDict):
+    start: datetime
+    end: datetime
+    provider: str | None
+    response_status: int | None
+    rows_returned: int
+    rows_written: int
+    outcome: str
+    reason: str | None
+
+
 class HistoryResponse(BaseModel):
     instrument_id: UUID
     interval: BarInterval
@@ -389,6 +1267,15 @@ class HistoryResponse(BaseModel):
     bars: list[MarketBarResponse]
     offset: int
     limit: int
+    provider_attempts: list[ProviderAttemptResponse] = Field(default_factory=list)
+    fallback_reason: str | None = None
+    provider: str | None = None
+    fetched_at: datetime | None = None
+    as_of: datetime | None = None
+    currency: str | None = None
+    session_state: Literal["open", "closed", "unknown"] = "unknown"
+    is_cached: bool = True
+    sync_status: Literal["success", "unavailable", "no_new_bars"] = "success"
 
 
 class IndicatorValueResponse(BaseModel):
@@ -397,6 +1284,11 @@ class IndicatorValueResponse(BaseModel):
     bars_required: int
     bars_used: int
     status: Literal["available", "insufficient_history"]
+
+
+class IndicatorSeriesPointResponse(BaseModel):
+    timestamp: datetime
+    value: Decimal
 
 
 class IndicatorsResponse(BaseModel):
@@ -409,6 +1301,7 @@ class IndicatorsResponse(BaseModel):
     latest_bar: datetime | None
     bars_available: int
     indicators: dict[str, IndicatorValueResponse]
+    indicator_series: dict[str, list[IndicatorSeriesPointResponse]]
     disclaimer: str = "Decision support, not investment advice."
 
 
@@ -420,6 +1313,120 @@ def _indicator_result(value: IndicatorValue) -> IndicatorValueResponse:
         bars_used=value.bars_used,
         status="available" if value.value is not None else "insufficient_history",
     )
+
+
+def _ema_values(values: list[Decimal], period: int) -> list[Decimal | None]:
+    result: list[Decimal | None] = [None] * len(values)
+    if len(values) < period:
+        return result
+    average = sum(values[:period], Decimal("0")) / Decimal(period)
+    result[period - 1] = average
+    alpha = Decimal("2") / Decimal(period + 1)
+    for index in range(period, len(values)):
+        average = values[index] * alpha + average * (Decimal("1") - alpha)
+        result[index] = average
+    return result
+
+
+def _indicator_series(
+    bars: list[MarketBar], timezone_name: str
+) -> dict[str, list[IndicatorSeriesPointResponse]]:
+    keys = (
+        "sma_20", "sma_50", "sma_200", "ema_20", "ema_50", "ema_200",
+        "vwap", "bb_upper", "bb_middle", "bb_lower", "rsi_14",
+        "macd", "macd_signal", "macd_histogram", "atr_14",
+    )
+    values: dict[str, list[IndicatorSeriesPointResponse]] = {
+        key: [] for key in keys
+    }
+    closes = [bar.close for bar in bars]
+    with localcontext() as context:
+        context.prec = 34
+        ema_values = {
+            period: _ema_values(closes, period)
+            for period in (20, 50, 200, 12, 26)
+        }
+        macd_values: list[Decimal] = []
+        macd_indices: list[int] = []
+        for index, (fast, slow) in enumerate(zip(ema_values[12], ema_values[26])):
+            if fast is not None and slow is not None:
+                macd_values.append(fast - slow)
+                macd_indices.append(index)
+        macd_index_by_bar = {
+            bar_index: macd_index
+            for macd_index, bar_index in enumerate(macd_indices)
+        }
+        signal_values = _ema_values(macd_values, 9)
+        cumulative_volume = Decimal("0")
+        cumulative_value = Decimal("0")
+        current_session = None
+        exchange_timezone = ZoneInfo(timezone_name)
+        for index, bar in enumerate(bars):
+            timestamp = _utc(bar.timestamp)
+            if index >= 19:
+                window = closes[index - 19:index + 1]
+                mean = sum(window, Decimal("0")) / Decimal(20)
+                variance = sum(
+                    ((close - mean) ** 2 for close in window), Decimal("0")
+                ) / Decimal(20)
+                deviation = variance.sqrt() * Decimal("2")
+                values["bb_upper"].append(IndicatorSeriesPointResponse(
+                    timestamp=timestamp, value=mean + deviation
+                ))
+                values["bb_middle"].append(IndicatorSeriesPointResponse(
+                    timestamp=timestamp, value=mean
+                ))
+                values["bb_lower"].append(IndicatorSeriesPointResponse(
+                    timestamp=timestamp, value=mean - deviation
+                ))
+            for key, period, calculator in (
+                ("sma_20", 20, sma),
+                ("sma_50", 50, sma),
+                ("sma_200", 200, sma),
+                ("rsi_14", 14, rsi),
+                ("atr_14", 14, atr),
+            ):
+                calculated = calculator(bars[:index + 1], period).value
+                if calculated is not None:
+                    values[key].append(IndicatorSeriesPointResponse(
+                        timestamp=timestamp, value=calculated
+                    ))
+            for period in (20, 50, 200):
+                calculated = ema_values[period][index]
+                if calculated is not None:
+                    values[f"ema_{period}"].append(IndicatorSeriesPointResponse(
+                        timestamp=timestamp, value=calculated
+                    ))
+
+            session_date = timestamp.astimezone(exchange_timezone).date()
+            if session_date != current_session:
+                cumulative_volume = Decimal("0")
+                cumulative_value = Decimal("0")
+                current_session = session_date
+            typical_price = (bar.high + bar.low + bar.close) / Decimal("3")
+            cumulative_volume += bar.volume
+            cumulative_value += typical_price * bar.volume
+            if cumulative_volume > 0:
+                values["vwap"].append(IndicatorSeriesPointResponse(
+                    timestamp=timestamp,
+                    value=cumulative_value / cumulative_volume,
+                ))
+
+            macd_index = macd_index_by_bar.get(index)
+            if macd_index is not None:
+                macd_value = macd_values[macd_index]
+                values["macd"].append(IndicatorSeriesPointResponse(
+                    timestamp=timestamp, value=macd_value
+                ))
+                signal_value = signal_values[macd_index]
+                if signal_value is not None:
+                    values["macd_signal"].append(IndicatorSeriesPointResponse(
+                        timestamp=timestamp, value=signal_value
+                    ))
+                    values["macd_histogram"].append(IndicatorSeriesPointResponse(
+                        timestamp=timestamp, value=macd_value - signal_value
+                    ))
+    return values
 
 
 def require_verified_market_session(
@@ -443,10 +1450,39 @@ class QuoteResponse(BaseModel):
     source: str
     retrieved_at: datetime
     freshness: Literal["fresh", "stale"]
+    freshness_status: Literal[
+        "fresh", "stale", "historical", "unavailable", "synthetic",
+        "unverified", "future_dated",
+    ]
     freshness_message: str
     is_cached: bool
     is_synthetic: bool
     is_verified: bool
+    provider_configured: bool
+    provider_request_status: Literal["succeeded", "not_attempted", "failed"]
+    provider_attempts: list[ProviderAttemptResponse] = Field(default_factory=list)
+    fallback_reason: str | None = None
+    provider_connection_status: Literal[
+        "not_applicable_rest", "connected", "reconnecting", "disconnected", "unavailable"
+    ] = "not_applicable_rest"
+    feed_active: bool = False
+    market_timestamp: datetime
+    market_age_seconds: float
+    data_type: Literal[
+        "provider_quote", "provider_snapshot", "live_tick", "daily_close"
+    ]
+    delivery_mode: Literal[
+        "on_demand_rest", "rest_snapshot", "websocket_tick"
+    ] = "on_demand_rest"
+    stream_status: Literal[
+        "not_configured", "active", "reconnecting", "stale", "unavailable"
+    ] = "not_configured"
+    provider_delay_seconds: None = None
+    provider: str | None = None
+    fetched_at: datetime | None = None
+    as_of: datetime | None = None
+    interval: str = "quote"
+    session_state: Literal["open", "closed", "unknown"] = "unknown"
     bar: HistoricalBar
 
 
@@ -454,8 +1490,17 @@ class WatchlistQuoteResponse(BaseModel):
     source: str
     retrieved_at: datetime
     freshness: Literal["fresh", "stale"]
+    freshness_status: Literal[
+        "fresh", "stale", "historical", "unavailable", "synthetic",
+        "unverified", "future_dated",
+    ]
     is_synthetic: bool
     is_verified: bool
+    market_timestamp: datetime
+    market_age_seconds: float
+    data_type: Literal[
+        "provider_quote", "provider_snapshot", "live_tick", "daily_close"
+    ]
     close: Decimal
 
 
@@ -570,25 +1615,34 @@ def _get_instrument(db: Session, instrument_id: UUID) -> Instrument:
 
 
 def _freshness(
-    db: Session, instrument_id: UUID, interval: str, *, now: datetime | None = None
+    db: Session,
+    instrument_id: UUID,
+    interval: str,
+    *,
+    source: str | None = None,
+    now: datetime | None = None,
 ) -> FreshnessResponse:
     instrument = db.get(Instrument, instrument_id)
     is_synthetic_instrument = instrument.is_synthetic if instrument else False
-    sync = db.scalar(
-        select(MarketDataSync).where(
+    sync_query = select(MarketDataSync).where(
             MarketDataSync.instrument_id == instrument_id,
             MarketDataSync.interval == interval,
-        ).order_by(
+        )
+    if source is not None:
+        sync_query = sync_query.where(MarketDataSync.source == source)
+    sync = db.scalar(sync_query.order_by(
             MarketDataSync.attempted_at.desc(),
             MarketDataSync.succeeded_at.is_not(None).desc(),
-        )
-    )
-    latest_bar = db.scalar(
+        ))
+    latest_bar_query = (
         select(MarketBar)
         .where(MarketBar.instrument_id == instrument_id, MarketBar.interval == interval)
         .where(MarketBar.is_synthetic.is_(True) if is_synthetic_instrument else MarketBar.is_synthetic.is_(False))
-        .order_by(MarketBar.timestamp.desc())
-        .limit(1)
+    )
+    if source is not None:
+        latest_bar_query = latest_bar_query.where(MarketBar.source == source)
+    latest_bar = db.scalar(
+        latest_bar_query.order_by(MarketBar.timestamp.desc()).limit(1)
     )
     if sync is None:
         return FreshnessResponse(
@@ -647,11 +1701,11 @@ def _validate_range(interval: str, start: datetime, end: datetime) -> tuple[date
     start_utc, end_utc = _utc(start), _utc(end)
     if start_utc >= end_utc:
         raise HTTPException(status_code=422, detail="start must be before end")
-    max_days = {"1m": 7, "15m": 60, "1h": 730}.get(interval)
-    if max_days is not None and end_utc - start_utc > timedelta(days=max_days):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Date range for {interval} bars cannot exceed {max_days} days",
+    if interval == "1d":
+        start_utc = start_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_day_start = end_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_utc = end_day_start + (
+            timedelta(days=1) if end_utc > end_day_start else timedelta()
         )
     return start_utc, end_utc
 
@@ -727,8 +1781,12 @@ def _record_sync_attempt(
     rows_written: int,
     outcome: str,
     reason: str | None,
+    reason_category: ReasonCategory | None,
     attempted_at: datetime,
+    http_diagnostics: list[dict[str, Any]] | None = None,
 ) -> None:
+    if reason_category is not None and not isinstance(reason_category, ReasonCategory):
+        raise ValueError("reason_category must be a ReasonCategory")
     db.add(MarketDataSyncAttempt(
         instrument_id=instrument_id,
         interval=interval,
@@ -741,6 +1799,8 @@ def _record_sync_attempt(
         rows_written=rows_written,
         outcome=outcome,
         reason=reason[:200] if reason else None,
+        reason_category=reason_category.value if reason_category else None,
+        http_diagnostics=http_diagnostics or [],
         attempted_at=attempted_at,
     ))
 
@@ -875,6 +1935,9 @@ def _fetch_provider_history(
             ]
             if len(bars) > limit:
                 raise MarketDataProviderError("provider_exceeded_bar_limit")
+            timestamps = [bar.timestamp for bar in bars]
+            if timestamps != sorted(set(timestamps)):
+                raise MarketDataProviderError("provider_returned_duplicate_or_unsorted_bars")
             if any(not start <= bar.timestamp < end for bar in bars):
                 raise MarketDataProviderError("provider_returned_out_of_range_bar")
             return bars
@@ -883,7 +1946,507 @@ def _fetch_provider_history(
                 time.sleep(_retry_after_seconds(error.retry_after, attempt))
                 continue
             raise
+        except ValidationError:
+            raise MarketDataProviderError(
+                "provider_unavailable_or_invalid_response"
+            ) from None
     raise MarketDataProviderError("provider_rate_limit_exceeded", status_code=429)
+
+
+def _sync_dhan_history(
+    db: Session,
+    instrument: Instrument,
+    user: User,
+    interval: str,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    cached_bars: list[MarketBar],
+) -> bool:
+    if instrument.is_synthetic or instrument.currency.upper() != "INR":
+        return False
+    credential = db.scalar(
+        select(BrokerCredential).where(
+            BrokerCredential.user_id == user.id,
+            BrokerCredential.broker == "dhan",
+        )
+    )
+    adapter = DhanAdapter()
+    if credential is None:
+        return False
+    if interval != "1d" and start < datetime.now(timezone.utc) - timedelta(days=365 * 5 + 2):
+        raise HTTPException(
+            status_code=422,
+            detail="Dhan intraday history is available for up to five years; choose a later start date.",
+        )
+    try:
+        if instrument.asset_class != "equity":
+            return False
+        mapping_values = adapter.find_verified_equity_mapping(
+            instrument.symbol, instrument.venue
+        )
+        if mapping_values is None:
+            logger.warning(
+                "Dhan history unavailable instrument_id=%s reason=instrument_mapping_unverified",
+                instrument.id,
+            )
+            return False
+        security_id, exchange_segment = mapping_values
+        mapping_owner = db.scalar(
+            select(InstrumentProviderIdentifier.instrument_id).where(
+                InstrumentProviderIdentifier.provider == adapter.slug,
+                InstrumentProviderIdentifier.provider_instrument_id == security_id,
+                InstrumentProviderIdentifier.instrument_id != instrument.id,
+            )
+        )
+        if mapping_owner is not None:
+            logger.warning(
+                "Dhan history unavailable instrument_id=%s reason=instrument_mapping_conflict",
+                instrument.id,
+            )
+            return False
+        mapping = next(
+            (
+                item for item in instrument.provider_identifiers
+                if item.provider == adapter.slug
+            ),
+            None,
+        )
+        if mapping is not None and mapping.provider_instrument_id != security_id:
+            logger.warning(
+                "Dhan history unavailable instrument_id=%s reason=instrument_mapping_conflict",
+                instrument.id,
+            )
+            return False
+        if mapping is None:
+            mapping = InstrumentProviderIdentifier(
+                instrument_id=instrument.id,
+                provider=adapter.slug,
+                provider_instrument_id=security_id,
+                provider_symbol=instrument.symbol,
+                is_verified=True,
+                last_seen_at=datetime.now(timezone.utc),
+            )
+            instrument.provider_identifiers.append(mapping)
+            db.add(mapping)
+        else:
+            mapping.is_verified = True
+            mapping.last_seen_at = datetime.now(timezone.utc)
+
+        requested_start = start
+        requested_end = end
+        if cached_bars:
+            oldest = min(_utc(row.timestamp) for row in cached_bars)
+            newest = max(_utc(row.timestamp) for row in cached_bars)
+            if start < oldest:
+                requested_end = min(end, oldest)
+            elif end > newest + timedelta(minutes={
+                "1m": 1, "5m": 5, "15m": 15, "1h": 60,
+                "1d": 1440,
+            }[interval]):
+                requested_start = max(start, newest + timedelta(minutes={
+                    "1m": 1, "5m": 5, "15m": 15, "1h": 60,
+                    "1d": 1440,
+                }[interval]))
+            else:
+                return False
+        if requested_start >= requested_end:
+            return False
+
+        from app.api.brokers import _fresh_tokens
+
+        tokens = _fresh_tokens(db, adapter, credential)
+        candidate = candidate_for_instrument(
+            adapter.slug,
+            security_id,
+            instrument.symbol,
+            symbol=instrument.symbol,
+            display_name=instrument.display_name,
+            asset_class=instrument.asset_class,
+            venue=instrument.venue,
+            currency=instrument.currency,
+            country=instrument.country,
+            timezone_name="Asia/Kolkata",
+        )
+        bars: list[HistoricalBar] = []
+        chunk_end = requested_end
+        while chunk_end > requested_start and len(bars) < limit:
+            chunk_start = max(requested_start, chunk_end - timedelta(days=90))
+            chunk = adapter.get_historical_bars(
+                tokens["access_token"],
+                tokens,
+                exchange_segment,
+                security_id,
+                interval,
+                chunk_start,
+                chunk_end,
+            )
+            bars.extend(chunk)
+            chunk_end = chunk_start
+        bars = sorted(
+            {bar.timestamp: bar for bar in bars}.values(),
+            key=lambda bar: bar.timestamp,
+        )[-limit:]
+        if not bars:
+            logger.info(
+                "Dhan history returned no candles instrument_id=%s interval=%s",
+                instrument.id,
+                interval,
+            )
+            retrieved_at = datetime.now(timezone.utc)
+            _sync_record(
+                db,
+                instrument.id,
+                interval,
+                source=adapter.slug,
+                attempted_at=retrieved_at,
+                status="success",
+                rows_received=0,
+                safe_error_code=None,
+                requested_start=requested_start,
+                requested_end=requested_end,
+                requested_limit=limit,
+                safe_reason="provider_no_history_for_range",
+            )
+            _record_sync_attempt(
+                db,
+                instrument_id=instrument.id,
+                interval=interval,
+                provider=adapter.slug,
+                start=requested_start,
+                end=requested_end,
+                limit=limit,
+                response_status=200,
+                rows_returned=0,
+                rows_written=0,
+                outcome="success",
+                reason="provider_no_history_for_range",
+                reason_category=ReasonCategory.PROVIDER_NO_HISTORY_FOR_RANGE,
+                attempted_at=retrieved_at,
+            )
+            db.commit()
+            return True
+        retrieved_at = datetime.now(timezone.utc)
+        rows_written = _persist_real_bars(
+            db, instrument, adapter, candidate, interval, bars, retrieved_at
+        )
+        _sync_record(
+            db,
+            instrument.id,
+            interval,
+            source=adapter.slug,
+            attempted_at=retrieved_at,
+            status="success",
+            rows_received=len(bars),
+            safe_error_code=None,
+            requested_start=requested_start,
+            requested_end=requested_end,
+            requested_limit=limit,
+            rows_written=rows_written,
+            safe_reason=None if rows_written else "provider_data_already_stored",
+        )
+        _record_sync_attempt(
+            db,
+            instrument_id=instrument.id,
+            interval=interval,
+            provider=adapter.slug,
+            start=requested_start,
+            end=requested_end,
+            limit=limit,
+            response_status=None,
+            rows_returned=len(bars),
+            rows_written=rows_written,
+            outcome="success" if rows_written else "unchanged",
+            reason=None if rows_written else "provider_data_already_stored",
+            reason_category=(
+                None
+                if rows_written
+                else ReasonCategory.PROVIDER_DATA_ALREADY_STORED
+            ),
+            attempted_at=retrieved_at,
+        )
+        db.commit()
+        return True
+    except HTTPException:
+        db.rollback()
+        raise
+    except BrokerReconnectRequired as error:
+        credential.expires_at = datetime.now(timezone.utc)
+        db.commit()
+        raise HTTPException(
+            status_code=401,
+            detail="Dhan authentication expired. Reconnect and retry market-data sync.",
+        ) from error
+    except (BrokerAdapterError, BrokerRateLimited, KeyError, ValueError) as error:
+        db.rollback()
+        _log_market_data_failure(
+            "Dhan historical request failed (instrument_id=%s interval=%s)",
+            error,
+            "dhan_historical_data_unavailable",
+            instrument.id,
+            interval,
+        )
+        return False
+
+
+@router.get("/settings", response_model=MarketDataSettingsResponse)
+def get_market_data_settings(
+    active_session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+) -> MarketDataSettingsResponse:
+    sources = _available_market_data_sources(db, active_session.user_id)
+    selected = _selected_market_data_source(
+        db, active_session.user_id, sources
+    )
+    return MarketDataSettingsResponse(selected_provider=selected, sources=sources)
+
+
+@router.put(
+    "/settings/providers/{provider_name}",
+    response_model=MarketDataSettingsResponse,
+)
+def set_market_data_provider_enabled(
+    provider_name: str,
+    request: MarketDataProviderEnableRequest,
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> MarketDataSettingsResponse:
+    if provider_name not in MARKET_DATA_FALLBACK_PRIORITY:
+        raise HTTPException(status_code=404, detail="Market-data provider not found")
+    preference = _user_market_data_settings(db, active_session.user_id)
+    if preference is None:
+        preference = UserMarketDataSettings(
+            user_id=active_session.user_id,
+            disabled_providers=[],
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(preference)
+    disabled = set(preference.disabled_providers or [])
+    if request.enabled:
+        disabled.discard(provider_name)
+    else:
+        disabled.add(provider_name)
+    preference.disabled_providers = sorted(disabled)
+    if (
+        not request.enabled
+        and preference.selected_provider == provider_name
+    ):
+        preference.selected_provider = None
+    preference.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    sources = _available_market_data_sources(db, active_session.user_id)
+    return MarketDataSettingsResponse(
+        selected_provider=_selected_market_data_source(
+            db, active_session.user_id, sources
+        ),
+        sources=sources,
+    )
+
+
+@router.put("/settings/provider", response_model=MarketDataSettingsResponse)
+def select_market_data_provider(
+    request: MarketDataSourceRequest,
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> MarketDataSettingsResponse:
+    sources = _available_market_data_sources(db, active_session.user_id)
+    source = next(
+        (
+            item for item in sources
+            if item.name == request.provider
+        ),
+        None,
+    )
+    if source is None or not source.available or not source.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "provider_not_eligible",
+                "message": "Selected provider is not eligible for this account.",
+            },
+        )
+    preference = _user_market_data_settings(db, active_session.user_id)
+    now = datetime.now(timezone.utc)
+    if preference is None:
+        preference = UserMarketDataSettings(
+            user_id=active_session.user_id,
+            selected_provider=request.provider,
+            disabled_providers=[],
+            updated_at=now,
+        )
+        db.add(preference)
+    else:
+        preference.selected_provider = request.provider
+        preference.updated_at = now
+    db.commit()
+    sources = _available_market_data_sources(db, active_session.user_id)
+    return MarketDataSettingsResponse(
+        selected_provider=_selected_market_data_source(
+            db, active_session.user_id, sources
+        ),
+        sources=sources,
+    )
+
+
+@router.post(
+    "/providers/{provider_name}/breaker/reset",
+    response_model=ProviderBreakerResetResponse,
+)
+def reset_market_data_provider_breaker(
+    provider_name: str,
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+) -> ProviderBreakerResetResponse:
+    if provider_name not in MARKET_DATA_FALLBACK_PRIORITY:
+        raise HTTPException(status_code=404, detail="Market-data provider not found")
+    reset_provider_circuit_breaker(provider_name)
+    return ProviderBreakerResetResponse(
+        provider=provider_name,
+        state="closed",
+        consecutive_failures=0,
+    )
+
+
+def _require_market_data_two_factor(active_session: UserSession) -> None:
+    if not active_session.user.two_factor_enabled or not active_session.two_factor_verified:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "two_factor_required",
+                "message": "Verify this session with app-based two-factor authentication before connecting Angel One.",
+            },
+        )
+
+
+@router.post("/settings/angel-one/connect", response_model=AngelOneConnectResponse)
+def connect_angel_one(
+    request: AngelOneConnectRequest,
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> AngelOneConnectResponse:
+    _require_market_data_two_factor(active_session)
+    reset_provider_circuit_breaker("angel_one")
+    api_key = settings.angel_one_api_key.get_secret_value() if settings.angel_one_api_key else ""
+    if not api_key.strip() or not settings.angel_one_client_public_ip.strip():
+        raise HTTPException(
+            status_code=503,
+            detail="Angel One API key and registered client public IP must be configured on the backend.",
+        )
+    try:
+        tokens, expires_at = AngelOneProvider.login(
+            api_key,
+            request.client_code.strip(),
+            request.pin,
+            request.totp,
+        )
+    except MarketDataProviderError as error:
+        _log_market_data_failure(
+            "Angel One login failed (provider=%s code=%s upstream_status=%s)",
+            error,
+            error.code,
+            "angel_one",
+            error.code,
+            error.status_code,
+        )
+        if error.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Angel One login was rate limited. Wait before retrying.",
+            ) from None
+        if error.code == "provider_authentication_failed":
+            raise HTTPException(
+                status_code=401,
+                detail="Angel One rejected the client code, PIN, or current authenticator code.",
+            ) from None
+        if error.code == "provider_timeout":
+            raise HTTPException(
+                status_code=504,
+                detail="Timed out connecting to Angel One SmartAPI. Check provider availability and retry.",
+            ) from None
+        if error.code == "provider_network_error":
+            raise HTTPException(
+                status_code=502,
+                detail="Could not reach Angel One SmartAPI. Check outbound network access and retry.",
+            ) from None
+        if error.code == "provider_subscription_required":
+            raise HTTPException(
+                status_code=403,
+                detail="Angel One reports this SmartAPI app or account lacks access. Check its API permissions.",
+            ) from None
+        if error.code == "invalid_provider_response":
+            raise HTTPException(
+                status_code=502,
+                detail="Angel One SmartAPI returned an invalid login response. Retry or contact provider support.",
+            ) from None
+        if error.code == "provider_server_error":
+            status = (
+                f" (HTTP {error.status_code})"
+                if error.status_code is not None
+                else ""
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Angel One SmartAPI returned an upstream server error{status}. Retry later.",
+            ) from None
+        if error.status_code is not None and 400 <= error.status_code < 500:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Angel One SmartAPI rejected the login request (HTTP {error.status_code}). Check app configuration and retry.",
+            ) from None
+        raise HTTPException(
+            status_code=502,
+            detail="Angel One authentication could not be completed because SmartAPI rejected or could not process the login request. Retry after checking provider status.",
+        ) from None
+    preference = _user_market_data_settings(db, active_session.user_id)
+    now = datetime.now(timezone.utc)
+    if preference is None:
+        preference = UserMarketDataSettings(
+            user_id=active_session.user_id,
+            selected_provider=None,
+            disabled_providers=[],
+            updated_at=now,
+        )
+        db.add(preference)
+    preference.encrypted_angel_tokens = _encrypt_market_tokens(tokens)
+    preference.angel_expires_at = expires_at
+    preference.angel_connected_at = now
+    preference.updated_at = now
+    db.commit()
+    reset_provider_circuit_breaker("angel_one")
+    return AngelOneConnectResponse(
+        connected=True,
+        expires_at=expires_at,
+        message="Angel One market-data session connected. Credentials and session tokens remain backend-only.",
+    )
+
+
+@router.post("/settings/angel-one/disconnect", response_model=MarketDataSettingsResponse)
+def disconnect_angel_one(
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> MarketDataSettingsResponse:
+    preference = _user_market_data_settings(db, active_session.user_id)
+    reset_provider_circuit_breaker("angel_one")
+    if preference is not None:
+        preference.encrypted_angel_tokens = None
+        preference.angel_expires_at = None
+        preference.angel_connected_at = None
+        if preference.selected_provider == "angel_one":
+            preference.selected_provider = None
+        preference.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    return MarketDataSettingsResponse(
+        selected_provider=(
+            preference.selected_provider
+            if preference is not None and preference.selected_provider
+            else _default_market_data_source(db, active_session.user_id)
+        ),
+        sources=_available_market_data_sources(db, active_session.user_id),
+    )
 
 
 @router.get("/provider", response_model=ProviderResponse)
@@ -960,6 +2523,12 @@ def _growth(current: Decimal | None, previous: Decimal | None) -> Decimal | None
     return (current - previous) / abs(previous) * Decimal("100")
 
 
+def _ratio(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | None:
+    if numerator is None or denominator in (None, Decimal("0")):
+        return None
+    return (numerator / denominator).quantize(Decimal("0.00000001"))
+
+
 def _fundamental_period_responses(
     rows: list[InstrumentFundamental],
 ) -> list[FundamentalPeriodResponse]:
@@ -971,6 +2540,7 @@ def _fundamental_period_responses(
             if 360 <= (row.period_end - candidate.period_end).days <= 370
         ]
         prior = min(previous, key=lambda candidate: abs((row.period_end - candidate.period_end).days - 365), default=None)
+        equity_ratio = _ratio(row.net_income, row.total_equity)
         values.append(FundamentalPeriodResponse(
             id=row.id,
             period_type=row.period_type,
@@ -986,6 +2556,8 @@ def _fundamental_period_responses(
             operating_cash_flow=row.operating_cash_flow,
             free_cash_flow=row.free_cash_flow,
             total_debt=row.total_debt,
+            return_on_equity_pct=equity_ratio * Decimal("100") if equity_ratio is not None else None,
+            debt_to_equity=_ratio(row.total_debt, row.total_equity),
             shares_outstanding=row.shares_outstanding,
             source=row.source,
             fetched_at=_utc(row.fetched_at),
@@ -1009,6 +2581,7 @@ def sync_instrument_fundamentals(
     db: Session = Depends(get_db),
 ) -> FundamentalsSyncResponse:
     instrument = _get_instrument(db, instrument_id)
+    instrument_id = instrument.id
     if instrument.is_synthetic:
         return FundamentalsSyncResponse(
             instrument_id=instrument.id,
@@ -1037,15 +2610,25 @@ def sync_instrument_fundamentals(
         rows, snapshot = fundamentals_service.sync_instrument_fundamentals(
             db, instrument, candidate.provider_symbol
         )
-    except (MarketDataProviderError, TimeoutError, ValueError):
+    except (MarketDataProviderError, TimeoutError, ValueError) as error:
         db.rollback()
+        message = (
+            "No Yahoo Finance symbol mapping is available for this instrument."
+            if isinstance(error, MarketDataProviderError)
+            and error.code == "provider_symbol_unavailable"
+            else "The Yahoo Finance symbol mapping conflicts with another instrument."
+            if isinstance(error, MarketDataProviderError)
+            and error.code == "provider_mapping_conflict"
+            else "The provider could not supply fundamentals for this instrument. "
+            "No synthetic fallback is used and no values were estimated."
+        )
         return FundamentalsSyncResponse(
-            instrument_id=instrument.id,
+            instrument_id=instrument_id,
             status="unavailable",
             source=None,
             fetched_at=None,
             fundamentals_count=0,
-            message="Fundamentals are unavailable from providers. No synthetic fallback was used.",
+            message=message,
         )
     snapshot_fields = ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
     has_values = any(getattr(snapshot, field) is not None for field in snapshot_fields) or any(
@@ -1059,7 +2642,7 @@ def sync_instrument_fundamentals(
     )
     if not has_values:
         return FundamentalsSyncResponse(
-            instrument_id=instrument.id,
+            instrument_id=instrument_id,
             status="unavailable",
             source=snapshot.source,
             fetched_at=_utc(snapshot.fetched_at),
@@ -1067,7 +2650,7 @@ def sync_instrument_fundamentals(
             message="The provider returned no non-null fundamentals. No values were estimated.",
         )
     return FundamentalsSyncResponse(
-        instrument_id=instrument.id,
+        instrument_id=instrument_id,
         status="available",
         source=snapshot.source,
         fetched_at=_utc(snapshot.fetched_at),
@@ -1125,14 +2708,14 @@ def get_instrument_fundamentals(
     )
     unavailable = not snapshot_has_values and not period_has_values
     return FundamentalsResponse(
-        instrument_id=instrument.id,
+        instrument_id=instrument_id,
         symbol=instrument.symbol,
         currency=instrument.currency,
         snapshot=snapshot_response,
         fundamentals=rows,
         unavailable=unavailable,
         message=(
-            "Fundamentals are unavailable from providers."
+            "No non-null fundamentals are stored for this instrument; request a provider sync."
             if unavailable
             else "Provider-reported fundamentals are shown with source and freshness."
         ),
@@ -1145,15 +2728,26 @@ def get_instrument_fundamentals(
 def get_instrument_indicators(
     instrument_id: UUID,
     interval: BarInterval = Query(default="1d"),
+    source: str | None = Query(default=None, min_length=1, max_length=32),
     _session: UserSession = Depends(require_verified_market_session),
+    provider: MarketDataProvider = Depends(get_market_data_provider),
     db: Session = Depends(get_db),
 ) -> IndicatorsResponse:
     instrument = _get_instrument(db, instrument_id)
+    active_providers = _providers(provider)
+    selected_source = source or (
+        active_providers[0].name if active_providers else None
+    )
+    latest_query = select(MarketBar).where(
+        MarketBar.instrument_id == instrument.id,
+        MarketBar.interval == interval,
+    )
+    if selected_source is not None:
+        latest_query = latest_query.where(MarketBar.source == selected_source)
+    else:
+        latest_query = latest_query.where(MarketBar.source.is_(None))
     latest_bar = db.scalar(
-        select(MarketBar)
-        .where(MarketBar.instrument_id == instrument.id, MarketBar.interval == interval)
-        .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
-        .limit(1)
+        latest_query.order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc()).limit(1)
     )
     bars: list[MarketBar] = []
     if latest_bar is not None:
@@ -1166,7 +2760,6 @@ def get_instrument_indicators(
                     MarketBar.source == latest_bar.source,
                 )
                 .order_by(MarketBar.timestamp.desc())
-                .limit(MAX_BARS)
             )
         )
         bars.reverse()
@@ -1175,16 +2768,18 @@ def get_instrument_indicators(
         name: _indicator_result(value)
         for name, value in calculated.__dict__.items()
     }
+    indicator_series = _indicator_series(bars, instrument.timezone)
     return IndicatorsResponse(
         instrument_id=instrument.id,
         symbol=instrument.symbol,
         currency=instrument.currency,
         interval=interval,
-        freshness=_freshness(db, instrument.id, interval),
+        freshness=_freshness(db, instrument.id, interval, source=selected_source),
         source=latest_bar.source if latest_bar else None,
         latest_bar=_utc(latest_bar.timestamp) if latest_bar else None,
         bars_available=len(bars),
         indicators=indicators,
+        indicator_series=indicator_series,
     )
 
 
@@ -1226,23 +2821,31 @@ def get_watchlist(
         if quote is not None:
             retrieved_at = _utc(quote.retrieved_at)
             quote_timestamp = _utc(quote.timestamp)
-            age = max(
-                (now - retrieved_at).total_seconds(),
-                (now - quote_timestamp).total_seconds(),
+            _usable, quote_reason, quote_evidence = classify_quote(
+                quote, instrument, None, now
             )
+            freshness_status = quote_evidence["quote_freshness_status"]
             quote_response = WatchlistQuoteResponse(
                 source=quote.source,
                 retrieved_at=retrieved_at,
                 freshness=(
-                    "fresh"
-                    if 0 <= age <= settings.market_data_quote_freshness_seconds
-                    else "stale"
+                    "fresh" if quote_reason is None else "stale"
                 ),
+                freshness_status=freshness_status,
                 is_synthetic=quote.is_synthetic,
                 is_verified=any(
-                    mapping.provider == quote.source and mapping.is_verified
+                    mapping.provider == (
+                        "dhan"
+                        if quote.source == "dhan_ws"
+                        else "angel_one"
+                        if quote.source == "angel_one_ws"
+                        else quote.source
+                    ) and mapping.is_verified
                     for mapping in instrument.provider_identifiers
                 ),
+                market_timestamp=quote_timestamp,
+                market_age_seconds=max(0.0, quote_evidence["quote_timestamp_age_seconds"]),
+                data_type=quote_evidence["quote_data_type"],
                 close=quote.close,
             )
         result.append(
@@ -1653,6 +3256,7 @@ def get_market_data_coverage(
             "oldest_bar": _utc(bars[1]) if bars[1] else None,
             "newest_bar": _utc(bars[2]) if bars[2] else None,
             "last_sync_status": sync.status if sync else None,
+            "last_sync_provider": sync.source if sync else None,
             "last_sync_reason": sync.safe_reason or sync.safe_error_code if sync else None,
             "freshness_status": freshness_status,
         })
@@ -1704,6 +3308,602 @@ def remove_watchlist_instrument(
     return None
 
 
+def _dhan_snapshot_quote(
+    db: Session,
+    instrument: Instrument,
+    user: User,
+    *,
+    refresh: bool,
+    now: datetime,
+) -> tuple[QuoteResponse | None, tuple[MarketQuote, bool] | None]:
+    if instrument.currency.upper() != "INR" or instrument.is_synthetic:
+        return None, None
+    live_cache = db.scalar(
+        select(MarketQuote).where(
+            MarketQuote.instrument_id == instrument.id,
+            MarketQuote.source == "dhan_ws",
+        )
+    )
+    live_mapping = next(
+        (
+            item for item in instrument.provider_identifiers
+            if item.provider == "dhan" and item.is_verified
+        ),
+        None,
+    )
+    stale_live_quote = (
+        (live_cache, live_mapping is not None)
+        if live_cache is not None and not live_cache.is_synthetic
+        else None
+    )
+    if live_cache is not None and live_mapping is not None and not refresh:
+        cache_age = (now - _utc(live_cache.retrieved_at)).total_seconds()
+        price_age = (now - _utc(live_cache.timestamp)).total_seconds()
+        if (
+            0 <= cache_age <= settings.market_data_quote_freshness_seconds
+            and 0 <= price_age <= settings.market_data_quote_freshness_seconds
+        ):
+            response = _quote_response(
+                instrument,
+                live_cache,
+                freshness="fresh",
+                freshness_message=(
+                    "Most recent Dhan WebSocket tick is cached; persistent feed status "
+                    "is only available while the stream is connected."
+                ),
+                is_cached=True,
+                is_verified=True,
+                provider_request_status="not_attempted",
+            )
+            return (
+                response.model_copy(update={
+                    "delivery_mode": "websocket_tick",
+                    "stream_status": "stale",
+                    "provider_connection_status": "disconnected",
+                    "feed_active": False,
+                }),
+                stale_live_quote,
+            )
+    credential = db.scalar(
+        select(BrokerCredential).where(
+            BrokerCredential.user_id == user.id,
+            BrokerCredential.broker == "dhan",
+        )
+    )
+    adapter = DhanAdapter()
+    if credential is None:
+        return None, stale_live_quote
+    cached_quote = db.scalar(
+        select(MarketQuote).where(
+            MarketQuote.instrument_id == instrument.id,
+            MarketQuote.source == adapter.slug,
+        )
+    )
+    stale_quote = stale_live_quote or (
+        (cached_quote, False)
+        if cached_quote is not None and not cached_quote.is_synthetic
+        else None
+    )
+    try:
+        security_id, exchange_segment = adapter.find_verified_equity_mapping(
+            instrument.symbol, instrument.venue
+        ) or (None, None)
+        if security_id is None or exchange_segment is None:
+            return None, stale_quote
+        mapping_owner = db.scalar(
+            select(InstrumentProviderIdentifier.instrument_id).where(
+                InstrumentProviderIdentifier.provider == adapter.slug,
+                InstrumentProviderIdentifier.provider_instrument_id == security_id,
+                InstrumentProviderIdentifier.instrument_id != instrument.id,
+            )
+        )
+        if mapping_owner is not None:
+            return None, stale_quote
+        mapping = next(
+            (
+                item
+                for item in instrument.provider_identifiers
+                if item.provider == adapter.slug
+            ),
+            None,
+        )
+        if mapping is not None and mapping.provider_instrument_id != security_id:
+            return None, stale_quote
+        if mapping is None:
+            mapping = InstrumentProviderIdentifier(
+                instrument_id=instrument.id,
+                provider=adapter.slug,
+                provider_instrument_id=security_id,
+                provider_symbol=instrument.symbol,
+                is_verified=True,
+                last_seen_at=now,
+            )
+            instrument.provider_identifiers.append(mapping)
+            db.add(mapping)
+        else:
+            mapping.is_verified = True
+            mapping.last_seen_at = now
+        if cached_quote is not None and not cached_quote.is_synthetic:
+            cache_age = (now - _utc(cached_quote.retrieved_at)).total_seconds()
+            price_age = (now - _utc(cached_quote.timestamp)).total_seconds()
+            if (
+                not refresh
+                and 0 <= cache_age <= settings.market_data_quote_freshness_seconds
+                and 0 <= price_age <= settings.market_data_quote_freshness_seconds
+            ):
+                db.commit()
+                return (
+                    _quote_response(
+                        instrument,
+                        cached_quote,
+                        freshness="fresh",
+                        freshness_message="Cached Dhan REST market snapshot is within the configured freshness window.",
+                        is_cached=True,
+                        is_verified=True,
+                        provider_request_status="not_attempted",
+                    ),
+                    stale_quote,
+                )
+
+        from app.api.brokers import _fresh_tokens
+
+        tokens = _fresh_tokens(db, adapter, credential)
+        bar = adapter.get_market_quote(
+            tokens["access_token"], tokens, exchange_segment, security_id
+        )
+        retrieved_at = datetime.now(timezone.utc)
+        if cached_quote is None:
+            cached_quote = MarketQuote(
+                instrument_id=instrument.id,
+                source=adapter.slug,
+            )
+            db.add(cached_quote)
+        cached_quote.timestamp = bar.timestamp
+        cached_quote.open = bar.open
+        cached_quote.high = bar.high
+        cached_quote.low = bar.low
+        cached_quote.close = bar.close
+        cached_quote.volume = bar.volume
+        cached_quote.retrieved_at = retrieved_at
+        cached_quote.is_synthetic = False
+        db.commit()
+        db.refresh(cached_quote)
+        is_stale = (
+            retrieved_at - _utc(bar.timestamp)
+        ).total_seconds() > settings.market_data_quote_freshness_seconds
+        return (
+            _quote_response(
+                instrument,
+                cached_quote,
+                freshness="stale" if is_stale else "fresh",
+                freshness_message=(
+                    "Dhan returned a market snapshot older than the configured freshness window."
+                    if is_stale
+                    else "Quote retrieved from Dhan REST market quote; this is a snapshot, not a WebSocket tick."
+                ),
+                is_cached=False,
+                is_verified=True,
+                provider_request_status="succeeded",
+            ),
+            stale_quote,
+        )
+    except BrokerReconnectRequired:
+        credential.expires_at = now
+        db.commit()
+        return None, stale_quote
+    except HTTPException:
+        db.rollback()
+        return None, stale_quote
+    except (BrokerAdapterError, KeyError, ValueError, TimeoutError):
+        db.rollback()
+        return None, stale_quote
+
+
+async def _stream_angel_one_quote(
+    websocket: WebSocket,
+    instrument_id: UUID,
+    active_session: UserSession,
+    db: Session,
+) -> None:
+    instrument = db.scalar(
+        select(Instrument)
+        .where(Instrument.id == instrument_id)
+        .options(selectinload(Instrument.provider_identifiers))
+    )
+    if (
+        instrument is None
+        or instrument.currency.upper() != "INR"
+        or instrument.asset_class != "equity"
+        or instrument.is_synthetic
+    ):
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4404)
+        return
+    try:
+        provider, _, _ = _market_data_credentials(
+            db, active_session.user_id, "angel_one"
+        )
+        if provider is None:
+            raise MarketDataProviderError("provider_unavailable")
+        candidate, mapping = _resolve_provider_candidate(db, instrument, provider)
+        if not mapping.is_verified:
+            raise MarketDataProviderError("unverified_instrument_mapping")
+        db.commit()
+    except HTTPException as error:
+        db.rollback()
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4401 if error.status_code == 401 else 4404)
+        return
+    except (MarketDataProviderError, TimeoutError, ValueError):
+        db.rollback()
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4404)
+        return
+
+    async def send_status(status: str) -> None:
+        await websocket.send_json({"type": "status", "status": status})
+
+    stream_task = asyncio.current_task()
+
+    async def monitor_client() -> None:
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            if stream_task is not None:
+                stream_task.cancel()
+
+    client_monitor = asyncio.create_task(monitor_client())
+    retry_delay = 1
+    has_connected = False
+    try:
+        while True:
+            await send_status("connecting" if not has_connected else "reconnecting")
+            try:
+                async for bar in provider.stream_quote(candidate):
+                    retrieved_at = datetime.now(timezone.utc)
+                    quote = db.scalar(
+                        select(MarketQuote).where(
+                            MarketQuote.instrument_id == instrument.id,
+                            MarketQuote.source == "angel_one_ws",
+                        )
+                    )
+                    if quote is None:
+                        quote = MarketQuote(
+                            instrument_id=instrument.id,
+                            source="angel_one_ws",
+                        )
+                        db.add(quote)
+                    quote.timestamp = bar.timestamp
+                    quote.open = bar.open
+                    quote.high = bar.high
+                    quote.low = bar.low
+                    quote.close = bar.close
+                    quote.volume = bar.volume
+                    quote.retrieved_at = retrieved_at
+                    quote.is_synthetic = False
+                    db.commit()
+                    db.refresh(quote)
+                    response = _quote_response(
+                        instrument,
+                        quote,
+                        freshness="fresh",
+                        freshness_message="Live Angel One WebSocket tick received.",
+                        is_cached=False,
+                        is_verified=True,
+                        provider_request_status="succeeded",
+                    ).model_copy(update={
+                        "delivery_mode": "websocket_tick",
+                        "stream_status": "active",
+                        "provider_connection_status": "connected",
+                        "feed_active": True,
+                    })
+                    await websocket.send_json({
+                        "type": "tick",
+                        "quote": response.model_dump(mode="json"),
+                    })
+                    has_connected = True
+                    retry_delay = 1
+            except InvalidStatus as error:
+                if error.response.status_code == 401:
+                    preference = _user_market_data_settings(db, active_session.user_id)
+                    if preference is not None:
+                        preference.angel_expires_at = datetime.now(timezone.utc)
+                        preference.updated_at = datetime.now(timezone.utc)
+                        db.commit()
+                    try:
+                        provider, _, _ = _market_data_credentials(
+                            db, active_session.user_id, "angel_one"
+                        )
+                    except HTTPException:
+                        await send_status("unavailable")
+                        await websocket.close(code=4401)
+                        return
+                    if provider is None:
+                        await send_status("unavailable")
+                        await websocket.close(code=4401)
+                        return
+                    candidate, mapping = _resolve_provider_candidate(db, instrument, provider)
+                    if not mapping.is_verified:
+                        await send_status("unavailable")
+                        await websocket.close(code=4404)
+                        return
+                elif error.response.status_code == 403:
+                    await send_status("unavailable")
+                    await websocket.close(code=4403)
+                    return
+                else:
+                    await send_status("reconnecting")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30)
+            except MarketDataProviderError as error:
+                if error.status_code == 401 or error.code == "provider_authentication_failed":
+                    preference = _user_market_data_settings(db, active_session.user_id)
+                    if preference is not None:
+                        preference.angel_expires_at = datetime.now(timezone.utc)
+                        preference.updated_at = datetime.now(timezone.utc)
+                        db.commit()
+                    try:
+                        provider, _, _ = _market_data_credentials(
+                            db, active_session.user_id, "angel_one"
+                        )
+                    except HTTPException:
+                        await send_status("unavailable")
+                        await websocket.close(code=4401)
+                        return
+                    if provider is None:
+                        await send_status("unavailable")
+                        await websocket.close(code=4401)
+                        return
+                else:
+                    await send_status("unavailable")
+                    await websocket.close(code=1011)
+                    return
+            except (OSError, TimeoutError, WebSocketException):
+                await send_status("reconnecting")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 30)
+            else:
+                await send_status("reconnecting")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 30)
+    except WebSocketDisconnect:
+        return
+    except asyncio.CancelledError:
+        return
+    finally:
+        client_monitor.cancel()
+        try:
+            await client_monitor
+        except asyncio.CancelledError:
+            pass
+
+
+@router.websocket("/instruments/{instrument_id}/stream")
+async def dhan_quote_stream(
+    websocket: WebSocket,
+    instrument_id: UUID,
+    db: Session = Depends(get_db),
+) -> None:
+    await websocket.accept()
+    origin = websocket.headers.get("origin")
+    parsed_origin = urlsplit(origin or "")
+    allowed_origin = origin == settings.frontend_origin or (
+        parsed_origin.scheme == "https"
+        and parsed_origin.hostname is not None
+        and parsed_origin.hostname.endswith(".app.github.dev")
+    )
+    if origin and not allowed_origin:
+        await websocket.close(code=4403)
+        return
+    raw_token = websocket.cookies.get("session_token")
+    active_session = (
+        db.scalar(
+            select(UserSession)
+            .where(
+                UserSession.token_hash == hash_token(raw_token),
+                UserSession.revoked_at.is_(None),
+            )
+            .options(selectinload(UserSession.user))
+        )
+        if raw_token
+        else None
+    )
+    expires_at = active_session.expires_at if active_session is not None else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if active_session is None or expires_at <= datetime.now(timezone.utc):
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4401)
+        return
+    if (
+        not active_session.user.email_verified
+        or not active_session.user.two_factor_enabled
+        or not active_session.two_factor_verified
+    ):
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4403)
+        return
+
+    selected_source = _default_market_data_source(db, active_session.user_id)
+    if selected_source == "angel_one":
+        await _stream_angel_one_quote(
+            websocket, instrument_id, active_session, db
+        )
+        return
+    if selected_source != "dhan":
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4404)
+        return
+
+    credential = db.scalar(
+        select(BrokerCredential).where(
+            BrokerCredential.user_id == active_session.user_id,
+            BrokerCredential.broker == "dhan",
+        )
+    )
+    adapter = DhanAdapter()
+    instrument = db.scalar(
+        select(Instrument)
+        .where(Instrument.id == instrument_id)
+        .options(selectinload(Instrument.provider_identifiers))
+    )
+    if (
+        credential is None
+        or instrument is None
+        or instrument.currency.upper() != "INR"
+        or instrument.asset_class != "equity"
+        or instrument.is_synthetic
+    ):
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4404)
+        return
+
+    try:
+        mapping_values = await asyncio.to_thread(
+            adapter.find_verified_equity_mapping,
+            instrument.symbol,
+            instrument.venue,
+        )
+        if mapping_values is None:
+            await websocket.send_json({"type": "status", "status": "unavailable"})
+            await websocket.close(code=4404)
+            return
+        security_id, exchange_segment = mapping_values
+        mapping_owner = db.scalar(
+            select(InstrumentProviderIdentifier.instrument_id).where(
+                InstrumentProviderIdentifier.provider == adapter.slug,
+                InstrumentProviderIdentifier.provider_instrument_id == security_id,
+                InstrumentProviderIdentifier.instrument_id != instrument.id,
+            )
+        )
+        if mapping_owner is not None:
+            await websocket.send_json({"type": "status", "status": "unavailable"})
+            await websocket.close(code=4404)
+            return
+        mapping = next(
+            (
+                item
+                for item in instrument.provider_identifiers
+                if item.provider == adapter.slug
+            ),
+            None,
+        )
+        if mapping is not None and mapping.provider_instrument_id != security_id:
+            await websocket.send_json({"type": "status", "status": "unavailable"})
+            await websocket.close(code=4404)
+            return
+        if mapping is None:
+            mapping = InstrumentProviderIdentifier(
+                instrument_id=instrument.id,
+                provider=adapter.slug,
+                provider_instrument_id=security_id,
+                provider_symbol=instrument.symbol,
+                is_verified=True,
+                last_seen_at=datetime.now(timezone.utc),
+            )
+            instrument.provider_identifiers.append(mapping)
+            db.add(mapping)
+        else:
+            mapping.is_verified = True
+            mapping.last_seen_at = datetime.now(timezone.utc)
+        db.commit()
+        from app.api.brokers import _fresh_tokens
+
+        tokens = _fresh_tokens(db, adapter, credential)
+    except HTTPException:
+        db.rollback()
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=4401)
+        return
+    except (BrokerAdapterError, KeyError, ValueError, TimeoutError):
+        db.rollback()
+        await websocket.send_json({"type": "status", "status": "unavailable"})
+        await websocket.close(code=1011)
+        return
+
+    async def send_status(status: str) -> None:
+        await websocket.send_json({"type": "status", "status": status})
+
+    stream_task = asyncio.current_task()
+
+    async def monitor_client() -> None:
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            if stream_task is not None:
+                stream_task.cancel()
+
+    client_monitor = asyncio.create_task(monitor_client())
+    try:
+        async for bar in adapter.stream_market_quotes(
+            tokens["access_token"],
+            tokens,
+            exchange_segment,
+            security_id,
+            send_status,
+        ):
+            quote = db.scalar(
+                select(MarketQuote).where(
+                    MarketQuote.instrument_id == instrument.id,
+                    MarketQuote.source == "dhan_ws",
+                )
+            )
+            if quote is None:
+                quote = MarketQuote(
+                    instrument_id=instrument.id,
+                    source="dhan_ws",
+                )
+                db.add(quote)
+            quote.timestamp = bar.timestamp
+            quote.open = bar.open
+            quote.high = bar.high
+            quote.low = bar.low
+            quote.close = bar.close
+            quote.volume = bar.volume
+            quote.retrieved_at = datetime.now(timezone.utc)
+            quote.is_synthetic = False
+            db.commit()
+            db.refresh(quote)
+            response = _quote_response(
+                instrument,
+                quote,
+                freshness="fresh",
+                freshness_message="Live Dhan WebSocket quote packet received.",
+                is_cached=False,
+                is_verified=True,
+                provider_request_status="succeeded",
+            ).model_copy(update={
+                "delivery_mode": "websocket_tick",
+                "stream_status": "active",
+                "provider_connection_status": "connected",
+                "feed_active": True,
+            })
+            await websocket.send_json({
+                "type": "tick",
+                "quote": response.model_dump(mode="json"),
+            })
+    except WebSocketDisconnect:
+        return
+    except asyncio.CancelledError:
+        return
+    except BrokerReconnectRequired:
+        credential.expires_at = datetime.now(timezone.utc)
+        db.commit()
+        await send_status("unavailable")
+        await websocket.close(code=4401)
+    except BrokerAdapterError:
+        await send_status("unavailable")
+        await websocket.close(code=1011)
+    finally:
+        client_monitor.cancel()
+        try:
+            await client_monitor
+        except asyncio.CancelledError:
+            pass
+
+
 @router.get("/instruments/{instrument_id}/quote", response_model=QuoteResponse)
 def latest_quote(
     instrument_id: UUID,
@@ -1715,8 +3915,99 @@ def latest_quote(
     instrument = _get_instrument(db, instrument_id)
     now = datetime.now(timezone.utc)
     stale_cache: tuple[MarketQuote, bool] | None = None
-    for active_provider in _providers(provider):
+    active_providers = _providers(provider)
+    provider_attempts = [
+        ProviderAttemptResponse(
+            provider=attempt["provider"],
+            outcome="unavailable",
+            reason=attempt["reason"],
+        )
+        for attempt in getattr(provider, "unavailable_providers", [])
+    ]
+    fallback_reason = (
+        provider_attempts[0].reason if provider_attempts else None
+    )
+    if active_providers and active_providers[0].name == "angel_one":
+        live_quote = db.scalar(
+            select(MarketQuote).where(
+                MarketQuote.instrument_id == instrument.id,
+                MarketQuote.source == "angel_one_ws",
+            )
+        )
+        live_mapping = next(
+            (
+                item for item in instrument.provider_identifiers
+                if item.provider == "angel_one" and item.is_verified
+            ),
+            None,
+        )
+        if live_quote is not None:
+            stale_cache = (live_quote, live_mapping is not None)
+            _, _, evidence = classify_quote(live_quote, instrument, None, now)
+            if not refresh and live_mapping is not None and evidence["quote_freshness_status"] == "fresh":
+                return _quote_response(
+                    instrument,
+                    live_quote,
+                    freshness="fresh",
+                    freshness_message="Latest Angel One WebSocket tick is within the configured freshness window.",
+                    is_cached=True,
+                    is_verified=True,
+                    provider_request_status="not_attempted",
+                ).model_copy(update={
+                    "provider_connection_status": "connected",
+                    "feed_active": True,
+                    "stream_status": "active",
+                    "provider_attempts": provider_attempts,
+                    "fallback_reason": fallback_reason,
+                })
+    dhan_snapshot_attempted = False
+    if active_providers and active_providers[0].name == "dhan":
+        dhan_quote, stale_dhan_quote = _dhan_snapshot_quote(
+            db, instrument, _user, refresh=refresh, now=now
+        )
+        if dhan_quote is not None:
+            if dhan_quote.freshness_status == "fresh":
+                return dhan_quote.model_copy(update={
+                    "provider_attempts": provider_attempts,
+                    "fallback_reason": fallback_reason,
+                })
+            provider_attempts.append(ProviderAttemptResponse(
+                provider="dhan",
+                outcome="stale",
+                reason=dhan_quote.freshness_status,
+            ))
+            fallback_reason = fallback_reason or dhan_quote.freshness_status
+            cached_dhan_quote = db.scalar(
+                select(MarketQuote).where(
+                    MarketQuote.instrument_id == instrument.id,
+                    MarketQuote.source == dhan_quote.source,
+                )
+            )
+            stale_cache = (
+                (cached_dhan_quote, dhan_quote.is_verified)
+                if cached_dhan_quote is not None
+                else stale_dhan_quote
+            )
+            dhan_snapshot_attempted = dhan_quote.provider_request_status == "succeeded"
+        else:
+            stale_cache = stale_dhan_quote
+    for active_provider in active_providers:
+        if dhan_snapshot_attempted and active_provider.name == "dhan":
+            continue
         if active_provider.is_mock and not instrument.is_synthetic:
+            continue
+        attempt_started = time.monotonic()
+        breaker_reason = _provider_circuit_breaker.before_attempt(
+            active_provider.name
+        )
+        if breaker_reason is not None:
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="skipped",
+                reason=breaker_reason,
+                reason_category=_reason_category(breaker_reason),
+            ))
+            fallback_reason = fallback_reason or breaker_reason
             continue
         provider_mapping = next(
             (
@@ -1738,8 +4029,7 @@ def latest_quote(
             if not refresh and 0 <= cache_age <= settings.market_data_quote_freshness_seconds:
                 price_age = (now - _utc(cached_quote.timestamp)).total_seconds()
                 price_is_stale = price_age > settings.market_data_quote_freshness_seconds
-                db.commit()
-                return _quote_response(
+                response = _quote_response(
                     instrument,
                     cached_quote,
                     freshness="stale" if price_is_stale else "fresh",
@@ -1750,22 +4040,131 @@ def latest_quote(
                     ),
                     is_cached=True,
                     is_verified=provider_mapping.is_verified if provider_mapping else False,
+                    provider_request_status="not_attempted",
                 )
+                if response.freshness_status in {"fresh", "unverified"}:
+                    db.commit()
+                    return response.model_copy(update={
+                        "provider_attempts": provider_attempts,
+                        "fallback_reason": fallback_reason,
+                    })
+                provider_attempts.append(ProviderAttemptResponse(
+                    provider=active_provider.name,
+                    outcome="stale",
+                    reason=response.freshness_status,
+                ))
+                fallback_reason = fallback_reason or response.freshness_status
             stale_cache = stale_cache or (
                 cached_quote,
                 provider_mapping.is_verified if provider_mapping else False,
             )
         try:
             candidate, mapping = _resolve_provider_candidate(db, instrument, active_provider)
-        except (MarketDataProviderError, TimeoutError, ValueError):
+        except (MarketDataProviderError, TimeoutError, ValueError) as error:
+            reason = (
+                _safe_provider_error_code(error.code)
+                if isinstance(error, MarketDataProviderError)
+                else "instrument_mapping_failed"
+            )
+            unsupported = reason in {
+                "instrument_not_found",
+                "provider_symbol_unavailable",
+                "invalid_instrument_mapping",
+            }
+            if not unsupported:
+                _provider_circuit_breaker.record_failure(active_provider.name)
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="unsupported" if unsupported else "unavailable",
+                reason=reason,
+                reason_category=_reason_category(reason),
+                http_status=(
+                    error.status_code
+                    if isinstance(error, MarketDataProviderError)
+                    else None
+                ),
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+            ))
+            fallback_reason = fallback_reason or reason
+            continue
+        except Exception as error:
+            db.rollback()
+            reason = f"internal_error:{type(error).__name__}"
+            logger.exception(
+                "Unexpected market-data provider mapping failure; trying next provider.",
+                extra={
+                    "provider": active_provider.name,
+                    "instrument_id": str(instrument.id),
+                },
+            )
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="unavailable",
+                reason=reason,
+                reason_category=ReasonCategory.INTERNAL_ERROR,
+                http_status=getattr(active_provider, "last_response_status", None),
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+            ))
+            fallback_reason = fallback_reason or reason
             continue
         if cached_quote is not None and stale_cache is not None:
             stale_cache = (stale_cache[0], mapping.is_verified)
         try:
             bar = HistoricalBar.model_validate(active_provider.get_latest_quote(candidate))
-        except (MarketDataProviderError, TimeoutError, ValueError):
+        except (MarketDataProviderError, TimeoutError, ValueError) as error:
+            reason = (
+                _safe_provider_error_code(error.code)
+                if isinstance(error, MarketDataProviderError)
+                else "provider_invalid_response"
+            )
+            if reason == "rate_limited":
+                _provider_circuit_breaker.record_failure(
+                    active_provider.name,
+                    cooldown_seconds=30,
+                )
+            else:
+                _provider_circuit_breaker.record_failure(active_provider.name)
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="unavailable",
+                reason=reason,
+                reason_category=_reason_category(reason),
+                http_status=(
+                    error.status_code
+                    if isinstance(error, MarketDataProviderError)
+                    else getattr(active_provider, "last_response_status", None)
+                ),
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+            ))
+            fallback_reason = fallback_reason or reason
+            continue
+        except Exception as error:
+            db.rollback()
+            reason = f"internal_error:{type(error).__name__}"
+            logger.exception(
+                "Unexpected market-data quote failure; trying next provider.",
+                extra={
+                    "provider": active_provider.name,
+                    "instrument_id": str(instrument.id),
+                },
+            )
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="unavailable",
+                reason=reason,
+                reason_category=ReasonCategory.INTERNAL_ERROR,
+                http_status=getattr(active_provider, "last_response_status", None),
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+            ))
+            fallback_reason = fallback_reason or reason
             continue
         if active_provider.is_mock or candidate.is_synthetic:
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="unavailable",
+                reason="synthetic_data_not_accepted",
+            ))
+            fallback_reason = fallback_reason or "synthetic_data_not_accepted"
             continue
 
         retrieved_at = datetime.now(timezone.utc)
@@ -1785,7 +4184,7 @@ def latest_quote(
         ).total_seconds() > settings.market_data_quote_freshness_seconds
         db.commit()
         db.refresh(cached_quote)
-        return _quote_response(
+        response = _quote_response(
             instrument,
             cached_quote,
             freshness="stale" if price_is_stale else "fresh",
@@ -1798,7 +4197,38 @@ def latest_quote(
             ),
             is_cached=False,
             is_verified=mapping.is_verified,
+            provider_request_status="succeeded",
         )
+        if response.freshness_status not in {"fresh", "unverified"}:
+            _provider_circuit_breaker.record_failure(active_provider.name)
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="stale",
+                reason=response.freshness_status,
+                reason_category=_reason_category(response.freshness_status),
+                http_status=getattr(active_provider, "last_response_status", None),
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+            ))
+            fallback_reason = fallback_reason or response.freshness_status
+            stale_cache = (cached_quote, mapping.is_verified)
+            continue
+        _provider_circuit_breaker.record_success(active_provider.name)
+        provider_attempts.append(ProviderAttemptResponse(
+            provider=active_provider.name,
+            outcome="used",
+            reason=(
+                "unverified_instrument_mapping"
+                if response.freshness_status == "unverified"
+                else None
+            ),
+            http_status=getattr(active_provider, "last_response_status", None),
+            latency_ms=(time.monotonic() - attempt_started) * 1000,
+            bars=1,
+        ))
+        return response.model_copy(update={
+            "provider_attempts": provider_attempts,
+            "fallback_reason": fallback_reason,
+        })
 
     db.rollback()
     if stale_cache is not None:
@@ -1812,8 +4242,21 @@ def latest_quote(
             ),
             is_cached=True,
             is_verified=is_verified,
-        )
-    raise HTTPException(status_code=503, detail="Quote is temporarily unavailable")
+            provider_request_status="failed",
+        ).model_copy(update={
+            "provider_attempts": provider_attempts,
+            "fallback_reason": fallback_reason or "all_providers_unavailable_or_stale",
+        })
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "message": "Quote is temporarily unavailable.",
+            "provider_attempts": [
+                attempt.model_dump() for attempt in provider_attempts
+            ],
+            "fallback_reason": fallback_reason or "all_providers_unavailable_or_stale",
+        },
+    )
 
 
 def _quote_response(
@@ -1824,18 +4267,63 @@ def _quote_response(
     freshness_message: str,
     is_cached: bool,
     is_verified: bool,
+    provider_request_status: Literal["succeeded", "not_attempted", "failed"],
 ) -> QuoteResponse:
+    usable, reason, evidence = classify_quote(
+        quote, instrument, None, datetime.now(timezone.utc)
+    )
+    freshness_status = evidence["quote_freshness_status"]
+    if reason == "historical_close_not_current":
+        freshness_message = (
+            "Daily-bar close only; this is historical data, not a current market quote."
+        )
+    elif reason == "unverified_provider_mapping":
+        freshness_message = (
+            "The observation is recent, but its provider instrument mapping is unverified."
+        )
+    elif reason == "future_dated_price":
+        freshness_message = "The provider timestamp is in the future; this price is not usable."
+    elif reason == "market_timestamp_unavailable":
+        freshness_message = "The provider did not supply a market timestamp."
+    elif (
+        reason == "stale_price"
+        and quote.source != "dhan"
+        and "All configured providers failed" not in freshness_message
+    ):
+        freshness_message = "The market observation or retrieval is outside the freshness window."
+    elif not usable and reason == "synthetic_price":
+        freshness_message = "Synthetic data is not a current market price."
+
     return QuoteResponse(
         instrument_id=instrument.id,
         symbol=instrument.symbol,
         currency=instrument.currency,
         source=quote.source,
         retrieved_at=_utc(quote.retrieved_at),
-        freshness=freshness,
+        freshness="fresh" if usable else "stale",
+        freshness_status=freshness_status,
         freshness_message=freshness_message,
         is_cached=is_cached,
         is_synthetic=quote.is_synthetic,
         is_verified=is_verified,
+        provider_configured=True,
+        provider_request_status=provider_request_status,
+        market_timestamp=_utc(quote.timestamp),
+        market_age_seconds=max(0.0, evidence["quote_timestamp_age_seconds"]),
+        data_type=evidence["quote_data_type"],
+        delivery_mode=(
+            "websocket_tick"
+            if quote.source in {"dhan_ws", "angel_one_ws"}
+            else "rest_snapshot"
+            if quote.source == "dhan"
+            else "on_demand_rest"
+        ),
+        stream_status="not_configured",
+        provider=quote.source.removesuffix("_ws"),
+        fetched_at=_utc(quote.retrieved_at),
+        as_of=_utc(quote.timestamp),
+        interval="quote",
+        session_state=_market_session_state(instrument),
         bar=HistoricalBar(
             timestamp=_utc(quote.timestamp),
             open=quote.open,
@@ -1865,22 +4353,68 @@ def sync_history(
     start_utc, end_utc = _validate_range(interval, start, end)
     if instrument.is_synthetic:
         raise HTTPException(status_code=409, detail="Synthetic instruments cannot sync market history.")
+    active_providers = _providers(provider)
+    selected_source = active_providers[0].name if active_providers else None
+    provider_attempts = [
+        ProviderAttemptResponse(
+            provider=attempt["provider"],
+            outcome="unavailable",
+            reason=attempt["reason"],
+        )
+        for attempt in getattr(provider, "unavailable_providers", [])
+    ]
+
+    def read_history(source: str | None) -> HistoryResponse:
+        source_provider = next(
+            (active for active in active_providers if active.name == source),
+            None,
+        )
+        response = get_history(
+            instrument_id=instrument_id,
+            interval=interval,
+            start=start_utc,
+            end=end_utc,
+            offset=0,
+            limit=limit,
+            _user=_user,
+            provider=MarketDataProviderChain(
+                [source_provider] if source_provider is not None else []
+            ),
+            db=db,
+        )
+        return response.model_copy(update={
+            "provider_attempts": provider_attempts,
+            "fallback_reason": next(
+                (attempt.reason for attempt in provider_attempts if attempt.reason),
+                None,
+            ),
+        })
+
+    cached_query = (
+        select(MarketBar)
+        .where(
+            MarketBar.instrument_id == instrument.id,
+            MarketBar.interval == interval,
+            MarketBar.is_synthetic.is_(False),
+            MarketBar.timestamp >= start_utc,
+            MarketBar.timestamp < end_utc,
+        )
+    )
+    if selected_source is not None:
+        cached_query = cached_query.where(MarketBar.source == selected_source)
+    else:
+        cached_query = cached_query.where(MarketBar.source.is_(None))
     cached_bars = list(
         db.scalars(
-            select(MarketBar)
-            .where(
-                MarketBar.instrument_id == instrument.id,
-                MarketBar.interval == interval,
-                MarketBar.is_synthetic.is_(False),
-                MarketBar.timestamp >= start_utc,
-                MarketBar.timestamp < end_utc,
-            )
-            .order_by(MarketBar.timestamp)
+            cached_query.order_by(MarketBar.timestamp)
         )
     )
     missing_ranges: list[tuple[datetime, datetime]] = []
     if interval == "1d" and cached_bars:
-        cached_timestamps = sorted({_utc(bar.timestamp) for bar in cached_bars})
+        cached_timestamps = sorted({
+            _utc(bar.timestamp).replace(hour=0, minute=0, second=0, microsecond=0)
+            for bar in cached_bars
+        })
         if start_utc < cached_timestamps[0]:
             missing_ranges.append((start_utc, cached_timestamps[0]))
         for previous, current in zip(cached_timestamps, cached_timestamps[1:]):
@@ -1892,44 +4426,70 @@ def sync_history(
             )
     elif cached_bars:
         db.commit()
-        return get_history(
-            instrument_id=instrument_id,
-            interval=interval,
-            start=start_utc,
-            end=end_utc,
-            offset=0,
-            limit=limit,
-            _user=_user,
-            db=db,
-        )
+        return read_history(selected_source)
     else:
         missing_ranges.append((start_utc, end_utc))
 
     if not missing_ranges:
-        return get_history(
-            instrument_id=instrument_id,
-            interval=interval,
-            start=start_utc,
-            end=end_utc,
-            offset=0,
-            limit=limit,
-            _user=_user,
-            db=db,
-        )
+        return read_history(selected_source)
 
     selected_provider: MarketDataProvider | None = None
     selected_candidate: InstrumentCandidate | None = None
     validated_bars: list[HistoricalBar] = []
-    yfinance_lookback_error: str | None = None
+    provider_failures: list[dict[str, str]] = []
+    supported_provider_attempted = False
     for active_provider in _providers(provider):
+        limitation = _provider_history_limitation(
+            active_provider.name, interval, start_utc
+        )
+        if limitation is not None:
+            provider_failures.append({
+                "provider": active_provider.name,
+                "reason": limitation,
+            })
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="unsupported",
+                reason=limitation,
+                reason_category=ReasonCategory.UNSUPPORTED_INTERVAL_OR_LOOKBACK,
+            ))
+            continue
+        breaker_reason = _provider_circuit_breaker.before_attempt(
+            active_provider.name
+        )
+        if breaker_reason is not None:
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="skipped",
+                reason=breaker_reason,
+                reason_category=_reason_category(breaker_reason),
+            ))
+            provider_failures.append({
+                "provider": active_provider.name,
+                "reason": breaker_reason,
+            })
+            continue
+        supported_provider_attempted = True
         attempted_at = datetime.now(timezone.utc)
+        attempt_started = time.monotonic()
+        provider_http_diagnostics = getattr(
+            active_provider, "last_http_diagnostics", None
+        )
+        if isinstance(provider_http_diagnostics, list):
+            provider_http_diagnostics.clear()
         response_status = None
         safe_error = None
         provider_rows_returned = [0]
+        no_new_bars = False
         try:
             candidate, _mapping = _resolve_provider_candidate(db, instrument, active_provider)
             provider_bars: list[HistoricalBar] = []
-            for range_start, range_end in missing_ranges:
+            provider_ranges = (
+                missing_ranges
+                if active_provider.name == selected_source
+                else [(start_utc, end_utc)]
+            )
+            for range_start, range_end in provider_ranges:
                 remaining = limit - len(provider_bars)
                 if remaining <= 0:
                     break
@@ -1943,7 +4503,10 @@ def sync_history(
                     rows_returned=provider_rows_returned,
                 ))
             if not provider_bars:
-                raise MarketDataProviderError("provider_no_history_for_range")
+                if _market_session_state(instrument, attempted_at) == "closed":
+                    no_new_bars = True
+                else:
+                    raise MarketDataProviderError("provider_no_history_for_range")
             selected_provider = active_provider
             selected_candidate = candidate
             validated_bars = sorted(
@@ -1951,31 +4514,98 @@ def sync_history(
                 key=lambda bar: bar.timestamp,
             )
         except MarketDataProviderError as error:
-            _log_market_data_failure(
-                "Market history provider failed (provider=%s instrument_id=%s interval=%s)",
-                error,
-                error.code,
-                active_provider.name,
-                instrument.id,
-                interval,
+            db.rollback()
+            safe_error = _safe_provider_error_code(error.code)
+            if safe_error == "rate_limited":
+                _provider_circuit_breaker.record_failure(
+                    active_provider.name,
+                    cooldown_seconds=30,
+                )
+            elif safe_error not in {
+                "instrument_not_found",
+                "provider_symbol_unavailable",
+                "invalid_instrument_mapping",
+                "unsupported_interval",
+            }:
+                _provider_circuit_breaker.record_failure(active_provider.name)
+            logger.error(
+                "market_data_provider_failure",
+                extra={
+                    "provider": active_provider.name,
+                    "operation": "history_sync",
+                    "instrument_id": str(instrument.id),
+                    "interval": interval,
+                    "error_category": safe_error,
+                    "upstream_status": error.status_code,
+                },
             )
-            if error.code.startswith("yfinance_") and "lookback_exceeded" in error.code:
-                yfinance_lookback_error = error.code
-            response_status = error.status_code or getattr(
+            provider_failures.append({
+                "provider": active_provider.name,
+                "reason": safe_error,
+            })
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome=(
+                    "rate_limited"
+                    if safe_error == "rate_limited"
+                    else "unsupported"
+                    if safe_error in {
+                        "instrument_not_found",
+                        "provider_symbol_unavailable",
+                        "unsupported_interval",
+                    }
+                    else "unavailable"
+                ),
+                reason=safe_error,
+                reason_category=_reason_category(safe_error),
+                http_status=getattr(
+                    active_provider, "last_response_status", None
+                ) or error.status_code,
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+                bars=provider_rows_returned[0],
+            ))
+            response_status = getattr(
                 active_provider, "last_response_status", None
-            )
-            safe_error = error.code
+            ) or error.status_code
         except Exception as error:
-            _log_market_data_failure(
-                "Unexpected market history failure (provider=%s instrument_id=%s interval=%s)",
-                error,
-                "provider_unavailable_or_invalid_response",
-                active_provider.name,
-                instrument.id,
-                interval,
+            db.rollback()
+            safe_error = (
+                f"internal_error:{type(error).__name__}"
+                if active_provider.name == "angel_one"
+                else "provider_unexpected_error"
             )
-            safe_error = "provider_unavailable_or_invalid_response"
+            if active_provider.name != "angel_one":
+                _provider_circuit_breaker.record_failure(active_provider.name)
+            logger.error(
+                "market_data_provider_failure",
+                extra={
+                    "provider": active_provider.name,
+                    "operation": "history_sync",
+                    "instrument_id": str(instrument.id),
+                    "interval": interval,
+                    "error_category": safe_error,
+                    "exception_type": type(error).__name__,
+                    "upstream_status": getattr(
+                        active_provider, "last_response_status", None
+                    ),
+                },
+            )
             response_status = getattr(active_provider, "last_response_status", None)
+            provider_failures.append({
+                "provider": active_provider.name,
+                "reason": safe_error,
+            })
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="unavailable",
+                reason=safe_error,
+                reason_category=_reason_category(safe_error),
+                http_status=getattr(
+                    active_provider, "last_response_status", None
+                ),
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+                bars=provider_rows_returned[0],
+            ))
         if selected_provider is not active_provider:
             _sync_record(
                 db,
@@ -2005,44 +4635,82 @@ def sync_history(
                 rows_written=0,
                 outcome="unavailable",
                 reason=safe_error or "provider_unavailable",
+                reason_category=_reason_category(safe_error or "provider_unavailable"),
                 attempted_at=attempted_at,
+                http_diagnostics=provider_http_diagnostics,
             )
+            db.commit()
             continue
+        _provider_circuit_breaker.record_success(active_provider.name)
+        if no_new_bars:
+            provider_attempts.append(ProviderAttemptResponse(
+                provider=active_provider.name,
+                outcome="no_new_bars",
+                reason_category=ReasonCategory.CLOSED_SESSION_NO_NEW_BARS,
+                http_status=getattr(active_provider, "last_response_status", None),
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+                bars=0,
+            ))
         break
     if selected_provider is None or selected_candidate is None:
         db.commit()
-        if yfinance_lookback_error:
-            max_days = {"1m": 7, "15m": 60, "1h": 730}.get(interval, 0)
+        if not supported_provider_attempted:
             raise HTTPException(
                 status_code=422,
-                detail=f"Yahoo Finance {interval} history is limited to the most recent {max_days} days."
-                if max_days
-                else "Yahoo Finance history is unavailable for the requested range.",
+                detail={
+                    "stage": "provider_capability_check",
+                    "message": "No configured provider supports this interval and requested range.",
+                    "providers": provider_failures,
+                },
             )
         if cached_bars:
-            return get_history(
-                instrument_id=instrument_id,
-                interval=interval,
-                start=start_utc,
-                end=end_utc,
-                offset=0,
-                limit=limit,
-                _user=_user,
-                db=db,
-            )
-        raise HTTPException(status_code=503, detail="Historical market data is temporarily unavailable")
+            return read_history(selected_source)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "stage": "provider_history_fetch",
+                "message": "Historical market data is temporarily unavailable.",
+                "providers": provider_failures,
+                "provider_attempts": [
+                    attempt.model_dump() for attempt in provider_attempts
+                ],
+            },
+        )
 
     retrieved_at = datetime.now(timezone.utc)
-    rows_written = _persist_real_bars(
-        db,
-        instrument,
-        selected_provider,
-        selected_candidate,
-        interval,
-        validated_bars,
-        retrieved_at,
+    rows_written = (
+        0
+        if no_new_bars
+        else _persist_real_bars(
+            db,
+            instrument,
+            selected_provider,
+            selected_candidate,
+            interval,
+            validated_bars,
+            retrieved_at,
+        )
     )
 
+    previous_failures = [
+        attempt for attempt in provider_attempts
+        if attempt.outcome in {"unavailable", "unsupported"}
+        and attempt.provider != selected_provider.name
+    ]
+    fallback_reason = (
+        f"fallback_after_{previous_failures[0].provider}_"
+        f"{previous_failures[0].reason or previous_failures[0].outcome}"
+        if previous_failures
+        else None
+    )
+    if fallback_reason is not None:
+        fallback_reason = fallback_reason[:160]
+    success_reason = ";".join(
+        reason for reason in (
+            fallback_reason,
+            "provider_data_already_stored" if not rows_written else None,
+        ) if reason
+    ) or None
     _sync_record(
         db,
         instrument.id,
@@ -2057,7 +4725,7 @@ def sync_history(
         requested_limit=limit,
         rows_written=rows_written,
         response_status=getattr(selected_provider, "last_response_status", None),
-        safe_reason=None if rows_written else "provider_data_already_stored",
+        safe_reason="no_new_bars" if no_new_bars else success_reason,
     )
     _record_sync_attempt(
         db,
@@ -2070,21 +4738,44 @@ def sync_history(
         response_status=getattr(selected_provider, "last_response_status", None),
         rows_returned=provider_rows_returned[0],
         rows_written=rows_written,
-        outcome="success" if rows_written else "unavailable",
-        reason=None if rows_written else "provider_data_already_stored",
+        outcome=(
+            "no_new_bars"
+            if no_new_bars
+            else "success"
+            if rows_written
+            else "unavailable"
+        ),
+        reason=(
+            "no_new_bars"
+            if no_new_bars
+            else None
+            if rows_written
+            else "provider_data_already_stored"
+        ),
+        reason_category=(
+            ReasonCategory.CLOSED_SESSION_NO_NEW_BARS
+            if no_new_bars
+            else None
+            if rows_written
+            else ReasonCategory.PROVIDER_DATA_ALREADY_STORED
+        ),
         attempted_at=retrieved_at,
+        http_diagnostics=provider_http_diagnostics,
     )
     db.commit()
-    return get_history(
-        instrument_id=instrument_id,
-        interval=interval,
-        start=start_utc,
-        end=end_utc,
-        offset=0,
-        limit=limit,
-        _user=_user,
-        db=db,
-    )
+    if not no_new_bars:
+        provider_attempts.append(ProviderAttemptResponse(
+            provider=selected_provider.name,
+            outcome="used",
+            http_status=getattr(selected_provider, "last_response_status", None),
+            latency_ms=(time.monotonic() - attempt_started) * 1000,
+            bars=len(validated_bars),
+        ))
+    return read_history(selected_provider.name).model_copy(update={
+        "is_cached": no_new_bars or rows_written == 0,
+        "fetched_at": retrieved_at if not no_new_bars else None,
+        "sync_status": "no_new_bars" if no_new_bars else "success",
+    })
 
 
 def _count_real_daily_bars(
@@ -2124,12 +4815,12 @@ def _backfill_instrument(
     end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     start = (end - timedelta(days=365 * years)).replace(hour=0)
     bars_before = _count_real_daily_bars(db, instrument.id, start, end)
-    chunks: list[dict] = []
+    chunks: list[BackfillChunkDetail] = []
     chunks_failed = 0
     chunk_start = start
     while chunk_start < end and len(chunks) < MAX_BACKFILL_CHUNKS:
         chunk_end = min(chunk_start + timedelta(days=BACKFILL_CHUNK_DAYS), end)
-        detail = {
+        detail: BackfillChunkDetail = {
             "start": chunk_start,
             "end": chunk_end,
             "provider": None,
@@ -2205,6 +4896,7 @@ def _backfill_instrument(
                     rows_written=detail["rows_written"],
                     outcome=detail["outcome"],
                     reason=detail["reason"],
+                    reason_category=_reason_category(detail["reason"]),
                     attempted_at=attempted_at,
                 )
                 succeeded = True
@@ -2250,6 +4942,9 @@ def _backfill_instrument(
                     rows_written=0,
                     outcome="unavailable",
                     reason=error.code,
+                    reason_category=_reason_category(
+                        _safe_provider_error_code(error.code)
+                    ),
                     attempted_at=attempted_at,
                 )
                 if error.status_code == 429:
@@ -2299,6 +4994,7 @@ def _backfill_instrument(
                     rows_written=0,
                     outcome="unavailable",
                     reason=safe_reason,
+                    reason_category=_reason_category(safe_reason),
                     attempted_at=attempted_at,
                 )
         if not succeeded:
@@ -2418,6 +5114,7 @@ def get_history(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=MAX_BARS),
     _user: User = Depends(get_current_user),
+    provider: MarketDataProvider = Depends(get_market_data_provider),
     db: Session = Depends(get_db),
 ):
     instrument = _get_instrument(db, instrument_id)
@@ -2427,6 +5124,10 @@ def get_history(
         MarketBar.instrument_id == instrument.id,
         MarketBar.interval == interval,
     )
+    selected_providers = _providers(provider)
+    selected_source = selected_providers[0].name if selected_providers else None
+    if selected_source is not None:
+        query = query.where(MarketBar.source == selected_source)
     if not instrument.is_synthetic:
         query = query.where(MarketBar.is_synthetic.is_(False))
     if start is not None and end is not None:
@@ -2438,7 +5139,7 @@ def get_history(
     return HistoryResponse(
         instrument_id=instrument.id,
         interval=interval,
-        freshness=_freshness(db, instrument.id, interval),
+        freshness=_freshness(db, instrument.id, interval, source=selected_source),
         bars=[
             MarketBarResponse(
                 timestamp=_utc(bar.timestamp),
@@ -2455,4 +5156,14 @@ def get_history(
         ],
         offset=offset,
         limit=limit,
+        provider=selected_source,
+        fetched_at=(
+            max(_utc(bar.retrieved_at) for bar in bars)
+            if bars
+            else None
+        ),
+        as_of=_utc(bars[-1].timestamp) if bars else None,
+        currency=instrument.currency,
+        session_state=_market_session_state(instrument),
+        is_cached=True,
     )

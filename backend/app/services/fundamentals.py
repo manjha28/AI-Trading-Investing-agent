@@ -2,7 +2,8 @@
 
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any
+import logging
+from typing import Any, Callable
 from uuid import uuid4
 
 import yfinance as yf
@@ -14,6 +15,7 @@ from app.models import Instrument, InstrumentFundamental, InstrumentSnapshot
 from app.provider_adapters import YahooFinanceProvider
 
 MAX_PERIODS_PER_TYPE = 12
+logger = logging.getLogger(__name__)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -110,18 +112,34 @@ def fetch_yfinance_fundamentals(provider_symbol: str) -> dict[str, Any]:
     """Fetch bounded annual and quarterly statement rows from Yahoo Finance."""
     def fetch() -> dict[str, Any]:
         ticker = yf.Ticker(provider_symbol)
-        info = ticker.get_info()
+        def field(name: str, read: Callable[[], Any]) -> Any:
+            try:
+                return YahooFinanceProvider._thread_call(read)
+            except MarketDataProviderError as error:
+                logger.warning(
+                    "Fundamentals field unavailable provider=yfinance field=%s error_class=%s",
+                    name,
+                    type(error).__name__,
+                )
+                return None
+
         return {
-            "info": info,
-            "annual_income": ticker.income_stmt,
-            "quarterly_income": ticker.quarterly_income_stmt,
-            "annual_balance": ticker.balance_sheet,
-            "quarterly_balance": ticker.quarterly_balance_sheet,
-            "annual_cashflow": ticker.cashflow,
-            "quarterly_cashflow": ticker.quarterly_cashflow,
+            "info": field("snapshot", ticker.get_info) or {},
+            "annual_income": field("annual_income", lambda: ticker.income_stmt),
+            "quarterly_income": field(
+                "quarterly_income", lambda: ticker.quarterly_income_stmt
+            ),
+            "annual_balance": field("annual_balance", lambda: ticker.balance_sheet),
+            "quarterly_balance": field(
+                "quarterly_balance", lambda: ticker.quarterly_balance_sheet
+            ),
+            "annual_cashflow": field("annual_cashflow", lambda: ticker.cashflow),
+            "quarterly_cashflow": field(
+                "quarterly_cashflow", lambda: ticker.quarterly_cashflow
+            ),
         }
 
-    result = YahooFinanceProvider._thread_call(fetch)
+    result = fetch()
     info = result.get("info")
     annual = _period_rows(
         result.get("annual_income"),

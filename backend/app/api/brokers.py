@@ -1,11 +1,13 @@
+import hashlib
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -30,13 +32,20 @@ from app.db import get_db
 from app.fernet_keys import normalize_fernet_key
 from app.models import (
     BrokerCredential,
+    BrokerAccountMirror,
     BrokerMirror,
     BrokerOAuthState,
+    DhanLedgerMirror,
+    DhanTradeMirror,
     Portfolio,
     PortfolioTransaction,
     UserSession,
 )
 from app.security import hash_token, new_token
+from app.provider_adapters import (
+    DhanAccountRequestError,
+    DhanReadOnlyAccountAdapter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +62,10 @@ class MirrorRow(BaseModel):
     symbol: str
     exchange: str
     product: str
+    security_id: str | None = None
+    isin: str | None = None
+    source: str
+    currency: str = "INR"
     quantity: Decimal
     average_price: Decimal | None
     synced_at: datetime
@@ -273,6 +286,8 @@ def _fresh_tokens(
         try:
             tokens, expires_at = adapter.refresh_token(tokens)
         except BrokerReconnectRequired as error:
+            credential.expires_at = _now()
+            db.commit()
             raise _broker_error(401, "broker_authentication_required", str(error)) from error
         except BrokerAdapterError as error:
             raise _broker_error(
@@ -283,6 +298,10 @@ def _fresh_tokens(
         credential.encrypted_tokens = encrypt_tokens(tokens)
         credential.expires_at = expires_at
         db.commit()
+        if adapter.slug in {"angel_one", "dhan", "yfinance"}:
+            from app.api.market_data import reset_provider_circuit_breaker
+
+            reset_provider_circuit_breaker(adapter.slug)
     return tokens
 
 
@@ -349,8 +368,239 @@ def _normalize_rows(
                 symbol=symbol.strip().upper()[:64],
                 exchange=exchange,
                 product=product,
+                security_id=(
+                    str(_first(record, "securityId", "security_id"))[:64]
+                    if _first(record, "securityId", "security_id") is not None
+                    else None
+                ),
+                isin=(
+                    str(record["isin"]).strip()[:16]
+                    if isinstance(record.get("isin"), str) and record["isin"].strip()
+                    else None
+                ),
                 quantity=quantity,
                 average_price=average_price,
+                synced_at=synced_at,
+            )
+        )
+    return normalized
+
+
+def _normalize_dhan_funds(
+    payload: dict[str, Any],
+    user_id: UUID,
+    synced_at: datetime,
+) -> BrokerAccountMirror:
+    available = _first(payload, "availabelBalance", "availableBalance")
+    if available is None:
+        raise BrokerAdapterError("Dhan fund limit response has no available balance")
+    try:
+        values = {
+            "available_balance": Decimal(str(available)),
+            "sod_limit": (
+                Decimal(str(payload["sodLimit"]))
+                if payload.get("sodLimit") is not None
+                else None
+            ),
+            "collateral_amount": (
+                Decimal(str(payload["collateralAmount"]))
+                if payload.get("collateralAmount") is not None
+                else None
+            ),
+            "receivable_amount": (
+                Decimal(str(payload["receiveableAmount"]))
+                if payload.get("receiveableAmount") is not None
+                else None
+            ),
+            "utilized_amount": (
+                Decimal(str(payload["utilizedAmount"]))
+                if payload.get("utilizedAmount") is not None
+                else None
+            ),
+            "blocked_payout_amount": (
+                Decimal(str(payload["blockedPayoutAmount"]))
+                if payload.get("blockedPayoutAmount") is not None
+                else None
+            ),
+            "withdrawable_balance": (
+                Decimal(str(payload["withdrawableBalance"]))
+                if payload.get("withdrawableBalance") is not None
+                else None
+            ),
+        }
+    except (InvalidOperation, ValueError, TypeError) as error:
+        raise BrokerAdapterError("Dhan fund limit response contains invalid amounts") from error
+    if any(
+        value is not None and not value.is_finite()
+        for value in values.values()
+    ):
+        raise BrokerAdapterError("Dhan fund limit response contains invalid amounts")
+    return BrokerAccountMirror(
+        user_id=user_id,
+        broker="dhan",
+        currency="INR",
+        synced_at=synced_at,
+        **values,
+    )
+
+
+def _dhan_decimal(value: Any, field: str, *, optional: bool = False) -> Decimal | None:
+    if value is None or value == "":
+        if optional:
+            return None
+        raise BrokerAdapterError(f"Dhan response is missing {field}")
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as error:
+        raise BrokerAdapterError(f"Dhan response has invalid {field}") from error
+    if not amount.is_finite():
+        raise BrokerAdapterError(f"Dhan response has invalid {field}")
+    return amount
+
+
+def _required_dhan_decimal(value: Any, field: str) -> Decimal:
+    amount = _dhan_decimal(value, field)
+    assert amount is not None
+    return amount
+
+
+def _dhan_timestamp(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise BrokerAdapterError(f"Dhan response is missing {field}")
+    text_value = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text_value.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+        for pattern in (
+            "%Y-%m-%d %H:%M:%S",
+            "%d-%m-%Y %H:%M:%S",
+            "%Y-%m-%d",
+            "%d-%m-%Y",
+            "%d %b %Y",
+            "%b %d, %Y",
+        ):
+            try:
+                parsed = datetime.strptime(text_value, pattern)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            raise BrokerAdapterError(f"Dhan response has invalid {field}") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_dhan_trades(
+    rows: list[dict[str, Any]], user_id: UUID, synced_at: datetime
+) -> list[DhanTradeMirror]:
+    normalized = []
+    charge_fields = (
+        "sebiTax",
+        "stt",
+        "brokerageCharges",
+        "serviceTax",
+        "exchangeTransactionCharges",
+        "stampDuty",
+    )
+    for row in rows:
+        trade_id = row.get("exchangeTradeId")
+        side = str(row.get("transactionType") or "").upper()
+        if trade_id is None or not str(trade_id).strip() or side not in {"BUY", "SELL"}:
+            raise BrokerAdapterError("Dhan trade response is missing its trade ID or side")
+        charges_values = [
+            _dhan_decimal(row.get(field), field, optional=True)
+            for field in charge_fields
+        ]
+        charges = (
+            sum((amount for amount in charges_values if amount is not None), Decimal("0"))
+            if any(amount is not None for amount in charges_values)
+            else None
+        )
+        normalized.append(
+            DhanTradeMirror(
+                user_id=user_id,
+                source="dhan",
+                trade_id=str(trade_id)[:64],
+                order_id=(
+                    str(row["orderId"])[:64] if row.get("orderId") is not None else None
+                ),
+                symbol=(
+                    str(row.get("tradingSymbol") or row.get("customSymbol"))[:64]
+                    if row.get("tradingSymbol") or row.get("customSymbol")
+                    else None
+                ),
+                security_id=(
+                    str(row["securityId"])[:64] if row.get("securityId") is not None else None
+                ),
+                exchange_segment=(
+                    str(row["exchangeSegment"])[:32]
+                    if row.get("exchangeSegment") is not None
+                    else None
+                ),
+                side=side,
+                quantity=_required_dhan_decimal(
+                    row.get("tradedQuantity"), "tradedQuantity"
+                ),
+                price=_required_dhan_decimal(row.get("tradedPrice"), "tradedPrice"),
+                charges=charges,
+                currency="INR",
+                trade_at=_dhan_timestamp(
+                    row.get("exchangeTime") or row.get("updateTime") or row.get("createTime"),
+                    "exchangeTime",
+                ),
+                synced_at=synced_at,
+            )
+        )
+    return normalized
+
+
+def _normalize_dhan_ledger(
+    rows: list[dict[str, Any]], user_id: UUID, synced_at: datetime
+) -> list[DhanLedgerMirror]:
+    normalized = []
+    for row in rows:
+        entry_id = row.get("vouchernumber")
+        if entry_id is None or not str(entry_id).strip():
+            raise BrokerAdapterError("Dhan ledger response is missing its entry ID")
+        provider_entry_id = str(entry_id)[:64]
+        line_identity = {
+            "provider_entry_id": provider_entry_id,
+            "voucherdate": row.get("voucherdate"),
+            "narration": row.get("narration"),
+            "voucherdesc": row.get("voucherdesc"),
+            "exchange": row.get("exchange"),
+            "debit": row.get("debit"),
+            "credit": row.get("credit"),
+            "runbal": row.get("runbal"),
+        }
+        line_key = hashlib.sha256(
+            json.dumps(
+                line_identity,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode()
+        ).hexdigest()
+        normalized.append(
+            DhanLedgerMirror(
+                user_id=user_id,
+                source="dhan",
+                entry_id=line_key,
+                provider_entry_id=provider_entry_id,
+                entry_date=_dhan_timestamp(row.get("voucherdate"), "voucherdate"),
+                description=(
+                    str(row.get("narration") or row.get("voucherdesc"))[:1000]
+                    if row.get("narration") or row.get("voucherdesc")
+                    else None
+                ),
+                debit=_dhan_decimal(row.get("debit"), "debit", optional=True),
+                credit=_dhan_decimal(row.get("credit"), "credit", optional=True),
+                running_balance=_dhan_decimal(
+                    row.get("runbal"), "runbal", optional=True
+                ),
+                currency="INR",
                 synced_at=synced_at,
             )
         )
@@ -470,6 +720,30 @@ def list_brokers(
     return result
 
 
+@router.get("/connection-status")
+def broker_connection_status(
+    response: Response,
+    active_session: UserSession = Depends(get_active_session),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    response.headers["Cache-Control"] = "no-store"
+    if not active_session.user.email_verified:
+        raise HTTPException(status_code=403, detail="Verify your email address first")
+    credentials = db.scalars(
+        select(BrokerCredential).where(
+            BrokerCredential.user_id == _user_id(active_session)
+        )
+    ).all()
+    return {
+        "connected": any(
+            (credential.expires_at.replace(tzinfo=timezone.utc)
+             if credential.expires_at.tzinfo is None
+             else credential.expires_at) > _now()
+            for credential in credentials
+        )
+    }
+
+
 @router.post("/{slug}/connect")
 async def connect_broker(
     slug: str,
@@ -480,6 +754,10 @@ async def connect_broker(
     db: Session = Depends(get_db),
 ):
     adapter = _adapter(slug)
+    if slug in {"angel_one", "dhan", "yfinance"}:
+        from app.api.market_data import reset_provider_circuit_breaker
+
+        reset_provider_circuit_breaker(slug)
     _fernet()
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -598,6 +876,10 @@ def broker_callback(
     except IntegrityError as exception:
         db.rollback()
         raise HTTPException(status_code=409, detail="Broker connection could not be saved") from exception
+    if slug in {"angel_one", "dhan", "yfinance"}:
+        from app.api.market_data import reset_provider_circuit_breaker
+
+        reset_provider_circuit_breaker(slug)
     if not return_origin:
         redirect_uri = getattr(adapter, "redirect_url", None)
         if not redirect_uri:
@@ -623,6 +905,8 @@ def broker_callback(
 def sync_broker(
     slug: str,
     response: Response,
+    from_date: date | None = Query(default=None, alias="from-date"),
+    to_date: date | None = Query(default=None, alias="to-date"),
     active_session: UserSession = Depends(require_broker_access),
     _: UserSession = Depends(require_csrf),
     db: Session = Depends(get_db),
@@ -630,48 +914,245 @@ def sync_broker(
     response.headers["Cache-Control"] = "no-store"
     adapter = _adapter(slug)
     credential = _credential(db, _user_id(active_session), slug)
-    tokens = _fresh_tokens(db, adapter, credential)
+    if slug == "dhan":
+        tokens = decrypt_tokens(credential.encrypted_tokens)
+        expiry = credential.expires_at
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= _now():
+            raise _broker_error(
+                401,
+                "broker_authentication_required",
+                "Dhan session has expired. Reconnect before syncing account data.",
+            )
+        dhan_reader = DhanReadOnlyAccountAdapter(
+            tokens["access_token"], tokens["client_id"]
+        )
+    else:
+        tokens = _fresh_tokens(db, adapter, credential)
+        dhan_reader = None
     now = _now()
-    try:
-        raw_holdings = adapter.get_holdings(tokens["access_token"], tokens)
+    dhan_to_date = to_date or now.date()
+    dhan_from_date = from_date or (dhan_to_date - timedelta(days=365))
+    if dhan_from_date > dhan_to_date:
+        raise HTTPException(status_code=422, detail="from-date must not be after to-date")
+    endpoint_results: dict[str, dict[str, str]] = {}
+    normalized: dict[str, list[BrokerMirror]] = {}
+    account_snapshot: BrokerAccountMirror | None = None
+    normalized_trades: list[DhanTradeMirror] | None = None
+    normalized_ledger: list[DhanLedgerMirror] | None = None
+    authentication_expired = False
+    endpoint_calls: tuple[tuple[str, str, str], ...] = (
+        ("holdings", "get_holdings", "holding"),
+        ("positions", "get_positions", "position"),
+    ) + ((("fundlimit", "get_fundlimit", "funds"),) if slug == "dhan" else ())
+    for endpoint, method_name, kind in endpoint_calls:
         try:
-            holdings = _normalize_rows(
-                raw_holdings,
-                "holding",
-                now,
-                _user_id(active_session),
-                slug,
+            if dhan_reader is not None:
+                raw_rows = getattr(dhan_reader, method_name)()
+            else:
+                raw_rows = getattr(adapter, method_name)(
+                    tokens["access_token"], tokens
+                )
+            endpoint_http_status = (
+                str(dhan_reader.last_http_diagnostics[-1]["http_status"])
+                if dhan_reader is not None and dhan_reader.last_http_diagnostics
+                else None
             )
-        except Exception as error:
+            success_result = {"status": "succeeded"}
+            if endpoint_http_status is not None:
+                success_result["http_status"] = endpoint_http_status
+            if kind == "funds":
+                if not isinstance(raw_rows, dict):
+                    raise BrokerAdapterError(
+                        "Dhan fund limit response has an unexpected format"
+                    )
+                account_snapshot = _normalize_dhan_funds(
+                    raw_rows, _user_id(active_session), now
+                )
+                endpoint_results[endpoint] = success_result
+                continue
+            try:
+                normalized[kind] = _normalize_rows(
+                    raw_rows,
+                    kind,
+                    now,
+                    _user_id(active_session),
+                    slug,
+                )
+            except BrokerAdapterError as error:
+                if slug == "dhan":
+                    _log_dhan_sync_failure(
+                        f"{endpoint}_response_normalization",
+                        error,
+                        f"{endpoint.title()} response could not be normalized.",
+                    )
+                raise
+            if endpoint == "holdings" and endpoint_http_status == "500" and not raw_rows:
+                success_result["reason"] = "no_holdings_available"
+            endpoint_results[endpoint] = success_result
+        except BrokerReconnectRequired as error:
+            credential.expires_at = now
+            db.commit()
+            authentication_expired = True
+            endpoint_results[endpoint] = {"status": "failed", "reason": "authentication_expired"}
             if slug == "dhan":
                 _log_dhan_sync_failure(
-                    "holdings_response_normalization",
+                    f"{endpoint}_authentication",
                     error,
-                    "Holdings response could not be normalized.",
+                    "Dhan authentication was rejected by the provider.",
                 )
-            raise
+                break
+            raise _broker_error(401, "broker_authentication_required", str(error)) from error
+        except DhanAccountRequestError as error:
+            endpoint_results[endpoint] = {
+                "status": "failed",
+                "reason": error.code,
+            }
+            if error.status_code is not None:
+                endpoint_results[endpoint]["http_status"] = str(error.status_code)
+            if error.code == "provider_authentication_failed":
+                credential.expires_at = now
+                db.commit()
+                authentication_expired = True
+                break
+        except BrokerAdapterError as error:
+            endpoint_results[endpoint] = {"status": "failed", "reason": "provider_error"}
+            if slug != "dhan":
+                raise _broker_error(
+                    502, "broker_provider_error", "Broker account sync failed."
+                ) from error
 
-        raw_positions = adapter.get_positions(tokens["access_token"], tokens)
+    if dhan_reader is not None:
+        trade_records: list[dict[str, Any]] = []
         try:
-            positions = _normalize_rows(
-                raw_positions,
-                "position",
-                now,
-                _user_id(active_session),
-                slug,
-            )
-        except Exception as error:
-            if slug == "dhan":
-                _log_dhan_sync_failure(
-                    "positions_response_normalization",
-                    error,
-                    "Positions response could not be normalized.",
+            for page in range(100):
+                page_records = dhan_reader.get_past_trades(
+                    dhan_from_date.isoformat(),
+                    dhan_to_date.isoformat(),
+                    page,
                 )
-            raise
-    except BrokerReconnectRequired as error:
-        raise _broker_error(401, "broker_authentication_required", str(error)) from error
-    except BrokerAdapterError as error:
-        raise _broker_error(502, "broker_provider_error", "Broker account sync failed.") from error
+                trade_records.extend(page_records)
+                if not page_records:
+                    break
+            else:
+                raise DhanAccountRequestError("provider_pagination_limit")
+            normalized_trades = _normalize_dhan_trades(
+                trade_records, _user_id(active_session), now
+            )
+            result = {
+                "status": "succeeded",
+                "record_count": str(len(normalized_trades)),
+            }
+            if dhan_reader.last_http_diagnostics:
+                result["http_status"] = str(
+                    dhan_reader.last_http_diagnostics[-1]["http_status"]
+                )
+            endpoint_results["trades"] = result
+        except DhanAccountRequestError as error:
+            result = {"status": "failed", "reason": error.code}
+            if error.status_code is not None:
+                result["http_status"] = str(error.status_code)
+            elif dhan_reader.last_http_diagnostics:
+                status = dhan_reader.last_http_diagnostics[-1]["http_status"]
+                if status is not None:
+                    result["http_status"] = str(status)
+            endpoint_results["trades"] = result
+        except BrokerAdapterError as error:
+            _log_dhan_sync_failure(
+                "trades_response_normalization",
+                error,
+                "Past trades response could not be normalized.",
+            )
+            endpoint_results["trades"] = {
+                "status": "failed",
+                "reason": "provider_error",
+            }
+
+        try:
+            ledger_records = dhan_reader.get_ledger(
+                dhan_from_date.isoformat(), dhan_to_date.isoformat()
+            )
+            unkeyed_ledger_count = sum(
+                not row.get("vouchernumber") for row in ledger_records
+            )
+            if unkeyed_ledger_count:
+                logger.warning(
+                    "Dhan ledger entries skipped because provider entry IDs are missing count=%d",
+                    unkeyed_ledger_count,
+                )
+            normalized_ledger = _normalize_dhan_ledger(
+                [
+                    row for row in ledger_records
+                    if row.get("vouchernumber") is not None
+                    and str(row["vouchernumber"]).strip()
+                ],
+                _user_id(active_session),
+                now,
+            )
+            result = {
+                "status": "partial" if unkeyed_ledger_count else "succeeded",
+                "record_count": str(len(normalized_ledger)),
+                "received_count": str(len(ledger_records)),
+                "skipped_count": str(unkeyed_ledger_count),
+            }
+            if unkeyed_ledger_count:
+                result["reason"] = "missing_provider_entry_id"
+            if dhan_reader.last_http_diagnostics:
+                result["http_status"] = str(
+                    dhan_reader.last_http_diagnostics[-1]["http_status"]
+                )
+            endpoint_results["ledger"] = result
+        except DhanAccountRequestError as error:
+            result = {"status": "failed", "reason": error.code}
+            if error.status_code is not None:
+                result["http_status"] = str(error.status_code)
+            elif dhan_reader.last_http_diagnostics:
+                status = dhan_reader.last_http_diagnostics[-1]["http_status"]
+                if status is not None:
+                    result["http_status"] = str(status)
+            endpoint_results["ledger"] = result
+        except BrokerAdapterError as error:
+            _log_dhan_sync_failure(
+                "ledger_response_normalization",
+                error,
+                "Ledger response could not be normalized.",
+            )
+            endpoint_results["ledger"] = {
+                "status": "failed",
+                "reason": "provider_error",
+            }
+
+    failed_endpoints = [
+        endpoint for endpoint, result in endpoint_results.items()
+        if result["status"] == "failed"
+    ]
+    if failed_endpoints and not normalized and account_snapshot is None and (
+        normalized_trades is None and normalized_ledger is None
+    ):
+        if authentication_expired:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "broker_authentication_required",
+                    "message": (
+                        f"Dhan authentication expired at the {failed_endpoints[0]} "
+                        "endpoint. Reconnect and retry account sync."
+                    ),
+                    "sync_status": "failed",
+                    "endpoint_results": endpoint_results,
+                },
+            )
+        detail = {
+            "code": "broker_sync_failed",
+            "message": (
+                f"{slug.title()} account sync failed at the "
+                f"{', '.join(failed_endpoints)} endpoint."
+            ),
+            "sync_status": "failed",
+            "endpoint_results": endpoint_results,
+        }
+        raise HTTPException(status_code=502, detail=detail)
 
     credential = db.scalar(
         select(BrokerCredential)
@@ -684,14 +1165,100 @@ def sync_broker(
     if credential is None:
         raise HTTPException(status_code=409, detail="Broker was disconnected during sync")
     try:
-        db.execute(
-            delete(BrokerMirror).where(
-                BrokerMirror.user_id == _user_id(active_session),
-                BrokerMirror.broker == slug,
-            )
+        successful_kinds = set(normalized)
+        mirror_delete = delete(BrokerMirror).where(
+            BrokerMirror.user_id == _user_id(active_session),
+            BrokerMirror.broker == slug,
         )
-        db.add_all(holdings + positions)
-        credential.last_synced_at = now
+        if failed_endpoints:
+            mirror_delete = mirror_delete.where(
+                BrokerMirror.kind.in_(successful_kinds)
+            )
+        db.execute(mirror_delete)
+        db.add_all([
+            row for rows in normalized.values() for row in rows
+        ])
+        if account_snapshot is not None:
+            existing_account = db.scalar(
+                select(BrokerAccountMirror).where(
+                    BrokerAccountMirror.user_id == _user_id(active_session),
+                    BrokerAccountMirror.broker == slug,
+                )
+            )
+            if existing_account is None:
+                db.add(account_snapshot)
+            else:
+                for field in (
+                    "currency",
+                    "available_balance",
+                    "sod_limit",
+                    "collateral_amount",
+                    "receivable_amount",
+                    "utilized_amount",
+                    "blocked_payout_amount",
+                    "withdrawable_balance",
+                    "synced_at",
+                ):
+                    setattr(existing_account, field, getattr(account_snapshot, field))
+        for row in normalized_trades or []:
+            existing_trade = db.scalar(
+                select(DhanTradeMirror).where(
+                    DhanTradeMirror.user_id == _user_id(active_session),
+                    DhanTradeMirror.source == "dhan",
+                    DhanTradeMirror.trade_id == row.trade_id,
+                )
+            )
+            if existing_trade is None:
+                db.add(row)
+            else:
+                for field in (
+                    "order_id",
+                    "symbol",
+                    "security_id",
+                    "exchange_segment",
+                    "side",
+                    "quantity",
+                    "price",
+                    "charges",
+                    "currency",
+                    "trade_at",
+                    "synced_at",
+                ):
+                    setattr(existing_trade, field, getattr(row, field))
+        for row in normalized_ledger or []:
+            existing_entry = db.scalar(
+                select(DhanLedgerMirror).where(
+                    DhanLedgerMirror.user_id == _user_id(active_session),
+                    DhanLedgerMirror.source == "dhan",
+                    DhanLedgerMirror.entry_id == row.entry_id,
+                )
+            )
+            if existing_entry is None:
+                existing_entry = db.scalar(
+                    select(DhanLedgerMirror).where(
+                        DhanLedgerMirror.user_id == _user_id(active_session),
+                        DhanLedgerMirror.source == "dhan",
+                        DhanLedgerMirror.entry_id == row.provider_entry_id,
+                        DhanLedgerMirror.provider_entry_id.is_(None),
+                    )
+                )
+            if existing_entry is None:
+                db.add(row)
+            else:
+                for field in (
+                    "entry_id",
+                    "provider_entry_id",
+                    "entry_date",
+                    "description",
+                    "debit",
+                    "credit",
+                    "running_balance",
+                    "currency",
+                    "synced_at",
+                ):
+                    setattr(existing_entry, field, getattr(row, field))
+        if not failed_endpoints:
+            credential.last_synced_at = now
         db.commit()
     except Exception as error:
         if slug == "dhan":
@@ -708,8 +1275,80 @@ def sync_broker(
         "broker": slug,
         "synthetic": adapter.is_synthetic,
         "synced_at": now,
-        "holdings_count": len(holdings),
-        "positions_count": len(positions),
+        "sync_status": (
+            "partial"
+            if failed_endpoints
+            or any(result["status"] == "partial" for result in endpoint_results.values())
+            else "successful"
+        ),
+        "authentication_status": "expired" if authentication_expired else "connected",
+        "endpoint_results": endpoint_results,
+        "holdings_count": len(normalized.get("holding", [])),
+        "positions_count": len(normalized.get("position", [])),
+        "cash_synced": account_snapshot is not None,
+        "trades_count": len(normalized_trades) if normalized_trades is not None else None,
+        "ledger_count": len(normalized_ledger) if normalized_ledger is not None else None,
+        "from_date": dhan_from_date.isoformat() if dhan_reader is not None else None,
+        "to_date": dhan_to_date.isoformat() if dhan_reader is not None else None,
+    }
+
+
+@router.get("/dhan/transactions")
+def get_dhan_transaction_mirror(
+    response: Response,
+    active_session: UserSession = Depends(require_broker_access),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    user_id = _user_id(active_session)
+    trades = db.scalars(
+        select(DhanTradeMirror)
+        .where(DhanTradeMirror.user_id == user_id, DhanTradeMirror.source == "dhan")
+        .order_by(DhanTradeMirror.trade_at.desc(), DhanTradeMirror.trade_id)
+    ).all()
+    ledger = db.scalars(
+        select(DhanLedgerMirror)
+        .where(DhanLedgerMirror.user_id == user_id, DhanLedgerMirror.source == "dhan")
+        .order_by(DhanLedgerMirror.entry_date.desc(), DhanLedgerMirror.entry_id)
+    ).all()
+    return {
+        "source": "dhan",
+        "currency": "INR",
+        "trades": [
+            {
+                "trade_id": row.trade_id,
+                "order_id": row.order_id,
+                "symbol": row.symbol,
+                "security_id": row.security_id,
+                "exchange_segment": row.exchange_segment,
+                "side": row.side,
+                "quantity": row.quantity,
+                "price": row.price,
+                "charges": row.charges,
+                "trade_at": row.trade_at,
+                "broker": "Dhan",
+                "source": row.source,
+                "synced_at": row.synced_at,
+            }
+            for row in trades
+        ],
+        "ledger": [
+            {
+                "id": str(row.id),
+                "entry_id": row.provider_entry_id or row.entry_id,
+                "provider_entry_id": row.provider_entry_id,
+                "entry_date": row.entry_date,
+                "description": row.description,
+                "debit": row.debit,
+                "credit": row.credit,
+                "running_balance": row.running_balance,
+                "currency": row.currency,
+                "broker": "Dhan",
+                "source": row.source,
+                "synced_at": row.synced_at,
+            }
+            for row in ledger
+        ],
     }
 
 
@@ -724,7 +1363,212 @@ def get_broker_mirror(
     response.headers["Cache-Control"] = "no-store"
     if slug not in ADAPTERS:
         raise HTTPException(status_code=404, detail="Broker not supported")
-    return _mirror_rows(db, _user_id(active_session), slug, kind)
+    return [
+        {
+            "kind": row.kind,
+            "symbol": row.symbol,
+            "exchange": row.exchange,
+            "product": row.product,
+            "security_id": row.security_id,
+            "isin": row.isin,
+            "source": row.broker,
+            "currency": "INR" if row.broker == "dhan" else "",
+            "quantity": row.quantity,
+            "average_price": row.average_price,
+            "synced_at": row.synced_at,
+        }
+        for row in _mirror_rows(db, _user_id(active_session), slug, kind)
+    ]
+
+
+@router.get("/dhan/portfolio")
+def get_dhan_portfolio_mirror(
+    response: Response,
+    active_session: UserSession = Depends(require_broker_access),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    user_id = _user_id(active_session)
+    rows = _mirror_rows(db, user_id, "dhan")
+    account = db.scalar(
+        select(BrokerAccountMirror).where(
+            BrokerAccountMirror.user_id == user_id,
+            BrokerAccountMirror.broker == "dhan",
+        )
+    )
+    return {
+        "source": "dhan",
+        "currency": "INR",
+        "synced_at": max(
+            (
+                row.synced_at for row in rows
+            ),
+            default=account.synced_at if account is not None else None,
+        ),
+        "holdings": [
+            {
+                "symbol": row.symbol,
+                "exchange": row.exchange,
+                "security_id": row.security_id,
+                "isin": row.isin,
+                "quantity": row.quantity,
+                "average_price": row.average_price,
+                "synced_at": row.synced_at,
+            }
+            for row in rows
+            if row.kind == "holding"
+        ],
+        "positions": [
+            {
+                "symbol": row.symbol,
+                "exchange": row.exchange,
+                "product": row.product,
+                "security_id": row.security_id,
+                "quantity": row.quantity,
+                "average_price": row.average_price,
+                "synced_at": row.synced_at,
+            }
+            for row in rows
+            if row.kind == "position"
+        ],
+        "funds": (
+            {
+                "available_balance": account.available_balance,
+                "sod_limit": account.sod_limit,
+                "collateral_amount": account.collateral_amount,
+                "receivable_amount": account.receivable_amount,
+                "utilized_amount": account.utilized_amount,
+                "blocked_payout_amount": account.blocked_payout_amount,
+                "withdrawable_balance": account.withdrawable_balance,
+                "synced_at": account.synced_at,
+            }
+            if account is not None
+            else None
+        ),
+    }
+
+
+@router.get("/portfolio-summary")
+def get_broker_portfolio_summary(
+    response: Response,
+    active_session: UserSession = Depends(require_broker_access),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    user_id = _user_id(active_session)
+    mirror_rows = list(db.scalars(
+        select(BrokerMirror).where(BrokerMirror.user_id == user_id)
+    ))
+    account_rows = list(db.scalars(
+        select(BrokerAccountMirror).where(
+            BrokerAccountMirror.user_id == user_id,
+            BrokerAccountMirror.currency == "INR",
+        )
+    ))
+    accounts_by_broker = {row.broker: row for row in account_rows}
+    broker_names = sorted(
+        set(accounts_by_broker)
+        | {
+            row.broker for row in mirror_rows
+            if row.broker == "dhan" or row.broker in accounts_by_broker
+        }
+    )
+    brokers: list[dict[str, Any]] = []
+    for broker_name in broker_names:
+        account = accounts_by_broker.get(broker_name)
+        rows = [row for row in mirror_rows if row.broker == broker_name]
+        currency = account.currency if account is not None else (
+            "INR" if broker_name == "dhan" else None
+        )
+        if currency != "INR":
+            continue
+        has_unknown_cost = any(
+            row.average_price is None for row in rows
+        )
+        invested_cost = (
+            sum(
+                (row.quantity * row.average_price for row in rows),
+                Decimal("0"),
+            )
+            if not has_unknown_cost
+            else None
+        )
+        synced_at = max(
+            (
+                [row.synced_at for row in rows]
+                + ([account.synced_at] if account is not None else [])
+            ),
+            default=None,
+        )
+        cash = account.available_balance if account is not None else None
+        brokers.append({
+            "source": broker_name,
+            "currency": currency,
+            "synced_at": synced_at,
+            "cash": str(cash) if cash is not None else None,
+            "invested_cost": (
+                str(invested_cost) if invested_cost is not None else None
+            ),
+            "market_value": None,
+            "total_value": None,
+            "unrealized_pnl": None,
+            "day_change": None,
+            "holdings_count": sum(row.kind == "holding" for row in rows),
+            "positions_count": sum(row.kind == "position" for row in rows),
+        })
+
+    def combined(field: str) -> Decimal | None:
+        values = [broker[field] for broker in brokers]
+        if not values or any(value is None for value in values):
+            return None
+        return sum(
+            (Decimal(str(value)) for value in values),
+            Decimal("0"),
+        )
+
+    source_names = [broker["source"] for broker in brokers]
+    combined_synced_at = max(
+        (broker["synced_at"] for broker in brokers if broker["synced_at"]),
+        default=None,
+    )
+    return {
+        "currency": "INR",
+        "source": "combined" if len(source_names) > 1 else (
+            source_names[0] if source_names else None
+        ),
+        "sources": source_names,
+        "synced_at": combined_synced_at,
+        "totals": {
+            "cash": str(combined("cash")) if combined("cash") is not None else None,
+            "invested_cost": (
+                str(combined("invested_cost"))
+                if combined("invested_cost") is not None
+                else None
+            ),
+            "market_value": (
+                str(combined("market_value"))
+                if combined("market_value") is not None
+                else None
+            ),
+            "total_value": (
+                str(combined("total_value"))
+                if combined("total_value") is not None
+                else None
+            ),
+            "unrealized_pnl": (
+                str(combined("unrealized_pnl"))
+                if combined("unrealized_pnl") is not None
+                else None
+            ),
+            "day_change": (
+                str(combined("day_change"))
+                if combined("day_change") is not None
+                else None
+            ),
+            "synced_at": combined_synced_at,
+        },
+        "brokers": brokers,
+    }
 
 
 @router.get("/{slug}/account")
@@ -864,3 +1708,7 @@ def disconnect_broker(
         )
     )
     db.commit()
+    if slug in {"angel_one", "dhan", "yfinance"}:
+        from app.api.market_data import reset_provider_circuit_breaker
+
+        reset_provider_circuit_breaker(slug)

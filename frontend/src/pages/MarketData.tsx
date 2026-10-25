@@ -1,7 +1,7 @@
 import {
-  ArrowUpRight, CircleDollarSign, Clock3, Pencil, Plus, Search, ShieldCheck, Trash2, Wallet,
+  ArrowUpRight, Clock3, Pencil, Plus, Search, ShieldCheck, Trash2, Wallet,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api';
 import { CandleChart } from '../components/CandleChart';
 import { ThesisEditor } from '../components/ThesisEditor';
@@ -15,7 +15,7 @@ import {
   type DataTableColumn,
 } from '../components/ui';
 import {
-  formatMoney, formatQuantity, localDateTime, marketRangeParams, indicatorLabels,
+  formatMoney, formatQuantity, localDateTime, marketRangeParams,
   type WorkspaceState,
 } from '../components/useWorkspace';
 
@@ -34,6 +34,8 @@ type FundamentalPeriod = {
   operating_cash_flow: string | null;
   free_cash_flow: string | null;
   total_debt: string | null;
+  return_on_equity_pct: string | null;
+  debt_to_equity: string | null;
   shares_outstanding: string | null;
   source: string;
   fetched_at: string;
@@ -62,7 +64,7 @@ type FundamentalsData = {
   unavailable: boolean;
   message: string;
 };
-type FundamentalsSync = { status: 'available' | 'unavailable'; message: string };
+type FundamentalsSync = { instrument_id: string; status: 'available' | 'unavailable'; message: string };
 type CoverageInstrument = {
   instrument_id: string;
   symbol: string;
@@ -72,6 +74,7 @@ type CoverageInstrument = {
   oldest_bar: string | null;
   newest_bar: string | null;
   last_sync_status: string | null;
+  last_sync_provider: string | null;
   last_sync_reason: string | null;
   freshness_status: 'fresh' | 'stale' | 'failed' | 'never-synced';
 };
@@ -82,8 +85,23 @@ type BackfillResponse = {
   symbol?: string;
   chunks_failed?: number;
 };
+type MarketDataSource = {
+  name: string;
+  label: string;
+  available: boolean;
+  status: string;
+  enabled: boolean;
+};
+type MarketDataSettings = {
+  selected_provider: string | null;
+  sources: MarketDataSource[];
+};
+type MarketStreamStatus = 'not_configured' | 'connecting' | 'active' | 'reconnecting' | 'unavailable';
+type MarketStreamMessage =
+  | { type: 'status'; status: MarketStreamStatus }
+  | { type: 'tick'; quote: NonNullable<WorkspaceState['marketQuote']> };
 
-export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 'addInstrumentToWatchlist' | 'addSelectedInstrumentToWatchlist' | 'attachSelectedInstrument' | 'currency' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadingMarketHistory' | 'loadingMarketIndicators' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'removeInstrumentFromWatchlist' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation' | 'watchlist'> }) {
+export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 'addInstrumentToWatchlist' | 'addSelectedInstrumentToWatchlist' | 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'removeInstrumentFromWatchlist' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation' | 'watchlist'> }) {
   const {
   addInstrumentToWatchlist,
   addSelectedInstrumentToWatchlist,
@@ -91,9 +109,11 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   currency,
   loadInstrumentIndicators,
   loadMarketHistory,
+  loadOlderMarketHistory,
+  loadingOlderMarketHistory,
+  hasOlderMarketHistory,
   loadMarketQuote,
   loadingMarketHistory,
-  loadingMarketIndicators,
   loadingMarketQuote,
   marketEnd,
   marketHistory,
@@ -117,18 +137,134 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   valuation,
   watchlist
 } = workspace;
-  const [detailTab, setDetailTab] = useState<'indicators' | 'fundamentals'>('indicators');
   const [fundamentals, setFundamentals] = useState<FundamentalsData | null>(null);
   const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
   const [fundamentalsSyncing, setFundamentalsSyncing] = useState(false);
   const [fundamentalsMessage, setFundamentalsMessage] = useState('');
   const [fundamentalPeriodType, setFundamentalPeriodType] = useState<'annual' | 'quarterly'>('annual');
+  const selectedInstrumentId = useRef<string | null>(null);
+  selectedInstrumentId.current = selectedInstrument?.id ?? null;
   const [coverage, setCoverage] = useState<CoverageInstrument[]>([]);
   const [coverageLoading, setCoverageLoading] = useState(true);
   const [coverageError, setCoverageError] = useState('');
   const [coverageMessage, setCoverageMessage] = useState('');
   const [coverageRunning, setCoverageRunning] = useState<string | null>(null);
   const [coverageBatchRunning, setCoverageBatchRunning] = useState(false);
+  const [liveFeedEnabled, setLiveFeedEnabled] = useState(false);
+  const [liveFeedStatus, setLiveFeedStatus] = useState<MarketStreamStatus>('not_configured');
+  const [liveFeedMessage, setLiveFeedMessage] = useState('');
+  const [streamRetryKey, setStreamRetryKey] = useState(0);
+  const [liveMarketQuote, setLiveMarketQuote] = useState<NonNullable<WorkspaceState['marketQuote']> | null>(null);
+  const [marketDataSettings, setMarketDataSettings] = useState<MarketDataSettings | null>(null);
+  const [marketDataSettingsLoading, setMarketDataSettingsLoading] = useState(true);
+  const [marketDataSettingsError, setMarketDataSettingsError] = useState('');
+  const displayedMarketQuote = liveMarketQuote ?? marketQuote;
+  const selectedProvider = marketDataSettings?.selected_provider;
+  const selectedSourceLabel = marketDataSettings?.sources.find(
+    (source) => source.name === selectedProvider,
+  )?.label ?? 'Market-data';
+  const liveStreamSupported = ['dhan', 'angel_one'].includes(
+    marketDataSettings?.selected_provider ?? '',
+  );
+
+  async function refreshMarketDataSettings() {
+    setMarketDataSettingsError('');
+    try {
+      const settings = await apiRequest<MarketDataSettings>('/market-data/settings');
+      setMarketDataSettings(settings);
+      return settings;
+    } catch (error) {
+      setMarketDataSettingsError(error instanceof Error ? error.message : 'Market-data settings could not be loaded.');
+      throw error;
+    } finally {
+      setMarketDataSettingsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshMarketDataSettings().catch(() => undefined);
+  }, []);
+
+  async function selectMarketDataSource(provider: string) {
+    setMarketDataSettingsError('');
+    try {
+      const settings = await apiRequest<MarketDataSettings>(
+        '/market-data/settings/provider',
+        {
+          method: 'PUT',
+          body: JSON.stringify({ provider }),
+        },
+      );
+      setMarketDataSettings(settings);
+    } catch (error) {
+      setMarketDataSettingsError(error instanceof Error ? error.message : 'Data source could not be selected.');
+    }
+  }
+
+  useEffect(() => {
+    if (!liveFeedEnabled || !selectedInstrument || !liveStreamSupported) {
+      setLiveMarketQuote(null);
+      setLiveFeedStatus('not_configured');
+      if (liveFeedEnabled && !liveStreamSupported) setLiveFeedEnabled(false);
+      return;
+    }
+    const streamUrl = new URL(
+      `/api/v1/market-data/instruments/${selectedInstrument.id}/stream`,
+      window.location.href,
+    );
+    streamUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let intentionalClose = false;
+    let retryTimer: number | undefined;
+    setLiveMarketQuote(null);
+    setLiveFeedStatus('connecting');
+    setLiveFeedMessage('');
+    const socket = new WebSocket(streamUrl);
+    const heartbeat = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send('ping');
+    }, 15_000);
+    socket.onmessage = (event) => {
+      let message: MarketStreamMessage;
+      try {
+        message = JSON.parse(event.data) as MarketStreamMessage;
+      } catch {
+        setLiveFeedStatus('unavailable');
+        setLiveFeedMessage('The live feed returned an invalid message.');
+        return;
+      }
+      if (message.type === 'status') {
+        setLiveFeedStatus(message.status);
+        if (message.status === 'unavailable') {
+          setLiveFeedMessage(`${selectedSourceLabel} live feed is unavailable. Check the connection, permissions, and instrument mapping.`);
+        }
+        return;
+      }
+      setLiveMarketQuote(message.quote);
+      setLiveFeedStatus('active');
+      setLiveFeedMessage('');
+    };
+    socket.onerror = () => {
+      setLiveFeedStatus('unavailable');
+      setLiveFeedMessage(`The ${selectedSourceLabel} live feed connection failed.`);
+    };
+    socket.onclose = (event) => {
+      if (!intentionalClose) {
+        if (![4401, 4403, 4404].includes(event.code)) {
+          setLiveFeedStatus('reconnecting');
+          setLiveFeedMessage(`${selectedSourceLabel} live feed disconnected. Reconnecting…`);
+          retryTimer = window.setTimeout(() => setStreamRetryKey((key) => key + 1), 2000);
+        } else {
+          setLiveFeedStatus('unavailable');
+          setLiveFeedMessage(`${selectedSourceLabel} live feed is unavailable. Review authentication and instrument mapping.`);
+        }
+      }
+    };
+    return () => {
+      intentionalClose = true;
+      window.clearInterval(heartbeat);
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      socket.close();
+    };
+  }, [liveFeedEnabled, liveStreamSupported, marketDataSettings?.selected_provider, selectedInstrument?.id, selectedSourceLabel, streamRetryKey]);
 
   async function loadCoverage() {
     setCoverageLoading(true);
@@ -186,6 +322,19 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
       no_real_provider_available: 'No real provider configured',
       no_new_bars_written: 'No new bars',
     };
+    const fallback = value.match(/^fallback_after_(angel_one|dhan|yfinance)_(.+)$/);
+    if (fallback) {
+      const providerLabels: Record<string, string> = {
+        angel: 'Angel One',
+        angel_one: 'Angel One',
+        dhan: 'Dhan',
+        yfinance: 'Yahoo Finance',
+      };
+      return `Fallback after ${providerLabels[fallback[1]] ?? fallback[1]} failed: ${fallback[2].replaceAll('_', ' ')}`;
+    }
+    if (value.includes(';')) {
+      return value.split(';').map(displaySyncReason).join(' · ');
+    }
     return messages[value] ?? value.replaceAll('_', ' ');
   }
 
@@ -240,7 +389,17 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
     {
       key: 'reason',
       label: 'Last result',
-      render: (instrument) => displaySyncReason(instrument.last_sync_reason),
+      render: (instrument) => (
+        <>
+          {instrument.last_sync_provider && (
+            <span>
+              {instrument.last_sync_status === 'success' ? 'Served by ' : 'Attempted '}
+              {instrument.last_sync_provider} ·{' '}
+            </span>
+          )}
+          {displaySyncReason(instrument.last_sync_reason)}
+        </>
+      ),
       sortValue: (instrument) => instrument.last_sync_reason ?? '',
       className: 'coverage-reason',
     },
@@ -267,6 +426,8 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
       return;
     }
     let active = true;
+    setFundamentals(null);
+    setFundamentalsSyncing(false);
     setFundamentalsLoading(true);
     setFundamentalsMessage('');
     apiRequest<FundamentalsData>(`/market-data/instruments/${selectedInstrument.id}/fundamentals?period_type=${fundamentalPeriodType}`)
@@ -293,22 +454,43 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
         `/market-data/instruments/${selectedInstrument.id}/fundamentals/sync`,
         { method: 'POST', body: '{}' },
       );
+      if (selectedInstrumentId.current !== result.instrument_id) return;
       setFundamentalsMessage(result.message);
-      setFundamentals(await apiRequest<FundamentalsData>(
-        `/market-data/instruments/${selectedInstrument.id}/fundamentals?period_type=${fundamentalPeriodType}`,
-      ));
+      const data = await apiRequest<FundamentalsData>(
+        `/market-data/instruments/${result.instrument_id}/fundamentals?period_type=${fundamentalPeriodType}`,
+      );
+      if (selectedInstrumentId.current === data.instrument_id) setFundamentals(data);
     } catch (error) {
-      setFundamentalsMessage(error instanceof Error ? error.message : 'Fundamentals sync failed.');
+      if (selectedInstrumentId.current === selectedInstrument.id) {
+        setFundamentalsMessage(error instanceof Error ? error.message : 'Fundamentals sync failed.');
+      }
     } finally {
-      setFundamentalsSyncing(false);
+      if (selectedInstrumentId.current === selectedInstrument.id) setFundamentalsSyncing(false);
     }
   }
 
   const displayFundamental = (value: string | null, suffix = '') =>
     value === null ? 'Unavailable' : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 })}${suffix}`;
+  const eligibleSources = (marketDataSettings?.sources ?? []).filter(
+    (source) => source.available && source.enabled,
+  );
   return (
               <section className="market-page">
-                <div className="data-note"><CircleDollarSign size={17} /><span>Market data provenance and freshness are shown for each result. Provider mappings are not verified exchange listings unless explicitly marked; market data is not used for portfolio valuation.</span></div>
+                <section className="data-section">
+                  <label>
+                    Data source
+                    <select
+                      value={selectedProvider ?? eligibleSources[0]?.name ?? ''}
+                      onChange={(event) => void selectMarketDataSource(event.target.value)}
+                      disabled={marketDataSettingsLoading || eligibleSources.length === 0}
+                    >
+                      {eligibleSources.map((source) => (
+                        <option key={source.name} value={source.name}>{source.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {marketDataSettingsError && <p className="market-source-message error" role="alert">{marketDataSettingsError}</p>}
+                </section>
                 <Panel
                   title="Market data coverage"
                   description="Stored real daily bars and the latest synchronization result for holdings and watchlist instruments."
@@ -376,12 +558,16 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                         ? <button className="secondary-button" type="button" onClick={() => void removeInstrumentFromWatchlist(selectedInstrument.id)}>Remove from refresh watchlist</button>
                         : <button className="secondary-button" type="button" onClick={() => void addSelectedInstrumentToWatchlist()}>Add to refresh watchlist</button>}
                       <button className="secondary-button" type="button" onClick={() => void loadMarketQuote(selectedInstrument, true)} disabled={loadingMarketQuote}>{loadingMarketQuote ? 'Loading quote…' : 'Refresh instrument price'}</button>
-                      {marketQuote && <div className="market-quote" aria-live="polite">
-                        <div className="section-heading"><div><p className="eyebrow">LATEST PRICE</p><h3>{formatMoney(marketQuote.bar.close, marketQuote.currency)}</h3></div><span className={`freshness-badge ${marketQuote.is_synthetic ? 'freshness-synthetic' : `freshness-${marketQuote.freshness}`}`}>{marketQuote.is_synthetic ? 'synthetic' : marketQuote.freshness}</span></div>
-                        <p className="market-provenance">{marketQuote.freshness_message} Source: {marketQuote.source} · Retrieved: {new Date(marketQuote.retrieved_at).toLocaleString()} · {marketQuote.is_cached ? 'Cached' : 'Provider response'} · {marketQuote.is_synthetic ? 'Synthetic' : marketQuote.is_verified ? 'Verified' : 'Unverified'}</p>
+                      {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedStatus.replaceAll('_', ' ')}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}</p>}
+                      {displayedMarketQuote && <div className="market-quote" aria-live="polite">
+                        <div className="section-heading"><div><p className="eyebrow">{displayedMarketQuote.data_type === 'daily_close' ? 'HISTORICAL DAILY CLOSE' : displayedMarketQuote.data_type === 'live_tick' ? 'LIVE WEBSOCKET TICK' : displayedMarketQuote.data_type === 'provider_snapshot' ? 'LATEST REST SNAPSHOT' : 'LATEST PROVIDER QUOTE'}</p><h3>{formatMoney(displayedMarketQuote.bar.close, displayedMarketQuote.currency)}</h3></div><span className={`freshness-badge freshness-${displayedMarketQuote.freshness_status}`}>{displayedMarketQuote.freshness_status.replaceAll('_', ' ')}</span></div>
+                        <p className="market-provenance">{displayedMarketQuote.freshness_message} Source: {displayedMarketQuote.source} · Market timestamp: {new Date(displayedMarketQuote.market_timestamp).toLocaleString()} · Observation age: {Math.floor(displayedMarketQuote.market_age_seconds)}s · Retrieved: {new Date(displayedMarketQuote.retrieved_at).toLocaleString()} · {displayedMarketQuote.is_cached ? 'Cached' : 'Provider response'} · {displayedMarketQuote.is_synthetic ? 'Synthetic' : displayedMarketQuote.is_verified ? 'Verified mapping' : 'Unverified mapping'}</p>
+                        <p className="market-provenance">Provider configured: {displayedMarketQuote.provider_configured ? 'yes' : 'no'} · Delivery: {displayedMarketQuote.delivery_mode.replaceAll('_', ' ')} · Latest request: {displayedMarketQuote.provider_request_status.replaceAll('_', ' ')} · Persistent connection: {displayedMarketQuote.provider_connection_status.replaceAll('_', ' ')} · Stream active: {displayedMarketQuote.feed_active ? 'yes' : 'no'} · Provider delay: unavailable.</p>
+                        {displayedMarketQuote.fallback_reason && <p className="market-provenance">Fallback reason: {displayedMarketQuote.fallback_reason.replaceAll('_', ' ')}.</p>}
+                        {displayedMarketQuote.provider_attempts.length > 0 && <p className="market-provenance">Provider attempts: {displayedMarketQuote.provider_attempts.map((attempt) => `${attempt.provider}: ${attempt.outcome.replaceAll('_', ' ')}${attempt.reason_category ? ` [${attempt.reason_category.replaceAll('_', ' ')}]` : attempt.reason ? ` (${attempt.reason.replaceAll('_', ' ')})` : ''}${attempt.latency_ms !== null && attempt.latency_ms !== undefined ? `, ${Math.round(attempt.latency_ms)} ms` : ''}`).join(' · ')}</p>}
                       </div>}
                       <div className="market-range">
-                          <label>Interval<select value={marketInterval} onChange={(event) => { const interval = event.target.value as '1d' | '1h' | '15m'; setMarketInterval(interval); setMarketHistory(null); if (selectedInstrument) void loadInstrumentIndicators(selectedInstrument, interval); }}><option value="1d">1 day</option><option value="1h">1 hour</option><option value="15m">15 minutes</option></select></label>
+                          <label>Interval<select value={marketInterval} onChange={(event) => { const interval = event.target.value as typeof marketInterval; setMarketInterval(interval); setMarketHistory(null); if (selectedInstrument) void loadInstrumentIndicators(selectedInstrument, interval, marketHistory?.provider); }}><option value="1d">1 day</option><option value="1h">1 hour</option><option value="15m">15 minutes</option><option value="5m">5 minutes</option><option value="1m">1 minute</option></select></label>
                           <label>From<input type="date" value={marketStart} onChange={(event) => { setMarketStart(event.target.value); setMarketHistory(null); }} required /></label>
                           <label>Through<input type="date" value={marketEnd} onChange={(event) => { setMarketEnd(event.target.value); setMarketHistory(null); }} required /></label>
                       </div>
@@ -390,47 +576,14 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                   </section>
                 </div>
                 {selectedInstrument && <section className="data-section instrument-detail-panel">
-                  <div className="instrument-detail-tabs" role="tablist" aria-label="Instrument details">
-                    <button type="button" role="tab" aria-selected={detailTab === 'indicators'} className={detailTab === 'indicators' ? 'active' : ''} onClick={() => setDetailTab('indicators')}>Indicators</button>
-                    <button type="button" role="tab" aria-selected={detailTab === 'fundamentals'} className={detailTab === 'fundamentals' ? 'active' : ''} onClick={() => setDetailTab('fundamentals')}>Fundamentals</button>
-                  </div>
-                  {detailTab === 'indicators' && <>
-                  <div className="section-heading">
-                    <div><p className="eyebrow">STORED OHLCV ONLY</p><h2>{selectedInstrument.symbol} indicators</h2></div>
-                    <span className={`freshness-badge ${marketIndicators?.freshness.is_synthetic ? 'freshness-synthetic' : `freshness-${marketIndicators?.freshness.status ?? 'unavailable'}`}`}>
-                      {marketIndicators?.freshness.is_synthetic ? 'synthetic' : marketIndicators?.freshness.status ?? (loadingMarketIndicators ? 'loading' : 'unavailable')}
-                    </span>
-                  </div>
-                  {loadingMarketIndicators ? <p className="loading-inline">Calculating from stored bars…</p> : marketIndicators ? <>
-                    <p className="market-provenance">{marketIndicators.freshness.message} Source: {marketIndicators.source ?? '—'} · Latest bar: {marketIndicators.latest_bar ? new Date(marketIndicators.latest_bar).toLocaleString() : 'Unavailable'} · {marketIndicators.bars_available} stored bars.</p>
-                    <div className="indicator-grid">{Object.entries(marketIndicators.indicators).map(([key, result]) => {
-                      const definition = indicatorLabels[key] ?? { label: key, unit: 'index' as const };
-                      const displayValue = result.value === null
-                        ? `Insufficient history · ${result.bars_used}/${result.bars_required} bars`
-                        : definition.unit === 'price'
-                          ? formatMoney(result.value, selectedInstrument.currency)
-                          : `${Number(result.value).toFixed(2)}${definition.unit === 'percent' ? '%' : ''}`;
-                      return <article className="indicator-item" key={key}>
-                        <span>{definition.label}</span>
-                        <strong>{displayValue}</strong>
-                        <small>
-                          {result.is_synthetic
-                            ? <span className="freshness-badge freshness-synthetic">synthetic input</span>
-                            : `${result.bars_used} bars used`}
-                        </small>
-                      </article>;
-                    })}</div>
-                    <p className="valuation-footnote">{marketIndicators.disclaimer} Indicators use stored {marketIndicators.interval} OHLCV bars and are not forecasts.</p>
-                  </> : <p className="table-empty">Indicator data is unavailable.</p>}
-                  </>}
-                  {detailTab === 'fundamentals' && <div className="fundamentals-panel">
+                  <div className="fundamentals-panel">
                     <div className="section-heading">
                       <div><p className="eyebrow">PROVIDER-REPORTED COMPANY DATA</p><h2>{selectedInstrument.symbol} fundamentals</h2></div>
                       <button className="secondary-button" type="button" onClick={() => void syncFundamentals()} disabled={fundamentalsSyncing || selectedInstrument.is_synthetic}>{fundamentalsSyncing ? 'Syncing…' : 'Sync fundamentals'}</button>
                     </div>
                     <p className="accounting-note">Currency: {selectedInstrument.currency}. Values are not converted. Missing provider fields are unavailable, never shown as zero.</p>
                     {fundamentalsMessage && <p className="market-provenance" role="status">{fundamentalsMessage}</p>}
-                    {fundamentalsLoading ? <p className="loading-inline">Loading stored fundamentals…</p> : fundamentals?.unavailable ? <p className="table-empty">Fundamentals unavailable from providers. No synthetic or estimated values are available.</p> : fundamentals ? <>
+                                {fundamentalsLoading ? <p className="loading-inline">Loading {selectedInstrument.symbol} fundamentals…</p> : fundamentals?.unavailable ? <p className="table-empty">{fundamentals.message} Use Sync fundamentals to request the selected instrument from Yahoo Finance. Missing fields remain unavailable.</p> : fundamentals ? <>
                       {fundamentals.snapshot && <>
                         <div className="fundamental-snapshot-grid">
                           <article><span>Market cap</span><strong>{fundamentals.snapshot.market_cap === null ? 'Unavailable' : formatMoney(fundamentals.snapshot.market_cap, selectedInstrument.currency)}</strong></article>
@@ -448,34 +601,39 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                         <h3>Financial periods</h3>
                         <label>Period<select value={fundamentalPeriodType} onChange={(event) => setFundamentalPeriodType(event.target.value as 'annual' | 'quarterly')}><option value="annual">Annual</option><option value="quarterly">Quarterly</option></select></label>
                       </div>
-                      {fundamentals.fundamentals.length === 0 ? <p className="table-empty">Fundamentals unavailable from providers for this period.</p> : <div className="table-scroll"><table><thead><tr><th>Period end</th><th>Revenue</th><th>YoY</th><th>Net income</th><th>YoY</th><th>Operating margin</th><th>EPS</th><th>YoY</th><th>FCF</th><th>YoY</th><th>Source / fetched</th></tr></thead><tbody>{fundamentals.fundamentals.map((row) => <tr key={row.id}>
+                      {fundamentals.fundamentals.length === 0 ? <p className="table-empty">No financial periods are available for this instrument yet.</p> : <div className="table-scroll"><table><thead><tr><th>Period end</th><th>Revenue</th><th>YoY</th><th>Net income</th><th>YoY</th><th>Operating margin</th><th>ROE</th><th>EPS</th><th>YoY</th><th>Debt / equity</th><th>Operating cash flow</th><th>FCF</th><th>YoY</th><th>Source / fetched</th></tr></thead><tbody>{fundamentals.fundamentals.map((row) => <tr key={row.id}>
                         <td>{row.period_end}</td>
                         <td>{row.revenue === null ? 'Unavailable' : formatMoney(row.revenue, row.currency)}</td>
                         <td>{displayFundamental(row.revenue_yoy_growth_pct, '%')}</td>
                         <td>{row.net_income === null ? 'Unavailable' : formatMoney(row.net_income, row.currency)}</td>
                         <td>{displayFundamental(row.net_income_yoy_growth_pct, '%')}</td>
                         <td>{displayFundamental(row.operating_margin, '%')}</td>
+                        <td>{displayFundamental(row.return_on_equity_pct, '%')}</td>
                         <td>{displayFundamental(row.eps)}</td>
                         <td>{displayFundamental(row.eps_yoy_growth_pct, '%')}</td>
+                        <td>{displayFundamental(row.debt_to_equity)}</td>
+                        <td>{row.operating_cash_flow === null ? 'Unavailable' : formatMoney(row.operating_cash_flow, row.currency)}</td>
                         <td>{row.free_cash_flow === null ? 'Unavailable' : formatMoney(row.free_cash_flow, row.currency)}</td>
                         <td>{displayFundamental(row.free_cash_flow_yoy_growth_pct, '%')}</td>
                         <td>{row.source}<small className="trade-subtext">{new Date(row.fetched_at).toLocaleString()} · <span className={row.stale ? 'stale-text' : ''}>{row.stale ? 'stale' : 'fresh'}</span></small></td>
                       </tr>)}</tbody></table></div>}
                     </> : <p className="table-empty">Fundamentals unavailable from providers.</p>}
-                  </div>}
+                  </div>
                 </section>}
                 {marketHistory && selectedInstrument && <section className="data-section market-history">
                   <div className="section-heading"><div><p className="eyebrow">PROVENANCE &amp; FRESHNESS</p><h2>{selectedInstrument.symbol} history</h2></div><span className={`freshness-badge freshness-${marketHistory.freshness.status}`}>{marketHistory.freshness.status.replace('_', ' ')}</span></div>
-                  <p className="market-provenance">{marketHistory.freshness.message} Source: {marketHistory.freshness.source ?? '—'} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Latest bar: {marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'}</p>
+                  <p className="market-provenance">{marketHistory.freshness.message} Provider: {marketHistory.provider ?? marketHistory.freshness.source ?? 'unavailable'} · Interval: {marketHistory.interval} · Currency: {marketHistory.currency ?? selectedInstrument.currency} · Session: {marketHistory.session_state} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Retrieved: {marketHistory.fetched_at ? new Date(marketHistory.fetched_at).toLocaleString() : 'not recorded'} · Latest bar: {marketHistory.as_of ? new Date(marketHistory.as_of).toLocaleString() : marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'} · {marketHistory.is_cached ? 'Cached' : 'Provider response'} · Sync: {marketHistory.sync_status.replaceAll('_', ' ')}</p>
+                  {marketHistory.fallback_reason && <p className="market-provenance">Fallback reason: {marketHistory.fallback_reason.replaceAll('_', ' ')}.</p>}
+                  {marketHistory.provider_attempts.length > 0 && <p className="market-provenance">Provider attempts: {marketHistory.provider_attempts.map((attempt) => `${attempt.provider}: ${attempt.outcome.replaceAll('_', ' ')}${attempt.reason_category ? ` [${attempt.reason_category.replaceAll('_', ' ')}]` : attempt.reason ? ` (${attempt.reason.replaceAll('_', ' ')})` : ''}${attempt.latency_ms !== null && attempt.latency_ms !== undefined ? `, ${Math.round(attempt.latency_ms)} ms` : ''}${attempt.bars ? `, ${attempt.bars} bars` : ''}`).join(' · ')}</p>}
                   {marketHistory.bars.length === 0 ? <div className="table-empty">No bars are available for that date range.</div> : <>
-                    <CandleChart bars={marketHistory.bars} currency={selectedInstrument.currency} interval={marketInterval} />
-                    <div className="table-scroll"><table><thead><tr><th>{marketInterval === '1d' ? 'Session date' : 'Timestamp (UTC)'}</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody>{marketHistory.bars.map((bar) => {
+                    <CandleChart bars={marketHistory.bars} currency={selectedInstrument.currency} interval={marketInterval} preferredSource={marketIndicators?.source} indicatorSeries={marketIndicators?.indicator_series} indicatorBarsAvailable={marketIndicators?.bars_available} onLoadOlder={loadOlderMarketHistory} loadingOlder={loadingOlderMarketHistory} hasOlder={hasOlderMarketHistory} />
+                    <details className="historical-bars-details"><summary>View stored OHLCV rows ({marketHistory.bars.length})</summary><div className="table-scroll"><table><thead><tr><th>{marketInterval === '1d' ? 'Session date' : 'Timestamp (UTC)'}</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody>{marketHistory.bars.map((bar) => {
                       const verified = selectedInstrument.provider_identifiers.find((mapping) => mapping.provider === bar.source)?.is_verified === true;
                       const displayedTimestamp = marketInterval === '1d'
                         ? new Date(bar.timestamp).toISOString().slice(0, 10)
                         : new Date(bar.timestamp).toISOString().replace('T', ' ').replace('.000Z', 'Z');
                       return <tr key={`${bar.timestamp}-${bar.source}`}><td>{displayedTimestamp}</td><td>{Number(bar.open).toFixed(2)}</td><td>{Number(bar.high).toFixed(2)}</td><td>{Number(bar.low).toFixed(2)}</td><td>{Number(bar.close).toFixed(2)}</td><td>{bar.volume}</td><td>{bar.is_synthetic ? 'Synthetic · ' : ''}{bar.is_synthetic || !verified ? 'Unverified · ' : 'Verified · '}{bar.source}</td></tr>;
-                    })}</tbody></table></div>
+                    })}</tbody></table></div></details>
                   </>}
                 </section>}
               </section>

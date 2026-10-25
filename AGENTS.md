@@ -14,6 +14,7 @@ unintended risk is being carried. It never trades.
   is synthetic, stale, unavailable, or in a currency different from the portfolio. Never convert FX.
 - Decimal for all money/quantity math, matching existing ledger rounding.
 - Migrations: additive only, single head, next sequential number. Never drop a populated column.
+- Alembic revision IDs must be <= 32 characters, format `NNNN_short_slug`.
 - Every model module must be imported in app/models/__init__.py so SQLAlchemy metadata is
   complete. After any migration, `alembic check` must report no pending changes.
 - Every route: authenticated + email-verified; CSRF on mutations; owner-scoped queries.
@@ -29,6 +30,7 @@ unintended risk is being carried. It never trades.
   Do not silently write a substitute implementation.
 - Do not read the whole repo. Follow imports only as far as needed.
 - Run only the test file named in the prompt. Do not run the full suite unless asked.
+- Lint must pass before any task is reported complete, and include lint output in the report.
 - Run `npm run build` once, at the end of the milestone, not after each edit.
 - Do not update README.md unless the prompt says so. Append one line to CHANGELOG.md instead.
 - Do not paste full file contents or long diffs in your reply. Summarize in under 10 lines.

@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from app.api.auth import get_active_session, require_csrf
 from app.api.portfolio_transactions import calculate_portfolio_ledger, get_owned_portfolio
-from app.config import settings
 from app.db import get_db
 from app.models import (
     Instrument,
@@ -21,6 +20,7 @@ from app.models import (
     PositionThesisRevision,
     UserSession,
 )
+from app.services.price_freshness import classify_quote
 
 router = APIRouter(prefix="/portfolios/{portfolio_id}/theses", tags=["position theses"])
 
@@ -347,24 +347,30 @@ def _market(
             note="No cached quote is available; distances are not shown.",
         )
     now = datetime.now(timezone.utc)
-    age = max(
-        (now - _utc(quote.retrieved_at)).total_seconds(),
-        (now - _utc(quote.timestamp)).total_seconds(),
+    usable, reason, _evidence = classify_quote(
+        quote, instrument, portfolio_currency, now
     )
-    fresh = 0 <= age <= settings.market_data_quote_freshness_seconds
-    if quote.is_synthetic:
-        note = "Synthetic demo price; do not act on these distances."
-    elif not fresh:
-        note = "Price is stale; do not act on these distances."
+    if reason == "synthetic_price":
+        note = "Synthetic demo price; distances are not shown."
+    elif reason == "historical_close_not_current":
+        note = "Daily close is historical; distances are not shown."
+    elif reason == "unverified_provider_mapping":
+        note = "Provider instrument mapping is unverified; distances are not shown."
+    elif reason == "future_dated_price":
+        note = "Provider timestamp is in the future; distances are not shown."
+    elif reason == "market_timestamp_unavailable":
+        note = "Market timestamp is unavailable; distances are not shown."
+    elif not usable:
+        note = "Price is stale or otherwise unusable; distances are not shown."
     else:
-        note = "Cached price within the freshness window."
+        note = "Verified provider quote is within the freshness window."
     return ThesisMarket(
-        last_price=quote.close,
-        freshness="fresh" if fresh else "stale",
+        last_price=quote.close if usable else None,
+        freshness="fresh" if usable else "stale",
         is_synthetic=quote.is_synthetic,
         source=quote.source,
         retrieved_at=_utc(quote.retrieved_at),
-        actionable=fresh and not quote.is_synthetic,
+        actionable=usable,
         note=note,
     )
 

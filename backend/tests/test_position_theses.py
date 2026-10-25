@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -9,9 +10,19 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.api.market_data import get_market_data_provider
+from app.api.position_theses import _market
 from app.db import Base, get_db
 from app.main import app
-from app.models import Instrument, MarketQuote, PositionThesis, PositionThesisRevision, User
+from app.models import (
+    Instrument,
+    InstrumentProviderIdentifier,
+    MarketQuote,
+    PositionThesis,
+    PositionThesisRevision,
+    User,
+)
+from market_data_fixtures import RecordedMarketDataProvider
 
 
 @pytest.fixture
@@ -32,6 +43,7 @@ def client(test_engine) -> Iterator[TestClient]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_market_data_provider] = RecordedMarketDataProvider
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -109,11 +121,19 @@ def url(portfolio: dict, suffix: str = "") -> str:
 def add_quote(test_engine, instrument_id: str, *, synthetic: bool, age_hours: float = 0) -> None:
     moment = datetime.now(timezone.utc) - timedelta(hours=age_hours)
     with Session(test_engine) as db:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.instrument_id == UUID(instrument_id),
+                InstrumentProviderIdentifier.provider == "recorded",
+            )
+        )
+        if mapping is not None:
+            mapping.is_verified = True
         db.add(
             MarketQuote(
                 instrument_id=UUID(instrument_id), timestamp=moment, open=Decimal("100"),
                 high=Decimal("100"), low=Decimal("100"), close=Decimal("100"),
-                volume=Decimal("1"), source="test", retrieved_at=moment, is_synthetic=synthetic,
+                volume=Decimal("1"), source="recorded", retrieved_at=moment, is_synthetic=synthetic,
             )
         )
         db.commit()
@@ -136,16 +156,23 @@ def test_create_returns_distances_and_flags(client, test_engine) -> None:
 def test_synthetic_and_stale_prices_are_not_actionable(client, test_engine) -> None:
     register(client, test_engine, "a@example.com")
     portfolio, instrument = create_holding(client)
-    add_quote(test_engine, instrument["id"], synthetic=True)
+    synthetic_market = _market(
+        SimpleNamespace(
+            timestamp=datetime.now(timezone.utc),
+            retrieved_at=datetime.now(timezone.utc),
+            source="recorded",
+            close=Decimal("100"),
+            is_synthetic=True,
+        ),
+        SimpleNamespace(currency="USD", provider_identifiers=[]),
+        "USD",
+    )
+    assert synthetic_market.is_synthetic is True
+    assert synthetic_market.actionable is False
+    assert "Synthetic" in synthetic_market.note
+
+    add_quote(test_engine, instrument["id"], synthetic=False, age_hours=72)
     thesis = client.post(url(portfolio), headers=csrf(client), json=thesis_body(instrument)).json()
-    assert thesis["market"]["is_synthetic"] is True
-    assert thesis["market"]["actionable"] is False
-    assert "Synthetic" in thesis["market"]["note"]
-    with Session(test_engine) as db:
-        quote = db.scalar(select(MarketQuote))
-        quote.is_synthetic = False
-        quote.timestamp = quote.retrieved_at = datetime.now(timezone.utc) - timedelta(days=3)
-        db.commit()
     stale = client.get(url(portfolio, f"/{thesis['id']}")).json()
     assert stale["market"]["freshness"] == "stale"
     assert stale["market"]["actionable"] is False
@@ -158,6 +185,32 @@ def test_unavailable_price_hides_distances(client, test_engine) -> None:
     assert thesis["market"]["freshness"] == "unavailable"
     assert thesis["stop_distance_pct"] is None
     assert all(t["distance_pct"] is None for t in thesis["target_levels"])
+
+
+def test_unverified_mapping_hides_thesis_distances(client, test_engine) -> None:
+    register(client, test_engine, "unverified-thesis@example.com")
+    portfolio, instrument = create_holding(client)
+    add_quote(test_engine, instrument["id"], synthetic=False)
+    with Session(test_engine) as db:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.instrument_id == UUID(instrument["id"]),
+                InstrumentProviderIdentifier.provider == "recorded",
+            )
+        )
+        assert mapping is not None
+        mapping.is_verified = False
+        db.commit()
+
+    response = client.post(url(portfolio), headers=csrf(client), json=thesis_body(instrument))
+
+    assert response.status_code == 201, response.text
+    thesis = response.json()
+    assert thesis["market"]["freshness"] == "stale"
+    assert thesis["market"]["actionable"] is False
+    assert thesis["market"]["last_price"] is None
+    assert thesis["stop_distance_pct"] is None
+    assert all(level["distance_pct"] is None for level in thesis["target_levels"])
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,11 @@
+import asyncio
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import json
 from pathlib import Path
 from datetime import datetime, timezone
+import struct
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
@@ -17,6 +20,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api import brokers
+from app import broker_adapters
 from app.broker_adapters import BrokerAdapterError, DhanAdapter, UpstoxAdapter
 from app.config import settings
 from app.db import Base, get_db
@@ -204,9 +208,16 @@ def test_dhan_sync_http_failure_logs_endpoint_and_sanitized_provider_error(
         json={},
     )
 
-    assert response.status_code == 502
-    assert response.json()["detail"]["message"] == "Broker account sync failed."
-    assert requested_paths[successful_calls] == failing_path
+    if failing_path == "/v2/holdings":
+        assert response.status_code == 401
+        assert response.json()["detail"]["sync_status"] == "failed"
+        assert requested_paths == [failing_path]
+    else:
+        assert response.status_code == 200
+        assert response.json()["sync_status"] == "partial"
+        assert response.json()["authentication_status"] == "expired"
+        assert response.json()["endpoint_results"]["positions"]["reason"] == "authentication_expired"
+        assert requested_paths[successful_calls] == failing_path
     diagnostic = caplog.text
     assert f"stage={expected_stage}" in diagnostic
     assert f"endpoint={failing_path}" in diagnostic
@@ -239,6 +250,7 @@ def test_dhan_sync_normalization_failures_have_distinct_safe_diagnostics(
     ))
     monkeypatch.setattr(DhanAdapter, "get_positions", lambda *_args: (
         [{"tradingsymbol": "POSITION_VALUE_SENTINEL", "netQty": "not-a-number"}]
+        if kind == "position" else []
     ))
     caplog.set_level("WARNING", logger="app.api.brokers")
 
@@ -248,7 +260,11 @@ def test_dhan_sync_normalization_failures_have_distinct_safe_diagnostics(
         json={},
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 200
+    assert response.json()["sync_status"] == "partial"
+    assert response.json()["authentication_status"] == "connected"
+    failed_endpoint = "holdings" if kind == "holding" else "positions"
+    assert response.json()["endpoint_results"][failed_endpoint]["status"] == "failed"
     assert expected_stage in caplog.text
     assert "error_class=BrokerAdapterError" in caplog.text
     assert "could not be normalized" in caplog.text
@@ -256,6 +272,434 @@ def test_dhan_sync_normalization_failures_have_distinct_safe_diagnostics(
     assert "POSITION_VALUE_SENTINEL" not in caplog.text
     assert "DIAGNOSTIC_ACCESS_TOKEN_SENTINEL" not in caplog.text
     assert "DIAGNOSTIC_CLIENT_ID_SENTINEL" not in caplog.text
+
+
+def test_dhan_empty_holdings_provider_error_is_normalized_to_empty_list(monkeypatch) -> None:
+    def mocked_request(method, url, **kwargs):
+        if httpx.URL(url).path == "/v2/holdings":
+            return httpx.Response(
+                500,
+                json={
+                    "errorCode": "DH-1111",
+                    "errorMessage": "No holdings found",
+                },
+                request=httpx.Request(method, url),
+            )
+        return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "request", mocked_request)
+
+    assert DhanAdapter().get_holdings("access-token", {"client_id": "client"}) == []
+
+
+def test_dhan_sync_accepts_empty_holdings_without_disconnecting(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    prepare_dhan_sync(first, test_engine, encryption_key, monkeypatch)
+
+    def mocked_request(method, url, **kwargs):
+        if httpx.URL(url).path == "/v2/holdings":
+            return httpx.Response(
+                500,
+                json={
+                    "errorCode": "DH-1111",
+                    "errorMessage": "No holdings found",
+                },
+                request=httpx.Request(method, url),
+            )
+        return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "request", mocked_request)
+
+    response = first.post(
+        "/api/v1/brokers/dhan/sync",
+        headers=csrf(first),
+        json={},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["sync_status"] == "successful"
+    assert response.json()["authentication_status"] == "connected"
+    assert response.json()["holdings_count"] == 0
+    assert response.json()["endpoint_results"] == {
+        "holdings": {"status": "succeeded"},
+        "positions": {"status": "succeeded"},
+    }
+
+
+def test_dhan_holdings_only_normalizes_the_documented_empty_case(monkeypatch) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "request",
+        lambda method, url, **kwargs: httpx.Response(
+            500,
+            json={"errorCode": "DH-1111", "errorMessage": "Other provider failure"},
+            request=httpx.Request(method, url),
+        ),
+    )
+
+    with pytest.raises(BrokerAdapterError):
+        DhanAdapter().get_holdings("access-token", {"client_id": "client"})
+
+
+def test_dhan_quote_parser_returns_exchange_timestamp_and_decimal_values(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def mocked_request(method, url, **kwargs):
+        captured.update(method=method, url=url, **kwargs)
+        return httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    "NSE_EQ": {
+                        "11536": {
+                            "last_price": 3900.25,
+                            "last_trade_time": "15/04/2025 10:30:00",
+                            "volume": 1200,
+                            "ohlc": {
+                                "open": 3890,
+                                "high": 3910,
+                                "low": 3880,
+                            },
+                        }
+                    }
+                },
+            },
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(httpx, "request", mocked_request)
+    quote = DhanAdapter().get_market_quote(
+        "access-token", {"client_id": "client"}, "NSE_EQ", "11536"
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.dhan.co/v2/marketfeed/quote"
+    assert captured["json"] == {"NSE_EQ": [11536]}
+    assert quote.close == Decimal("3900.25")
+    assert quote.timestamp == datetime(2025, 4, 15, 5, 0, tzinfo=timezone.utc)
+
+
+def test_dhan_historical_data_requests_one_minute_candles_and_converts_epoch(
+    monkeypatch,
+) -> None:
+    start = datetime(2026, 10, 25, 3, 45, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 25, 4, 0, tzinfo=timezone.utc)
+    epoch = int(datetime(2026, 10, 25, 3, 46, tzinfo=timezone.utc).timestamp())
+    captured: dict[str, object] = {}
+
+    def mocked_request(method, url, **kwargs):
+        captured.update(method=method, url=url, **kwargs)
+        return httpx.Response(
+            200,
+            json={
+                "open": [100],
+                "high": [102],
+                "low": [99],
+                "close": [101],
+                "volume": [1000],
+                "timestamp": [epoch],
+            },
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(httpx, "request", mocked_request)
+    bars = DhanAdapter().get_historical_bars(
+        "token",
+        {"client_id": "client"},
+        "NSE_EQ",
+        "2885",
+        "1m",
+        start,
+        end,
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.dhan.co/v2/charts/intraday"
+    assert captured["json"]["interval"] == "1"
+    assert captured["json"]["fromDate"] == "2026-10-25 09:15:00"
+    assert captured["json"]["toDate"] == "2026-10-25 09:30:00"
+    assert len(bars) == 1
+    assert bars[0].timestamp == datetime(2026, 10, 25, 3, 46, tzinfo=timezone.utc)
+
+
+def test_dhan_historical_response_rejects_misaligned_arrays(monkeypatch) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "request",
+        lambda method, url, **kwargs: httpx.Response(
+            200,
+            json={
+                "open": [100],
+                "high": [],
+                "low": [99],
+                "close": [101],
+                "volume": [1000],
+                "timestamp": [1],
+            },
+            request=httpx.Request(method, url),
+        ),
+    )
+
+    with pytest.raises(BrokerAdapterError, match="arrays do not align"):
+        DhanAdapter().get_historical_bars(
+            "token",
+            {"client_id": "client"},
+            "NSE_EQ",
+            "2885",
+            "1m",
+            datetime(1970, 1, 1, tzinfo=timezone.utc),
+            datetime(1970, 1, 2, tzinfo=timezone.utc),
+        )
+
+
+def test_dhan_historical_response_accepts_empty_aligned_arrays(monkeypatch) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "request",
+        lambda method, url, **kwargs: httpx.Response(
+            200,
+            json={
+                "open": [],
+                "high": [],
+                "low": [],
+                "close": [],
+                "volume": [],
+                "timestamp": [],
+            },
+            request=httpx.Request(method, url),
+        ),
+    )
+
+    bars = DhanAdapter().get_historical_bars(
+        "token",
+        {"client_id": "client"},
+        "NSE_EQ",
+        "2885",
+        "1d",
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+
+    assert bars == []
+
+
+def _dhan_quote_packet() -> bytes:
+    packet = bytearray(50)
+    packet[0] = 4
+    packet[1:3] = (50).to_bytes(2, "little")
+    packet[3] = 1
+    packet[4:8] = (11536).to_bytes(4, "little", signed=True)
+    struct.pack_into("<f", packet, 8, 3900.25)
+    struct.pack_into("<i", packet, 14, int(datetime(2025, 4, 15, 5, tzinfo=timezone.utc).timestamp()))
+    struct.pack_into("<i", packet, 22, 1200)
+    struct.pack_into("<f", packet, 34, 3890)
+    struct.pack_into("<f", packet, 42, 3910)
+    struct.pack_into("<f", packet, 46, 3880)
+    return bytes(packet)
+
+
+def _dhan_disconnect_packet() -> bytes:
+    packet = bytearray(8)
+    packet[0] = 50
+    packet[1:3] = (8).to_bytes(2, "little")
+    packet[3] = 1
+    packet[4:8] = (11536).to_bytes(4, "little", signed=True)
+    return bytes(packet)
+
+
+def test_dhan_websocket_quote_packet_uses_documented_little_endian_fields() -> None:
+    quote = DhanAdapter.decode_market_feed_packet(
+        _dhan_quote_packet(), "NSE_EQ", "11536"
+    )
+
+    assert quote is not None
+    assert quote.timestamp == datetime(2025, 4, 15, 5, tzinfo=timezone.utc)
+    assert quote.open == Decimal("3890.0")
+    assert quote.high == Decimal("3910.0")
+    assert quote.low == Decimal("3880.0")
+    assert quote.close == Decimal("3900.25")
+    assert quote.volume == Decimal("1200")
+
+
+def test_dhan_websocket_resubscribe_after_disconnect(monkeypatch) -> None:
+    class FakeConnection:
+        def __init__(self, messages: list[bytes]):
+            self.messages = messages
+            self.subscriptions: list[dict[str, object]] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send(self, message: str) -> None:
+            self.subscriptions.append(json.loads(message))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.messages:
+                raise StopAsyncIteration
+            return self.messages.pop(0)
+
+    connections = [
+        FakeConnection([_dhan_disconnect_packet()]),
+        FakeConnection([_dhan_quote_packet()]),
+    ]
+    connection_iterator = iter(connections)
+    monkeypatch.setattr(
+        broker_adapters,
+        "websocket_connect",
+        lambda *_args, **_kwargs: next(connection_iterator),
+    )
+    statuses: list[str] = []
+
+    async def capture_status(status: str) -> None:
+        statuses.append(status)
+
+    async def verify_stream() -> None:
+        stream = DhanAdapter().stream_market_quotes(
+            "access-token",
+            {"client_id": "client"},
+            "NSE_EQ",
+            "11536",
+            capture_status,
+        )
+        assert await anext(stream) is not None
+        await stream.aclose()
+
+    asyncio.run(verify_stream())
+
+    assert statuses == ["active", "reconnecting", "active"]
+    assert [connection.subscriptions for connection in connections] == [
+        [{
+            "RequestCode": 17,
+            "InstrumentCount": 1,
+            "InstrumentList": [{"ExchangeSegment": "NSE_EQ", "SecurityId": "11536"}],
+        }]
+    ] * 2
+
+
+def test_dhan_instrument_master_mapping_requires_one_verified_equity(monkeypatch) -> None:
+    monkeypatch.setattr(DhanAdapter, "_equity_index_cache", None)
+    monkeypatch.setattr(DhanAdapter, "_scrip_master_cache", None)
+    row = {
+        "EXCH_ID": "NSE",
+        "SEGMENT": "E",
+        "SECURITY_ID": "11536",
+        "SYMBOL_NAME": "TCS",
+        "INSTRUMENT": "EQUITY",
+        "SERIES": "EQ",
+    }
+    monkeypatch.setattr(DhanAdapter, "_scrip_master", classmethod(lambda _cls: [row]))
+    adapter = DhanAdapter()
+
+    assert adapter.find_verified_equity_mapping("TCS", "NSE") == ("11536", "NSE_EQ")
+    assert adapter.find_verified_equity_mapping("UNKNOWN", "NSE") is None
+    monkeypatch.setattr(
+        DhanAdapter, "_scrip_master", classmethod(lambda _cls: [row, dict(row, SECURITY_ID="11537")])
+    )
+    assert adapter.find_verified_equity_mapping("TCS", "NSE") is None
+
+
+def test_dhan_instrument_master_matches_reliance_underlying_symbol(monkeypatch) -> None:
+    row = {
+        "EXCH_ID": "NSE",
+        "SEGMENT": "E",
+        "SECURITY_ID": "2885",
+        "SYMBOL_NAME": "RELIANCE INDUSTRIES LTD",
+        "UNDERLYING_SYMBOL": "RELIANCE",
+        "INSTRUMENT": "EQUITY",
+        "SERIES": "EQ",
+    }
+    monkeypatch.setattr(DhanAdapter, "_scrip_master", classmethod(lambda _cls: [row]))
+
+    assert DhanAdapter().find_verified_equity_mapping("RELIANCE", "NSE") == (
+        "2885",
+        "NSE_EQ",
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": False, "data": []},
+        {"status": True, "data": None},
+        {"status": True, "errorCode": "DH-901", "data": []},
+        {"status": True, "error_code": "DH-901", "data": []},
+    ],
+)
+def test_dhan_success_http_error_payloads_are_rejected(payload) -> None:
+    with pytest.raises(BrokerAdapterError) as error:
+        broker_adapters._unwrap(payload)
+    assert error.value.category == "provider_response_error"
+
+
+def test_dhan_equity_index_does_not_readd_ambiguous_symbols(monkeypatch) -> None:
+    monkeypatch.setattr(DhanAdapter, "_equity_index_cache", None)
+    rows = [
+        {
+            "EXCH_ID": "NSE",
+            "SEGMENT": "E",
+            "SECURITY_ID": security_id,
+            "SYMBOL_NAME": "ALPHA",
+            "INSTRUMENT": "EQUITY",
+            "SERIES": "EQ",
+        }
+        for security_id in ("100", "101", "102")
+    ]
+    monkeypatch.setattr(DhanAdapter, "_scrip_master", classmethod(lambda _cls: rows))
+
+    assert DhanAdapter().find_verified_equity_mapping("ALPHA", "NSE") is None
+
+
+def test_dhan_streams_large_instrument_master_and_maps_multiple_nse_equities(
+    monkeypatch,
+) -> None:
+    class LargeLength:
+        def __len__(self):
+            return 33_000_001
+
+    class StreamingResponse:
+        content = LargeLength()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            return iter([
+                "EXCH_ID,SEGMENT,SECURITY_ID,SYMBOL_NAME,INSTRUMENT,SERIES,UNDERLYING_SYMBOL",
+                "NSE,E,2885,RELIANCE INDUSTRIES LTD,EQUITY,EQ,RELIANCE",
+                "NSE,E,11536,TCS LTD,EQUITY,EQ,TCS",
+                "NSE,E,999999,RELIANCE FUT,FUTIDX,XX,RELIANCE",
+            ])
+
+    monkeypatch.setattr(DhanAdapter, "_scrip_master_cache", None)
+    monkeypatch.setattr(
+        httpx,
+        "stream",
+        lambda method, url, **kwargs: StreamingResponse(),
+    )
+
+    assert DhanAdapter().find_verified_equity_mapping("RELIANCE", "NSE") == (
+        "2885",
+        "NSE_EQ",
+    )
+    assert DhanAdapter().find_verified_equity_mapping("TCS", "XNSE") == (
+        "11536",
+        "NSE_EQ",
+    )
 
 
 def test_dhan_sync_persistence_failure_logs_class_without_database_values(

@@ -10,13 +10,14 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr | None = None
     resend_from_email: str = ""
     email_verification_url: str = "http://localhost:5173/"
-    market_data_providers: str = "delta_exchange,binance,yfinance,upstox"
+    market_data_providers: str = "angel_one,dhan,twelve_data,finnhub,delta_exchange,binance,yfinance,upstox"
     twelve_data_api_key: SecretStr | None = None
     finnhub_api_key: SecretStr | None = None
     market_data_quote_freshness_seconds: int = 60
+    market_data_clock_skew_tolerance_seconds: int = Field(default=30, ge=0)
     market_data_daily_freshness_seconds: int = 172800
     market_data_intraday_freshness_seconds: int = 3600
-    price_usable_max_age_seconds: int = Field(default=900, gt=0)
+    price_usable_max_age_seconds: int = Field(default=60, gt=0)
     daily_close_price_max_age_seconds: int = Field(default=172800, gt=0)
     indicator_lookback_bars: int = Field(default=500, gt=0)
     market_data_refresh_seconds: int = Field(default=300, gt=0)
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     dhan_api_key: SecretStr | None = None
     dhan_api_secret: SecretStr | None = None
     dhan_redirect_uri: str | None = None
+    angel_one_api_key: SecretStr | None = None
+    angel_one_client_public_ip: str = ""
+    angel_one_client_local_ip: str = "127.0.0.1"
+    angel_one_client_mac_address: str = "00:00:00:00:00:00"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

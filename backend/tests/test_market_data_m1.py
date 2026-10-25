@@ -190,8 +190,10 @@ def test_partial_daily_cache_backfills_uncovered_ranges(client: TestClient, test
 
     assert response.status_code == 200, response.text
     assert len(provider.ranges) >= 2
-    assert provider.ranges[0][0] == start
-    assert provider.ranges[-1][1] == end
+    assert provider.ranges[0][0] == start.replace(hour=0, minute=0, second=0, microsecond=0)
+    assert provider.ranges[-1][1] == end.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ) + timedelta(days=1)
     assert len(response.json()["bars"]) > 2
     assert all(not bar["is_synthetic"] for bar in response.json()["bars"])
 

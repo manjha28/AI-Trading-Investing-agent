@@ -72,8 +72,12 @@ type WatchlistEntry = {
     source: string;
     retrieved_at: string;
     freshness: 'fresh' | 'stale';
+    freshness_status: 'fresh' | 'stale' | 'historical' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
     is_synthetic: boolean;
     is_verified: boolean;
+    market_timestamp: string;
+    market_age_seconds: number;
+    data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
     close: string;
   } | null;
 };
@@ -187,9 +191,27 @@ type MarketBar = {
   retrieved_at: string;
   is_synthetic: boolean;
 };
+type MarketInterval = '1d' | '1h' | '15m' | '5m' | '1m';
 type MarketHistory = {
   instrument_id: string;
   interval: string;
+  provider_attempts: {
+    provider: string;
+    outcome: 'used' | 'unavailable' | 'unsupported' | 'stale' | 'skipped' | 'rate_limited' | 'no_new_bars' | 'config_blocker';
+    reason: string | null;
+    reason_category: string | null;
+    http_status: number | null;
+    latency_ms: number | null;
+    bars: number;
+  }[];
+  fallback_reason: string | null;
+  provider: string | null;
+  fetched_at: string | null;
+  as_of: string | null;
+  currency: string | null;
+  session_state: 'open' | 'closed' | 'unknown';
+  is_cached: boolean;
+  sync_status: 'success' | 'unavailable' | 'no_new_bars';
   freshness: {
     status: 'fresh' | 'stale' | 'unavailable' | 'never_fetched';
     source: string | null;
@@ -222,6 +244,7 @@ type InstrumentIndicators = {
   latest_bar: string | null;
   bars_available: number;
   indicators: Record<string, IndicatorValue>;
+  indicator_series: Record<string, { timestamp: string; value: string }[]>;
   disclaimer: string;
 };
 
@@ -274,10 +297,36 @@ type MarketQuote = {
   source: string;
   retrieved_at: string;
   freshness: 'fresh' | 'stale';
+  freshness_status: 'fresh' | 'stale' | 'historical' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
   freshness_message: string;
   is_cached: boolean;
   is_synthetic: boolean;
   is_verified: boolean;
+  provider_configured: boolean;
+  provider_request_status: 'succeeded' | 'not_attempted' | 'failed';
+  provider_attempts: {
+    provider: string;
+    outcome: 'used' | 'unavailable' | 'unsupported' | 'stale' | 'skipped' | 'rate_limited' | 'no_new_bars' | 'config_blocker';
+    reason: string | null;
+    reason_category: string | null;
+    http_status: number | null;
+    latency_ms: number | null;
+    bars: number;
+  }[];
+  fallback_reason: string | null;
+  provider_connection_status: 'not_applicable_rest' | 'connected' | 'reconnecting' | 'disconnected' | 'unavailable';
+  feed_active: boolean;
+  market_timestamp: string;
+  market_age_seconds: number;
+  data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
+  delivery_mode: 'on_demand_rest' | 'rest_snapshot' | 'websocket_tick';
+  stream_status: 'not_configured' | 'active' | 'reconnecting' | 'stale' | 'unavailable';
+  provider_delay_seconds: null;
+  provider: string | null;
+  fetched_at: string | null;
+  as_of: string | null;
+  interval: string;
+  session_state: 'open' | 'closed' | 'unknown';
   bar: {
     timestamp: string;
     open: string;
@@ -373,6 +422,16 @@ export function useWorkspace() {
   const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research'>(
     () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
   );
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('broker_connected')) return;
+    url.searchParams.delete('broker_connected');
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, []);
   const [transactionType, setTransactionType] = useState<TransactionType>('deposit');
   const [journalTrades, setJournalTrades] = useState<JournalTrade[]>([]);
   const [journalAnalytics, setJournalAnalytics] = useState<JournalAnalytics | null>(null);
@@ -382,9 +441,12 @@ export function useWorkspace() {
   const [marketInstruments, setMarketInstruments] = useState<MarketInstrument[]>([]);
   const [selectedInstrument, setSelectedInstrument] = useState<MarketInstrument | null>(null);
   const [marketHistory, setMarketHistory] = useState<MarketHistory | null>(null);
+  const [loadingOlderMarketHistory, setLoadingOlderMarketHistory] = useState(false);
+  const [hasOlderMarketHistory, setHasOlderMarketHistory] = useState(true);
+  const olderHistoryRequest = useRef(false);
   const [marketIndicators, setMarketIndicators] = useState<InstrumentIndicators | null>(null);
   const [marketQuote, setMarketQuote] = useState<MarketQuote | null>(null);
-  const [marketInterval, setMarketInterval] = useState<'1d' | '1h' | '15m'>('1d');
+  const [marketInterval, setMarketInterval] = useState<MarketInterval>('1d');
   const [marketStart, setMarketStart] = useState(
     isoDateInput(new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)),
   );
@@ -899,6 +961,7 @@ export function useWorkspace() {
   async function selectMarketInstrument(instrument: MarketInstrument) {
     setError('');
     setMarketHistory(null);
+    setHasOlderMarketHistory(true);
     setMarketIndicators(null);
     setMarketQuote(null);
     try {
@@ -912,7 +975,7 @@ export function useWorkspace() {
       setSelectedInstrument(details);
       setMarketHistory(history);
       void loadMarketQuote(details);
-      void loadInstrumentIndicators(details, marketInterval);
+      void loadInstrumentIndicators(details, marketInterval, history.provider);
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -921,11 +984,13 @@ export function useWorkspace() {
   async function loadInstrumentIndicators(
     instrument: MarketInstrument,
     interval = marketInterval,
+    source?: string | null,
   ) {
     setMarketIndicators(null);
     setLoadingMarketIndicators(true);
     try {
       const query = new URLSearchParams({ interval });
+      if (source) query.set('source', source);
       const indicators = await apiRequest<InstrumentIndicators>(
         `/instruments/${instrument.id}/indicators?${query}`,
       );
@@ -1026,6 +1091,7 @@ export function useWorkspace() {
     if (!selectedInstrument || !marketStart || !marketEnd) return;
     setError('');
     setMarketHistory(null);
+    setHasOlderMarketHistory(true);
     setLoadingMarketHistory(true);
     try {
       const params = marketRangeParams(marketInterval, marketStart, marketEnd);
@@ -1034,6 +1100,7 @@ export function useWorkspace() {
         { method: 'POST' },
       );
       setMarketHistory(history);
+      await loadInstrumentIndicators(selectedInstrument, marketInterval, history.provider);
     } catch (requestError) {
       setError((requestError as Error).message);
       if (selectedInstrument) {
@@ -1043,12 +1110,61 @@ export function useWorkspace() {
             `/market-data/instruments/${selectedInstrument.id}/history?${params}`,
           );
           setMarketHistory(history);
+          await loadInstrumentIndicators(selectedInstrument, marketInterval, history.provider);
         } catch (historyError) {
           setError(`${(requestError as Error).message}; saved history unavailable: ${(historyError as Error).message}`);
         }
       }
     } finally {
       setLoadingMarketHistory(false);
+    }
+  }
+
+  async function loadOlderMarketHistory() {
+    if (
+      !selectedInstrument
+      || !marketHistory?.bars.length
+      || !hasOlderMarketHistory
+      || olderHistoryRequest.current
+    ) return;
+    olderHistoryRequest.current = true;
+    setLoadingOlderMarketHistory(true);
+    try {
+      const oldestTimestamp = Math.min(
+        ...marketHistory.bars.map((bar) => new Date(bar.timestamp).getTime()),
+      );
+      const end = new Date(oldestTimestamp);
+      const start = new Date(oldestTimestamp - 90 * 24 * 60 * 60 * 1000);
+      const params = new URLSearchParams({
+        interval: marketInterval,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        limit: '500',
+      });
+      const olderHistory = await apiRequest<MarketHistory>(
+        `/market-data/instruments/${selectedInstrument.id}/history/sync?${params}`,
+        { method: 'POST' },
+      );
+      const mergedBars = new Map(
+        [...marketHistory.bars, ...olderHistory.bars].map((bar) => [
+          `${bar.timestamp}-${bar.source}`,
+          bar,
+        ]),
+      );
+      const bars = [...mergedBars.values()].sort(
+        (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
+      );
+      setMarketHistory({ ...olderHistory, bars });
+      await loadInstrumentIndicators(selectedInstrument, marketInterval, olderHistory.provider);
+      const newOldestTimestamp = bars.length
+        ? new Date(bars[0].timestamp).getTime()
+        : oldestTimestamp;
+      if (newOldestTimestamp >= oldestTimestamp) setHasOlderMarketHistory(false);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      olderHistoryRequest.current = false;
+      setLoadingOlderMarketHistory(false);
     }
   }
 
@@ -1211,6 +1327,8 @@ export function useWorkspace() {
     selectedInstrument,
     setSelectedInstrument,
     marketHistory,
+    loadingOlderMarketHistory,
+    hasOlderMarketHistory,
     setMarketHistory,
     marketIndicators,
     setMarketIndicators,
@@ -1268,6 +1386,7 @@ export function useWorkspace() {
     removeInstrumentFromWatchlist,
     refreshWatchlist,
     loadMarketHistory,
+    loadOlderMarketHistory,
     signOut,
     resendVerificationEmail,
     beginTwoFactorSetup,

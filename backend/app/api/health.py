@@ -45,6 +45,8 @@ def readiness_check() -> JSONResponse:
                 "status": "not_ready",
                 "database": "available",
                 "migrations": "pending",
+                "current_revisions": sorted(current),
+                "expected_revisions": sorted(expected_migration_heads()),
             },
         )
 

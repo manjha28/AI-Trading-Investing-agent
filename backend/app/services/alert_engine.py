@@ -131,16 +131,25 @@ def _rule_match(
     result: bool = False
     if rule.rule_type == "data_stale":
         maximum = int(params["max_age_seconds"])
-        reason = (
-            "quote_unavailable"
-            if quote is None
-            else "synthetic_price"
-            if quote.is_synthetic
-            else "quote_stale"
-            if quote_age is None or quote_age > maximum or quote_age < 0
-            else None
-        )
-        return reason is not None, {**market_inputs, "max_age_seconds": maximum}, None
+        timestamp_age = quote_evidence["quote_timestamp_age_seconds"]
+        reason = quote_reason
+        if (
+            reason is None
+            and (
+                quote_age is None
+                or timestamp_age is None
+                or quote_age < 0
+                or timestamp_age < 0
+                or quote_age > maximum
+                or timestamp_age > maximum
+            )
+        ):
+            reason = "quote_stale"
+        return reason is not None, {
+            **market_inputs,
+            "max_age_seconds": maximum,
+            "quote_timestamp_age_seconds": timestamp_age,
+        }, None
 
     if rule.rule_type == "holding_period_crosses_365d":
         holding = ledger.positions.get(symbol) if ledger and symbol else None

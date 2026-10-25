@@ -60,11 +60,15 @@ def test_readiness_fails_when_migrations_behind(monkeypatch) -> None:
     response = client.get("/api/v1/ready")
 
     assert response.status_code == 503
-    assert response.json() == {
+    payload = response.json()
+    assert payload == {
         "status": "not_ready",
         "database": "available",
         "migrations": "pending",
+        "current_revisions": ["0013_app_two_factor"],
+        "expected_revisions": sorted(health.expected_migration_heads()),
     }
+    assert "0023_md_provider_settings" in payload["expected_revisions"]
     test_engine.dispose()
 
 

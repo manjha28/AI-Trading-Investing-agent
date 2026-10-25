@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -58,18 +58,26 @@ def login_verified(client: TestClient, test_engine) -> None:
         db.commit()
 
 
-def add_real_instrument(test_engine) -> UUID:
+def add_real_instrument(
+    test_engine,
+    *,
+    symbol: str = "ACME",
+    venue: str = "NYSE",
+    currency: str = "USD",
+    country: str = "US",
+    timezone_name: str = "America/New_York",
+) -> UUID:
     from uuid import uuid4
 
     instrument = Instrument(
         id=uuid4(),
-        symbol="ACME",
-        display_name="Acme Corporation",
+        symbol=symbol,
+        display_name=f"{symbol} fixture",
         asset_class="equity",
-        venue="NYSE",
-        currency="USD",
-        country="US",
-        timezone="America/New_York",
+        venue=venue,
+        currency=currency,
+        country=country,
+        timezone=timezone_name,
         multiplier=None,
         expiry=None,
         strike=None,
@@ -131,7 +139,7 @@ def provider_fixture():
     }
 
 
-def patch_provider_fixture(monkeypatch, fixture=None) -> None:
+def patch_provider_fixture(monkeypatch, fixture=None, *, fail_info: bool = False) -> None:
     fixture = fixture or provider_fixture()
 
     class RecordedTicker:
@@ -139,6 +147,8 @@ def patch_provider_fixture(monkeypatch, fixture=None) -> None:
             pass
 
         def get_info(self):
+            if fail_info:
+                raise MarketDataProviderError("provider_request_failed")
             return fixture["info"]
 
         @property
@@ -202,7 +212,118 @@ def test_provider_mapping_and_missing_fields_are_null_not_zero(
     assert row["total_assets"] is None
     assert row["total_debt"] is None
     assert row["shares_outstanding"] is None
+    assert row["return_on_equity_pct"] is None
+    assert row["debt_to_equity"] is None
     assert result.json()["snapshot"]["market_cap"] == "123456.00000000"
+
+
+def test_fundamentals_are_resolved_and_cached_per_selected_indian_equity(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    login_verified(client, test_engine)
+    instruments = {
+        symbol: add_real_instrument(
+            test_engine,
+            symbol=symbol,
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone_name="Asia/Kolkata",
+        )
+        for symbol in ("RELIANCE", "TCS", "INFY")
+    }
+    fetched_symbols: list[str] = []
+
+    def fetch(provider_symbol: str):
+        fetched_symbols.append(provider_symbol)
+        revenue = {
+            "RELIANCE.NS": Decimal("1000"),
+            "TCS.NS": Decimal("2000"),
+            "INFY.NS": Decimal("3000"),
+        }[provider_symbol]
+        return {
+            "annual": [{
+                "period_type": "annual",
+                "period_end": date(2025, 3, 31),
+                "currency": "INR",
+                "revenue": revenue,
+                "net_income": Decimal("100"),
+                "eps": Decimal("10"),
+                "operating_margin": Decimal("20"),
+                "total_assets": Decimal("500"),
+                "total_liabilities": Decimal("250"),
+                "total_equity": Decimal("250"),
+                "operating_cash_flow": Decimal("80"),
+                "free_cash_flow": Decimal("70"),
+                "total_debt": Decimal("50"),
+                "shares_outstanding": Decimal("10"),
+            }],
+            "quarterly": [],
+            "snapshot": {
+                "market_cap": revenue * 10,
+                "pe": Decimal("12"),
+                "pb": Decimal("2"),
+                "dividend_yield": None,
+                "sector": "Technology",
+                "industry": "Information Technology",
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.fundamentals.fetch_yfinance_fundamentals",
+        fetch,
+    )
+
+    for instrument_id in instruments.values():
+        synced = client.post(
+            f"/api/v1/market-data/instruments/{instrument_id}/fundamentals/sync",
+            headers=csrf(client),
+            json={},
+        )
+        assert synced.status_code == 200, synced.text
+        assert synced.json()["status"] == "available"
+
+    results = {
+        symbol: client.get(
+            f"/api/v1/market-data/instruments/{instrument_id}/fundamentals?period_type=annual"
+        ).json()
+        for symbol, instrument_id in instruments.items()
+    }
+
+    assert fetched_symbols == ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
+    assert {
+        symbol: payload["fundamentals"][0]["revenue"]
+        for symbol, payload in results.items()
+    } == {
+        "RELIANCE": "1000.00000000",
+        "TCS": "2000.00000000",
+        "INFY": "3000.00000000",
+    }
+    assert results["RELIANCE"]["fundamentals"][0]["return_on_equity_pct"] == "40.00000000"
+    assert results["RELIANCE"]["fundamentals"][0]["debt_to_equity"] == "0.20000000"
+    assert all(payload["snapshot"]["source"] == "yfinance" for payload in results.values())
+
+
+def test_snapshot_provider_failure_does_not_discard_statement_fields(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    login_verified(client, test_engine)
+    instrument = add_real_instrument(test_engine)
+    patch_provider_fixture(monkeypatch, fail_info=True)
+
+    response = client.post(
+        f"/api/v1/market-data/instruments/{instrument}/fundamentals/sync",
+        headers=csrf(client),
+        json={},
+    )
+    data = client.get(
+        f"/api/v1/market-data/instruments/{instrument}/fundamentals?period_type=annual"
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "available"
+    assert data.json()["fundamentals"][0]["revenue"] == "1000.00000000"
+    assert data.json()["snapshot"]["market_cap"] is None
 
 
 def test_stale_flag_uses_95_day_cutoff(client: TestClient, test_engine, monkeypatch) -> None:

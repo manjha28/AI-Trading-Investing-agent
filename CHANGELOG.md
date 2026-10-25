@@ -1,3 +1,8 @@
+- Market data: bound and cache Angel One master loading, use SmartAPI scrip search for routine mappings, preserve fallback/error provenance, and update yfinance for pandas 3 compatibility.
+- A4: shorten the market-data settings migration revision, restore Angel One → Dhan → Yahoo fallback reporting, and document safe Angel One setup in Codespaces.
+- A3: add per-user market-data source selection, encrypted Angel One sessions, and verified REST/WebSocket observations with explicit freshness provenance.
+- A2: stream and filter Dhan instrument data, validate provider history capabilities, recover mapping conflicts, and improve chart indicators and selected-stock fundamentals.
+- Market data: validate exchange observation timestamps and provider mappings before using current quotes; distinguish REST-only delivery from streaming and historical closes.
 - Frontend: add a collapsible dark trading-workstation shell, compact portfolio overview, and matching chart styling.
 - A1: remove runtime synthetic market data, add diagnostic real-history backfill, and expose linked-instrument coverage.
 - Research: backfill uncovered real daily history, exclude synthetic bars from real analysis, and show partial-source and unavailable-data states clearly.
@@ -12,3 +17,9 @@
 - M6.3a: correct alert price freshness, per-instrument cooldowns, indicator lookbacks, drawdown evidence, and one-time LTCG crossing alerts.
 - M6.3b: centralize quote usability freshness, align indicator lookbacks, report complete currency exposure and lot-age ranges, and guard growth from non-positive bases.
 - Journal: redesign the existing trade journal with terminal styling, API-backed KPIs and strategy results, activity calendar, sortable filtered history, and compact trade entry.
+- Dhan: handle provider-reported empty holdings, report partial account syncs without disconnecting valid authentication, and add verified REST snapshots plus binary WebSocket ticks with explicit provenance.
+- Market data: fetch verified Dhan candle history in bounded chunks, support intraday timeframes, load older candles progressively, and plot stored-bar moving averages and RSI.
+- Market data: persist typed, sanitized sync-attempt reason categories and cover sync success, fallback, and provider-failure paths.
+- Migrations: keep revision IDs within Alembic's 32-character version column limit and validate their lengths.
+- Quality gate: block backend undefined names with Ruff F821 and add route smoke coverage.
+- Market data: compute chart indicators from complete source-matched stored history, add fixed-priority provider toggles and breaker reset, and move broker connection controls off the Market Data page.

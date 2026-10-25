@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import csv
+import json
 import logging
 import re
+import struct
+import threading
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from decimal import Decimal, InvalidOperation
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
+from websockets.asyncio.client import connect as websocket_connect
+from websockets.exceptions import InvalidStatus, WebSocketException
 
 from app.config import settings
+from app.market_data import HistoricalBar
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +94,52 @@ def _log_dhan_request_failure(
 
 
 class BrokerAdapterError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "provider_request_failed",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status_code = status_code
 
 
 class BrokerReconnectRequired(BrokerAdapterError):
+    def __init__(self, message: str, *, status_code: int | None = 401) -> None:
+        super().__init__(
+            message,
+            category="authentication_expired",
+            status_code=status_code,
+        )
+
+
+class BrokerFeedDisconnected(BrokerAdapterError):
     pass
+
+
+class BrokerRateLimited(BrokerAdapterError):
+    def __init__(self, message: str, *, status_code: int | None = 429) -> None:
+        super().__init__(
+            message,
+            category="rate_limited",
+            status_code=status_code,
+        )
+
+
+_dhan_request_lock = threading.Lock()
+_dhan_next_request_at = 0.0
+
+
+def _wait_for_dhan_market_data() -> None:
+    global _dhan_next_request_at
+    with _dhan_request_lock:
+        now = time.monotonic()
+        delay = max(0.0, _dhan_next_request_at - now)
+        _dhan_next_request_at = now + delay + 1.0
+    if delay:
+        time.sleep(delay)
 
 
 def _now() -> datetime:
@@ -142,7 +193,14 @@ def _body(response: httpx.Response) -> Any:
     return payload
 
 
-def _request(method: str, url: str, *, diagnostic_stage: str | None = None, **kwargs: Any) -> Any:
+def _request(
+    method: str,
+    url: str,
+    *,
+    diagnostic_stage: str | None = None,
+    allow_empty_dhan_holdings: bool = False,
+    **kwargs: Any,
+) -> Any:
     path = urlsplit(url).path
     try:
         response = httpx.request(method, url, timeout=20.0, **kwargs)
@@ -168,6 +226,31 @@ def _request(method: str, url: str, *, diagnostic_stage: str | None = None, **kw
             description="Upstream request returned an HTTP error.",
             payload=error_payload,
         )
+        if response.status_code == 401:
+            raise BrokerReconnectRequired("Reconnect to this broker to renew the session")
+        if diagnostic_stage is not None and response.status_code == 429:
+            raise BrokerRateLimited("Dhan market-data request was rate limited")
+        provider_code, provider_message = _safe_provider_error(error_payload)
+        rate_markers = ("rate", "limit", "throttle", "too many")
+        is_rate_limited = any(
+            marker in f"{provider_code or ''} {provider_message or ''}".casefold()
+            for marker in rate_markers
+        )
+        if diagnostic_stage is not None and is_rate_limited:
+            raise BrokerRateLimited(
+                "Dhan market-data request was rate limited",
+                status_code=response.status_code,
+            )
+        if (
+            allow_empty_dhan_holdings
+            and path == "/v2/holdings"
+            and response.status_code == 500
+            and isinstance(error_payload, dict)
+            and error_payload.get("errorCode") == "DH-1111"
+            and isinstance(error_payload.get("errorMessage"), str)
+            and error_payload["errorMessage"].casefold().startswith("no holdings")
+        ):
+            return []
     try:
         return _body(response)
     except BrokerAdapterError as error:
@@ -188,7 +271,20 @@ def _unwrap(payload: Any) -> Any:
         if payload.get("success") is False or status is False or (
             isinstance(status, str) and status.casefold() in {"failure", "failed", "error"}
         ):
-            raise BrokerAdapterError("Broker rejected the account request")
+            raise BrokerAdapterError(
+                "Broker rejected the request",
+                category="provider_response_error",
+            )
+        if "errorCode" in payload or "error_code" in payload:
+            raise BrokerAdapterError(
+                "Broker returned an error payload",
+                category="provider_response_error",
+            )
+        if "data" in payload and payload["data"] is None:
+            raise BrokerAdapterError(
+                "Broker returned an empty data payload",
+                category="provider_response_error",
+            )
     if isinstance(payload, dict) and "data" in payload:
         return payload["data"]
     return payload
@@ -491,9 +587,16 @@ class AngelOneAdapter(BrokerAdapter):
 
 class DhanAdapter(BrokerAdapter):
     slug = "dhan"
+    name = "dhan"
+    is_mock = False
     display_name = "Dhan"
     api_root = "https://api.dhan.co"
     auth_root = "https://auth.dhan.co"
+    scrip_master_url = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+    _scrip_master_cache: tuple[float, list[dict[str, str]]] | None = None
+    _equity_index_cache: tuple[
+        float, dict[tuple[str, str], dict[str, str]]
+    ] | None = None
 
     @property
     def api_key(self) -> str | None:
@@ -575,7 +678,7 @@ class DhanAdapter(BrokerAdapter):
     def account_headers(self, access_token: str, tokens: Mapping[str, str]) -> dict[str, str]:
         return {
             "access-token": access_token,
-            "dhanClientId": tokens["client_id"],
+            "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
@@ -585,11 +688,14 @@ class DhanAdapter(BrokerAdapter):
         stage: str,
         access_token: str,
         tokens: Mapping[str, str],
+        *,
+        allow_empty_holdings: bool = False,
     ) -> Any:
         payload = _request(
             "GET",
             f"{self.api_root}{path}",
             diagnostic_stage=stage,
+            allow_empty_dhan_holdings=allow_empty_holdings,
             headers=self.account_headers(access_token, tokens),
         )
         try:
@@ -619,8 +725,378 @@ class DhanAdapter(BrokerAdapter):
 
     def get_holdings(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
         return self._get_dhan_account_data(
-            "/v2/holdings", "holdings_api_request", access_token, tokens
+            "/v2/holdings",
+            "holdings_api_request",
+            access_token,
+            tokens,
+            allow_empty_holdings=True,
         )
+
+    @classmethod
+    def _scrip_master(cls) -> list[dict[str, str]]:
+        now = time.monotonic()
+        if cls._scrip_master_cache and now - cls._scrip_master_cache[0] < 86400:
+            return cls._scrip_master_cache[1]
+        try:
+            with httpx.stream(
+                "GET",
+                cls.scrip_master_url,
+                timeout=20.0,
+                follow_redirects=False,
+            ) as response:
+                response.raise_for_status()
+                reader = csv.DictReader(response.iter_lines())
+                required_fields = {
+                    "EXCH_ID",
+                    "SEGMENT",
+                    "SECURITY_ID",
+                    "SYMBOL_NAME",
+                    "INSTRUMENT",
+                    "SERIES",
+                }
+                if not required_fields <= set(reader.fieldnames or ()):
+                    raise BrokerAdapterError(
+                        "Dhan instrument master has an unexpected format"
+                    )
+                records = [
+                    row
+                    for row in reader
+                    if row.get("EXCH_ID", "").upper() in {"NSE", "BSE"}
+                    and row.get("SEGMENT", "").upper() == "E"
+                    and row.get("INSTRUMENT", "").upper() == "EQUITY"
+                    and row.get("SERIES", "").upper() == "EQ"
+                    and row.get("SECURITY_ID", "").strip().isdigit()
+                ]
+        except BrokerAdapterError:
+            raise
+        except (httpx.HTTPError, UnicodeDecodeError, csv.Error) as error:
+            raise BrokerAdapterError("Dhan instrument master is unavailable") from error
+        if not records:
+            raise BrokerAdapterError("Dhan instrument master has an unexpected format")
+        cls._scrip_master_cache = (now, records)
+        cls._equity_index_cache = None
+        return records
+
+    @classmethod
+    def _equity_index(cls) -> dict[tuple[str, str], dict[str, str]]:
+        rows = cls._scrip_master()
+        master_timestamp = cls._scrip_master_cache[0] if cls._scrip_master_cache else 0
+        cached = cls._equity_index_cache
+        if cached is not None and cached[0] == master_timestamp:
+            return cached[1]
+        index: dict[tuple[str, str], dict[str, str]] = {}
+        ambiguous: set[tuple[str, str]] = set()
+        for row in rows:
+            exchange = row.get("EXCH_ID", "").upper()
+            if (
+                exchange not in {"NSE", "BSE"}
+                or row.get("SEGMENT", "").upper() != "E"
+                or row.get("INSTRUMENT", "").upper() != "EQUITY"
+                or row.get("SERIES", "").upper() != "EQ"
+            ):
+                continue
+            for raw_symbol in (
+                row.get("UNDERLYING_SYMBOL", ""),
+                row.get("SYMBOL_NAME", ""),
+            ):
+                symbol = raw_symbol.strip().upper().removesuffix("-EQ")
+                if symbol and row.get("SECURITY_ID", "").strip().isdigit():
+                    key = (exchange, symbol)
+                    if key in ambiguous:
+                        continue
+                    if key in index and index[key]["SECURITY_ID"] != row["SECURITY_ID"]:
+                        index.pop(key)
+                        ambiguous.add(key)
+                    else:
+                        index[key] = row
+        cls._equity_index_cache = (master_timestamp, index)
+        return index
+
+    def find_verified_equity_mapping(
+        self, symbol: str, venue: str
+    ) -> tuple[str, str] | None:
+        exchange = {
+            "NSE": "NSE",
+            "XNSE": "NSE",
+            "NSI": "NSE",
+            "NSE_EQ": "NSE",
+            "BSE": "BSE",
+            "XBOM": "BSE",
+            "BOM": "BSE",
+            "BSE_EQ": "BSE",
+        }.get(venue.upper())
+        if exchange is None:
+            return None
+        row = self._equity_index().get((exchange, symbol.strip().upper()))
+        if (
+            row is None
+            or row.get("SEGMENT", "").upper() != "E"
+            or row.get("INSTRUMENT", "").upper() != "EQUITY"
+            or row.get("SERIES", "").upper() != "EQ"
+        ):
+            return None
+        segment = "NSE_EQ" if exchange == "NSE" else "BSE_EQ"
+        return row["SECURITY_ID"].strip(), segment
+
+    @staticmethod
+    def _check_market_data_payload(payload: Any) -> None:
+        if not isinstance(payload, dict):
+            raise BrokerAdapterError(
+                "Dhan market-data response has an unexpected format",
+                category="invalid_provider_response",
+            )
+        status = payload.get("status")
+        if (
+            payload.get("success") is False
+            or status is False
+            or (
+                isinstance(status, str)
+                and status.casefold() in {"failure", "failed", "error"}
+            )
+            or payload.get("errorCode")
+            or payload.get("error_code")
+            or ("data" in payload and payload.get("data") is None)
+        ):
+            raise BrokerAdapterError(
+                "Dhan returned an error response",
+                category="provider_response_error",
+            )
+
+    def get_market_quote(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        exchange_segment: str,
+        security_id: str,
+    ) -> HistoricalBar:
+        _wait_for_dhan_market_data()
+        payload = _request(
+            "POST",
+            f"{self.api_root}/v2/marketfeed/quote",
+            diagnostic_stage="market_quote_api_request",
+            headers={
+                "access-token": access_token,
+                "client-id": tokens["client_id"],
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={exchange_segment: [int(security_id)]},
+        )
+        self._check_market_data_payload(payload)
+        if payload.get("status") != "success":
+            raise BrokerAdapterError(
+                "Dhan market quote response was unsuccessful",
+                category="invalid_provider_response",
+            )
+        data = payload.get("data")
+        segment_data = data.get(exchange_segment) if isinstance(data, dict) else None
+        record = segment_data.get(security_id) if isinstance(segment_data, dict) else None
+        ohlc = record.get("ohlc") if isinstance(record, dict) else None
+        if not isinstance(record, dict) or not isinstance(ohlc, dict):
+            raise BrokerAdapterError("Dhan market quote response has an unexpected format")
+        try:
+            raw_timestamp = record["last_trade_time"]
+            timestamp = datetime.strptime(
+                str(raw_timestamp), "%d/%m/%Y %H:%M:%S"
+            ).replace(tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc)
+            return HistoricalBar(
+                timestamp=timestamp,
+                open=Decimal(str(ohlc["open"])),
+                high=Decimal(str(ohlc["high"])),
+                low=Decimal(str(ohlc["low"])),
+                close=Decimal(str(record["last_price"])),
+                volume=Decimal(str(record["volume"])),
+            )
+        except (KeyError, ValueError, TypeError, InvalidOperation) as error:
+            raise BrokerAdapterError(
+                "Dhan market quote response is missing valid price or trade-time data"
+            ) from error
+
+    def get_historical_bars(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        exchange_segment: str,
+        security_id: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[HistoricalBar]:
+        if interval not in {"1d", "1m", "5m", "15m", "1h"}:
+            raise BrokerAdapterError("Dhan does not support this candle interval")
+        if start.utcoffset() is None or end.utcoffset() is None or start >= end:
+            raise BrokerAdapterError("Dhan historical request range is invalid")
+        intraday = interval != "1d"
+        if intraday and end - start > timedelta(days=90):
+            raise BrokerAdapterError(
+                "Dhan intraday history is limited to 90 days per request",
+                category="provider_window_exceeded",
+            )
+        path = "/v2/charts/intraday" if intraday else "/v2/charts/historical"
+        start_local = start.astimezone(ZoneInfo("Asia/Kolkata"))
+        end_local = end.astimezone(ZoneInfo("Asia/Kolkata"))
+        body: dict[str, Any] = {
+            "securityId": security_id,
+            "exchangeSegment": exchange_segment,
+            "instrument": "EQUITY",
+            "oi": False,
+            "fromDate": (
+                start_local.strftime("%Y-%m-%d %H:%M:%S")
+                if intraday else start_local.strftime("%Y-%m-%d")
+            ),
+            "toDate": (
+                end_local.strftime("%Y-%m-%d %H:%M:%S")
+                if intraday else end_local.strftime("%Y-%m-%d")
+            ),
+        }
+        if intraday:
+            body["interval"] = {
+                "1m": "1",
+                "5m": "5",
+                "15m": "15",
+                "1h": "60",
+            }[interval]
+        _wait_for_dhan_market_data()
+        payload = _request(
+            "POST",
+            f"{self.api_root}{path}",
+            diagnostic_stage="historical_data_api_request",
+            headers={
+                "access-token": access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+        self._check_market_data_payload(payload)
+        arrays = {
+            key: payload.get(key)
+            for key in ("open", "high", "low", "close", "volume", "timestamp")
+        }
+        if any(not isinstance(values, list) for values in arrays.values()):
+            raise BrokerAdapterError("Dhan historical response has an unexpected format")
+        lengths = {len(values) for values in arrays.values() if isinstance(values, list)}
+        if len(lengths) != 1:
+            raise BrokerAdapterError("Dhan historical response arrays do not align")
+        bars: list[HistoricalBar] = []
+        try:
+            for index in range(next(iter(lengths), 0)):
+                timestamp = datetime.fromtimestamp(
+                    float(arrays["timestamp"][index]), timezone.utc
+                )
+                bar = HistoricalBar(
+                    timestamp=timestamp,
+                    open=Decimal(str(arrays["open"][index])),
+                    high=Decimal(str(arrays["high"][index])),
+                    low=Decimal(str(arrays["low"][index])),
+                    close=Decimal(str(arrays["close"][index])),
+                    volume=Decimal(str(arrays["volume"][index])),
+                )
+                if start.astimezone(timezone.utc) <= bar.timestamp < end.astimezone(timezone.utc):
+                    bars.append(bar)
+        except (ValueError, TypeError, KeyError, IndexError, OverflowError, InvalidOperation) as error:
+            raise BrokerAdapterError("Dhan historical response contains invalid candles") from error
+        return sorted({bar.timestamp: bar for bar in bars}.values(), key=lambda bar: bar.timestamp)
+
+    @staticmethod
+    def decode_market_feed_packet(
+        packet: bytes,
+        exchange_segment: str,
+        security_id: str,
+    ) -> HistoricalBar | None:
+        segment_codes = {"NSE_EQ": 1, "NSE_FNO": 2, "NSE_CURRENCY": 3, "BSE_EQ": 4,
+                         "MCX_COMM": 5, "BSE_CURRENCY": 7, "BSE_FNO": 8}
+        if len(packet) < 8:
+            raise BrokerAdapterError("Dhan live feed packet has an invalid header")
+        packet_length = int.from_bytes(packet[1:3], "little")
+        if packet_length != len(packet):
+            raise BrokerAdapterError("Dhan live feed packet has an invalid header")
+        if packet[0] == 50:
+            raise BrokerFeedDisconnected("Dhan feed requested a reconnect")
+        if exchange_segment not in segment_codes:
+            raise BrokerAdapterError("Dhan live feed packet has an invalid header")
+        packet_security_id = int.from_bytes(packet[4:8], "little", signed=True)
+        if (
+            packet[3] != segment_codes[exchange_segment]
+            or packet_security_id != int(security_id)
+        ):
+            raise BrokerAdapterError("Dhan live feed packet does not match its subscription")
+        if packet[0] != 4:
+            return None
+        if packet_length != 50:
+            raise BrokerAdapterError("Dhan live feed quote packet has an invalid length")
+        try:
+            last_price = struct.unpack_from("<f", packet, 8)[0]
+            trade_timestamp = struct.unpack_from("<i", packet, 14)[0]
+            volume = struct.unpack_from("<i", packet, 22)[0]
+            opening = struct.unpack_from("<f", packet, 34)[0]
+            high = struct.unpack_from("<f", packet, 42)[0]
+            low = struct.unpack_from("<f", packet, 46)[0]
+            return HistoricalBar(
+                timestamp=datetime.fromtimestamp(trade_timestamp, timezone.utc),
+                open=Decimal(str(opening)),
+                high=Decimal(str(high)),
+                low=Decimal(str(low)),
+                close=Decimal(str(last_price)),
+                volume=Decimal(volume),
+            )
+        except (OverflowError, OSError, ValueError, TypeError, InvalidOperation) as error:
+            raise BrokerAdapterError("Dhan live feed quote packet contains invalid values") from error
+
+    async def stream_market_quotes(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        exchange_segment: str,
+        security_id: str,
+        status_callback: Callable[[str], Awaitable[None]],
+    ) -> AsyncIterator[HistoricalBar]:
+        query = urlencode({
+            "version": "2",
+            "token": access_token,
+            "clientId": tokens["client_id"],
+            "authType": "2",
+        })
+        url = f"wss://api-feed.dhan.co?{query}"
+        subscription = json.dumps({
+            "RequestCode": 17,
+            "InstrumentCount": 1,
+            "InstrumentList": [
+                {"ExchangeSegment": exchange_segment, "SecurityId": security_id}
+            ],
+        })
+        for attempt in range(3):
+            if attempt:
+                await status_callback("reconnecting")
+                await asyncio.sleep(min(2 ** (attempt - 1), 4))
+            try:
+                async with websocket_connect(
+                    url, ping_interval=10, ping_timeout=40, close_timeout=5
+                ) as connection:
+                    await connection.send(subscription)
+                    await status_callback("active")
+                    async for message in connection:
+                        if not isinstance(message, bytes):
+                            continue
+                        try:
+                            quote = self.decode_market_feed_packet(
+                                message, exchange_segment, security_id
+                            )
+                        except BrokerFeedDisconnected:
+                            break
+                        if quote is not None:
+                            yield quote
+            except InvalidStatus as error:
+                if error.response.status_code == 401:
+                    raise BrokerReconnectRequired(
+                        "Reconnect to this broker to renew the session"
+                    ) from None
+                if attempt == 2:
+                    break
+            except (OSError, TimeoutError, WebSocketException):
+                if attempt == 2:
+                    break
+        raise BrokerAdapterError("Dhan live feed disconnected after retrying")
 
     def get_positions(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
         return self._get_dhan_account_data(

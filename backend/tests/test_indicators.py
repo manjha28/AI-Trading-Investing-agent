@@ -198,6 +198,9 @@ def test_instrument_indicators_endpoint_uses_stored_bars_only(
     assert Decimal(payload["indicators"]["sma_20"]["value"]) == Decimal("109.5")
     assert payload["indicators"]["sma_20"]["status"] == "available"
     assert payload["indicators"]["rsi_14"]["is_synthetic"] is False
+    assert len(payload["indicator_series"]["sma_20"]) == 1
+    assert Decimal(payload["indicator_series"]["sma_20"][0]["value"]) == Decimal("109.5")
+    assert len(payload["indicator_series"]["rsi_14"]) == 6
 
 
 def test_split_adjusted_lot_preserves_ltcg_boundary_date(

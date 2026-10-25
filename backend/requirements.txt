@@ -8,4 +8,4 @@ psycopg[binary]==3.3.6
 pytest==9.1.1
 httpx==0.28.1
 cryptography>=44,<48
-yfinance>=0.2.65,<1.0
+yfinance>=1.7.0,<2
