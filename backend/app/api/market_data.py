@@ -1,5 +1,5 @@
 import base64
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 import json
 from email.utils import parsedate_to_datetime
@@ -65,6 +65,13 @@ from app.models import (
     WatchlistInstrument,
 )
 from app.services.indicators import IndicatorValue, atr, compute_indicators, ema, rsi, sma
+from app.services.options_signal_engine import (
+    ActiveOptionPosition,
+    OHLCVBar as SignalOHLCVBar,
+    OptionQuote as SignalOptionQuote,
+    OptionsSignalInput,
+    evaluate_options_signal,
+)
 from app.services import fundamentals as fundamentals_service
 from app.services.price_freshness import classify_quote
 from app.provider_adapters import (
@@ -791,6 +798,29 @@ class OptionChainResponse(BaseModel):
     strikes: list[OptionStrikeResponse]
     source: str = "Dhan"
     fetched_at: datetime
+
+
+class OptionsSignalAPIResponse(BaseModel):
+    action: Literal["BUY_CALL", "BUY_PUT", "EXIT_CALL", "EXIT_PUT", "NO_TRADE"]
+    underlying_symbol: str
+    as_of: datetime
+    direction_score: int
+    opposing_score: int
+    selected_option_type: Literal["call", "put"] | None = None
+    strike: Decimal | None = None
+    reference_entry_premium: Decimal | None = None
+    estimated_premium_risk_per_lot: Decimal | None = None
+    suggested_lots_by_risk_budget: int | None = None
+    option_return_pct_at_bid: Decimal | None = None
+    reasons: list[str]
+    blockers: list[str]
+    evidence: dict[str, str | int | None]
+    underlying_source: str | None
+    chain_source: str | None
+    bar_source: str
+    chain_retrieved_at: datetime
+    last_bar_timestamp: datetime | None
+    disclaimer: str = "Decision support, not investment advice. No order was placed."
 
 
 class FundamentalsSyncResponse(BaseModel):
@@ -3373,6 +3403,157 @@ def get_instrument_option_chain(
         underlying_price=_option_decimal(payload.get("last_price"), "underlying price"),
         strikes=strikes,
         fetched_at=datetime.now(timezone.utc),
+    )
+
+
+@router.get(
+    "/instruments/{instrument_id}/option-chain/signal",
+    response_model=OptionsSignalAPIResponse,
+)
+def get_instrument_option_signal(
+    instrument_id: UUID,
+    expiry: date = Query(...),
+    position_option_type: Literal["call", "put"] | None = None,
+    position_strike: Decimal | None = Query(default=None, gt=0),
+    position_entry_premium: Decimal | None = Query(default=None, gt=0),
+    capital: Decimal | None = Query(default=None, gt=0),
+    risk_fraction: Decimal = Query(default=Decimal("0.005"), gt=0, le=Decimal("0.02")),
+    active_session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+) -> OptionsSignalAPIResponse:
+    """Evaluate an options setup from a fresh Dhan chain and real Dhan 5-minute bars.
+
+    This endpoint is advisory-only. It never submits or simulates orders. Both
+    the option chain and intraday bars are sourced from Dhan to avoid mixing
+    candle histories from different providers.
+    """
+    provided_position_fields = (
+        position_option_type is not None,
+        position_strike is not None,
+        position_entry_premium is not None,
+    )
+    if any(provided_position_fields) and not all(provided_position_fields):
+        raise HTTPException(
+            status_code=422,
+            detail="An open position requires option type, strike, and entry premium together.",
+        )
+
+    instrument = _get_instrument(db, instrument_id)
+    chain_response = get_instrument_option_chain(
+        instrument_id=instrument_id,
+        expiry=expiry,
+        active_session=active_session,
+        db=db,
+    )
+    now = datetime.now(timezone.utc)
+    market_zone = ZoneInfo("Asia/Kolkata")
+    expiry_at = datetime.combine(
+        expiry,
+        datetime_time(hour=15, minute=30),
+        tzinfo=market_zone,
+    )
+    session_date = now.astimezone(market_zone).date()
+    stored_rows = list(db.scalars(
+        select(MarketBar)
+        .where(
+            MarketBar.instrument_id == instrument.id,
+            MarketBar.interval == "5m",
+            MarketBar.source == "dhan",
+            MarketBar.is_synthetic.is_(False),
+        )
+        .order_by(MarketBar.timestamp.desc())
+        .limit(100)
+    ))
+    stored_rows.reverse()
+    current_session_rows = [
+        bar for bar in stored_rows
+        if _utc(bar.timestamp).astimezone(market_zone).date() == session_date
+    ]
+    bars = [
+        SignalOHLCVBar(
+            timestamp=_utc(bar.timestamp),
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+            volume=bar.volume,
+            is_synthetic=bar.is_synthetic,
+        )
+        for bar in current_session_rows
+    ]
+
+    chain_quotes: list[SignalOptionQuote] = []
+    for strike_row in chain_response.strikes:
+        for option_type, contract in (("call", strike_row.ce), ("put", strike_row.pe)):
+            if contract is None:
+                continue
+            chain_quotes.append(SignalOptionQuote(
+                strike=strike_row.strike,
+                option_type=option_type,
+                expiry_at=expiry_at,
+                bid=contract.top_bid_price or Decimal("0"),
+                ask=contract.top_ask_price or Decimal("0"),
+                bid_qty=Decimal(contract.top_bid_quantity or 0),
+                ask_qty=Decimal(contract.top_ask_quantity or 0),
+                ltp=contract.last_price or Decimal("0"),
+                volume=Decimal(contract.volume or 0),
+                open_interest=Decimal(contract.oi or 0),
+                delta=contract.greeks.delta,
+                gamma=contract.greeks.gamma,
+                theta=contract.greeks.theta,
+                vega=contract.greeks.vega,
+                implied_volatility=contract.implied_volatility,
+                lot_size=None,
+            ))
+
+    spot = chain_response.underlying_price or Decimal("0")
+    active_position = None
+    if all(provided_position_fields):
+        active_position = ActiveOptionPosition(
+            option_type=position_option_type,
+            strike=position_strike,
+            expiry_at=expiry_at,
+            entry_premium=position_entry_premium,
+        )
+
+    signal = evaluate_options_signal(OptionsSignalInput(
+        underlying_symbol=instrument.symbol,
+        chain_underlying_symbol=chain_response.symbol,
+        as_of=now,
+        spot=spot,
+        spot_timestamp=_utc(chain_response.fetched_at),
+        spot_source="dhan_option_chain_underlying_retrieved_at",
+        chain_timestamp=_utc(chain_response.fetched_at),
+        chain_source=chain_response.source,
+        chain_spot=spot,
+        expiry_at=expiry_at,
+        bars=bars,
+        chain=chain_quotes,
+        exchange_timezone="Asia/Kolkata",
+        capital=capital,
+        risk_fraction=risk_fraction,
+        active_position=active_position,
+    ))
+    return OptionsSignalAPIResponse(
+        action=signal.action,
+        underlying_symbol=signal.underlying_symbol,
+        as_of=signal.as_of,
+        direction_score=signal.direction_score,
+        opposing_score=signal.opposing_score,
+        selected_option_type=signal.selected_option_type,
+        strike=signal.strike,
+        reference_entry_premium=signal.reference_entry_premium,
+        estimated_premium_risk_per_lot=signal.estimated_premium_risk_per_lot,
+        suggested_lots_by_risk_budget=signal.suggested_lots_by_risk_budget,
+        option_return_pct_at_bid=signal.option_return_pct_at_bid,
+        reasons=list(signal.reasons),
+        blockers=list(signal.blockers),
+        evidence=signal.evidence,
+        underlying_source=signal.underlying_source,
+        chain_source=signal.chain_source,
+        bar_source="dhan",
+        chain_retrieved_at=_utc(chain_response.fetched_at),
+        last_bar_timestamp=_utc(bars[-1].timestamp) if bars else None,
     )
 
 
