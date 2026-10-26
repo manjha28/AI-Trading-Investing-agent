@@ -62,9 +62,21 @@ def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(mo
         def override_db():
             yield session
 
-        app.dependency_overrides[get_db] = override_db
-        app.dependency_overrides[require_verified_market_session] = (
-            lambda: SimpleNamespace(user_id=uuid4())
+        monkeypatch.setitem(app.dependency_overrides, get_db, override_db)
+        monkeypatch.setitem(
+            app.dependency_overrides,
+            require_verified_market_session,
+            lambda: SimpleNamespace(user_id=uuid4()),
+        )
+        monkeypatch.setitem(
+            app.dependency_overrides,
+            market_data.get_market_data_provider,
+            lambda: SimpleNamespace(providers=[], unavailable_providers=[]),
+        )
+        monkeypatch.setitem(
+            app.dependency_overrides,
+            market_data.get_current_user,
+            lambda: SimpleNamespace(id=uuid4(), email_verified=True),
         )
         try:
             with TestClient(app) as client:
@@ -73,7 +85,7 @@ def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(mo
                     params={"expiry": expiry.isoformat()},
                 )
         finally:
-            app.dependency_overrides.clear()
+            pass
     engine.dispose()
 
     assert result.status_code == 200
@@ -99,9 +111,21 @@ def test_signal_endpoint_requires_all_open_position_fields(monkeypatch) -> None:
         def override_db():
             yield session
 
-        app.dependency_overrides[get_db] = override_db
-        app.dependency_overrides[require_verified_market_session] = (
-            lambda: SimpleNamespace(user_id=uuid4())
+        monkeypatch.setitem(app.dependency_overrides, get_db, override_db)
+        monkeypatch.setitem(
+            app.dependency_overrides,
+            require_verified_market_session,
+            lambda: SimpleNamespace(user_id=uuid4()),
+        )
+        monkeypatch.setitem(
+            app.dependency_overrides,
+            market_data.get_market_data_provider,
+            lambda: SimpleNamespace(providers=[], unavailable_providers=[]),
+        )
+        monkeypatch.setitem(
+            app.dependency_overrides,
+            market_data.get_current_user,
+            lambda: SimpleNamespace(id=uuid4(), email_verified=True),
         )
         try:
             with TestClient(app) as client:
