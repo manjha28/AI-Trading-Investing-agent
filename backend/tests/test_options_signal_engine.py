@@ -176,3 +176,18 @@ def test_call_with_negative_delta_is_rejected() -> None:
     result = evaluate_options_signal(replace(data, chain=chain))
     assert result.action == "NO_TRADE"
     assert "delta_sign_inconsistent_with_option_type" in result.blockers
+
+
+def test_nearby_call_oi_wall_blocks_long_call() -> None:
+    data = _fixture()
+    base_call = data.chain[0]
+    wall = replace(
+        base_call,
+        strike=data.spot + D("0.05"),
+        open_interest=D("100000"),
+        volume=D("5000"),
+    )
+    result = evaluate_options_signal(replace(data, chain=data.chain + (wall,)))
+    assert result.action == "NO_TRADE"
+    assert "nearby_call_oi_wall" in result.blockers
+    assert result.evidence["call_oi_wall_strike"] == str(wall.strike)
