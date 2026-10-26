@@ -124,17 +124,14 @@ def test_signal_endpoint_requires_all_open_position_fields(monkeypatch) -> None:
             market_data.get_current_user,
             lambda: SimpleNamespace(id=uuid4(), email_verified=True),
         )
-        try:
-            with TestClient(app) as client:
-                result = client.get(
-                    f"/api/v1/market-data/instruments/{instrument.id}/option-chain/signal",
-                    params={
-                        "expiry": (date.today() + timedelta(days=5)).isoformat(),
-                        "position_option_type": "call",
-                    },
-                )
-        finally:
-            app.dependency_overrides.clear()
+        with TestClient(app) as client:
+            result = client.get(
+                f"/api/v1/market-data/instruments/{instrument.id}/option-chain/signal",
+                params={
+                    "expiry": (date.today() + timedelta(days=5)).isoformat(),
+                    "position_option_type": "call",
+                },
+            )
     engine.dispose()
 
     assert result.status_code == 422
