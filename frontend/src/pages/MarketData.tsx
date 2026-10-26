@@ -158,6 +158,7 @@ type OptionGreeks = {
 };
 type OptionContract = {
   security_id: string | null;
+  implied_volatility: string | null;
   last_price: string | null;
   oi: number | null;
   volume: number | null;
@@ -180,6 +181,29 @@ type OptionChainData = {
   strikes: OptionStrike[];
   source: string;
   fetched_at: string;
+};
+
+type OptionsSignalData = {
+  action: 'BUY_CALL' | 'BUY_PUT' | 'EXIT_CALL' | 'EXIT_PUT' | 'NO_TRADE';
+  underlying_symbol: string;
+  as_of: string;
+  direction_score: number;
+  opposing_score: number;
+  selected_option_type: 'call' | 'put' | null;
+  strike: string | null;
+  reference_entry_premium: string | null;
+  estimated_premium_risk_per_lot: string | null;
+  suggested_lots_by_risk_budget: number | null;
+  option_return_pct_at_bid: string | null;
+  reasons: string[];
+  blockers: string[];
+  evidence: Record<string, string | number | null>;
+  underlying_source: string | null;
+  chain_source: string | null;
+  bar_source: string;
+  chain_retrieved_at: string;
+  last_bar_timestamp: string | null;
+  disclaimer: string;
 };
 
 export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
@@ -263,6 +287,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [optionChain, setOptionChain] = useState<OptionChainData | null>(null);
   const [optionChainLoading, setOptionChainLoading] = useState(false);
   const [optionChainError, setOptionChainError] = useState('');
+  const [optionSignal, setOptionSignal] = useState<OptionsSignalData | null>(null);
+  const [optionSignalLoading, setOptionSignalLoading] = useState(false);
+  const [optionSignalError, setOptionSignalError] = useState('');
+  const [signalPositionType, setSignalPositionType] = useState<'' | 'call' | 'put'>('');
+  const [signalPositionStrike, setSignalPositionStrike] = useState('');
+  const [signalPositionEntryPremium, setSignalPositionEntryPremium] = useState('');
   const [depthStatus, setDepthStatus] = useState<MarketStreamStatus>('not_configured');
   const [depthMessage, setDepthMessage] = useState('');
   const [depthLastSnapshotAt, setDepthLastSnapshotAt] = useState<string | null>(null);
@@ -1106,6 +1136,14 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   ]);
 
   useEffect(() => {
+    setOptionSignal(null);
+    setOptionSignalError('');
+    setSignalPositionType('');
+    setSignalPositionStrike('');
+    setSignalPositionEntryPremium('');
+  }, [activeDetailInstrumentId, selectedOptionExpiry]);
+
+  useEffect(() => {
     if (
       activeDetailTab !== 'Depth'
       || !activeDetailInstrumentId
@@ -1207,6 +1245,44 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
       console.info('[dhan-depth-feed] unsubscribe instrument=%s', activeDetailInstrumentId);
     };
   }, [activeDetailTab, activeDetailInstrumentId, marketDataSettings?.selected_provider]);
+
+  async function refreshOptionsSignal() {
+    if (!activeDetailInstrumentId || !selectedOptionExpiry) {
+      setOptionSignalError('Select an instrument and expiry before evaluating a signal.');
+      return;
+    }
+    setOptionSignalLoading(true);
+    setOptionSignalError('');
+    setOptionSignal(null);
+    try {
+      const params = new URLSearchParams({ expiry: selectedOptionExpiry });
+      if (signalPositionType) {
+        if (!signalPositionStrike.trim() || !signalPositionEntryPremium.trim()) {
+          setOptionSignalError('For an exit check, enter the held option strike and entry premium.');
+          return;
+        }
+        const strike = Number(signalPositionStrike);
+        const entryPremium = Number(signalPositionEntryPremium);
+        if (!Number.isFinite(strike) || strike <= 0 || !Number.isFinite(entryPremium) || entryPremium <= 0) {
+          setOptionSignalError('Strike and entry premium must be positive numbers.');
+          return;
+        }
+        params.set('position_option_type', signalPositionType);
+        params.set('position_strike', signalPositionStrike);
+        params.set('position_entry_premium', signalPositionEntryPremium);
+      }
+      const result = await apiRequest<OptionsSignalData>(
+        `/market-data/instruments/${activeDetailInstrumentId}/option-chain/signal?${params.toString()}`,
+      );
+      if (activeDetailInstrumentIdRef.current === activeDetailInstrumentId) {
+        setOptionSignal(result);
+      }
+    } catch (error) {
+      setOptionSignalError(error instanceof Error ? error.message : 'Signal evaluation failed.');
+    } finally {
+      setOptionSignalLoading(false);
+    }
+  }
 
   async function syncFundamentals() {
     if (!selectedInstrument) return;
@@ -1626,6 +1702,107 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                             ? ` · Underlying: ${displayOptionPrice(optionChain.underlying_price)}`
                             : ''}
                         </p>
+                        <section className="data-section options-signal-section" aria-label="Options signal engine">
+                          <div className="section-heading">
+                            <div>
+                              <p className="eyebrow">SIGNAL ENGINE</p>
+                              <h3>Long-options setup</h3>
+                            </div>
+                            <button
+                              className="primary-button"
+                              type="button"
+                              onClick={() => void refreshOptionsSignal()}
+                              disabled={!activeDetailInstrumentId || !selectedOptionExpiry || optionSignalLoading || optionExpiriesLoading || optionChainLoading}
+                            >
+                              {optionSignalLoading ? 'Evaluating…' : 'Evaluate signal'}
+                            </button>
+                          </div>
+                          <p className="market-provenance">
+                            Uses today’s real Dhan 5-minute bars, current Dhan option-chain quotes, EMA 9/21, session VWAP,
+                            RSI, ATR breakout, relative volume, bid/ask spread, Greeks, theta drag and nearby OI walls.
+                            This is advisory only; no order will be placed.
+                          </p>
+                          <div className="market-search options-signal-position">
+                            <label>
+                              Position being monitored
+                              <select
+                                value={signalPositionType}
+                                onChange={(event) => setSignalPositionType(event.target.value as '' | 'call' | 'put')}
+                              >
+                                <option value="">No open position — find new entry</option>
+                                <option value="call">I am holding a call — check exit</option>
+                                <option value="put">I am holding a put — check exit</option>
+                              </select>
+                            </label>
+                            {signalPositionType && (
+                              <>
+                                <label>
+                                  Held strike
+                                  <input
+                                    type="number"
+                                    min="0.01"
+                                    step="any"
+                                    value={signalPositionStrike}
+                                    onChange={(event) => setSignalPositionStrike(event.target.value)}
+                                    placeholder="Strike price"
+                                  />
+                                </label>
+                                <label>
+                                  Entry premium
+                                  <input
+                                    type="number"
+                                    min="0.01"
+                                    step="any"
+                                    value={signalPositionEntryPremium}
+                                    onChange={(event) => setSignalPositionEntryPremium(event.target.value)}
+                                    placeholder="Premium paid"
+                                  />
+                                </label>
+                              </>
+                            )}
+                          </div>
+                          {optionSignalError && <p className="market-source-message error" role="alert">{optionSignalError}</p>}
+                          {optionSignalLoading && <p className="loading-inline">Checking live chain and recent bars…</p>}
+                          {optionSignal && (
+                            <div className="data-note options-signal-result" role="status">
+                              <div>
+                                <strong>{optionSignal.action.replaceAll('_', ' ')}</strong>
+                                <span>
+                                  {optionSignal.direction_score} directional points · opposing score {optionSignal.opposing_score}
+                                  {optionSignal.selected_option_type && optionSignal.strike
+                                    ? ` · ${optionSignal.selected_option_type.toUpperCase()} ${optionSignal.strike}`
+                                    : ''}
+                                  {optionSignal.reference_entry_premium
+                                    ? ` · Reference premium ₹${Number(optionSignal.reference_entry_premium).toFixed(2)}`
+                                    : ''}
+                                </span>
+                                {optionSignal.option_return_pct_at_bid !== null && (
+                                  <span>Current return at bid: {Number(optionSignal.option_return_pct_at_bid).toFixed(2)}%</span>
+                                )}
+                                {optionSignal.suggested_lots_by_risk_budget !== null && (
+                                  <span>Risk-budget lots: {optionSignal.suggested_lots_by_risk_budget}</span>
+                                )}
+                                {optionSignal.estimated_premium_risk_per_lot === null && optionSignal.action.startsWith('BUY_') && (
+                                  <span>Lot size is not verified, so contract sizing is intentionally unavailable.</span>
+                                )}
+                              </div>
+                              {optionSignal.reasons.length > 0 && (
+                                <p><strong>Why:</strong> {optionSignal.reasons.map((reason) => reason.replaceAll('_', ' ')).join(' · ')}</p>
+                              )}
+                              {optionSignal.blockers.length > 0 && (
+                                <p><strong>Blockers:</strong> {optionSignal.blockers.map((blocker) => blocker.replaceAll('_', ' ')).join(' · ')}</p>
+                              )}
+                              <small>
+                                Chain retrieved {new Date(optionSignal.chain_retrieved_at).toLocaleString()}
+                                {' · '}Bars source: {optionSignal.bar_source}
+                                {' · '}Latest bar: {optionSignal.last_bar_timestamp
+                                  ? new Date(optionSignal.last_bar_timestamp).toLocaleString()
+                                  : 'Unavailable'}
+                              </small>
+                              <small>{optionSignal.disclaimer}</small>
+                            </div>
+                          )}
+                        </section>
                         <p className="market-provenance">
                           Read-only provider data · Decision support, not investment advice.
                           Dhan limits option-chain requests to one every 3 seconds.
