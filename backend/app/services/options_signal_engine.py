@@ -617,6 +617,9 @@ def evaluate_options_signal(
         "selected_gamma": str(chosen.gamma) if chosen.gamma is not None else None,
         "selected_theta": str(chosen.theta) if chosen.theta is not None else None,
         "selected_vega": str(chosen.vega) if chosen.vega is not None else None,
+        "selected_implied_volatility": (
+            str(chosen.implied_volatility) if chosen.implied_volatility is not None else None
+        ),
         "selected_relative_spread_pct": str((chosen.ask - chosen.bid) * HUNDRED / ((chosen.ask + chosen.bid) / D(2))),
         "selected_open_interest": str(chosen.open_interest),
         "selected_volume": str(chosen.volume),
