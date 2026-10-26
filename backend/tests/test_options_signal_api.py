@@ -78,14 +78,11 @@ def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(mo
             market_data.get_current_user,
             lambda: SimpleNamespace(id=uuid4(), email_verified=True),
         )
-        try:
-            with TestClient(app) as client:
-                result = client.get(
-                    f"/api/v1/market-data/instruments/{instrument.id}/option-chain/signal",
-                    params={"expiry": expiry.isoformat()},
-                )
-        finally:
-            pass
+        with TestClient(app) as client:
+            result = client.get(
+                f"/api/v1/market-data/instruments/{instrument.id}/option-chain/signal",
+                params={"expiry": expiry.isoformat()},
+            )
     engine.dispose()
 
     assert result.status_code == 200
