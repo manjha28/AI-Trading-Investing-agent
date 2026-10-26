@@ -1,4 +1,4 @@
-- Options signals: add deterministic trend/momentum breakout scoring, option-chain quality gates, OI-wall avoidance, and advisory-only buy/exit recommendations.
+- Options signals: combine Dhan option-chain quotes and verified real 5-minute bars with EMA/VWAP/RSI/ATR breakout, relative volume, Greeks/theta, OI walls, and advisory-only buy/exit signals.
 - Market data: bound and cache Angel One master loading, use SmartAPI scrip search for routine mappings, preserve fallback/error provenance, and update yfinance for pandas 3 compatibility.
 - A4: shorten the market-data settings migration revision, restore Angel One → Dhan → Yahoo fallback reporting, and document safe Angel One setup in Codespaces.
 - A3: add per-user market-data source selection, encrypted Angel One sessions, and verified REST/WebSocket observations with explicit freshness provenance.
