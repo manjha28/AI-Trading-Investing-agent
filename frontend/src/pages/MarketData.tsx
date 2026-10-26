@@ -1734,6 +1734,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                           <p className="market-provenance">
                             Uses today’s real Dhan 5-minute bars, current Dhan option-chain quotes, EMA 9/21, session VWAP,
                             RSI, ATR breakout, relative volume, bid/ask spread, Greeks, theta drag and nearby OI walls.
+                            Historical IV rank is not stored, so provider IV is shown as context rather than treated as a historical percentile.
                             This is advisory only; no order will be placed.
                           </p>
                           <div className="market-search options-signal-position">
