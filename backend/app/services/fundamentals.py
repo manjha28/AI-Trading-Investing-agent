@@ -3,6 +3,8 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 import logging
+import threading
+import time
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -15,6 +17,12 @@ from app.models import Instrument, InstrumentFundamental, InstrumentSnapshot
 from app.provider_adapters import YahooFinanceProvider
 
 MAX_PERIODS_PER_TYPE = 12
+COMPANY_PROFILE_CACHE_TTL = 6 * 60 * 60
+COMPANY_PROFILE_FAILURE_CACHE_TTL = 15 * 60
+_company_profile_cache: dict[
+    str, tuple[float, dict[str, Any] | None, str | None]
+] = {}
+_company_profile_cache_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
@@ -166,6 +174,77 @@ def fetch_yfinance_fundamentals(provider_symbol: str) -> dict[str, Any]:
     if not annual and not quarterly and not info:
         raise MarketDataProviderError("yfinance_fundamentals_unavailable")
     return {"annual": annual, "quarterly": quarterly, "snapshot": snapshot}
+
+
+def fetch_yfinance_company_profile(provider_symbol: str) -> dict[str, Any]:
+    """Fetch Yahoo Finance company-profile fields without persisting raw provider data."""
+    cache_key = provider_symbol.strip().casefold()
+    now = time.monotonic()
+    with _company_profile_cache_lock:
+        cached = _company_profile_cache.get(cache_key)
+        if cached is not None and cached[0] > now:
+            if cached[2] is not None:
+                raise MarketDataProviderError(cached[2])
+            if cached[1] is not None:
+                return dict(cached[1])
+            return {}
+        if cached is not None:
+            _company_profile_cache.pop(cache_key, None)
+
+    ticker = yf.Ticker(provider_symbol)
+    try:
+        info = YahooFinanceProvider._thread_call(ticker.get_info)
+    except MarketDataProviderError as error:
+        ttl = (
+            COMPANY_PROFILE_FAILURE_CACHE_TTL
+            if error.code in {
+                "provider_rate_limit_exceeded",
+                "rate_limited",
+                "yfinance_cooldown_active",
+            }
+            else min(COMPANY_PROFILE_FAILURE_CACHE_TTL, 5 * 60)
+        )
+        with _company_profile_cache_lock:
+            _company_profile_cache[cache_key] = (
+                time.monotonic() + ttl,
+                None,
+                error.code,
+            )
+        raise
+    if not isinstance(info, dict):
+        with _company_profile_cache_lock:
+            _company_profile_cache[cache_key] = (
+                time.monotonic() + COMPANY_PROFILE_FAILURE_CACHE_TTL,
+                None,
+                "yfinance_fundamentals_unavailable",
+            )
+        raise MarketDataProviderError("yfinance_fundamentals_unavailable")
+    profile = {
+        "name": info.get("longName") or info.get("shortName"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "description": info.get("longBusinessSummary"),
+        "market_cap": _decimal(info.get("marketCap")),
+        "currency": info.get("currency"),
+    }
+    ttl = (
+        COMPANY_PROFILE_CACHE_TTL
+        if any(
+            profile.get(field) is not None
+            for field in ("name", "sector", "industry", "description", "market_cap")
+        )
+        else COMPANY_PROFILE_FAILURE_CACHE_TTL
+    )
+    with _company_profile_cache_lock:
+        if len(_company_profile_cache) >= 256:
+            expired_key = next(iter(_company_profile_cache))
+            _company_profile_cache.pop(expired_key, None)
+        _company_profile_cache[cache_key] = (
+            time.monotonic() + ttl,
+            profile,
+            None,
+        )
+    return profile
 
 
 def sync_instrument_fundamentals(

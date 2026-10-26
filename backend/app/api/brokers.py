@@ -1,7 +1,10 @@
+import csv
+import io
 import hashlib
 import json
 import logging
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -81,6 +84,10 @@ class ImportRequest(BaseModel):
     portfolio_id: UUID
     confirmed: bool
     rows: list[ImportRow] = Field(min_length=1, max_length=200)
+
+
+class DhanTradeCsvRequest(BaseModel):
+    csv_content: str = Field(min_length=1, max_length=5_000_000)
 
 
 def require_broker_access(
@@ -475,9 +482,12 @@ def _dhan_timestamp(value: Any, field: str) -> datetime:
         for pattern in (
             "%Y-%m-%d %H:%M:%S",
             "%d-%m-%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
             "%Y-%m-%d",
             "%d-%m-%Y",
+            "%d/%m/%Y",
             "%d %b %Y",
+            "%d-%b-%Y",
             "%b %d, %Y",
         ):
             try:
@@ -493,7 +503,10 @@ def _dhan_timestamp(value: Any, field: str) -> datetime:
 
 
 def _normalize_dhan_trades(
-    rows: list[dict[str, Any]], user_id: UUID, synced_at: datetime
+    rows: list[dict[str, Any]],
+    user_id: UUID,
+    synced_at: datetime,
+    source: str = "dhan",
 ) -> list[DhanTradeMirror]:
     normalized = []
     charge_fields = (
@@ -509,23 +522,57 @@ def _normalize_dhan_trades(
         side = str(row.get("transactionType") or "").upper()
         if trade_id is None or not str(trade_id).strip() or side not in {"BUY", "SELL"}:
             raise BrokerAdapterError("Dhan trade response is missing its trade ID or side")
-        charges_values = [
-            _dhan_decimal(row.get(field), field, optional=True)
-            for field in charge_fields
-        ]
-        charges = (
-            sum((amount for amount in charges_values if amount is not None), Decimal("0"))
-            if any(amount is not None for amount in charges_values)
+        if row.get("charges") not in (None, ""):
+            charges = _dhan_decimal(row.get("charges"), "charges", optional=True)
+        else:
+            charges_values = [
+                _dhan_decimal(row.get(field), field, optional=True)
+                for field in charge_fields
+            ]
+            charges = (
+                sum((amount for amount in charges_values if amount is not None), Decimal("0"))
+                if any(amount is not None for amount in charges_values)
+                else None
+            )
+        provider_trade_id = str(trade_id)[:64]
+        order_id = (
+            str(row["orderId"])[:64] if row.get("orderId") is not None else None
+        )
+        exchange_order_id = (
+            str(row["exchangeOrderId"])[:64]
+            if row.get("exchangeOrderId") is not None
             else None
         )
+        event_time = row.get(
+            "exchangeTime", row.get("updateTime", row.get("createTime"))
+        )
+        identity_payload = {
+            "provider_trade_id": provider_trade_id,
+            "order_id": order_id,
+            "exchange_order_id": exchange_order_id,
+            "security_id": row.get("securityId"),
+            "exchange_segment": row.get("exchangeSegment"),
+            "side": side,
+            "quantity": row.get("tradedQuantity"),
+            "price": row.get("tradedPrice"),
+            "trade_at": event_time,
+        }
+        identity_key = hashlib.sha256(
+            json.dumps(
+                identity_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode()
+        ).hexdigest()
         normalized.append(
             DhanTradeMirror(
                 user_id=user_id,
-                source="dhan",
-                trade_id=str(trade_id)[:64],
-                order_id=(
-                    str(row["orderId"])[:64] if row.get("orderId") is not None else None
-                ),
+                source=source,
+                trade_id=identity_key,
+                provider_trade_id=provider_trade_id,
+                order_id=order_id,
+                exchange_order_id=exchange_order_id,
                 symbol=(
                     str(row.get("tradingSymbol") or row.get("customSymbol"))[:64]
                     if row.get("tradingSymbol") or row.get("customSymbol")
@@ -546,10 +593,7 @@ def _normalize_dhan_trades(
                 price=_required_dhan_decimal(row.get("tradedPrice"), "tradedPrice"),
                 charges=charges,
                 currency="INR",
-                trade_at=_dhan_timestamp(
-                    row.get("exchangeTime") or row.get("updateTime") or row.get("createTime"),
-                    "exchangeTime",
-                ),
+                trade_at=_dhan_timestamp(event_time, "exchangeTime"),
                 synced_at=synced_at,
             )
         )
@@ -605,6 +649,53 @@ def _normalize_dhan_ledger(
             )
         )
     return normalized
+
+
+def _upsert_dhan_trades(
+    db: Session, rows: list[DhanTradeMirror]
+) -> tuple[int, int]:
+    inserted = 0
+    updated = 0
+    for row in rows:
+        existing = db.scalar(
+            select(DhanTradeMirror).where(
+                DhanTradeMirror.user_id == row.user_id,
+                DhanTradeMirror.source == row.source,
+                DhanTradeMirror.trade_id == row.trade_id,
+            )
+        )
+        if existing is None:
+            existing = db.scalar(
+                select(DhanTradeMirror).where(
+                    DhanTradeMirror.user_id == row.user_id,
+                    DhanTradeMirror.source == row.source,
+                    DhanTradeMirror.trade_id == row.provider_trade_id,
+                    DhanTradeMirror.provider_trade_id.is_(None),
+                )
+            )
+        if existing is None:
+            db.add(row)
+            inserted += 1
+            continue
+        for field in (
+            "trade_id",
+            "provider_trade_id",
+            "order_id",
+            "exchange_order_id",
+            "symbol",
+            "security_id",
+            "exchange_segment",
+            "side",
+            "quantity",
+            "price",
+            "charges",
+            "currency",
+            "trade_at",
+            "synced_at",
+        ):
+            setattr(existing, field, getattr(row, field))
+        updated += 1
+    return inserted, updated
 
 
 def _mirror_rows(db: Session, user_id: UUID, slug: str, kind: str | None = None) -> list[BrokerMirror]:
@@ -1212,7 +1303,9 @@ def sync_broker(
                 db.add(row)
             else:
                 for field in (
+                    "provider_trade_id",
                     "order_id",
+                    "exchange_order_id",
                     "symbol",
                     "security_id",
                     "exchange_segment",
@@ -1293,6 +1386,244 @@ def sync_broker(
     }
 
 
+@router.post("/dhan/trades/backfill")
+def backfill_dhan_trades(
+    response: Response,
+    from_date: date = Query(default=date(2023, 1, 1), alias="from-date"),
+    to_date: date | None = Query(default=None, alias="to-date"),
+    active_session: UserSession = Depends(require_broker_access),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    credential = _credential(db, _user_id(active_session), "dhan")
+    expiry = credential.expires_at
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if expiry <= _now():
+        raise _broker_error(
+            401,
+            "broker_authentication_required",
+            "Dhan session has expired. Reconnect before backfilling trade history.",
+        )
+    end = to_date or _now().date()
+    if from_date > end:
+        raise HTTPException(status_code=422, detail="from-date must not be after to-date")
+    tokens = decrypt_tokens(credential.encrypted_tokens)
+    reader = DhanReadOnlyAccountAdapter(tokens["access_token"], tokens["client_id"])
+    now = _now()
+    yearly_results: list[dict[str, Any]] = []
+    all_rows: list[DhanTradeMirror] = []
+    page = 0
+    page_count = 0
+    status: int | None = None
+    failure: str | None = None
+    chunk_rows: list[dict[str, Any]] = []
+    while True:
+        if page_count:
+            time.sleep(1)
+        try:
+            page_rows = reader.get_past_trades(
+                from_date.isoformat(), end.isoformat(), page
+            )
+            diagnostic = reader.last_http_diagnostics[-1]
+            status = diagnostic["http_status"]
+            chunk_rows.extend(page_rows)
+            logger.info(
+                "dhan_trade_backfill_chunk",
+                extra={
+                    "dhan_trade_chunk": {
+                        "url": diagnostic["url"],
+                        "date_range": f"{from_date.isoformat()}..{end.isoformat()}",
+                        "http_status": status,
+                        "page": page,
+                        "record_count": len(page_rows),
+                    }
+                },
+            )
+        except DhanAccountRequestError as error:
+            diagnostic = reader.last_http_diagnostics[-1] if reader.last_http_diagnostics else {}
+            status = diagnostic.get("http_status")
+            failure = error.code
+            logger.warning(
+                "dhan_trade_backfill_chunk_failed",
+                extra={
+                    "dhan_trade_chunk": {
+                        "url": diagnostic.get("url"),
+                        "date_range": f"{from_date.isoformat()}..{end.isoformat()}",
+                        "http_status": status,
+                        "page": page,
+                        "reason": failure,
+                    }
+                },
+            )
+            break
+        page_count += 1
+        if not page_rows:
+            break
+        page += 1
+
+    if not failure:
+        try:
+            all_rows = _normalize_dhan_trades(
+                chunk_rows, _user_id(active_session), now, source="dhan"
+            )
+        except BrokerAdapterError as error:
+            failure = "invalid_provider_response"
+            _log_dhan_sync_failure(
+                "trade_backfill",
+                error,
+                "Trade history chunk could not be normalized.",
+            )
+
+    year_counts: dict[int, int] = {}
+    for row in chunk_rows:
+        trade_at = row.get("exchangeTime", row.get("updateTime", row.get("createTime")))
+        try:
+            trade_year = _dhan_timestamp(trade_at, "trade time").year
+        except BrokerAdapterError:
+            continue
+        year_counts[trade_year] = year_counts.get(trade_year, 0) + 1
+
+    for cursor_year in range(from_date.year, end.year + 1):
+        chunk_start = max(from_date, date(cursor_year, 1, 1))
+        chunk_end = min(end, date(cursor_year, 12, 31))
+        year_rows = [row for row in all_rows if row.trade_at.year == cursor_year]
+        yearly_results.append(
+            {
+                "year": cursor_year,
+                "from_date": chunk_start.isoformat(),
+                "to_date": chunk_end.isoformat(),
+                "http_status": status,
+                "pages": page_count,
+                "records_received": year_counts.get(cursor_year, 0),
+                "status": "failed" if failure else "succeeded",
+                **({"reason": failure} if failure else {}),
+                "trades_imported": len(year_rows),
+            }
+        )
+
+    if any(result["status"] == "failed" for result in yearly_results):
+        if not all_rows:
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "dhan_trade_backfill_failed", "years": yearly_results},
+            )
+    inserted, updated = _upsert_dhan_trades(db, all_rows)
+    db.commit()
+    return {
+        "source": "dhan",
+        "from_date": from_date,
+        "to_date": end,
+        "inserted": inserted,
+        "updated": updated,
+        "years": yearly_results,
+    }
+
+
+@router.post("/dhan/trades/import-csv")
+def import_dhan_trade_csv(
+    payload: DhanTradeCsvRequest,
+    response: Response,
+    active_session: UserSession = Depends(require_broker_access),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    if db.scalar(
+        select(BrokerCredential).where(
+            BrokerCredential.user_id == _user_id(active_session),
+            BrokerCredential.broker == "dhan",
+        )
+    ) is None:
+        raise HTTPException(status_code=409, detail="Connect Dhan before importing its tradebook")
+    try:
+        records = list(csv.DictReader(io.StringIO(payload.csv_content)))
+    except csv.Error as error:
+        raise HTTPException(status_code=422, detail="Dhan CSV could not be parsed") from error
+    if not records:
+        raise HTTPException(status_code=422, detail="Dhan CSV contains no trade rows")
+
+    normalized_rows: list[dict[str, Any]] = []
+    for row_number, record in enumerate(records, start=2):
+        normalized = {
+            re.sub(r"[^a-z0-9]", "", str(key or "").casefold()): value
+            for key, value in record.items()
+            if key is not None
+        }
+
+        def value(*names: str) -> str | None:
+            return next(
+                (
+                    str(normalized[name]).strip()
+                    for name in names
+                    if normalized.get(name) is not None
+                    and str(normalized[name]).strip()
+                ),
+                None,
+            )
+
+        trade_id = value("exchangetradeid", "tradeid", "tradeidnumber")
+        quantity = value("tradedquantity", "quantity", "qty")
+        price = value("tradedprice", "price", "rate")
+        side = value("transactiontype", "side", "buysell")
+        trade_time = value("exchangetime", "tradetime", "tradedatetime")
+        if trade_time is None:
+            trade_date = value("tradedate", "exchangedate", "date")
+            time_value = value("time")
+            trade_time = f"{trade_date} {time_value}" if trade_date and time_value else trade_date
+        if not all((trade_id, quantity, price, side, trade_time)):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Dhan CSV row {row_number} is missing trade ID, side, quantity, price, or time",
+            )
+        item: dict[str, Any] = {
+            "exchangeTradeId": trade_id,
+            "orderId": value("orderid"),
+            "exchangeOrderId": value("exchangeorderid"),
+            "transactionType": side.upper(),
+            "exchangeSegment": value("exchangesegment", "exchange"),
+            "securityId": value("securityid"),
+            "tradingSymbol": value("tradingsymbol", "symbol", "scrip"),
+            "customSymbol": value("customsymbol"),
+            "tradedQuantity": quantity,
+            "tradedPrice": price,
+            "exchangeTime": trade_time,
+        }
+        charges = value("charges", "totalcharges", "totalchargesandtaxes")
+        if charges is not None:
+            item["charges"] = charges
+        else:
+            for key, aliases in {
+                "sebiTax": ("sebitax",),
+                "stt": ("stt",),
+                "brokerageCharges": ("brokeragecharges", "brokerage"),
+                "serviceTax": ("servicetax", "gst"),
+                "exchangeTransactionCharges": ("exchangetransactioncharges",),
+                "stampDuty": ("stampduty",),
+            }.items():
+                candidate = value(*aliases)
+                if candidate is not None:
+                    item[key] = candidate
+        normalized_rows.append(item)
+
+    now = _now()
+    try:
+        mirror_rows = _normalize_dhan_trades(
+            normalized_rows, _user_id(active_session), now, source="dhan_csv"
+        )
+    except (BrokerAdapterError, InvalidOperation, ValueError) as error:
+        raise HTTPException(status_code=422, detail="Dhan CSV contains invalid trade data") from error
+    inserted, updated = _upsert_dhan_trades(db, mirror_rows)
+    db.commit()
+    return {
+        "source": "dhan_csv",
+        "records_received": len(records),
+        "inserted": inserted,
+        "updated": updated,
+    }
+
+
 @router.get("/dhan/transactions")
 def get_dhan_transaction_mirror(
     response: Response,
@@ -1316,7 +1647,9 @@ def get_dhan_transaction_mirror(
         "currency": "INR",
         "trades": [
             {
-                "trade_id": row.trade_id,
+                "id": str(row.id),
+                "trade_id": row.provider_trade_id or row.trade_id,
+                "exchange_order_id": row.exchange_order_id,
                 "order_id": row.order_id,
                 "symbol": row.symbol,
                 "security_id": row.security_id,

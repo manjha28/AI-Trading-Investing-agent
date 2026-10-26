@@ -26,6 +26,8 @@ type IndicatorSeries = Record<string, IndicatorPoint[]>;
 
 type Props = {
   bars: Candle[];
+  liveBar?: Candle | null;
+  tickSize?: string | null;
   currency: string;
   interval: string;
   preferredSource?: string | null;
@@ -74,6 +76,44 @@ const INDICATOR_WARMUP_BARS: Record<string, number> = {
   atr_14: 14,
 };
 
+function quantizePrice(value: string, tickSize: string | null | undefined): string {
+  if (!tickSize || !/^-?\d+(?:\.\d+)?$/.test(value) || !/^\d+(?:\.\d+)?$/.test(tickSize)) {
+    return value;
+  }
+  const scale = Math.max(
+    value.split('.')[1]?.length ?? 0,
+    tickSize.split('.')[1]?.length ?? 0,
+  );
+  const units = (raw: string) => {
+    const [whole, fraction = ''] = raw.split('.');
+    return BigInt(`${whole}${fraction.padEnd(scale, '0')}`);
+  };
+  const priceUnits = units(value);
+  const tickUnits = units(tickSize);
+  if (tickUnits <= 0n) return value;
+  const quotient = priceUnits / tickUnits;
+  const remainder = priceUnits % tickUnits;
+  const rounded = (
+    remainder * 2n >= tickUnits ? quotient + 1n : quotient
+  ) * tickUnits;
+  const sign = rounded < 0n ? '-' : '';
+  const digits = (rounded < 0n ? -rounded : rounded).toString().padStart(scale + 1, '0');
+  return scale
+    ? `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`
+    : `${sign}${digits}`;
+}
+
+function compareDecimals(left: string, right: string): number {
+  const scale = Math.max(left.split('.')[1]?.length ?? 0, right.split('.')[1]?.length ?? 0);
+  const units = (raw: string) => {
+    const [whole, fraction = ''] = raw.split('.');
+    return BigInt(`${whole}${fraction.padEnd(scale, '0')}`);
+  };
+  const leftUnits = units(left);
+  const rightUnits = units(right);
+  return leftUnits === rightUnits ? 0 : leftUnits > rightUnits ? 1 : -1;
+}
+
 function price(value: number, currency: string) {
   if (currency.length !== 3) {
     return `${new Intl.NumberFormat('en-US', {
@@ -91,6 +131,8 @@ function price(value: number, currency: string) {
 
 export function CandleChart({
   bars,
+  liveBar = null,
+  tickSize = null,
   currency,
   interval,
   preferredSource,
@@ -110,6 +152,15 @@ export function CandleChart({
   const olderCallbackRef = useRef(onLoadOlder);
   const loadingOlderRef = useRef(loadingOlder);
   const hasOlderRef = useRef(hasOlder);
+  const liveBarRef = useRef<Candle | null>(null);
+  const liveTimerRef = useRef<number | null>(null);
+  const liveConfigRef = useRef({ bars, interval, tickSize });
+  const liveCandleRef = useRef<{
+    time: number;
+    open: string;
+    high: string;
+    low: string;
+  } | null>(null);
   const userNavigatedRef = useRef(false);
   const [chartMode, setChartMode] = useState<'candles' | 'line'>('candles');
   const [enabledIndicators, setEnabledIndicators] = useState<string[]>(INITIAL_INDICATORS);
@@ -119,6 +170,7 @@ export function CandleChart({
   olderCallbackRef.current = onLoadOlder;
   loadingOlderRef.current = loadingOlder;
   hasOlderRef.current = hasOlder;
+  liveConfigRef.current = { bars, interval, tickSize };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -220,6 +272,10 @@ export function CandleChart({
       indicatorSeriesRef.current.clear();
     };
   }, [currency, interval]);
+
+  useEffect(() => {
+    liveCandleRef.current = null;
+  }, [bars, interval]);
 
   const inferredSeriesBars = Math.max(
     0,
@@ -355,6 +411,7 @@ export function CandleChart({
       low: Number(bar.low),
       close: Number(bar.close),
     }));
+    const visibleRange = chart.timeScale().getVisibleLogicalRange();
     candleSeries.setData(data);
     lineSeries.setData(data.map(({ time, close }) => ({ time, value: close })));
     volumeSeries.setData(
@@ -375,11 +432,114 @@ export function CandleChart({
       value: Number(point.value),
       color: Number(point.value) >= 0 ? '#3fd99a99' : '#ef777799',
     })));
-    chart.timeScale().setVisibleRange({
-      from: data[0].time,
-      to: data[data.length - 1].time,
-    });
+    if (visibleRange) {
+      chart.timeScale().setVisibleLogicalRange(visibleRange);
+    } else {
+      chart.timeScale().setVisibleRange({
+        from: data[0].time,
+        to: data[data.length - 1].time,
+      });
+    }
   }, [bars, indicatorSeries, preferredSource]);
+
+  useEffect(() => {
+    if (!liveBar) return;
+    liveBarRef.current = liveBar;
+    if (liveTimerRef.current !== null) return;
+    liveTimerRef.current = window.setTimeout(() => {
+      liveTimerRef.current = null;
+      const tick = liveBarRef.current;
+      const config = liveConfigRef.current;
+      const candleSeries = candleSeriesRef.current;
+      if (!tick || !candleSeries || !config.tickSize || config.bars.length === 0) return;
+      const latestBar = config.bars.reduce((latest, bar) => (
+        new Date(bar.timestamp).getTime() > new Date(latest.timestamp).getTime()
+          ? bar
+          : latest
+      ));
+      const tickTimestamp = new Date(tick.timestamp).getTime();
+      if (!Number.isFinite(tickTimestamp)) return;
+      const intervalMs: Record<string, number> = {
+        '1m': 60_000,
+        '5m': 300_000,
+        '15m': 900_000,
+        '1h': 3_600_000,
+      };
+      let bucketTimestamp = tickTimestamp;
+      if (config.interval === '1d') {
+        const istOffset = 330 * 60_000;
+        const tickDay = new Date(tickTimestamp + istOffset).toISOString().slice(0, 10);
+        const latestDay = new Date(
+          new Date(latestBar.timestamp).getTime() + istOffset,
+        ).toISOString().slice(0, 10);
+        if (tickDay === latestDay) bucketTimestamp = new Date(latestBar.timestamp).getTime();
+        else bucketTimestamp = new Date(`${tickDay}T00:00:00.000Z`).getTime();
+      } else {
+        const duration = intervalMs[config.interval];
+        if (!duration) return;
+        const istOffset = 330 * 60_000;
+        bucketTimestamp = Math.floor((tickTimestamp + istOffset) / duration) * duration - istOffset;
+      }
+      const latestTimestamp = new Date(latestBar.timestamp).getTime();
+      if (bucketTimestamp < latestTimestamp) return;
+      const previousLiveCandle = liveCandleRef.current;
+      const sameBucket = bucketTimestamp === latestTimestamp
+        || previousLiveCandle?.time === bucketTimestamp;
+      const closeText = quantizePrice(tick.close, config.tickSize);
+      const previousHigh = sameBucket && previousLiveCandle?.time === bucketTimestamp
+        ? previousLiveCandle.high
+        : latestBar.high;
+      const previousLow = sameBucket && previousLiveCandle?.time === bucketTimestamp
+        ? previousLiveCandle.low
+        : latestBar.low;
+      const previousOpen = sameBucket && previousLiveCandle?.time === bucketTimestamp
+        ? previousLiveCandle.open
+        : latestBar.open;
+      const tickHigh = config.interval === '1d' ? tick.high : tick.close;
+      const tickLow = config.interval === '1d' ? tick.low : tick.close;
+      const highCandidate = sameBucket && compareDecimals(previousHigh, tickHigh) > 0
+        ? previousHigh
+        : tickHigh;
+      const lowCandidate = sameBucket && compareDecimals(previousLow, tickLow) < 0
+        ? previousLow
+        : tickLow;
+      const highText = quantizePrice(
+        compareDecimals(highCandidate, closeText) < 0 ? closeText : highCandidate,
+        config.tickSize,
+      );
+      const lowText = quantizePrice(
+        compareDecimals(lowCandidate, closeText) > 0 ? closeText : lowCandidate,
+        config.tickSize,
+      );
+      const openText = sameBucket
+        ? previousOpen
+        : config.interval === '1d'
+          ? quantizePrice(tick.open, config.tickSize)
+          : closeText;
+      liveCandleRef.current = {
+        time: bucketTimestamp,
+        open: openText,
+        high: highText,
+        low: lowText,
+      };
+      const open = Number(openText);
+      const high = Number(highText);
+      const low = Number(lowText);
+      const close = Number(closeText);
+      const time = Math.floor(bucketTimestamp / 1000) as Time;
+      candleSeries.update({ time, open, high, low, close });
+      lineSeriesRef.current?.update({ time, value: close });
+      volumeSeriesRef.current?.update({
+        time,
+        value: Number(tick.volume),
+        color: close >= open ? '#3fd99a66' : '#ef777766',
+      });
+    }, 150);
+  }, [bars, interval, liveBar, tickSize]);
+
+  useEffect(() => () => {
+    if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current);
+  }, []);
 
   useEffect(() => {
     candleSeriesRef.current?.applyOptions({ visible: chartMode === 'candles' });

@@ -37,6 +37,7 @@ MAX_RESPONSE_BYTES = 32_000_000
 MAX_ANGEL_ONE_MASTER_BYTES = 64_000_000
 _YFINANCE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yfinance")
 _YFINANCE_COOLDOWN_SECONDS = 60.0
+_YFINANCE_RATE_LIMIT_COOLDOWN_SECONDS = 900.0
 _yfinance_cooldown_lock = threading.Lock()
 _yfinance_cooldown_until = 0.0
 logger = logging.getLogger(__name__)
@@ -239,6 +240,7 @@ class DhanV2Adapter:
         "15m": "15",
         "25m": "25",
         "1h": "60",
+        "60m": "60",
     }
 
     def __init__(self, tokens: dict[str, str]):
@@ -266,14 +268,24 @@ class DhanV2Adapter:
             )
         if exchange_segment not in {"NSE_EQ", "BSE_EQ"}:
             raise MarketDataProviderError("invalid_instrument_mapping")
+        start_local = start.astimezone(ZoneInfo("Asia/Kolkata"))
+        end_local = end.astimezone(ZoneInfo("Asia/Kolkata"))
         body: dict[str, Any] = {
             "securityId": security_id,
             "exchangeSegment": exchange_segment,
             "instrument": "EQUITY",
             "expiryCode": 0,
             "oi": False,
-            "fromDate": start.date().isoformat(),
-            "toDate": end.date().isoformat(),
+            "fromDate": (
+                start_local.strftime("%Y-%m-%d %H:%M:%S")
+                if interval != "1d"
+                else start_local.date().isoformat()
+            ),
+            "toDate": (
+                end_local.strftime("%Y-%m-%d %H:%M:%S")
+                if interval != "1d"
+                else end_local.date().isoformat()
+            ),
         }
         if interval == "1d":
             path = "/charts/historical"
@@ -324,10 +336,10 @@ class DhanV2Adapter:
                     },
                 )
         except httpx.TimeoutException:
-            self._record_http_diagnostic(url, None, None, started)
+            self._record_http_diagnostic(url, None, None, started, body)
             raise MarketDataProviderError("provider_timeout") from None
         except httpx.TransportError:
-            self._record_http_diagnostic(url, None, None, started)
+            self._record_http_diagnostic(url, None, None, started, body)
             raise MarketDataProviderError("provider_network_error") from None
         response_body = response.text
         self._record_http_diagnostic(
@@ -335,24 +347,49 @@ class DhanV2Adapter:
             response.status_code,
             response_body,
             started,
+            body,
+        )
+        safe_response_body = _redact_diagnostic_text(
+            response_body[:500],
+            (self.access_token, self.client_id),
+        )
+        safe_request_url = _redact_diagnostic_url(str(response.request.url))
+        safe_request_body = _redact_diagnostic_text(
+            json.dumps(body, separators=(",", ":"), sort_keys=True),
+            (self.access_token, self.client_id),
         )
         if response.status_code == 429:
             raise MarketDataProviderError(
                 "provider_rate_limit_exceeded",
                 status_code=429,
                 retry_after=response.headers.get("Retry-After"),
+                response_body=safe_response_body,
+                request_url=safe_request_url,
+                request_body=safe_request_body,
             )
         if response.status_code in {401, 403}:
             raise MarketDataProviderError(
-                "provider_authentication_failed", status_code=response.status_code
+                "provider_authentication_failed",
+                status_code=response.status_code,
+                response_body=safe_response_body,
+                request_url=safe_request_url,
+                request_body=safe_request_body,
             )
         if response.status_code >= 500:
             raise MarketDataProviderError(
-                "provider_server_error", status_code=response.status_code
+                "provider_server_error",
+                status_code=response.status_code,
+                response_body=safe_response_body,
+                request_url=safe_request_url,
+                request_body=safe_request_body,
             )
         if response.status_code >= 400:
             raise MarketDataProviderError(
-                "provider_request_failed", status_code=response.status_code
+                "provider_request_failed",
+                status_code=response.status_code,
+                response_body=safe_response_body,
+                request_url=safe_request_url,
+                request_body=safe_request_body,
             )
         try:
             payload = response.json()
@@ -363,7 +400,13 @@ class DhanV2Adapter:
         if str(payload.get("status", "")).casefold() in {
             "failure", "failed", "false",
         }:
-            raise MarketDataProviderError("provider_request_failed")
+            raise MarketDataProviderError(
+                "provider_request_failed",
+                status_code=response.status_code,
+                response_body=safe_response_body,
+                request_url=safe_request_url,
+                request_body=safe_request_body,
+            )
         return payload
 
     def _record_http_diagnostic(
@@ -372,10 +415,19 @@ class DhanV2Adapter:
         status: int | None,
         body: str | None,
         started: float,
+        request_body: dict[str, Any] | None = None,
     ) -> None:
         entry = {
             "url": _redact_diagnostic_url(url),
             "http_status": status,
+            "request_body": (
+                _redact_diagnostic_text(
+                    json.dumps(request_body, separators=(",", ":"), sort_keys=True),
+                    (self.access_token, self.client_id),
+                )
+                if request_body is not None
+                else None
+            ),
             "response_body": (
                 _redact_diagnostic_text(
                     body[:500],
@@ -1783,7 +1835,12 @@ class YahooFinanceProvider(_HttpProvider):
                         category = "provider_request_failed"
                     with _yfinance_cooldown_lock:
                         _yfinance_cooldown_until = (
-                            time.monotonic() + _YFINANCE_COOLDOWN_SECONDS
+                            time.monotonic()
+                            + (
+                                _YFINANCE_RATE_LIMIT_COOLDOWN_SECONDS
+                                if category == "rate_limited"
+                                else _YFINANCE_COOLDOWN_SECONDS
+                            )
                         )
                     raise MarketDataProviderError(
                         category

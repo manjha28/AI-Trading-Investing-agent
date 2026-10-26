@@ -785,3 +785,122 @@ tbody tr:last-child td { border-bottom: 0; }
   .journal-calendar-day { min-height: 42px; padding: 4px; }
   .journal-calendar-controls strong { min-width: 90px; }
 }
+.journal-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.journal-import-button {
+  cursor: pointer;
+}
+
+.journal-import-button input {
+  display: none;
+}
+
+.journal-day-pnl {
+  font-variant-numeric: tabular-nums;
+}
+
+.watchlist-master-detail {
+  display: grid;
+  grid-template-columns: minmax(290px, .85fr) minmax(0, 1.6fr);
+  align-items: stretch;
+  gap: 14px;
+  margin-top: 14px;
+}
+.watchlist-rail, .watchlist-detail { min-width: 0; }
+.watchlist-management { display: grid; gap: 7px; margin-bottom: 10px; }
+.watchlist-management label { display: grid; gap: 4px; color: var(--muted); font-size: 9px; }
+.watchlist-management select, .watchlist-management input {
+  min-width: 0;
+  min-height: 32px;
+  padding: 6px 8px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #0e131b;
+  font-size: 10px;
+}
+.watchlist-management form { display: flex; gap: 5px; }
+.watchlist-management form input { flex: 1; }
+.watchlist-management form button, .watchlist-remove {
+  display: grid;
+  width: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #94a1ad;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #0e131b;
+}
+.watchlist-management form button:hover, .watchlist-remove:hover {
+  color: var(--red);
+  border-color: #5a2b2b;
+}
+.watchlist-instrument-list { display: grid; }
+.watchlist-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 31px;
+  align-items: stretch;
+  gap: 4px;
+  border-top: 1px solid #1b232d;
+}
+.watchlist-row-heading {
+  grid-template-columns: minmax(0, 1.3fr) minmax(62px, .9fr) minmax(70px, .9fr) minmax(42px, .6fr);
+  padding: 7px 4px;
+  color: #8493a3;
+  font-family: var(--mono);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+.watchlist-instrument-button {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1.3fr) minmax(62px, .9fr) minmax(70px, .9fr) minmax(42px, .6fr);
+  align-items: center;
+  gap: 4px;
+  padding: 9px 4px;
+  color: var(--ink);
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.watchlist-instrument-button:hover, .watchlist-instrument-button.selected { background: #111923; }
+.watchlist-instrument-button.selected { box-shadow: inset 2px 0 #3fd99a; }
+.watchlist-symbol { display: grid; gap: 3px; }
+.watchlist-symbol strong { font-size: 10px; font-weight: 600; }
+.watchlist-symbol small { color: var(--muted); font-size: 8px; }
+.watchlist-number { overflow: hidden; font-family: var(--mono); font-size: 9px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.watchlist-detail { display: flex; flex-direction: column; }
+.watchlist-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.watchlist-detail-header h2 { margin: 0 0 4px; font-size: 17px; }
+.watchlist-detail-header > div:first-child > span { color: var(--muted); font-size: 9px; }
+.watchlist-detail-price { display: grid; gap: 5px; justify-items: end; text-align: right; }
+.watchlist-detail-price strong { font-family: var(--mono); font-size: 19px; font-variant-numeric: tabular-nums; font-weight: 500; }
+.watchlist-detail-price small { color: var(--muted); font-size: 8px; }
+.watchlist-detail-tabs { display: flex; gap: 4px; overflow-x: auto; margin: 14px -2px 10px; border-bottom: 1px solid var(--line); }
+.watchlist-detail-tabs button { padding: 8px 10px; color: var(--muted); border: 0; border-bottom: 2px solid transparent; background: transparent; font-size: 9px; white-space: nowrap; }
+.watchlist-detail-tabs button:hover, .watchlist-detail-tabs button.active { color: var(--ink); }
+.watchlist-detail-tabs button.active { border-bottom-color: var(--green); }
+.watchlist-chart-content { min-height: 300px; }
+.watchlist-financial-content { min-height: 300px; overflow: hidden; }
+.watchlist-financial-content .section-heading { margin-bottom: 8px; }
+.watchlist-financial-content .section-heading h3 { margin: 0; font-size: 13px; }
+.watchlist-financial-content .market-provenance { margin: 6px 0 12px; }
+.watchlist-financial-content .table-scroll { max-height: 420px; }
+.watchlist-chart-content .table-empty, .watchlist-tab-placeholder { color: var(--muted); }
+.watchlist-tab-placeholder { display: grid; min-height: 250px; align-content: center; justify-items: center; gap: 8px; text-align: center; }
+.watchlist-tab-placeholder strong { color: var(--ink); font-size: 12px; }
+.watchlist-tab-placeholder span { font-size: 9px; }
+
+@media (max-width: 900px) {
+  .watchlist-master-detail { grid-template-columns: minmax(250px, .9fr) minmax(0, 1.3fr); }
+}
+
+@media (max-width: 760px) {
+  .watchlist-master-detail { grid-template-columns: minmax(0, 1fr); }
+  .watchlist-detail { min-height: 360px; }
+}

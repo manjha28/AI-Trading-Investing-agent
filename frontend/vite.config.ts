@@ -32,6 +32,7 @@ export default defineConfig(() => {
 				'/api': {
 					target: proxyTarget,
 					changeOrigin: true,
+					ws: true,
 				},
 				'/health': {
 					target: proxyTarget,
@@ -51,6 +52,7 @@ export default defineConfig(() => {
 				'/api': {
 					target: proxyTarget,
 					changeOrigin: true,
+					ws: true,
 				},
 				'/health': {
 					target: proxyTarget,

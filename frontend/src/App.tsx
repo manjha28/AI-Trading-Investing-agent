@@ -220,8 +220,6 @@ export default function App() {
           </>
         ) : activeView === 'market-data' ? (
           <MarketDataPage workspace={{
-            addInstrumentToWatchlist: workspace.addInstrumentToWatchlist,
-            addSelectedInstrumentToWatchlist: workspace.addSelectedInstrumentToWatchlist,
             attachSelectedInstrument: workspace.attachSelectedInstrument,
             currency: workspace.currency,
             hasOlderMarketHistory: workspace.hasOlderMarketHistory,
@@ -240,7 +238,6 @@ export default function App() {
             marketQuery: workspace.marketQuery,
             marketQuote: workspace.marketQuote,
             marketStart: workspace.marketStart,
-            removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist,
             searchMarketInstruments: workspace.searchMarketInstruments,
             searchingMarket: workspace.searchingMarket,
             selectMarketInstrument: workspace.selectMarketInstrument,
@@ -252,10 +249,9 @@ export default function App() {
             setMarketStart: workspace.setMarketStart,
             summary: workspace.summary,
             valuation: workspace.valuation,
-            watchlist: workspace.watchlist,
           }} />
         ) : activeView === 'journal' ? (
-          <JournalPage workspace={{cancelEditingTrade: workspace.cancelEditingTrade, currency: workspace.currency, editingTrade: workspace.editingTrade, journalAnalytics: workspace.journalAnalytics, journalAssetClass: workspace.journalAssetClass, journalBreakdown: workspace.journalBreakdown, journalCurrency: workspace.journalCurrency, journalHasExit: workspace.journalHasExit, journalTrades: workspace.journalTrades, removeJournalTrade: workspace.removeJournalTrade, setJournalAssetClass: workspace.setJournalAssetClass, setJournalCurrency: workspace.setJournalCurrency, setJournalHasExit: workspace.setJournalHasExit, startEditingTrade: workspace.startEditingTrade, submitJournalTrade: workspace.submitJournalTrade, valuation: workspace.valuation}} />
+          <JournalPage workspace={{cancelEditingTrade: workspace.cancelEditingTrade, currency: workspace.currency, editingTrade: workspace.editingTrade, journalAnalytics: workspace.journalAnalytics, journalAssetClass: workspace.journalAssetClass, journalBreakdown: workspace.journalBreakdown, journalCurrency: workspace.journalCurrency, journalHasExit: workspace.journalHasExit, journalTrades: workspace.journalTrades, removeJournalTrade: workspace.removeJournalTrade, refreshJournalTrades: workspace.refreshJournalTrades, setJournalAssetClass: workspace.setJournalAssetClass, setJournalCurrency: workspace.setJournalCurrency, setJournalHasExit: workspace.setJournalHasExit, startEditingTrade: workspace.startEditingTrade, submitJournalTrade: workspace.submitJournalTrade, valuation: workspace.valuation}} />
         ) : portfolios.length === 0 ? (
           <PortfolioSetupPage workspace={{createPortfolio: workspace.createPortfolio}} />
         ) : activeView === 'overview' ? (

@@ -24,6 +24,8 @@ from app.config import settings
 from app.market_data import HistoricalBar
 
 logger = logging.getLogger(__name__)
+_OPTION_CHAIN_REQUEST_LOCK = threading.Lock()
+_OPTION_CHAIN_LAST_REQUEST = 0.0
 
 _SENSITIVE_PROVIDER_FIELD = re.compile(
     r"(?i)\b(access[-_ ]?token|refresh[-_ ]?token|tokenid|token|authorization|"
@@ -140,6 +142,33 @@ def _wait_for_dhan_market_data() -> None:
         _dhan_next_request_at = now + delay + 1.0
     if delay:
         time.sleep(delay)
+
+
+def _dhan_feed_url(access_token: str, client_id: str) -> str:
+    query = urlencode({
+        "version": "2",
+        "token": access_token,
+        "clientId": client_id,
+        "authType": "2",
+    })
+    return f"wss://api-feed.dhan.co?{query}"
+
+
+def _dhan_depth_feed_url(access_token: str, client_id: str) -> str:
+    query = urlencode({
+        "token": access_token,
+        "clientId": client_id,
+        "authType": "2",
+    })
+    return f"wss://depth-api-feed.dhan.co/twentydepth?{query}"
+
+
+def _safe_dhan_close_reason(reason: str | None, *secrets: str) -> str:
+    safe_reason = reason or ""
+    for secret in secrets:
+        if secret:
+            safe_reason = safe_reason.replace(secret, "[REDACTED]")
+    return "".join(char if char.isprintable() else " " for char in safe_reason)[:160]
 
 
 def _now() -> datetime:
@@ -597,6 +626,12 @@ class DhanAdapter(BrokerAdapter):
     _equity_index_cache: tuple[
         float, dict[tuple[str, str], dict[str, str]]
     ] | None = None
+    _market_quote_cache: dict[
+        tuple[str, str, tuple[str, ...], str],
+        tuple[float, dict[str, HistoricalBar]],
+    ] = {}
+    _market_quote_cache_lock = threading.Lock()
+    _market_quote_cache_seconds = 1.0
 
     @property
     def api_key(self) -> str | None:
@@ -678,6 +713,7 @@ class DhanAdapter(BrokerAdapter):
     def account_headers(self, access_token: str, tokens: Mapping[str, str]) -> dict[str, str]:
         return {
             "access-token": access_token,
+            "client-id": tokens["client_id"],
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -758,13 +794,28 @@ class DhanAdapter(BrokerAdapter):
                     raise BrokerAdapterError(
                         "Dhan instrument master has an unexpected format"
                     )
+                master_fields = (
+                    "EXCH_ID",
+                    "SEGMENT",
+                    "SECURITY_ID",
+                    "SYMBOL_NAME",
+                    "UNDERLYING_SYMBOL",
+                    "INSTRUMENT",
+                    "SERIES",
+                    "ISIN",
+                    "LOT_SIZE",
+                    "TICK_SIZE",
+                    "LISTING_DATE",
+                    "LIST_DATE",
+                    "LISTINGDATE",
+                    "SM_EXPIRY_DATE",
+                    "EXPIRY_DATE",
+                    "EXPIRY",
+                )
                 records = [
-                    row
+                    {field: row.get(field, "") or "" for field in master_fields}
                     for row in reader
-                    if row.get("EXCH_ID", "").upper() in {"NSE", "BSE"}
-                    and row.get("SEGMENT", "").upper() == "E"
-                    and row.get("INSTRUMENT", "").upper() == "EQUITY"
-                    and row.get("SERIES", "").upper() == "EQ"
+                    if row.get("EXCH_ID", "").strip()
                     and row.get("SECURITY_ID", "").strip().isdigit()
                 ]
         except BrokerAdapterError:
@@ -776,6 +827,69 @@ class DhanAdapter(BrokerAdapter):
         cls._scrip_master_cache = (now, records)
         cls._equity_index_cache = None
         return records
+
+    @classmethod
+    def get_instrument_master_details(
+        cls,
+        provider_instrument_id: str,
+        venue: str,
+        symbol: str,
+    ) -> dict[str, str | None] | None:
+        exchange_aliases = {
+            "NSE": "NSE",
+            "XNSE": "NSE",
+            "NSI": "NSE",
+            "NSE_EQ": "NSE",
+            "BSE": "BSE",
+            "XBOM": "BSE",
+            "BOM": "BSE",
+            "BSE_EQ": "BSE",
+        }
+        exchange = exchange_aliases.get(venue.upper())
+        security_id = provider_instrument_id.split("|", maxsplit=1)[0].strip()
+        if exchange is None or not security_id.isdigit():
+            return None
+        candidates = [
+            row
+            for row in cls._scrip_master()
+            if row.get("EXCH_ID", "").strip().upper() == exchange
+            and row.get("SECURITY_ID", "").strip() == security_id
+        ]
+        normalized_symbol = symbol.strip().upper()
+        row = next(
+            (
+                candidate
+                for candidate in candidates
+                if normalized_symbol
+                in {
+                    candidate.get("SYMBOL_NAME", "").strip().upper(),
+                    candidate.get("UNDERLYING_SYMBOL", "").strip().upper(),
+                }
+            ),
+            candidates[0] if candidates else None,
+        )
+        if row is None:
+            return None
+        return {
+            "isin": row.get("ISIN") or None,
+            "exchange": row.get("EXCH_ID") or None,
+            "segment": row.get("SEGMENT") or None,
+            "instrument_type": row.get("INSTRUMENT") or None,
+            "lot_size": row.get("LOT_SIZE") or None,
+            "tick_size": row.get("TICK_SIZE") or None,
+            "listing_date": (
+                row.get("LISTING_DATE")
+                or row.get("LIST_DATE")
+                or row.get("LISTINGDATE")
+                or None
+            ),
+            "expiry": (
+                row.get("SM_EXPIRY_DATE")
+                or row.get("EXPIRY_DATE")
+                or row.get("EXPIRY")
+                or None
+            ),
+        }
 
     @classmethod
     def _equity_index(cls) -> dict[tuple[str, str], dict[str, str]]:
@@ -869,48 +983,104 @@ class DhanAdapter(BrokerAdapter):
         exchange_segment: str,
         security_id: str,
     ) -> HistoricalBar:
-        _wait_for_dhan_market_data()
-        payload = _request(
-            "POST",
-            f"{self.api_root}/v2/marketfeed/quote",
-            diagnostic_stage="market_quote_api_request",
-            headers={
-                "access-token": access_token,
-                "client-id": tokens["client_id"],
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            json={exchange_segment: [int(security_id)]},
+        quotes = self.get_market_quotes(
+            access_token, tokens, exchange_segment, [security_id]
         )
-        self._check_market_data_payload(payload)
-        if payload.get("status") != "success":
+        quote = quotes.get(str(security_id))
+        if quote is None:
             raise BrokerAdapterError(
-                "Dhan market quote response was unsuccessful",
+                "Dhan market quote response did not include the requested instrument",
                 category="invalid_provider_response",
             )
-        data = payload.get("data")
-        segment_data = data.get(exchange_segment) if isinstance(data, dict) else None
-        record = segment_data.get(security_id) if isinstance(segment_data, dict) else None
-        ohlc = record.get("ohlc") if isinstance(record, dict) else None
-        if not isinstance(record, dict) or not isinstance(ohlc, dict):
-            raise BrokerAdapterError("Dhan market quote response has an unexpected format")
-        try:
-            raw_timestamp = record["last_trade_time"]
-            timestamp = datetime.strptime(
-                str(raw_timestamp), "%d/%m/%Y %H:%M:%S"
-            ).replace(tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc)
-            return HistoricalBar(
-                timestamp=timestamp,
-                open=Decimal(str(ohlc["open"])),
-                high=Decimal(str(ohlc["high"])),
-                low=Decimal(str(ohlc["low"])),
-                close=Decimal(str(record["last_price"])),
-                volume=Decimal(str(record["volume"])),
+        return quote
+
+    def get_market_quotes(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        exchange_segment: str,
+        security_ids: list[str],
+    ) -> dict[str, HistoricalBar]:
+        ids = tuple(sorted(set(str(security_id) for security_id in security_ids)))
+        if not ids:
+            return {}
+        if exchange_segment not in {"NSE_EQ", "BSE_EQ"} or len(ids) > 1000:
+            raise BrokerAdapterError("Dhan market quote batch is invalid")
+        token_fingerprint = hashlib.sha256(access_token.encode()).hexdigest()
+        cache_key = (
+            tokens["client_id"],
+            exchange_segment,
+            ids,
+            token_fingerprint,
+        )
+        with self._market_quote_cache_lock:
+            cached = self._market_quote_cache.get(cache_key)
+            if (
+                cached is not None
+                and time.monotonic() - cached[0] <= self._market_quote_cache_seconds
+            ):
+                return dict(cached[1])
+
+            _wait_for_dhan_market_data()
+            payload = _request(
+                "POST",
+                f"{self.api_root}/v2/marketfeed/quote",
+                diagnostic_stage="market_quote_api_request",
+                headers={
+                    "access-token": access_token,
+                    "client-id": tokens["client_id"],
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                json={exchange_segment: [int(security_id) for security_id in ids]},
             )
-        except (KeyError, ValueError, TypeError, InvalidOperation) as error:
-            raise BrokerAdapterError(
-                "Dhan market quote response is missing valid price or trade-time data"
-            ) from error
+            self._check_market_data_payload(payload)
+            if payload.get("status") != "success":
+                raise BrokerAdapterError(
+                    "Dhan market quote response was unsuccessful",
+                    category="invalid_provider_response",
+                )
+            data = payload.get("data")
+            segment_data = (
+                data.get(exchange_segment) if isinstance(data, dict) else None
+            )
+            if not isinstance(segment_data, dict):
+                raise BrokerAdapterError(
+                    "Dhan market quote response has an unexpected format"
+                )
+            quotes: dict[str, HistoricalBar] = {}
+            for security_id in ids:
+                record = segment_data.get(security_id)
+                if record is None:
+                    record = segment_data.get(int(security_id))
+                ohlc = record.get("ohlc") if isinstance(record, dict) else None
+                if not isinstance(record, dict) or not isinstance(ohlc, dict):
+                    continue
+                try:
+                    raw_timestamp = record["last_trade_time"]
+                    timestamp = datetime.strptime(
+                        str(raw_timestamp), "%d/%m/%Y %H:%M:%S"
+                    ).replace(tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc)
+                    quotes[security_id] = HistoricalBar(
+                        timestamp=timestamp,
+                        open=Decimal(str(ohlc["open"])),
+                        high=Decimal(str(ohlc["high"])),
+                        low=Decimal(str(ohlc["low"])),
+                        close=Decimal(str(record["last_price"])),
+                        volume=Decimal(str(record["volume"])),
+                    )
+                except (KeyError, ValueError, TypeError, InvalidOperation) as error:
+                    raise BrokerAdapterError(
+                        "Dhan market quote response is missing valid price or trade-time data"
+                    ) from error
+            now = time.monotonic()
+            self._market_quote_cache = {
+                key: value
+                for key, value in self._market_quote_cache.items()
+                if now - value[0] <= self._market_quote_cache_seconds
+            }
+            self._market_quote_cache[cache_key] = (now, quotes)
+            return dict(quotes)
 
     def get_historical_bars(
         self,
@@ -922,7 +1092,7 @@ class DhanAdapter(BrokerAdapter):
         start: datetime,
         end: datetime,
     ) -> list[HistoricalBar]:
-        if interval not in {"1d", "1m", "5m", "15m", "1h"}:
+        if interval not in {"1d", "1m", "5m", "15m", "1h", "60m"}:
             raise BrokerAdapterError("Dhan does not support this candle interval")
         if start.utcoffset() is None or end.utcoffset() is None or start >= end:
             raise BrokerAdapterError("Dhan historical request range is invalid")
@@ -955,6 +1125,7 @@ class DhanAdapter(BrokerAdapter):
                 "5m": "5",
                 "15m": "15",
                 "1h": "60",
+                "60m": "60",
             }[interval]
         _wait_for_dhan_market_data()
         payload = _request(
@@ -1032,16 +1203,358 @@ class DhanAdapter(BrokerAdapter):
             opening = struct.unpack_from("<f", packet, 34)[0]
             high = struct.unpack_from("<f", packet, 42)[0]
             low = struct.unpack_from("<f", packet, 46)[0]
+            price_precision = Decimal("0.00000001")
             return HistoricalBar(
                 timestamp=datetime.fromtimestamp(trade_timestamp, timezone.utc),
-                open=Decimal(str(opening)),
-                high=Decimal(str(high)),
-                low=Decimal(str(low)),
-                close=Decimal(str(last_price)),
+                open=Decimal(str(opening)).quantize(price_precision),
+                high=Decimal(str(high)).quantize(price_precision),
+                low=Decimal(str(low)).quantize(price_precision),
+                close=Decimal(str(last_price)).quantize(price_precision),
                 volume=Decimal(volume),
             )
         except (OverflowError, OSError, ValueError, TypeError, InvalidOperation) as error:
             raise BrokerAdapterError("Dhan live feed quote packet contains invalid values") from error
+
+    @staticmethod
+    def decode_market_depth_packet(
+        packet: bytes,
+        exchange_segment: str,
+        security_id: str,
+    ) -> dict[str, Any] | None:
+        segment_codes = {"NSE_EQ": 1, "NSE_FNO": 2, "NSE_CURRENCY": 3, "BSE_EQ": 4,
+                         "MCX_COMM": 5, "BSE_CURRENCY": 7, "BSE_FNO": 8}
+        if len(packet) < 12:
+            raise BrokerAdapterError("Dhan live feed packet has an invalid header")
+        if int.from_bytes(packet[0:2], "little") != len(packet):
+            raise BrokerAdapterError("Dhan live feed packet has an invalid header")
+        if packet[2] == 50:
+            raise BrokerFeedDisconnected("Dhan feed requested a reconnect")
+        if packet[2] not in {41, 51}:
+            return None
+        if (
+            len(packet) != 332
+            or exchange_segment not in segment_codes
+            or packet[3] != segment_codes[exchange_segment]
+            or int.from_bytes(packet[4:8], "little", signed=True) != int(security_id)
+        ):
+            raise BrokerAdapterError("Dhan live feed depth packet does not match its subscription")
+        try:
+            levels = []
+            for level in range(20):
+                offset = 12 + level * 16
+                levels.append({
+                    "price": Decimal(str(struct.unpack_from("<d", packet, offset)[0])),
+                    "quantity": struct.unpack_from("<I", packet, offset + 8)[0],
+                    "orders": struct.unpack_from("<I", packet, offset + 12)[0],
+                })
+            return {
+                "side": "bids" if packet[2] == 41 else "asks",
+                "levels": levels,
+            }
+        except (OverflowError, OSError, ValueError, TypeError, InvalidOperation) as error:
+            raise BrokerAdapterError("Dhan live feed depth packet contains invalid values") from error
+
+    async def stream_watchlist_market_depth(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        initial_subscriptions: Mapping[str, tuple[str, str]],
+        subscription_updates: asyncio.Queue[Mapping[str, tuple[str, str]]],
+        status_callback: Callable[[str], Awaitable[None]],
+    ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        segment_codes = {
+            1: "NSE_EQ",
+            2: "NSE_FNO",
+            3: "NSE_CURRENCY",
+            4: "BSE_EQ",
+            5: "MCX_COMM",
+            7: "BSE_CURRENCY",
+            8: "BSE_FNO",
+        }
+
+        def subscription_items(
+            subscriptions: Mapping[str, tuple[str, str]],
+        ) -> dict[tuple[str, str], str]:
+            return {
+                (segment, str(security_id)): instrument_id
+                for instrument_id, (segment, security_id) in subscriptions.items()
+            }
+
+        def request_message(request_code: int, items: list[tuple[str, str]]) -> str:
+            return json.dumps({
+                "RequestCode": request_code,
+                "InstrumentCount": len(items),
+                "InstrumentList": [
+                    {"ExchangeSegment": segment, "SecurityId": security_id}
+                    for segment, security_id in items
+                ],
+            })
+
+        safe_url = (
+            "wss://depth-api-feed.dhan.co/twentydepth?token=[REDACTED]"
+            "&clientId=[REDACTED]&authType=2"
+        )
+        url = _dhan_depth_feed_url(access_token, tokens["client_id"])
+        current = subscription_items(initial_subscriptions)
+        connection = None
+        logger.info("Dhan depth feed connect attempt url=%s", safe_url)
+        try:
+            async with websocket_connect(
+                url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
+            ) as connection:
+                response = connection.response
+                logger.info(
+                    "Dhan depth feed handshake result=accepted status=%s reason=%s",
+                    response.status_code,
+                    response.reason_phrase,
+                )
+                items = list(current)
+                for start in range(0, len(items), 100):
+                    batch = items[start:start + 100]
+                    await connection.send(request_message(23, batch))
+                logger.info("Dhan depth feed connected subscriptions=%d", len(current))
+                await status_callback("active")
+                snapshots: dict[str, dict[str, Any]] = {}
+                receive_task = asyncio.create_task(connection.recv())
+                update_task = asyncio.create_task(subscription_updates.get())
+                try:
+                    while True:
+                        done, _ = await asyncio.wait(
+                            (receive_task, update_task),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if update_task in done:
+                            desired = subscription_items(update_task.result())
+                            removed = list(current.keys() - desired.keys())
+                            added = list(desired.keys() - current.keys())
+                            for request_code, changed in ((24, removed), (23, added)):
+                                for start in range(0, len(changed), 100):
+                                    await connection.send(
+                                        request_message(request_code, changed[start:start + 100])
+                                    )
+                            for instrument_id in set(current.values()) - set(desired.values()):
+                                snapshots.pop(instrument_id, None)
+                            current = desired
+                            logger.info(
+                                "Dhan depth feed subscriptions updated subscribed=%d "
+                                "unsubscribed=%d total=%d",
+                                len(added),
+                                len(removed),
+                                len(current),
+                            )
+                            if not current:
+                                return
+                            update_task = asyncio.create_task(subscription_updates.get())
+                        if receive_task in done:
+                            message = receive_task.result()
+                            receive_task = asyncio.create_task(connection.recv())
+                            if not isinstance(message, bytes):
+                                continue
+                            offset = 0
+                            while offset < len(message):
+                                if offset + 2 > len(message):
+                                    raise BrokerAdapterError(
+                                        "Dhan live feed depth packet has an invalid length"
+                                    )
+                                packet_length = int.from_bytes(
+                                    message[offset:offset + 2], "little"
+                                )
+                                packet_end = offset + packet_length
+                                if packet_length < 12 or packet_end > len(message):
+                                    raise BrokerAdapterError(
+                                        "Dhan live feed depth packet has an invalid length"
+                                    )
+                                packet = message[offset:packet_end]
+                                offset = packet_end
+                                if packet[2] == 50:
+                                    raise BrokerFeedDisconnected(
+                                        "Dhan depth feed requested a reconnect"
+                                    )
+                                segment = segment_codes.get(packet[3])
+                                security_id = str(
+                                    int.from_bytes(packet[4:8], "little", signed=True)
+                                )
+                                instrument_id = current.get((segment or "", security_id))
+                                if instrument_id is None:
+                                    continue
+                                try:
+                                    update = self.decode_market_depth_packet(
+                                        packet, segment or "", security_id
+                                    )
+                                except BrokerAdapterError as error:
+                                    logger.warning(
+                                        "Dhan depth feed parse error=%s", str(error)
+                                    )
+                                    continue
+                                if update is None:
+                                    continue
+                                snapshot = snapshots.setdefault(instrument_id, {})
+                                snapshot[update["side"]] = update["levels"]
+                                if "bids" in snapshot and "asks" in snapshot:
+                                    yield instrument_id, {
+                                        "timestamp": datetime.now(timezone.utc),
+                                        "bids": snapshot["bids"],
+                                        "asks": snapshot["asks"],
+                                    }
+                finally:
+                    receive_task.cancel()
+                    update_task.cancel()
+                    await asyncio.gather(
+                        receive_task, update_task, return_exceptions=True
+                    )
+        except InvalidStatus as error:
+            logger.error(
+                "Dhan depth feed handshake result=rejected status=%s reason=%s",
+                error.response.status_code,
+                error.response.reason_phrase,
+            )
+            raise BrokerAdapterError(
+                "Dhan depth feed handshake rejected "
+                f"HTTP {error.response.status_code}: {error.response.reason_phrase}",
+                status_code=error.response.status_code,
+            ) from error
+        except (OSError, TimeoutError, WebSocketException) as error:
+            close_code = connection.close_code if connection is not None else None
+            close_reason = _safe_dhan_close_reason(
+                connection.close_reason if connection is not None else str(error),
+                access_token,
+                tokens.get("client_id", ""),
+            )
+            logger.warning(
+                "Dhan depth feed disconnected code=%s reason=%s error_class=%s",
+                close_code,
+                close_reason,
+                type(error).__name__,
+            )
+            raise BrokerAdapterError(
+                f"Dhan depth feed closed code={close_code or 'unavailable'} "
+                f"reason={close_reason or type(error).__name__}",
+                status_code=close_code,
+            ) from error
+        finally:
+            if connection is not None:
+                logger.info(
+                    "Dhan depth feed closed code=%s reason=%s",
+                    connection.close_code,
+                    _safe_dhan_close_reason(
+                        connection.close_reason, access_token, tokens.get("client_id", "")
+                    ),
+                )
+
+    async def stream_market_depth(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        exchange_segment: str,
+        security_id: str,
+        status_callback: Callable[[str], Awaitable[None]],
+    ) -> AsyncIterator[dict[str, Any]]:
+        url = _dhan_depth_feed_url(access_token, tokens["client_id"])
+        safe_url = (
+            "wss://depth-api-feed.dhan.co/twentydepth?token=[REDACTED]"
+            "&clientId=[REDACTED]&authType=2"
+        )
+        logger.info("Dhan depth feed connect attempt url=%s", safe_url)
+        connection = None
+        try:
+            async with websocket_connect(
+                url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
+            ) as connection:
+                response = connection.response
+                logger.info(
+                    "Dhan depth feed handshake result=accepted status=%s reason=%s",
+                    response.status_code,
+                    response.reason_phrase,
+                )
+                await connection.send(json.dumps({
+                    "RequestCode": 23,
+                    "InstrumentCount": 1,
+                    "InstrumentList": [{
+                        "ExchangeSegment": exchange_segment,
+                        "SecurityId": security_id,
+                    }],
+                }))
+                await status_callback("active")
+                latest: dict[str, list[dict[str, Any]]] = {}
+                try:
+                    async for message in connection:
+                        if not isinstance(message, bytes):
+                            continue
+                        offset = 0
+                        try:
+                            while offset < len(message):
+                                if offset + 2 > len(message):
+                                    raise BrokerAdapterError(
+                                        "Dhan live feed depth packet has an invalid length"
+                                    )
+                                packet_length = int.from_bytes(
+                                    message[offset:offset + 2], "little"
+                                )
+                                packet_end = offset + packet_length
+                                if packet_length < 12 or packet_end > len(message):
+                                    raise BrokerAdapterError(
+                                        "Dhan live feed depth packet has an invalid length"
+                                    )
+                                update = self.decode_market_depth_packet(
+                                    message[offset:packet_end],
+                                    exchange_segment,
+                                    security_id,
+                                )
+                                offset = packet_end
+                                if update is not None:
+                                    latest[update["side"]] = update["levels"]
+                                    if "bids" in latest and "asks" in latest:
+                                        yield {
+                                            "timestamp": datetime.now(timezone.utc),
+                                            "bids": latest["bids"],
+                                            "asks": latest["asks"],
+                                        }
+                        except BrokerFeedDisconnected:
+                            raise
+                        except BrokerAdapterError as error:
+                            logger.warning("Dhan depth feed parse error=%s", str(error))
+                finally:
+                    if connection.close_code is None:
+                        try:
+                            await connection.send(json.dumps({
+                                "RequestCode": 24,
+                                "InstrumentCount": 1,
+                                "InstrumentList": [{
+                                    "ExchangeSegment": exchange_segment,
+                                    "SecurityId": security_id,
+                                }],
+                            }))
+                            logger.info("Dhan depth feed unsubscribed instrument=%s", security_id)
+                        except WebSocketException as error:
+                            logger.info(
+                                "Dhan depth feed unsubscribe failed error_class=%s",
+                                type(error).__name__,
+                            )
+        except InvalidStatus as error:
+            logger.error(
+                "Dhan depth feed handshake result=rejected status=%s reason=%s",
+                error.response.status_code,
+                error.response.reason_phrase,
+            )
+            raise
+        except (OSError, TimeoutError, WebSocketException) as error:
+            logger.warning(
+                "Dhan depth feed connection failed error_class=%s reason=%s",
+                type(error).__name__,
+                _safe_dhan_close_reason(
+                    str(error), access_token, tokens.get("client_id", "")
+                ),
+            )
+            raise
+        finally:
+            if connection is not None:
+                logger.info(
+                    "Dhan depth feed closed code=%s reason=%s",
+                    connection.close_code,
+                    _safe_dhan_close_reason(
+                        connection.close_reason, access_token, tokens.get("client_id", "")
+                    ),
+                )
 
     async def stream_market_quotes(
         self,
@@ -1051,13 +1564,11 @@ class DhanAdapter(BrokerAdapter):
         security_id: str,
         status_callback: Callable[[str], Awaitable[None]],
     ) -> AsyncIterator[HistoricalBar]:
-        query = urlencode({
-            "version": "2",
-            "token": access_token,
-            "clientId": tokens["client_id"],
-            "authType": "2",
-        })
-        url = f"wss://api-feed.dhan.co?{query}"
+        url = _dhan_feed_url(access_token, tokens["client_id"])
+        safe_url = (
+            "wss://api-feed.dhan.co?version=2&token=[REDACTED]"
+            "&clientId=[REDACTED]&authType=2"
+        )
         subscription = json.dumps({
             "RequestCode": 17,
             "InstrumentCount": 1,
@@ -1065,14 +1576,25 @@ class DhanAdapter(BrokerAdapter):
                 {"ExchangeSegment": exchange_segment, "SecurityId": security_id}
             ],
         })
+        last_failure = "Dhan live feed disconnected after retrying."
         for attempt in range(3):
             if attempt:
                 await status_callback("reconnecting")
                 await asyncio.sleep(min(2 ** (attempt - 1), 4))
+            logger.info(
+                "Dhan live feed connect attempt=%d url=%s", attempt + 1, safe_url
+            )
+            connection = None
             try:
                 async with websocket_connect(
-                    url, ping_interval=10, ping_timeout=40, close_timeout=5
+                    url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
                 ) as connection:
+                    response = connection.response
+                    logger.info(
+                        "Dhan live feed handshake result=accepted status=%s reason=%s",
+                        response.status_code,
+                        response.reason_phrase,
+                    )
                     await connection.send(subscription)
                     await status_callback("active")
                     async for message in connection:
@@ -1082,21 +1604,268 @@ class DhanAdapter(BrokerAdapter):
                             quote = self.decode_market_feed_packet(
                                 message, exchange_segment, security_id
                             )
-                        except BrokerFeedDisconnected:
+                        except BrokerFeedDisconnected as error:
+                            logger.info("Dhan live feed closed by provider reason=%s", str(error))
                             break
+                        except BrokerAdapterError as error:
+                            logger.warning("Dhan live feed parse error=%s", str(error))
+                            continue
                         if quote is not None:
                             yield quote
             except InvalidStatus as error:
-                if error.response.status_code == 401:
+                status_code = error.response.status_code
+                logger.error(
+                    "Dhan live feed handshake result=rejected status=%s reason=%s",
+                    status_code,
+                    error.response.reason_phrase,
+                )
+                last_failure = (
+                    f"Dhan live feed handshake rejected (HTTP {status_code})."
+                )
+                if status_code == 401:
                     raise BrokerReconnectRequired(
                         "Reconnect to this broker to renew the session"
                     ) from None
                 if attempt == 2:
                     break
-            except (OSError, TimeoutError, WebSocketException):
+            except (OSError, TimeoutError, WebSocketException) as error:
+                logger.warning(
+                    "Dhan live feed connection failed error_class=%s reason=%s",
+                    type(error).__name__,
+                    _safe_dhan_close_reason(
+                        str(error), access_token, tokens.get("client_id", "")
+                    ),
+                )
+                last_failure = (
+                    f"Dhan live feed connection failed ({type(error).__name__})."
+                )
                 if attempt == 2:
                     break
-        raise BrokerAdapterError("Dhan live feed disconnected after retrying")
+            finally:
+                if connection is not None:
+                    logger.info(
+                        "Dhan live feed closed code=%s reason=%s",
+                        connection.close_code,
+                        _safe_dhan_close_reason(
+                            connection.close_reason,
+                            access_token,
+                            tokens.get("client_id", ""),
+                        ),
+                    )
+        raise BrokerAdapterError(last_failure)
+
+    async def stream_watchlist_market_quotes(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        initial_subscriptions: Mapping[str, tuple[str, str]],
+        subscription_updates: asyncio.Queue[Mapping[str, tuple[str, str]]],
+        status_callback: Callable[[str], Awaitable[None]],
+    ) -> AsyncIterator[tuple[str, HistoricalBar]]:
+        segment_codes = {
+            1: "NSE_EQ",
+            2: "NSE_FNO",
+            3: "NSE_CURRENCY",
+            4: "BSE_EQ",
+            5: "MCX_COMM",
+            7: "BSE_CURRENCY",
+            8: "BSE_FNO",
+        }
+
+        def subscription_items(
+            subscriptions: Mapping[str, tuple[str, str]],
+        ) -> dict[tuple[str, str], str]:
+            if len(subscriptions) > 5000:
+                raise BrokerAdapterError("Dhan feed subscription exceeds its 5000-instrument limit")
+            items: dict[tuple[str, str], str] = {}
+            for instrument_id, (exchange_segment, security_id) in subscriptions.items():
+                key = (exchange_segment, str(security_id))
+                if key not in items:
+                    items[key] = instrument_id
+            return items
+
+        def request_message(
+            request_code: int,
+            instruments: list[tuple[str, str]],
+        ) -> str:
+            return json.dumps(
+                {
+                    "RequestCode": request_code,
+                    "InstrumentCount": len(instruments),
+                    "InstrumentList": [
+                        {"ExchangeSegment": segment, "SecurityId": security_id}
+                        for segment, security_id in instruments
+                    ],
+                }
+            )
+
+        url = _dhan_feed_url(access_token, tokens["client_id"])
+        safe_url = (
+            "wss://api-feed.dhan.co?version=2&token=[REDACTED]"
+            "&clientId=[REDACTED]&authType=2"
+        )
+        current = subscription_items(initial_subscriptions)
+        retry_delay = 1
+        reconnects = 0
+        while True:
+            await status_callback("connecting" if reconnects == 0 else "reconnecting")
+            logger.info(
+                "Dhan live feed connect attempt=%d url=%s",
+                reconnects + 1,
+                safe_url,
+            )
+            connection = None
+            try:
+                async with websocket_connect(
+                    url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
+                ) as connection:
+                    response = connection.response
+                    logger.info(
+                        "Dhan live feed handshake result=accepted status=%s reason=%s",
+                        response.status_code,
+                        response.reason_phrase,
+                    )
+                    for start in range(0, len(current), 100):
+                        batch = list(current)[start : start + 100]
+                        await connection.send(request_message(17, batch))
+                    logger.info(
+                        "Dhan live feed upstream subscription sent subscriptions=%d "
+                        "request_code=17",
+                        len(current),
+                    )
+                    await status_callback("active")
+                    retry_delay = 1
+                    receive_task = asyncio.create_task(connection.recv())
+                    update_task = asyncio.create_task(subscription_updates.get())
+                    try:
+                        while True:
+                            done, _ = await asyncio.wait(
+                                (receive_task, update_task),
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if update_task in done:
+                                desired = subscription_items(update_task.result())
+                                removed = list(current.keys() - desired.keys())
+                                added = list(desired.keys() - current.keys())
+                                for start in range(0, len(removed), 100):
+                                    await connection.send(
+                                        request_message(18, removed[start : start + 100])
+                                    )
+                                for start in range(0, len(added), 100):
+                                    await connection.send(
+                                        request_message(17, added[start : start + 100])
+                                    )
+                                current = desired
+                                logger.info(
+                                    "Dhan live feed subscriptions updated subscribed=%d unsubscribed=%d total=%d",
+                                    len(added),
+                                    len(removed),
+                                    len(current),
+                                )
+                                if not current:
+                                    return
+                                update_task = asyncio.create_task(subscription_updates.get())
+                            if receive_task in done:
+                                message = receive_task.result()
+                                receive_task = asyncio.create_task(connection.recv())
+                                if not isinstance(message, bytes):
+                                    continue
+                                if message and message[0] == 50:
+                                    raise BrokerFeedDisconnected(
+                                        "Dhan feed requested reconnection"
+                                    )
+                                try:
+                                    if len(message) < 8:
+                                        raise BrokerAdapterError(
+                                            "Dhan live feed packet has an invalid header"
+                                        )
+                                    segment = segment_codes.get(message[3])
+                                    security_id = str(
+                                        int.from_bytes(message[4:8], "little", signed=True)
+                                    )
+                                    instrument_id = current.get((segment or "", security_id))
+                                    if instrument_id is None:
+                                        continue
+                                    quote = self.decode_market_feed_packet(
+                                        message, segment or "", security_id
+                                    )
+                                except BrokerAdapterError as error:
+                                    logger.warning(
+                                        "Dhan live feed packet parse error=%s",
+                                        str(error),
+                                    )
+                                    continue
+                                if quote is not None:
+                                    yield instrument_id, quote
+                    finally:
+                        receive_task.cancel()
+                        update_task.cancel()
+                        await asyncio.gather(
+                            receive_task, update_task, return_exceptions=True
+                        )
+            except BrokerReconnectRequired:
+                raise
+            except InvalidStatus as error:
+                logger.error(
+                    "Dhan live feed handshake result=rejected status=%s reason=%s",
+                    error.response.status_code,
+                    error.response.reason_phrase,
+                )
+                if error.response.status_code == 401:
+                    raise BrokerReconnectRequired(
+                        "Reconnect to this broker to renew the session"
+                    ) from None
+                if error.response.status_code in {403, 4403}:
+                    raise BrokerAdapterError(
+                        "Dhan live feed handshake rejected "
+                        f"HTTP {error.response.status_code}: {error.response.reason_phrase}",
+                        status_code=error.response.status_code,
+                    ) from error
+                logger.warning(
+                    "Dhan live feed connection failed status=%s",
+                    error.response.status_code,
+                )
+            except BrokerFeedDisconnected as error:
+                logger.warning("Dhan live feed disconnected reason=%s", str(error))
+            except (OSError, TimeoutError, WebSocketException) as error:
+                logger.warning(
+                    "Dhan live feed disconnected error_class=%s reason=%s",
+                    type(error).__name__,
+                    _safe_dhan_close_reason(
+                        str(error), access_token, tokens.get("client_id", "")
+                    ),
+                )
+            finally:
+                if connection is not None:
+                    logger.info(
+                        "Dhan live feed closed code=%s reason=%s",
+                        connection.close_code,
+                        _safe_dhan_close_reason(
+                            connection.close_reason,
+                            access_token,
+                            tokens.get("client_id", ""),
+                        ),
+                    )
+            if (
+                connection is not None
+                and connection.close_code is not None
+                and connection.close_code >= 4000
+            ):
+                close_reason = _safe_dhan_close_reason(
+                    connection.close_reason,
+                    access_token,
+                    tokens.get("client_id", ""),
+                )
+                raise BrokerAdapterError(
+                    f"Dhan live feed closed code={connection.close_code} "
+                    f"reason={close_reason or 'unavailable'}",
+                    status_code=connection.close_code,
+                )
+            reconnects += 1
+            logger.info("Dhan live feed reconnect attempt=%d", reconnects)
+            await status_callback("reconnecting")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 30)
 
     def get_positions(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
         return self._get_dhan_account_data(
@@ -1108,6 +1877,80 @@ class DhanAdapter(BrokerAdapter):
 
     def get_funds(self, access_token: str, tokens: Mapping[str, str]) -> Any:
         return self.get("/v2/fundlimit", access_token, tokens)
+
+    def _post_option_chain(
+        self,
+        path: str,
+        access_token: str,
+        tokens: Mapping[str, str],
+        body: Mapping[str, Any],
+    ) -> Any:
+        global _OPTION_CHAIN_LAST_REQUEST
+        with _OPTION_CHAIN_REQUEST_LOCK:
+            delay = 3 - (time.monotonic() - _OPTION_CHAIN_LAST_REQUEST)
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                payload = _request(
+                    "POST",
+                    f"{self.api_root}{path}",
+                    diagnostic_stage="option_chain_api_request",
+                    headers=self.account_headers(access_token, tokens),
+                    json=body,
+                )
+                return _unwrap(payload)
+            finally:
+                _OPTION_CHAIN_LAST_REQUEST = time.monotonic()
+
+    def get_option_expiries(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        underlying_scrip: int,
+        underlying_segment: str,
+    ) -> list[str]:
+        payload = self._post_option_chain(
+            "/v2/optionchain/expirylist",
+            access_token,
+            tokens,
+            {
+                "UnderlyingScrip": underlying_scrip,
+                "UnderlyingSeg": underlying_segment,
+            },
+        )
+        if not isinstance(payload, list) or any(
+            not isinstance(expiry, str) for expiry in payload
+        ):
+            raise BrokerAdapterError(
+                "Dhan option expiry response has an unexpected format",
+                category="invalid_provider_response",
+            )
+        return payload
+
+    def get_option_chain(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        underlying_scrip: int,
+        underlying_segment: str,
+        expiry: str,
+    ) -> dict[str, Any]:
+        payload = self._post_option_chain(
+            "/v2/optionchain",
+            access_token,
+            tokens,
+            {
+                "UnderlyingScrip": underlying_scrip,
+                "UnderlyingSeg": underlying_segment,
+                "Expiry": expiry,
+            },
+        )
+        if not isinstance(payload, dict):
+            raise BrokerAdapterError(
+                "Dhan option-chain response has an unexpected format",
+                category="invalid_provider_response",
+            )
+        return payload
 
 
 ADAPTERS: dict[str, type[BrokerAdapter]] = {

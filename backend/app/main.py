@@ -13,7 +13,11 @@ from app.api.corporate_actions import router as corporate_actions_router
 from app.api.position_theses import router as position_theses_router
 from app.api.research import router as research_router
 from app.api.health import router as health_router
-from app.api.market_data import indicators_router, router as market_data_router
+from app.api.market_data import (
+    dhan_live_feed_hub,
+    indicators_router,
+    router as market_data_router,
+)
 from app.api.portfolios import router as portfolios_router
 from app.api.portfolio_transactions import router as portfolio_transactions_router
 from app.api.trades import router as trades_router
@@ -36,12 +40,14 @@ logging.getLogger("uvicorn.access").addFilter(BrokerCallbackAccessLogFilter())
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    await dhan_live_feed_hub.start()
     scheduler_task = None
     if settings.market_data_scheduler_enabled and "pytest" not in sys.modules:
         scheduler_task = asyncio.create_task(market_data_refresh_loop())
     try:
         yield
     finally:
+        await dhan_live_feed_hub.stop()
         if scheduler_task is not None:
             scheduler_task.cancel()
             try:

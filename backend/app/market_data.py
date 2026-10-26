@@ -14,11 +14,17 @@ class MarketDataProviderError(Exception):
         *,
         status_code: int | None = None,
         retry_after: str | None = None,
+        response_body: str | None = None,
+        request_url: str | None = None,
+        request_body: str | None = None,
     ):
         super().__init__(code)
         self.code = code
         self.status_code = status_code
         self.retry_after = retry_after
+        self.response_body = response_body
+        self.request_url = request_url
+        self.request_body = request_body
 
 
 class InstrumentCandidate(BaseModel):

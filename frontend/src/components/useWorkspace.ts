@@ -72,11 +72,13 @@ type WatchlistEntry = {
     source: string;
     retrieved_at: string;
     freshness: 'fresh' | 'stale';
-    freshness_status: 'fresh' | 'stale' | 'historical' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
+    freshness_status: 'fresh' | 'stale' | 'historical' | 'eod_close' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
     is_synthetic: boolean;
     is_verified: boolean;
     market_timestamp: string;
     market_age_seconds: number;
+    absolute_change: string | null;
+    percent_change: string | null;
     data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
     close: string;
   } | null;
@@ -141,6 +143,9 @@ type JournalTrade = {
   strike?: string | null;
   expiry?: string | null;
   net_pnl: string | null;
+  source: 'manual' | 'dhan' | 'dhan_csv';
+  source_side: string | null;
+  calendar_date: string;
 };
 type JournalBreakdown = {
   key: string;
@@ -155,13 +160,21 @@ type JournalAnalytics = {
   currency: string;
   closed_trades: number;
   open_trades: number;
+  trades_logged: number;
   wins: number;
   losses: number;
+  unpriced_closed_trades: number;
   win_rate: string | null;
-  net_pnl: string;
+  net_pnl: string | null;
   expectancy: string | null;
   profit_factor: string | null;
-  max_drawdown: string;
+  max_drawdown: string | null;
+  daily: {
+    date: string;
+    trade_count: number;
+    realized_pnl: string | null;
+    complete: boolean;
+  }[];
 };
 type MarketInstrument = {
   id: string;
@@ -173,6 +186,7 @@ type MarketInstrument = {
   country: string;
   timezone: string;
   multiplier: string | null;
+  tick_size: string | null;
   expiry: string | null;
   strike: string | null;
   option_type: string | null;
@@ -297,7 +311,7 @@ type MarketQuote = {
   source: string;
   retrieved_at: string;
   freshness: 'fresh' | 'stale';
-  freshness_status: 'fresh' | 'stale' | 'historical' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
+  freshness_status: 'fresh' | 'stale' | 'historical' | 'eod_close' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
   freshness_message: string;
   is_cached: boolean;
   is_synthetic: boolean;
@@ -318,6 +332,8 @@ type MarketQuote = {
   feed_active: boolean;
   market_timestamp: string;
   market_age_seconds: number;
+  absolute_change: string | null;
+  percent_change: string | null;
   data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
   delivery_mode: 'on_demand_rest' | 'rest_snapshot' | 'websocket_tick';
   stream_status: 'not_configured' | 'active' | 'reconnecting' | 'stale' | 'unavailable';
@@ -456,7 +472,7 @@ export function useWorkspace() {
   const [loadingMarketIndicators, setLoadingMarketIndicators] = useState(false);
   const [loadingMarketQuote, setLoadingMarketQuote] = useState(false);
   const [journalAssetClass, setJournalAssetClass] = useState('equity');
-  const [journalCurrency, setJournalCurrency] = useState('USD');
+  const [journalCurrency, setJournalCurrency] = useState('INR');
   const [journalHasExit, setJournalHasExit] = useState(false);
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
   const [error, setError] = useState('');
@@ -640,16 +656,9 @@ export function useWorkspace() {
   useEffect(() => {
     if (!user || activeView !== 'journal') return;
     let active = true;
-    Promise.all([
-      apiRequest<JournalTrade[]>('/trades'),
-      apiRequest<JournalAnalytics>(`/trades/analytics/summary?currency=${journalCurrency}`),
-      apiRequest<JournalBreakdown[]>(`/trades/analytics/breakdown?currency=${journalCurrency}&group_by=strategy`),
-    ])
-      .then(([trades, analytics, breakdown]) => {
+    refreshJournalTrades()
+      .then(() => {
         if (!active) return;
-        setJournalTrades(trades);
-        setJournalAnalytics(analytics);
-        setJournalBreakdown(breakdown);
       })
       .catch((requestError: Error) => {
         if (active) setError(requestError.message);
@@ -658,6 +667,17 @@ export function useWorkspace() {
       active = false;
     };
   }, [activeView, journalCurrency, user]);
+
+  async function refreshJournalTrades() {
+    const [trades, analytics, breakdown] = await Promise.all([
+      apiRequest<JournalTrade[]>(`/trades/journal?currency=${journalCurrency}`),
+      apiRequest<JournalAnalytics>(`/trades/analytics/journal?currency=${journalCurrency}`),
+      apiRequest<JournalBreakdown[]>(`/trades/analytics/breakdown?currency=${journalCurrency}&group_by=strategy`),
+    ]);
+    setJournalTrades(trades);
+    setJournalAnalytics(analytics);
+    setJournalBreakdown(breakdown);
+  }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -861,14 +881,7 @@ export function useWorkspace() {
         method: editingTrade ? 'PUT' : 'POST',
         body: JSON.stringify(payload),
       });
-      const [trades, analytics, breakdown] = await Promise.all([
-        apiRequest<JournalTrade[]>('/trades'),
-        apiRequest<JournalAnalytics>(`/trades/analytics/summary?currency=${journalCurrency}`),
-        apiRequest<JournalBreakdown[]>(`/trades/analytics/breakdown?currency=${journalCurrency}&group_by=strategy`),
-      ]);
-      setJournalTrades(trades);
-      setJournalAnalytics(analytics);
-      setJournalBreakdown(breakdown);
+      await refreshJournalTrades();
       setEditingTrade(null);
       setJournalHasExit(false);
       setJournalAssetClass('equity');
@@ -883,14 +896,7 @@ export function useWorkspace() {
     setError('');
     try {
       await apiRequest<void>(`/trades/${tradeId}`, { method: 'DELETE' });
-      const [trades, analytics, breakdown] = await Promise.all([
-        apiRequest<JournalTrade[]>('/trades'),
-        apiRequest<JournalAnalytics>(`/trades/analytics/summary?currency=${journalCurrency}`),
-        apiRequest<JournalBreakdown[]>(`/trades/analytics/breakdown?currency=${journalCurrency}&group_by=strategy`),
-      ]);
-      setJournalTrades(trades);
-      setJournalAnalytics(analytics);
-      setJournalBreakdown(breakdown);
+      await refreshJournalTrades();
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -1087,30 +1093,34 @@ export function useWorkspace() {
     setWatchlist(await apiRequest<WatchlistEntry[]>('/market-data/watchlist'));
   }
 
-  async function loadMarketHistory() {
-    if (!selectedInstrument || !marketStart || !marketEnd) return;
+  async function loadMarketHistory(
+    interval = marketInterval,
+    startDate = marketStart,
+    endDate = marketEnd,
+  ) {
+    if (!selectedInstrument || !startDate || !endDate) return;
     setError('');
     setMarketHistory(null);
     setHasOlderMarketHistory(true);
     setLoadingMarketHistory(true);
     try {
-      const params = marketRangeParams(marketInterval, marketStart, marketEnd);
+      const params = marketRangeParams(interval, startDate, endDate);
       const history = await apiRequest<MarketHistory>(
         `/market-data/instruments/${selectedInstrument.id}/history/sync?${params}`,
         { method: 'POST' },
       );
       setMarketHistory(history);
-      await loadInstrumentIndicators(selectedInstrument, marketInterval, history.provider);
+      await loadInstrumentIndicators(selectedInstrument, interval, history.provider);
     } catch (requestError) {
       setError((requestError as Error).message);
       if (selectedInstrument) {
         try {
-          const params = marketRangeParams(marketInterval, marketStart, marketEnd);
+          const params = marketRangeParams(interval, startDate, endDate);
           const history = await apiRequest<MarketHistory>(
             `/market-data/instruments/${selectedInstrument.id}/history?${params}`,
           );
           setMarketHistory(history);
-          await loadInstrumentIndicators(selectedInstrument, marketInterval, history.provider);
+          await loadInstrumentIndicators(selectedInstrument, interval, history.provider);
         } catch (historyError) {
           setError(`${(requestError as Error).message}; saved history unavailable: ${(historyError as Error).message}`);
         }
@@ -1370,6 +1380,7 @@ export function useWorkspace() {
     exportTransactionCsv,
     submitJournalTrade,
     removeJournalTrade,
+    refreshJournalTrades,
     removeTransaction,
     startEditingTransaction,
     cancelEditingTransaction,

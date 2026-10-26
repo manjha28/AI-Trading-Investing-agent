@@ -23,3 +23,9 @@
 - Migrations: keep revision IDs within Alembic's 32-character version column limit and validate their lengths.
 - Quality gate: block backend undefined names with Ruff F821 and add route smoke coverage.
 - Market data: compute chart indicators from complete source-matched stored history, add fixed-priority provider toggles and breaker reset, and move broker connection controls off the Market Data page.
+- Trading journal and watchlists: add idempotent Dhan trade-history backfill, named watchlists, market-hours-aware Dhan tick streaming, and Yahoo Finance fundamentals with explicit unsupported-provider states.
+- Market data: add redacted Dhan WebSocket lifecycle diagnostics and timeouts, Yahoo Finance company profiles, scoped 20-level depth streaming, fixed-priority quote skips, and EOD-close freshness.
+- Market data: align the live-feed timeout with Dhan retries, add a credential-redacted feed diagnostic, and expose rate-limited Dhan option chains.
+- Market data: enable Vite WebSocket proxying, show cached Yahoo profiles alongside Dhan instrument-master fields, and retain sanitized Dhan backfill diagnostics.
+- Market data: share process-wide Dhan ticker/depth WebSockets with reference-counted subscriptions, add IST-bucketed realtime candles with periodic intraday reconciliation, and clamp backfills to the earliest stored Dhan bar.
+- Market data: bound Dhan intraday history requests, shorten timeframe defaults, instrument live tick delivery counters, and cache batchable Dhan quote snapshots.
