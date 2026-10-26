@@ -395,6 +395,58 @@ def _score_direction(
     return bull, bear, evidence, tuple(reasons)
 
 
+def _chain_context(
+    data: OptionsSignalInput,
+    atr_value: Decimal | None,
+) -> dict[str, str | int | None]:
+    """Summarize near-spot put/call positioning without pretending OI is directional."""
+    spot = data.spot
+    band = max((atr_value or ZERO) * D("3"), spot * D("0.01"))
+    near_band = max((atr_value or ZERO) * D("2"), spot * D("0.01"))
+    relevant = [
+        quote for quote in data.chain
+        if quote.expiry_at == data.expiry_at and abs(quote.strike - spot) <= near_band
+    ]
+    calls = [quote for quote in relevant if quote.option_type == "call"]
+    puts = [quote for quote in relevant if quote.option_type == "put"]
+    call_oi = sum((q.open_interest for q in calls if q.open_interest > ZERO), ZERO)
+    put_oi = sum((q.open_interest for q in puts if q.open_interest > ZERO), ZERO)
+    call_volume = sum((q.volume for q in calls if q.volume > ZERO), ZERO)
+    put_volume = sum((q.volume for q in puts if q.volume > ZERO), ZERO)
+
+    call_wall_candidates = [
+        q for q in data.chain
+        if q.expiry_at == data.expiry_at and q.option_type == "call"
+        and spot < q.strike <= spot + band and q.open_interest > ZERO
+    ]
+    put_wall_candidates = [
+        q for q in data.chain
+        if q.expiry_at == data.expiry_at and q.option_type == "put"
+        and spot - band <= q.strike < spot and q.open_interest > ZERO
+    ]
+    call_wall = max(call_wall_candidates, key=lambda q: (q.open_interest, -q.strike), default=None)
+    put_wall = max(put_wall_candidates, key=lambda q: (q.open_interest, q.strike), default=None)
+
+    return {
+        "near_spot_call_open_interest": str(call_oi),
+        "near_spot_put_open_interest": str(put_oi),
+        "near_spot_pcr_open_interest": str(put_oi / call_oi) if call_oi > ZERO else None,
+        "near_spot_call_volume": str(call_volume),
+        "near_spot_put_volume": str(put_volume),
+        "near_spot_pcr_volume": str(put_volume / call_volume) if call_volume > ZERO else None,
+        "call_oi_wall_strike": str(call_wall.strike) if call_wall else None,
+        "call_oi_wall_distance_atr": (
+            str((call_wall.strike - spot) / atr_value)
+            if call_wall and atr_value and atr_value > ZERO else None
+        ),
+        "put_oi_wall_strike": str(put_wall.strike) if put_wall else None,
+        "put_oi_wall_distance_atr": (
+            str((spot - put_wall.strike) / atr_value)
+            if put_wall and atr_value and atr_value > ZERO else None
+        ),
+    }
+
+
 def _candidate_options(
     data: OptionsSignalInput, option_type: OptionType, config: SignalConfig
 ) -> list[tuple[Decimal, OptionQuote]]:
@@ -438,6 +490,8 @@ def evaluate_options_signal(
         )
 
     bull, bear, evidence, trend_reasons = _score_direction(data.bars, data, config)
+    chain_context = _chain_context(data, _atr(data.bars))
+    evidence.update(chain_context)
     evidence.update({
         "underlying_spot": str(data.spot),
         "spot_age_seconds": str(_age_seconds(data.as_of, data.spot_timestamp)),
@@ -501,6 +555,23 @@ def evaluate_options_signal(
         direction = "call"
     elif bear >= config.min_direction_score and bear - bull >= config.min_score_edge and evidence["bearish_breakout"] == 1 and evidence["high_volume"] == 1:
         direction = "put"
+    # Nearby high-open-interest strikes are potential friction zones, not proof
+    # of market direction. Avoid buying premium when an unbroken wall is too close.
+    if direction == "call" and chain_context["call_oi_wall_distance_atr"] is not None:
+        if D(str(chain_context["call_oi_wall_distance_atr"])) <= D("0.50"):
+            return OptionsSignalResult(
+                action="NO_TRADE", direction_score=score, opposing_score=opposing,
+                reasons=("A high-call-OI strike is within 0.5 ATR above spot; breakout room is limited.",) + trend_reasons,
+                blockers=("nearby_call_oi_wall",), evidence=evidence, **base
+            )
+    if direction == "put" and chain_context["put_oi_wall_distance_atr"] is not None:
+        if D(str(chain_context["put_oi_wall_distance_atr"])) <= D("0.50"):
+            return OptionsSignalResult(
+                action="NO_TRADE", direction_score=score, opposing_score=opposing,
+                reasons=("A high-put-OI strike is within 0.5 ATR below spot; breakdown room is limited.",) + trend_reasons,
+                blockers=("nearby_put_oi_wall",), evidence=evidence, **base
+            )
+
     if direction is None:
         return OptionsSignalResult(
             action="NO_TRADE", direction_score=score, opposing_score=opposing,
