@@ -39,6 +39,13 @@ _LONG_NUMBER = re.compile(r"\b\d{5,}\b")
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
+def _dhan_ist_epoch_to_utc(timestamp: int) -> datetime:
+    encoded_wall_clock = datetime.fromtimestamp(timestamp, timezone.utc)
+    return encoded_wall_clock.replace(
+        tzinfo=ZoneInfo("Asia/Kolkata")
+    ).astimezone(timezone.utc)
+
+
 def _safe_provider_error(payload: Any) -> tuple[str | None, str | None]:
     if not isinstance(payload, dict):
         return None, None
@@ -1192,6 +1199,24 @@ class DhanAdapter(BrokerAdapter):
             or packet_security_id != int(security_id)
         ):
             raise BrokerAdapterError("Dhan live feed packet does not match its subscription")
+        if packet[0] == 2:
+            if packet_length != 16:
+                raise BrokerAdapterError("Dhan live feed ticker packet has an invalid length")
+            try:
+                last_price = Decimal(str(struct.unpack_from("<f", packet, 8)[0]))
+                trade_timestamp = struct.unpack_from("<i", packet, 12)[0]
+                price_precision = Decimal("0.00000001")
+                price = last_price.quantize(price_precision)
+                return HistoricalBar(
+                    timestamp=_dhan_ist_epoch_to_utc(trade_timestamp),
+                    open=price,
+                    high=price,
+                    low=price,
+                    close=price,
+                    volume=Decimal(0),
+                )
+            except (OverflowError, OSError, ValueError, TypeError, InvalidOperation) as error:
+                raise BrokerAdapterError("Dhan live feed ticker packet contains invalid values") from error
         if packet[0] != 4:
             return None
         if packet_length != 50:
@@ -1205,7 +1230,7 @@ class DhanAdapter(BrokerAdapter):
             low = struct.unpack_from("<f", packet, 46)[0]
             price_precision = Decimal("0.00000001")
             return HistoricalBar(
-                timestamp=datetime.fromtimestamp(trade_timestamp, timezone.utc),
+                timestamp=_dhan_ist_epoch_to_utc(trade_timestamp),
                 open=Decimal(str(opening)).quantize(price_precision),
                 high=Decimal(str(high)).quantize(price_precision),
                 low=Decimal(str(low)).quantize(price_precision),
@@ -1586,10 +1611,15 @@ class DhanAdapter(BrokerAdapter):
             )
             connection = None
             try:
+                logger.info("dhan_upstream_connecting feed=ticker")
                 async with websocket_connect(
                     url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
                 ) as connection:
                     response = connection.response
+                    logger.info(
+                        "dhan_upstream_open feed=ticker http_status=%s",
+                        response.status_code,
+                    )
                     logger.info(
                         "Dhan live feed handshake result=accepted status=%s reason=%s",
                         response.status_code,
@@ -1679,7 +1709,31 @@ class DhanAdapter(BrokerAdapter):
                 raise BrokerAdapterError("Dhan feed subscription exceeds its 5000-instrument limit")
             items: dict[tuple[str, str], str] = {}
             for instrument_id, (exchange_segment, security_id) in subscriptions.items():
-                key = (exchange_segment, str(security_id))
+                raw_security_id = str(security_id).strip()
+                security_parts = raw_security_id.split("|", maxsplit=1)
+                normalized_security_id = security_parts[0].strip()
+                normalized_segment = (
+                    security_parts[1].strip()
+                    if len(security_parts) == 2
+                    else exchange_segment.strip()
+                )
+                if not re.fullmatch(r"[0-9]+", normalized_security_id):
+                    logger.warning(
+                        "Skipping invalid Dhan live-feed mapping "
+                        "instrument_id=%s provider_instrument_id=%r",
+                        instrument_id,
+                        raw_security_id,
+                    )
+                    continue
+                if normalized_segment not in segment_codes.values():
+                    logger.warning(
+                        "Skipping Dhan live-feed mapping with invalid segment "
+                        "instrument_id=%s segment=%r",
+                        instrument_id,
+                        normalized_segment,
+                    )
+                    continue
+                key = (normalized_segment, normalized_security_id)
                 if key not in items:
                     items[key] = instrument_id
             return items
@@ -1727,10 +1781,20 @@ class DhanAdapter(BrokerAdapter):
                     )
                     for start in range(0, len(current), 100):
                         batch = list(current)[start : start + 100]
-                        await connection.send(request_message(17, batch))
+                        payload = request_message(15, batch)
+                        logger.info(
+                            "Dhan live feed subscription payload_json=%s payload_utf8_hex=%s",
+                            payload,
+                            payload.encode("utf-8").hex(),
+                        )
+                        await connection.send(payload)
+                        logger.info(
+                            "dhan_subscribe_sent feed=ticker request_code=15 instruments=%d",
+                            len(batch),
+                        )
                     logger.info(
                         "Dhan live feed upstream subscription sent subscriptions=%d "
-                        "request_code=17",
+                        "request_code=15",
                         len(current),
                     )
                     await status_callback("active")
@@ -1748,13 +1812,31 @@ class DhanAdapter(BrokerAdapter):
                                 removed = list(current.keys() - desired.keys())
                                 added = list(desired.keys() - current.keys())
                                 for start in range(0, len(removed), 100):
-                                    await connection.send(
-                                        request_message(18, removed[start : start + 100])
+                                    payload = request_message(
+                                        16, removed[start : start + 100]
+                                    )
+                                    logger.info(
+                                        "Dhan live feed unsubscription payload_json=%s "
+                                        "payload_utf8_hex=%s",
+                                        payload,
+                                        payload.encode("utf-8").hex(),
+                                    )
+                                    await connection.send(payload)
+                                    logger.info(
+                                        "dhan_unsubscribe_sent feed=ticker request_code=16 instruments=%d",
+                                        len(removed[start : start + 100]),
                                     )
                                 for start in range(0, len(added), 100):
-                                    await connection.send(
-                                        request_message(17, added[start : start + 100])
+                                    payload = request_message(
+                                        15, added[start : start + 100]
                                     )
+                                    logger.info(
+                                        "Dhan live feed subscription payload_json=%s "
+                                        "payload_utf8_hex=%s",
+                                        payload,
+                                        payload.encode("utf-8").hex(),
+                                    )
+                                    await connection.send(payload)
                                 current = desired
                                 logger.info(
                                     "Dhan live feed subscriptions updated subscribed=%d unsubscribed=%d total=%d",
@@ -1796,6 +1878,10 @@ class DhanAdapter(BrokerAdapter):
                                     )
                                     continue
                                 if quote is not None:
+                                    logger.info(
+                                        "dhan_tick_received feed=ticker instrument_id=%s",
+                                        instrument_id,
+                                    )
                                     yield instrument_id, quote
                     finally:
                         receive_task.cancel()
@@ -1828,23 +1914,24 @@ class DhanAdapter(BrokerAdapter):
             except BrokerFeedDisconnected as error:
                 logger.warning("Dhan live feed disconnected reason=%s", str(error))
             except (OSError, TimeoutError, WebSocketException) as error:
-                logger.warning(
-                    "Dhan live feed disconnected error_class=%s reason=%s",
-                    type(error).__name__,
-                    _safe_dhan_close_reason(
-                        str(error), access_token, tokens.get("client_id", "")
-                    ),
-                )
+                if connection is None or connection.close_code is None or connection.close_code < 4000:
+                    logger.warning(
+                        "Dhan live feed disconnected error_class=%s reason=%s",
+                        type(error).__name__,
+                        _safe_dhan_close_reason(
+                            str(error), access_token, tokens.get("client_id", "")
+                        ),
+                    )
             finally:
                 if connection is not None:
+                    close_reason = connection.close_reason or ""
+                    for secret in (access_token, tokens.get("client_id", "")):
+                        if secret:
+                            close_reason = close_reason.replace(secret, "[REDACTED]")
                     logger.info(
-                        "Dhan live feed closed code=%s reason=%s",
+                        "Dhan live feed closed code=%s reason=%r",
                         connection.close_code,
-                        _safe_dhan_close_reason(
-                            connection.close_reason,
-                            access_token,
-                            tokens.get("client_id", ""),
-                        ),
+                        close_reason,
                     )
             if (
                 connection is not None

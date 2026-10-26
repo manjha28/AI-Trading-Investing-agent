@@ -118,14 +118,20 @@ async def run() -> int:
                 f"reason: {_safe_text(response.reason_phrase, access_token, client_id)}; "
                 f"subscription: Ticker {EXCHANGE_SEGMENT} security id {SECURITY_ID}"
             )
-            await connection.send(json.dumps({
+            payload = json.dumps({
                 "RequestCode": 15,
                 "InstrumentCount": 1,
                 "InstrumentList": [{
                     "ExchangeSegment": EXCHANGE_SEGMENT,
                     "SecurityId": SECURITY_ID,
                 }],
-            }))
+            })
+            payload_bytes = payload.encode("utf-8")
+            print(
+                f"Subscription payload JSON: {payload}; "
+                f"UTF-8 hex: {payload_bytes.hex()}"
+            )
+            await connection.send(payload)
 
             try:
                 async with asyncio.timeout(max(0, deadline - loop.time())):

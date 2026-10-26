@@ -219,7 +219,7 @@ export default function App() {
             <BrokersPage portfolioId={portfolioId} />
           </>
         ) : activeView === 'market-data' ? (
-          <MarketDataPage workspace={{
+          <MarketDataPage userId={user.id} workspace={{
             attachSelectedInstrument: workspace.attachSelectedInstrument,
             currency: workspace.currency,
             hasOlderMarketHistory: workspace.hasOlderMarketHistory,

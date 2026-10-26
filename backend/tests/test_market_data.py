@@ -30,6 +30,7 @@ from app.api.market_data import (
     _resolve_provider_candidate,
 )
 from app.api import auth, brokers, market_data
+from app import broker_adapters
 from app.broker_adapters import BrokerReconnectRequired, DhanAdapter
 from app.config import settings
 from app.db import Base, get_db
@@ -272,6 +273,101 @@ def test_watchlist_is_user_scoped_and_reports_cached_quote_provenance(
         register(other_client, "other-market@example.com")
         assert other_client.get("/api/v1/market-data/watchlist").json() == []
     assert len(client.get("/api/v1/market-data/watchlist").json()) == 1
+
+
+def test_ist_epoch_dhan_tick_is_open_during_nse_session() -> None:
+    raw_ltt = int(datetime(2025, 4, 15, 10, 30, tzinfo=timezone.utc).timestamp())
+    tick = broker_adapters._dhan_ist_epoch_to_utc(raw_ltt)
+
+    assert tick == datetime(2025, 4, 15, 5, 0, tzinfo=timezone.utc)
+    assert market_data._market_session_state(
+        SimpleNamespace(country="IN"),
+        tick,
+    ) == "open"
+
+
+def test_watchlist_stream_skips_closed_session_tick_without_closing(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    register(client, "dhan-closed-tick@example.com")
+    prepare_dhan_quote(client, test_engine, monkeypatch)
+    instrument = next(
+        item
+        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
+        if item["venue"] == "DEMO_IN"
+    )
+    use_dhan_market_data_provider()
+    session_token = client.cookies.get("session_token")
+    with Session(test_engine) as session:
+        user_session = session.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        user_session.user.two_factor_enabled = True
+        user_session.two_factor_verified = True
+        session.commit()
+
+    csrf_headers = {"X-CSRF-Token": client.cookies.get("csrf_token", "")}
+    watchlist = client.post(
+        "/api/v1/market-data/watchlists",
+        json={"name": "Closed tick test"},
+        headers=csrf_headers,
+    )
+    assert watchlist.status_code == 201, watchlist.text
+    added = client.post(
+        f"/api/v1/market-data/watchlists/{watchlist.json()['id']}"
+        f"/instruments/{instrument['id']}",
+        headers=csrf_headers,
+    )
+    assert added.status_code == 204, added.text
+
+    monkeypatch.setattr(
+        DhanAdapter,
+        "find_verified_equity_mapping",
+        lambda _self, _symbol, _venue: ("11536", "NSE_EQ"),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_market_session_state",
+        lambda _instrument, _now=None, *, raw_ltt=None, parsed_ltt_utc=None: (
+            "closed" if raw_ltt is not None else "open"
+        ),
+    )
+    queued_messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    queued_messages.put_nowait({"type": "status", "status": "active"})
+    queued_messages.put_nowait({
+        "type": "tick",
+        "instrument_id": instrument["id"],
+        "bar": HistoricalBar(
+            timestamp=datetime(2025, 4, 15, 5, 0, tzinfo=timezone.utc),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=Decimal("10"),
+        ),
+    })
+    queued_messages.put_nowait({"type": "status", "status": "active"})
+
+    async def join_feed(_feed, _group_id, _subscriptions, _token, _tokens):
+        return queued_messages
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join_feed)
+    with client.websocket_connect(
+        f"/api/v1/market-data/watchlists/{watchlist.json()['id']}/stream",
+        headers={"Origin": settings.frontend_origin},
+    ) as stream:
+        assert stream.receive_json()["status"] == "active"
+        closed_status = stream.receive_json()
+        assert closed_status["status"] == "market_closed"
+        assert stream.receive_json()["status"] == "active"
+
+    with Session(test_engine) as session:
+        assert session.scalar(
+            select(MarketQuote).where(MarketQuote.source == "dhan_ws")
+        ) is None
 
 
 def test_search_keeps_same_symbol_in_different_venues_distinct(client: TestClient) -> None:

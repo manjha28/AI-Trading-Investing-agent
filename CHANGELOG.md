@@ -1,3 +1,4 @@
+- Dhan: normalize live IST-naive LTT epochs, keep anomalous closed-session ticks from terminating watchlist streams, and fix browser delivery counters and reconnects.
 - Market data: bound and cache Angel One master loading, use SmartAPI scrip search for routine mappings, preserve fallback/error provenance, and update yfinance for pandas 3 compatibility.
 - A4: shorten the market-data settings migration revision, restore Angel One → Dhan → Yahoo fallback reporting, and document safe Angel One setup in Codespaces.
 - A3: add per-user market-data source selection, encrypted Angel One sessions, and verified REST/WebSocket observations with explicit freshness provenance.
@@ -29,3 +30,10 @@
 - Market data: enable Vite WebSocket proxying, show cached Yahoo profiles alongside Dhan instrument-master fields, and retain sanitized Dhan backfill diagnostics.
 - Market data: share process-wide Dhan ticker/depth WebSockets with reference-counted subscriptions, add IST-bucketed realtime candles with periodic intraday reconciliation, and clamp backfills to the earliest stored Dhan bar.
 - Market data: bound Dhan intraday history requests, shorten timeframe defaults, instrument live tick delivery counters, and cache batchable Dhan quote snapshots.
+- Market data: report 10-second ticker delivery counters, keep one serialized watchlist socket, and mark the feed live only after a browser tick.
+- Dhan: use Ticker-mode live subscriptions, decode ticker packets, and log redacted close-frame details and exact subscription payloads.
+- Market data: share CORS origin configuration with normalized WebSocket origin checks and log the received origin and allowlist.
+- Market data: accept missing proxied WebSocket origins and match configured frontend hosts across ports while logging redacted handshake headers.
+- Market data: account for 2026 NSE holidays in IST session checks, trust forwarded origins only from configured proxies, and backfill from the requested horizon bounded by Dhan listing dates.
+- Market data: keep watchlist WebSocket identity stable across feed updates and normalize Dhan security IDs before ticker subscriptions.
+- Market data: log watchlist instrument session states and evaluate all subscription eligibility against one shared UTC instant.

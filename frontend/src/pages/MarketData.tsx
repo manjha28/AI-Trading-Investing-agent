@@ -182,7 +182,7 @@ type OptionChainData = {
   fetched_at: string;
 };
 
-export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
+export function MarketDataPage({ workspace, userId }: { userId: string; workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
   const {
   attachSelectedInstrument,
   currency,
@@ -216,6 +216,28 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
 } = workspace;
 const loadIndicatorsRef = useRef(loadInstrumentIndicators);
 loadIndicatorsRef.current = loadInstrumentIndicators;
+  useEffect(() => {
+    const countChartUpdate = () => {
+      dhanDeliveryCountersRef.current.chartUpdatesApplied += 1;
+    };
+    window.addEventListener('market-chart-update-applied', countChartUpdate);
+    const counterTimer = window.setInterval(() => {
+      console.info(
+        '[dhan-watchlist-feed] delivery counters D_messages_received_in_browser=%d '
+        + 'E_chart_updates_applied=%d',
+        dhanDeliveryCountersRef.current.messagesReceivedInBrowser,
+        dhanDeliveryCountersRef.current.chartUpdatesApplied,
+      );
+      dhanDeliveryCountersRef.current = {
+        messagesReceivedInBrowser: 0,
+        chartUpdatesApplied: 0,
+      };
+    }, 10_000);
+    return () => {
+      window.removeEventListener('market-chart-update-applied', countChartUpdate);
+      window.clearInterval(counterTimer);
+    };
+  }, []);
   function changeMarketInterval(
     interval: typeof marketInterval,
     shouldLoad = Boolean(selectedInstrument),
@@ -251,7 +273,16 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [fundamentalPeriodType, setFundamentalPeriodType] = useState<'annual' | 'quarterly'>('annual');
   const selectedInstrumentId = useRef<string | null>(null);
   const dhanStreamRef = useRef<WebSocket | null>(null);
+  const dhanConnectionGenerationRef = useRef(0);
+  const dhanStreamCleanupTimerRef = useRef<number | undefined>(undefined);
+  const intentionalWatchlistSocketsRef = useRef(new WeakSet<WebSocket>());
+  const watchlistStreamReconcileRef = useRef<(() => void) | null>(null);
+  const browserMessageTotalRef = useRef(0);
   const depthStreamRef = useRef<WebSocket | null>(null);
+  const dhanDeliveryCountersRef = useRef({
+    messagesReceivedInBrowser: 0,
+    chartUpdatesApplied: 0,
+  });
   selectedInstrumentId.current = selectedInstrument?.id ?? null;
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
   const [companyProfileLoading, setCompanyProfileLoading] = useState(false);
@@ -282,8 +313,14 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [marketDataSettings, setMarketDataSettings] = useState<MarketDataSettings | null>(null);
   const [marketDataSettingsLoading, setMarketDataSettingsLoading] = useState(true);
   const [marketDataSettingsError, setMarketDataSettingsError] = useState('');
+  const liveFeedEnabledRef = useRef(liveFeedEnabled);
+  const selectedProviderRef = useRef(marketDataSettings?.selected_provider);
+  liveFeedEnabledRef.current = liveFeedEnabled;
+  selectedProviderRef.current = marketDataSettings?.selected_provider;
   const [namedWatchlists, setNamedWatchlists] = useState<NamedWatchlist[]>([]);
   const [activeWatchlistId, setActiveWatchlistId] = useState('');
+  const activeWatchlistIdRef = useRef(activeWatchlistId);
+  activeWatchlistIdRef.current = activeWatchlistId;
   const [watchlistEntries, setWatchlistEntries] = useState<WorkspaceState['watchlist']>([]);
   const [watchlistLoading, setWatchlistLoading] = useState(true);
   const [watchlistError, setWatchlistError] = useState('');
@@ -295,6 +332,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [activeDetailTab, setActiveDetailTab] = useState<WatchlistTab>('Chart');
   const [watchlistInstrumentLoading, setWatchlistInstrumentLoading] = useState(false);
   const displayedMarketQuote = liveMarketQuote ?? marketQuote;
+  const liveFeedLabel = liveFeedStatus === 'active'
+    ? 'live'
+    : liveFeedStatus.replaceAll('_', ' ');
   const selectedProvider = marketDataSettings?.selected_provider;
   const selectedSourceLabel = marketDataSettings?.sources.find(
     (source) => source.name === selectedProvider,
@@ -304,14 +344,8 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   );
   const activeDetailInstrumentId = activeWatchlistInstrument
     || (legacyInstrumentSelected ? selectedInstrument?.id ?? '' : '');
-  const activeDetailInstrumentIdRef = useRef(activeDetailInstrumentId);
-  activeDetailInstrumentIdRef.current = activeDetailInstrumentId;
   const hasWatchlistInstruments = watchlistEntries.length > 0;
   const hasActiveDetailInstrument = Boolean(activeDetailInstrumentId);
-  const watchlistInstrumentSignature = watchlistEntries
-    .map((entry) => entry.instrument_id)
-    .sort()
-    .join(',');
 
   async function refreshMarketDataSettings() {
     setMarketDataSettingsError('');
@@ -592,19 +626,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   }, [liveFeedEnabled, liveStreamSupported, marketDataSettings?.selected_provider, selectedInstrument?.id, selectedSourceLabel, streamRetryKey]);
 
   useEffect(() => {
-    if (
-      !liveFeedEnabled
-      || marketDataSettings?.selected_provider !== 'dhan'
-      || !activeWatchlistId
-      || (!hasWatchlistInstruments && !hasActiveDetailInstrument)
-    ) {
-      if (marketDataSettings?.selected_provider === 'dhan' && !liveFeedEnabled) {
-        setLiveMarketQuote(null);
-        setLiveFeedStatus('not_configured');
-        setLiveFeedMessage('');
-      }
-      return;
-    }
+    if (!activeWatchlistId || !userId) return;
     const streamUrl = new URL(
       `/api/v1/market-data/watchlists/${activeWatchlistId}/stream`,
       window.location.href,
@@ -615,144 +637,251 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     let connectionTimedOut = false;
     let retryTimer: number | undefined;
     let connectionTimer: number | undefined;
-    let browserMessagesReceived = 0;
-    const browserCounterTimer = window.setInterval(() => {
-      console.info(
-        '[dhan-watchlist-feed] browser delivery counter messages_received=%d',
-        browserMessagesReceived,
-      );
-    }, 30_000);
-    setLiveMarketQuote(null);
-    setLiveFeedStatus('connecting');
-    setLiveFeedMessage('');
-    const socket = new WebSocket(streamUrl);
-    dhanStreamRef.current = socket;
-    console.info('[dhan-watchlist-feed] connect attempt url=%s', streamUrl.href);
-    connectionTimer = window.setTimeout(() => {
-      if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
-        connectionTimedOut = true;
-        setLiveFeedStatus('unavailable');
-        setLiveFeedMessage('Dhan live feed connection timed out after 10 seconds.');
-        socket.close(4008, 'Connection timed out');
-      }
-    }, 10_000);
-    const heartbeat = window.setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) socket.send('ping');
-    }, 15_000);
-    socket.onopen = () => {
-      console.info('[dhan-watchlist-feed] application handshake result=accepted url=%s', streamUrl.href);
-      if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
-      connectionTimer = window.setTimeout(() => {
-        if (socket.readyState === WebSocket.OPEN && !marketClosed) {
-          connectionTimedOut = true;
-          setLiveFeedStatus('unavailable');
-          setLiveFeedMessage('Dhan did not confirm the provider feed handshake within 10 seconds.');
-          socket.close(4008, 'Provider handshake timed out');
-        }
-      }, 10_000);
-      socket.send(JSON.stringify({
-        type: 'subscriptions',
-        detail_instrument_id: activeDetailInstrumentIdRef.current || null,
-      }));
+    let heartbeat: number | undefined;
+    let socket: WebSocket | null = null;
+    const generation = ++dhanConnectionGenerationRef.current;
+    if (dhanStreamCleanupTimerRef.current !== undefined) {
+      window.clearTimeout(dhanStreamCleanupTimerRef.current);
+      dhanStreamCleanupTimerRef.current = undefined;
+    }
+    const handleFirstTickTimeout = () => {
+      if (
+        intentionalClose
+        || connectionTimedOut
+        || (socket?.readyState !== WebSocket.CONNECTING
+          && socket?.readyState !== WebSocket.OPEN)
+      ) return;
+      connectionTimedOut = true;
+      setLiveFeedStatus('unavailable');
+      setLiveFeedMessage('Dhan did not deliver a live tick within 10 seconds.');
+      socket?.close(4008, 'First live tick timed out');
     };
-    socket.onmessage = (event) => {
-      browserMessagesReceived += 1;
-      let message: MarketStreamMessage;
-      try {
-        message = JSON.parse(event.data) as MarketStreamMessage;
-      } catch (error) {
-        console.error('[dhan-watchlist-feed] parse error', error instanceof Error ? error.message : 'invalid JSON');
-        setLiveFeedStatus('unavailable');
-        setLiveFeedMessage('The live feed returned an invalid message.');
-        return;
-      }
-      if (message.type === 'status') {
-        marketClosed = message.status === 'market_closed';
-        setLiveLastSnapshotAt(message.last_snapshot_at ?? null);
-        setLiveFeedStatus(message.status);
-        setLiveFeedMessage(message.message ?? (
-          message.status === 'unavailable'
-            ? 'Dhan live feed is unavailable. Check the connection and instrument mapping.'
-            : ''
-        ));
-        if (message.status === 'active' || message.status === 'market_closed' || message.status === 'unavailable') {
-          if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
-        }
-        if (message.status === 'market_closed') {
-          setLiveMarketQuote(null);
-          void apiRequest<WorkspaceState['watchlist']>(
-            `/market-data/watchlist?watchlist_id=${encodeURIComponent(activeWatchlistId)}`,
-          ).then(setWatchlistEntries).catch((error: Error) => setWatchlistError(error.message));
-        }
-        return;
-      }
-      if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
-      if (selectedInstrumentId.current === message.quote.instrument_id) {
-        setLiveMarketQuote(message.quote);
-      }
-      setLiveFeedStatus('active');
-      setLiveFeedMessage('');
-      setWatchlistEntries((entries) => entries.map((entry) => {
-        if (entry.instrument_id !== message.quote.instrument_id) return entry;
-        return {
-          ...entry,
-          quote: {
-            source: message.quote.source,
-            retrieved_at: message.quote.retrieved_at,
-            freshness: message.quote.freshness,
-            freshness_status: message.quote.freshness_status,
-            is_synthetic: message.quote.is_synthetic,
-            is_verified: message.quote.is_verified,
-            market_timestamp: message.quote.market_timestamp,
-            market_age_seconds: message.quote.market_age_seconds,
-            data_type: message.quote.data_type,
-            close: message.quote.bar.close,
-            absolute_change: message.quote.absolute_change,
-            percent_change: message.quote.percent_change,
-          },
-        };
-      }));
-    };
-    socket.onerror = () => {
-      console.error('[dhan-watchlist-feed] socket error url=%s', streamUrl.href);
-      if (!connectionTimedOut) {
-        setLiveFeedStatus('unavailable');
-        setLiveFeedMessage('The Dhan live feed connection failed.');
-      }
-    };
-    socket.onclose = (event) => {
-      console.info('[dhan-watchlist-feed] close code=%d reason=%s', event.code, event.reason);
-      if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
-      if (!intentionalClose && !connectionTimedOut && event.code === 1000 && marketClosed) {
-        retryTimer = window.setTimeout(() => setStreamRetryKey((key) => key + 1), 30_000);
-      } else if (!intentionalClose && !connectionTimedOut && ![4401, 4403, 4404, 1000].includes(event.code)) {
-        setLiveFeedStatus('reconnecting');
-        setLiveFeedMessage('Dhan live feed disconnected. Reconnecting…');
-        retryTimer = window.setTimeout(() => setStreamRetryKey((key) => key + 1), 2000);
-      }
-    };
-    return () => {
+
+    const stop = () => {
       intentionalClose = true;
-      window.clearInterval(heartbeat);
+      if (heartbeat !== undefined) window.clearInterval(heartbeat);
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
-      window.clearInterval(browserCounterTimer);
-      if (dhanStreamRef.current === socket) dhanStreamRef.current = null;
-      socket.close();
+      if (socket && socket.readyState !== WebSocket.CLOSED) {
+        intentionalWatchlistSocketsRef.current.add(socket);
+        socket.close(1000, 'Watchlist live feed paused');
+      }
+      if (socket && dhanStreamRef.current === socket) dhanStreamRef.current = null;
+      if (
+        !liveFeedEnabledRef.current
+        && selectedProviderRef.current === 'dhan'
+      ) {
+        setLiveMarketQuote(null);
+        setLiveFeedStatus('not_configured');
+        setLiveFeedMessage('');
+      }
     };
-  }, [liveFeedEnabled, marketDataSettings?.selected_provider, activeWatchlistId, hasWatchlistInstruments, hasActiveDetailInstrument, streamRetryKey]);
+
+    const connect = () => {
+      if (
+        !liveFeedEnabledRef.current
+        || selectedProviderRef.current !== 'dhan'
+      ) return;
+      const previousSocket = dhanStreamRef.current;
+      if (
+        previousSocket?.url === streamUrl.href
+        && (
+          previousSocket.readyState === WebSocket.CONNECTING
+          || previousSocket.readyState === WebSocket.OPEN
+        )
+      ) {
+        socket = previousSocket;
+        return;
+      }
+      intentionalClose = false;
+      connectionTimedOut = false;
+      setLiveFeedStatus('connecting');
+      setLiveFeedMessage('Connecting to Dhan; waiting for the first live tick.');
+      const openAfterPreviousCloses = async () => {
+        if (previousSocket && previousSocket.readyState !== WebSocket.CLOSED) {
+          if (previousSocket.readyState !== WebSocket.CLOSING) {
+          intentionalWatchlistSocketsRef.current.add(previousSocket);
+          previousSocket.close(1000, 'Replacing watchlist stream');
+          }
+          await new Promise<void>((resolve) => {
+          if (previousSocket.readyState === WebSocket.CLOSED) {
+            resolve();
+            return;
+          }
+          previousSocket.addEventListener('close', () => resolve(), { once: true });
+          });
+        }
+        if (
+          intentionalClose
+          || connectionTimedOut
+          || activeWatchlistIdRef.current !== activeWatchlistId
+          || !liveFeedEnabledRef.current
+          || selectedProviderRef.current !== 'dhan'
+        ) return;
+
+        socket = new WebSocket(streamUrl);
+        dhanStreamRef.current = socket;
+        console.info('[dhan-watchlist-feed] connect attempt url=%s', streamUrl.href);
+        const activeSocket = socket;
+        if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
+        connectionTimer = window.setTimeout(handleFirstTickTimeout, 10_000);
+        heartbeat = window.setInterval(() => {
+          if (activeSocket.readyState === WebSocket.OPEN) activeSocket.send('ping');
+        }, 15_000);
+        activeSocket.onopen = () => {
+          console.info(
+          '[dhan-watchlist-feed] application handshake result=accepted url=%s',
+          streamUrl.href,
+          );
+        };
+        activeSocket.onmessage = (event) => {
+          browserMessageTotalRef.current += 1;
+          dhanDeliveryCountersRef.current.messagesReceivedInBrowser += 1;
+          let message: MarketStreamMessage;
+          try {
+          message = JSON.parse(event.data) as MarketStreamMessage;
+          } catch (error) {
+          console.info(
+            '[dhan-watchlist-feed] message received total=%d type=invalid',
+            browserMessageTotalRef.current,
+          );
+          const reason = error instanceof Error ? error.message : 'invalid JSON';
+          console.error('[dhan-watchlist-feed] parse error', reason);
+          setLiveFeedStatus('unavailable');
+          setLiveFeedMessage(`Invalid live-feed message: ${reason}`);
+          return;
+          }
+          console.info(
+          '[dhan-watchlist-feed] message received total=%d type=%s',
+          browserMessageTotalRef.current,
+          message.type === 'status' ? message.status : message.type,
+          );
+          if (message.type === 'status') {
+          marketClosed = message.status === 'market_closed';
+          setLiveLastSnapshotAt(message.last_snapshot_at ?? null);
+          if (message.status === 'active') {
+            if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
+            setLiveFeedStatus('connecting');
+            setLiveFeedMessage('Dhan is connected; waiting for the first live tick.');
+          } else {
+            setLiveFeedStatus(message.status);
+            setLiveFeedMessage(message.message ?? (
+              message.status === 'unavailable'
+                ? 'Dhan live feed is unavailable.'
+                : ''
+            ));
+          }
+          if (
+            message.status === 'market_closed'
+            || message.status === 'unavailable'
+          ) {
+            if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
+          }
+          if (message.status === 'market_closed') {
+            setLiveMarketQuote(null);
+            void apiRequest<WorkspaceState['watchlist']>(
+              `/market-data/watchlist?watchlist_id=${encodeURIComponent(activeWatchlistId)}`,
+            ).then(setWatchlistEntries).catch((error: Error) => setWatchlistError(error.message));
+          }
+          return;
+          }
+          if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
+          if (selectedInstrumentId.current === message.quote.instrument_id) {
+          setLiveMarketQuote(message.quote);
+          }
+          setLiveFeedStatus('active');
+          setLiveFeedMessage('');
+          setWatchlistEntries((entries) => entries.map((entry) => {
+          if (entry.instrument_id !== message.quote.instrument_id) return entry;
+          return {
+            ...entry,
+            quote: {
+              source: message.quote.source,
+              retrieved_at: message.quote.retrieved_at,
+              freshness: message.quote.freshness,
+              freshness_status: message.quote.freshness_status,
+              is_synthetic: message.quote.is_synthetic,
+              is_verified: message.quote.is_verified,
+              market_timestamp: message.quote.market_timestamp,
+              market_age_seconds: message.quote.market_age_seconds,
+              data_type: message.quote.data_type,
+              close: message.quote.bar.close,
+              absolute_change: message.quote.absolute_change,
+              percent_change: message.quote.percent_change,
+            },
+          };
+          }));
+        };
+        activeSocket.onerror = () => {
+          console.error('[dhan-watchlist-feed] socket error url=%s', streamUrl.href);
+          if (!connectionTimedOut) {
+          setLiveFeedStatus('unavailable');
+          setLiveFeedMessage('Dhan watchlist WebSocket reported a connection error.');
+          }
+        };
+        activeSocket.onclose = (event) => {
+          console.info(
+          '[dhan-watchlist-feed] close code=%d reason=%s',
+          event.code,
+          event.reason,
+          );
+          if (dhanStreamRef.current === activeSocket) dhanStreamRef.current = null;
+          if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
+          const reason = event.reason || `WebSocket closed with code ${event.code}.`;
+          if (
+          intentionalClose
+          || intentionalWatchlistSocketsRef.current.has(activeSocket)
+          ) return;
+          if (connectionTimedOut) {
+          setLiveFeedStatus('reconnecting');
+          setLiveFeedMessage('Dhan live feed timed out before delivering a tick; reconnecting.');
+          retryTimer = window.setTimeout(connect, marketClosed ? 30_000 : 2000);
+          return;
+          }
+          if ([4401, 4403, 4404].includes(event.code)) {
+          setLiveFeedStatus('unavailable');
+          setLiveFeedMessage(reason);
+          } else {
+          setLiveFeedStatus('reconnecting');
+          setLiveFeedMessage(reason);
+          retryTimer = window.setTimeout(connect, marketClosed ? 30_000 : 2000);
+          }
+        };
+      };
+      void openAfterPreviousCloses();
+    };
+
+    const reconcile = () => {
+      if (liveFeedEnabledRef.current && selectedProviderRef.current === 'dhan') {
+        connect();
+      } else {
+        stop();
+      }
+    };
+    watchlistStreamReconcileRef.current = reconcile;
+    reconcile();
+    return () => {
+      dhanStreamCleanupTimerRef.current = window.setTimeout(() => {
+        if (generation === dhanConnectionGenerationRef.current) {
+          intentionalClose = true;
+          if (heartbeat !== undefined) window.clearInterval(heartbeat);
+          if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+          if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
+          if (socket && socket.readyState !== WebSocket.CLOSED) {
+          intentionalWatchlistSocketsRef.current.add(socket);
+          socket.close(1000, 'Watchlist stream effect cleanup');
+          }
+          if (dhanStreamRef.current === socket) dhanStreamRef.current = null;
+          watchlistStreamReconcileRef.current = null;
+        }
+        dhanStreamCleanupTimerRef.current = undefined;
+      }, 50);
+    };
+  }, [activeWatchlistId, userId]);
 
   useEffect(() => {
-    const socket = dhanStreamRef.current;
-    if (
-      marketDataSettings?.selected_provider !== 'dhan'
-      || socket?.readyState !== WebSocket.OPEN
-    ) return;
-    socket.send(JSON.stringify({
-      type: 'subscriptions',
-      detail_instrument_id: activeDetailInstrumentId || null,
-    }));
-  }, [activeWatchlistId, activeDetailInstrumentId, watchlistInstrumentSignature, marketDataSettings?.selected_provider, liveFeedEnabled]);
+    watchlistStreamReconcileRef.current?.();
+  }, [liveFeedEnabled, marketDataSettings?.selected_provider]);
 
   async function loadCoverage() {
     setCoverageLoading(true);
@@ -1414,7 +1543,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         )}
                         {liveFeedEnabled && liveFeedStatus !== 'not_configured' && (
                           <small role="status">
-                            Live feed: {liveFeedStatus.replaceAll('_', ' ')}{liveFeedMessage ? ` · ${liveFeedMessage}` : ''}
+                            Live feed: {liveFeedLabel}{liveFeedMessage ? ` · ${liveFeedMessage}` : ''}
                             {liveFeedStatus === 'market_closed' && ` · Last snapshot: ${liveLastSnapshotAt ? new Date(liveLastSnapshotAt).toLocaleString() : 'Not available'}`}
                           </small>
                         )}
@@ -1750,7 +1879,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         ? <button className="secondary-button" type="button" onClick={() => void changeWatchlistInstrument(selectedInstrument.id, false, selectedInstrument.symbol)}>Remove from watchlist</button>
                         : <button className="secondary-button" type="button" onClick={() => void changeWatchlistInstrument(selectedInstrument.id, true, selectedInstrument.symbol)}>Add to watchlist</button>}
                       <button className="secondary-button" type="button" onClick={() => void loadMarketQuote(selectedInstrument, true)} disabled={loadingMarketQuote}>{loadingMarketQuote ? 'Loading quote…' : 'Refresh instrument price'}</button>
-                      {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedStatus.replaceAll('_', ' ')}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}</p>}
+                      {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedLabel}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}</p>}
                       {displayedMarketQuote && <div className="market-quote" aria-live="polite">
                         <div className="section-heading"><div><p className="eyebrow">{displayedMarketQuote.data_type === 'daily_close' ? 'HISTORICAL DAILY CLOSE' : displayedMarketQuote.data_type === 'live_tick' ? 'LIVE WEBSOCKET TICK' : displayedMarketQuote.data_type === 'provider_snapshot' ? 'LATEST REST SNAPSHOT' : 'LATEST PROVIDER QUOTE'}</p><h3>{formatMoney(displayedMarketQuote.bar.close, displayedMarketQuote.currency)}</h3></div><span className={`freshness-badge freshness-${displayedMarketQuote.freshness_status}`}>{displayedMarketQuote.freshness_status.replaceAll('_', ' ')}</span></div>
                         <p className="market-provenance">{displayedMarketQuote.freshness_message} Source: {displayedMarketQuote.source} · Market timestamp: {new Date(displayedMarketQuote.market_timestamp).toLocaleString()} · Observation age: {Math.floor(displayedMarketQuote.market_age_seconds)}s · Retrieved: {new Date(displayedMarketQuote.retrieved_at).toLocaleString()} · {displayedMarketQuote.is_cached ? 'Cached' : 'Provider response'} · {displayedMarketQuote.is_synthetic ? 'Synthetic' : displayedMarketQuote.is_verified ? 'Verified mapping' : 'Unverified mapping'}</p>

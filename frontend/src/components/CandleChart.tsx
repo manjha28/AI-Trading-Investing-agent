@@ -534,6 +534,7 @@ export function CandleChart({
         value: Number(tick.volume),
         color: close >= open ? '#3fd99a66' : '#ef777766',
       });
+      window.dispatchEvent(new Event('market-chart-update-applied'));
     }, 150);
   }, [bars, interval, liveBar, tickSize]);
 

@@ -64,8 +64,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],
-    allow_origin_regex=r"https://.*\.app\.github\.dev",
+    allow_origins=list(settings.allowed_origins),
+    allow_origin_regex=settings.allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],

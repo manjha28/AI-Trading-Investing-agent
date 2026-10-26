@@ -9,6 +9,7 @@ import asyncio
 import re
 import threading
 import time
+from datetime import time as datetime_time
 from enum import Enum
 from typing import Any, Literal, Mapping, TypedDict
 from urllib.parse import urlsplit
@@ -16,6 +17,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -32,7 +34,7 @@ from app.broker_adapters import (
     get_broker_adapter,
 )
 from app.api.auth import get_active_session, get_current_user, require_csrf
-from app.config import settings
+from app.config import is_allowed_origin, is_trusted_proxy, settings
 from app.db import get_db
 from app.market_data import (
     HistoricalBar,
@@ -92,19 +94,98 @@ BACKFILL_CHUNK_DAYS = 450
 RETRY_AFTER_CAP_SECONDS = 8
 MARKET_DATA_FALLBACK_PRIORITY = ("dhan", "angel_one", "yfinance")
 INSTRUMENT_SEARCH_PRIORITY = ("angel_one", "dhan", "yfinance")
+NSE_HOLIDAYS = {
+    date(2026, 1, 15),
+    date(2026, 1, 26),
+    date(2026, 2, 15),
+    date(2026, 3, 3),
+    date(2026, 3, 21),
+    date(2026, 3, 26),
+    date(2026, 3, 31),
+    date(2026, 4, 3),
+    date(2026, 4, 14),
+    date(2026, 5, 1),
+    date(2026, 5, 28),
+    date(2026, 6, 26),
+    date(2026, 8, 15),
+    date(2026, 9, 14),
+    date(2026, 10, 2),
+    date(2026, 10, 20),
+    date(2026, 11, 8),
+    date(2026, 11, 10),
+    date(2026, 11, 24),
+    date(2026, 12, 25),
+}
 logger = logging.getLogger(__name__)
 _provider_rate_lock = threading.Lock()
 _provider_next_request: dict[str, float] = {}
 
 
-def _dhan_feed_close_code(status_code: int | None) -> int:
+def _dhan_feed_close_code(status_code: int | None, site: str) -> int:
     if status_code == 401:
         return 4401
     if status_code == 403:
+        logger.warning(
+            "ws_close_mapping code=4403 site=%s reason=Dhan upstream returned HTTP 403",
+            site,
+        )
         return 4403
     if status_code is not None and 4000 <= status_code <= 4999:
         return status_code
     return 1011
+
+
+def _websocket_origin_allowed(route: str, websocket: WebSocket) -> bool:
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+    peer_host = websocket.client.host if websocket.client is not None else None
+    sensitive_markers = ("authorization", "cookie", "token", "secret", "api-key")
+    headers = {
+        name: (
+            "[REDACTED]"
+            if any(marker in name.casefold() for marker in sensitive_markers)
+            else value
+        )
+        for name, value in websocket.headers.items()
+    }
+    allowed_origins = list(settings.allowed_origins)
+    allowed_origin_regex = settings.allowed_origin_regex
+    trusted_peer = is_trusted_proxy(peer_host, settings.trusted_proxy_hosts)
+    forwarded_proto = websocket.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    forwarded_host = websocket.headers.get("x-forwarded-host", "").split(",", 1)[0].strip()
+    forwarded_origin = (
+        f"{forwarded_proto}://{forwarded_host}"
+        if trusted_peer and forwarded_proto and forwarded_host
+        else None
+    )
+    allowed = (
+        is_allowed_origin(origin, tuple(allowed_origins), allowed_origin_regex)
+        or (
+            trusted_peer
+            and is_allowed_origin(
+                forwarded_origin, tuple(allowed_origins), allowed_origin_regex
+            )
+        )
+    )
+    logger.info(
+        "ws_origin_check route=%s peer=%r origin=%r host=%r forwarded_origin=%r "
+        "trusted_peer=%s trusted_proxy_hosts=%r headers=%r "
+        "allowed_origins=%r allowed_origin_regex=%r allowed=%s "
+        "accepted_as_proxied=%s",
+        route,
+        peer_host,
+        origin,
+        host,
+        forwarded_origin,
+        trusted_peer,
+        settings.trusted_proxy_hosts,
+        headers,
+        allowed_origins,
+        allowed_origin_regex,
+        allowed,
+        origin is None,
+    )
+    return allowed
 
 
 class DhanLiveFeedHub:
@@ -143,15 +224,16 @@ class DhanLiveFeedHub:
 
     async def _log_tick_counters(self) -> None:
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
+            upstream_ticks = self._tick_counters["upstream_received"]
+            fanned_out = self._tick_counters["clients_fanned_out"]
             logger.info(
-                "Dhan ticker delivery counters upstream_ticks_received=%d "
-                "ticks_fanned_out=%d upstream_connections=%d subscriptions=%d",
-                self._tick_counters["upstream_received"],
-                self._tick_counters["clients_fanned_out"],
-                self._connection_counts["ticker"],
-                len(self._all_subscriptions("ticker")),
+                "Dhan ticker delivery counters A_upstream_ticks_received=%d "
+                "B_ticks_fanned_out=%d",
+                upstream_ticks,
+                fanned_out,
             )
+            self._tick_counters = {"upstream_received": 0, "clients_fanned_out": 0}
 
     def last_depth_snapshot_at(self, instrument_id: UUID) -> datetime | None:
         return self._depth_snapshot_times.get(str(instrument_id))
@@ -220,9 +302,22 @@ class DhanLiveFeedHub:
             self._publish_updates(feed)
             self._log_counts(feed)
 
-    async def leave(self, feed: str, group_id: str) -> None:
+    async def leave(
+        self,
+        feed: str,
+        group_id: str,
+        exit_reason: str = "unspecified",
+    ) -> None:
         async with self._lock:
+            clients_before = len(self._groups[feed])
             self._groups[feed].pop(group_id, None)
+            clients_after = len(self._groups[feed])
+            if clients_before == 1 and clients_after == 0:
+                logger.info(
+                    "Dhan shared feed last client left feed=%s reason=%s",
+                    feed,
+                    exit_reason,
+                )
             if self._groups[feed]:
                 self._publish_updates(feed)
                 self._log_counts(feed)
@@ -325,12 +420,13 @@ class DhanLiveFeedHub:
                 {"type": "error", "message": str(error), "status_code": error.status_code},
             )
         except Exception as error:
-            logger.warning(
-                "Dhan shared feed stopped feed=%s error_class=%s reason=%s",
-                feed,
-                type(error).__name__,
-                str(error),
-            )
+            if not (isinstance(error, BrokerAdapterError) and error.status_code == 4403):
+                logger.warning(
+                    "Dhan shared feed stopped feed=%s error_class=%s reason=%s",
+                    feed,
+                    type(error).__name__,
+                    str(error),
+                )
             self._publish(
                 feed,
                 {
@@ -1297,23 +1393,57 @@ def reset_provider_circuit_breaker(provider: str) -> None:
 def _market_session_state(
     instrument: Instrument | InstrumentCandidate | None,
     now: datetime | None = None,
+    *,
+    raw_ltt: int | None = None,
+    parsed_ltt_utc: datetime | None = None,
 ) -> Literal["open", "closed", "unknown"]:
     if instrument is None:
         return "unknown"
     country = instrument.country.upper()
     if country == "IN":
         zone = ZoneInfo("Asia/Kolkata")
-        opening, closing = (9, 15), (15, 30)
+        opening, closing = datetime_time(9, 15), datetime_time(15, 30)
     elif country == "US":
         zone = ZoneInfo("America/New_York")
-        opening, closing = (9, 30), (16, 0)
+        opening, closing = datetime_time(9, 30), datetime_time(16, 0)
     else:
         return "unknown"
-    local = (now or datetime.now(timezone.utc)).astimezone(zone)
-    if local.weekday() >= 5:
-        return "closed"
-    clock = (local.hour, local.minute)
-    return "open" if opening <= clock < closing else "closed"
+    current_utc = now or datetime.now(timezone.utc)
+    if current_utc.tzinfo is None:
+        current_utc = current_utc.replace(tzinfo=timezone.utc)
+    local = current_utc.astimezone(zone)
+    session_open = local.replace(
+        hour=opening.hour,
+        minute=opening.minute,
+        second=0,
+        microsecond=0,
+    )
+    session_close = local.replace(
+        hour=closing.hour,
+        minute=closing.minute,
+        second=0,
+        microsecond=0,
+    )
+    is_open = (
+        local.weekday() < 5
+        and (country != "IN" or local.date() not in NSE_HOLIDAYS)
+        and session_open <= local < session_close
+    )
+    if country == "IN" and not is_open:
+        logger.info(
+            "NSE session check raw_ltt=%s parsed_utc=%s session_time_utc=%s "
+            "current_utc=%s "
+            "now_ist=%s session_open_ist=%s session_close_ist=%s is_open=%s",
+            raw_ltt,
+            (parsed_ltt_utc or current_utc).isoformat(),
+            current_utc.isoformat(),
+            datetime.now(timezone.utc).isoformat(),
+            local.isoformat(),
+            session_open.isoformat(),
+            session_close.isoformat(),
+            is_open,
+        )
+    return "open" if is_open else "closed"
 
 
 def _venue_matches(instrument: Instrument, candidate: InstrumentCandidate) -> bool:
@@ -4765,7 +4895,12 @@ async def _stream_angel_one_quote(
                         return
                 elif error.response.status_code == 403:
                     await send_status("unavailable")
-                    await websocket.close(code=4403)
+                    reason = "Angel One quote request forbidden"
+                    logger.warning(
+                        "ws_close code=4403 site=angel_one_quote_forbidden reason=%s",
+                        reason,
+                    )
+                    await websocket.close(code=4403, reason=reason)
                     return
                 else:
                     await send_status("reconnecting")
@@ -4821,15 +4956,13 @@ async def dhan_market_depth_stream(
     db: Session = Depends(get_db),
 ) -> None:
     await websocket.accept()
-    origin = websocket.headers.get("origin")
-    parsed_origin = urlsplit(origin or "")
-    allowed_origin = origin == settings.frontend_origin or (
-        parsed_origin.scheme == "https"
-        and parsed_origin.hostname is not None
-        and parsed_origin.hostname.endswith(".app.github.dev")
-    )
-    if origin and not allowed_origin:
-        await websocket.close(code=4403)
+    allowed_origin = _websocket_origin_allowed("depth", websocket)
+    if not allowed_origin:
+        reason = "Depth WebSocket origin rejected"
+        logger.warning(
+            "ws_close code=4403 site=depth_origin_rejected reason=%s", reason
+        )
+        await websocket.close(code=4403, reason=reason)
         return
     raw_token = websocket.cookies.get("session_token")
     active_session = (
@@ -4865,7 +4998,12 @@ async def dhan_market_depth_stream(
             "status": "unavailable",
             "message": "Verify this session before using broker market data.",
         })
-        await websocket.close(code=4403)
+        reason = "Depth session verification required"
+        logger.warning(
+            "ws_close code=4403 site=depth_session_verification_required reason=%s",
+            reason,
+        )
+        await websocket.close(code=4403, reason=reason)
         return
     if _default_market_data_source(db, active_session.user_id) != "dhan":
         await websocket.send_json({
@@ -4971,7 +5109,13 @@ async def dhan_market_depth_stream(
         )
     except BrokerAdapterError as error:
         await send_status("unavailable", str(error))
-        await websocket.close(code=4403)
+        reason = "Depth Dhan subscription rejected"
+        logger.warning(
+            "ws_close code=4403 site=depth_dhan_subscription_rejected reason=%s error=%s",
+            reason,
+            str(error),
+        )
+        await websocket.close(code=4403, reason=reason)
         return
     stream_task = asyncio.current_task()
 
@@ -4996,9 +5140,18 @@ async def dhan_market_depth_stream(
                 continue
             if event["type"] == "error":
                 await send_status("unavailable", event["message"])
+                reason = event["message"][:120]
+                close_code = _dhan_feed_close_code(
+                    event.get("status_code"), "depth_upstream_http_rejected"
+                )
+                logger.warning(
+                    "ws_close code=%s site=depth_upstream_http_rejected reason=%s",
+                    close_code,
+                    reason,
+                )
                 await websocket.close(
-                    code=_dhan_feed_close_code(event.get("status_code")),
-                    reason=event["message"][:120],
+                    code=close_code,
+                    reason=reason,
                 )
                 return
             if event["type"] != "depth":
@@ -5060,15 +5213,14 @@ async def dhan_quote_stream(
     db: Session = Depends(get_db),
 ) -> None:
     await websocket.accept()
-    origin = websocket.headers.get("origin")
-    parsed_origin = urlsplit(origin or "")
-    allowed_origin = origin == settings.frontend_origin or (
-        parsed_origin.scheme == "https"
-        and parsed_origin.hostname is not None
-        and parsed_origin.hostname.endswith(".app.github.dev")
-    )
-    if origin and not allowed_origin:
-        await websocket.close(code=4403)
+    allowed_origin = _websocket_origin_allowed("instrument_stream", websocket)
+    if not allowed_origin:
+        reason = "Instrument WebSocket origin rejected"
+        logger.warning(
+            "ws_close code=4403 site=instrument_stream_origin_rejected reason=%s",
+            reason,
+        )
+        await websocket.close(code=4403, reason=reason)
         return
     raw_token = websocket.cookies.get("session_token")
     active_session = (
@@ -5096,7 +5248,12 @@ async def dhan_quote_stream(
         or not active_session.two_factor_verified
     ):
         await websocket.send_json({"type": "status", "status": "unavailable"})
-        await websocket.close(code=4403)
+        reason = "Instrument stream session verification required"
+        logger.warning(
+            "ws_close code=4403 site=instrument_stream_session_verification_required reason=%s",
+            reason,
+        )
+        await websocket.close(code=4403, reason=reason)
         return
 
     selected_source = _default_market_data_source(db, active_session.user_id)
@@ -5237,18 +5394,15 @@ async def dhan_quote_stream(
         )
     except BrokerAdapterError as error:
         await send_status("unavailable", str(error))
-        await websocket.close(code=4403)
+        reason = "Instrument Dhan subscription rejected"
+        logger.warning(
+            "ws_close code=4403 site=instrument_dhan_subscription_rejected reason=%s error=%s",
+            reason,
+            str(error),
+        )
+        await websocket.close(code=4403, reason=reason)
         return
 
-    logger.info(
-        "Dhan single-instrument subscription registered instrument_id=%s "
-        "backend_websocket_route=/api/v1/market-data/instruments/%s/stream "
-        "upstream_url=wss://api-feed.dhan.co?version=2&token=[REDACTED]"
-        "&clientId=[REDACTED]&authType=2",
-        instrument.id,
-        instrument.id,
-    )
-    client_ticks_sent = 0
     stream_task = asyncio.current_task()
 
     async def monitor_client() -> None:
@@ -5261,19 +5415,6 @@ async def dhan_quote_stream(
 
     client_monitor = asyncio.create_task(monitor_client())
 
-    async def log_client_counters() -> None:
-        while True:
-            await asyncio.sleep(30)
-            logger.info(
-                "Dhan single-instrument client delivery counter instrument_id=%s "
-                "messages_sent=%d upstream_connections=%d subscriptions=%d",
-                instrument.id,
-                client_ticks_sent,
-                dhan_live_feed_hub._connection_counts["ticker"],
-                len(dhan_live_feed_hub._all_subscriptions("ticker")),
-            )
-
-    client_counter_task = asyncio.create_task(log_client_counters())
     try:
         while True:
             event = await feed_queue.get()
@@ -5282,9 +5423,18 @@ async def dhan_quote_stream(
                 continue
             if event["type"] == "error":
                 await send_status("unavailable", event["message"])
+                reason = event["message"][:120]
+                close_code = _dhan_feed_close_code(
+                    event.get("status_code"), "instrument_upstream_http_rejected"
+                )
+                logger.warning(
+                    "ws_close code=%s site=instrument_upstream_http_rejected reason=%s",
+                    close_code,
+                    reason,
+                )
                 await websocket.close(
-                    code=_dhan_feed_close_code(event.get("status_code")),
-                    reason=event["message"][:120],
+                    code=close_code,
+                    reason=reason,
                 )
                 return
             if event["type"] != "tick":
@@ -5330,7 +5480,6 @@ async def dhan_quote_stream(
                 "type": "tick",
                 "quote": response.model_dump(mode="json"),
             })
-            client_ticks_sent += 1
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:
@@ -5348,9 +5497,8 @@ async def dhan_quote_stream(
         await websocket.close(code=1011)
     finally:
         client_monitor.cancel()
-        client_counter_task.cancel()
         try:
-            await asyncio.gather(client_monitor, client_counter_task)
+            await client_monitor
         except asyncio.CancelledError:
             pass
         await dhan_live_feed_hub.leave("ticker", group_id)
@@ -5400,15 +5548,15 @@ async def dhan_watchlist_quote_stream(
     db: Session = Depends(get_db),
 ) -> None:
     await websocket.accept()
-    origin = websocket.headers.get("origin")
-    parsed_origin = urlsplit(origin or "")
-    allowed_origin = origin == settings.frontend_origin or (
-        parsed_origin.scheme == "https"
-        and parsed_origin.hostname is not None
-        and parsed_origin.hostname.endswith(".app.github.dev")
-    )
-    if origin and not allowed_origin:
-        await websocket.close(code=4403)
+    logger.info("ws_client_accepted route=watchlist_stream watchlist_id=%s", watchlist_id)
+    allowed_origin = _websocket_origin_allowed("watchlist_stream", websocket)
+    if not allowed_origin:
+        reason = "Watchlist WebSocket origin rejected"
+        logger.warning(
+            "ws_close code=4403 site=watchlist_stream_origin_rejected reason=%s",
+            reason,
+        )
+        await websocket.close(code=4403, reason=reason)
         return
     raw_token = websocket.cookies.get("session_token")
     active_session = (
@@ -5444,7 +5592,12 @@ async def dhan_watchlist_quote_stream(
             "status": "unavailable",
             "message": "Verify this session before using broker market data.",
         })
-        await websocket.close(code=4403)
+        reason = "Watchlist stream session verification required"
+        logger.warning(
+            "ws_close code=4403 site=watchlist_stream_session_verification_required reason=%s",
+            reason,
+        )
+        await websocket.close(code=4403, reason=reason)
         return
     if _default_market_data_source(db, active_session.user_id) != "dhan":
         await websocket.send_json({
@@ -5509,18 +5662,10 @@ async def dhan_watchlist_quote_stream(
         current_market_instruments.clear()
         supported_count = 0
         open_count = 0
+        session_now = datetime.now(timezone.utc)
+        session_now_ist = session_now.astimezone(ZoneInfo("Asia/Kolkata"))
         for instrument in instruments:
-            if (
-                instrument.country.upper() != "IN"
-                or instrument.currency.upper() != "INR"
-                or instrument.asset_class != "equity"
-                or instrument.is_synthetic
-            ):
-                continue
-            supported_count += 1
-            if _market_session_state(instrument) != "open":
-                continue
-            open_count += 1
+            session_state = _market_session_state(instrument, session_now)
             mapping = next(
                 (
                     item
@@ -5529,6 +5674,58 @@ async def dhan_watchlist_quote_stream(
                 ),
                 None,
             )
+            mapping_value = (
+                mapping.provider_instrument_id if mapping is not None else "none"
+            )
+            mapping_segment = (
+                mapping.provider_instrument_id.rsplit("|", maxsplit=1)[-1]
+                if mapping is not None and "|" in mapping.provider_instrument_id
+                else None
+            )
+            if session_state == "unknown":
+                logger.warning(
+                    "Watchlist market session unknown; counts_as_open=false "
+                    "symbol=%s exchange=%s country=%s evaluated_at_utc=%s",
+                    instrument.symbol,
+                    instrument.venue,
+                    instrument.country,
+                    session_now.isoformat(),
+                )
+            if (
+                instrument.country.upper() != "IN"
+                or instrument.currency.upper() != "INR"
+                or instrument.asset_class != "equity"
+                or instrument.is_synthetic
+            ):
+                logger.info(
+                    "watchlist_instrument_session symbol=%s exchange=%s "
+                    "provider_mapping=%s mapping_segment=%s session_state=%s "
+                    "supported=false evaluated_at_utc=%s evaluated_at_ist=%s",
+                    instrument.symbol,
+                    instrument.venue,
+                    mapping_value,
+                    mapping_segment,
+                    session_state,
+                    session_now.isoformat(),
+                    session_now_ist.isoformat(),
+                )
+                continue
+            supported_count += 1
+            if session_state != "open":
+                logger.info(
+                    "watchlist_instrument_session symbol=%s exchange=%s "
+                    "provider_mapping=%s mapping_segment=%s session_state=%s "
+                    "supported=true evaluated_at_utc=%s evaluated_at_ist=%s",
+                    instrument.symbol,
+                    instrument.venue,
+                    mapping_value,
+                    mapping_segment,
+                    session_state,
+                    session_now.isoformat(),
+                    session_now_ist.isoformat(),
+                )
+                continue
+            open_count += 1
             if mapping is None:
                 mapping_values = await asyncio.to_thread(
                     adapter.find_verified_equity_mapping,
@@ -5536,6 +5733,16 @@ async def dhan_watchlist_quote_stream(
                     instrument.venue,
                 )
                 if mapping_values is None:
+                    logger.info(
+                        "watchlist_instrument_session symbol=%s exchange=%s "
+                        "provider_mapping=none session_state=%s supported=true "
+                        "evaluated_at_utc=%s evaluated_at_ist=%s",
+                        instrument.symbol,
+                        instrument.venue,
+                        session_state,
+                        session_now.isoformat(),
+                        session_now_ist.isoformat(),
+                    )
                     continue
                 security_id, exchange_segment = mapping_values
                 owner = db.scalar(
@@ -5546,6 +5753,16 @@ async def dhan_watchlist_quote_stream(
                     )
                 )
                 if owner is not None:
+                    logger.info(
+                        "watchlist_instrument_session symbol=%s exchange=%s "
+                        "provider_mapping=conflict session_state=%s supported=true "
+                        "evaluated_at_utc=%s evaluated_at_ist=%s",
+                        instrument.symbol,
+                        instrument.venue,
+                        session_state,
+                        session_now.isoformat(),
+                        session_now_ist.isoformat(),
+                    )
                     continue
                 mapping = InstrumentProviderIdentifier(
                     instrument_id=instrument.id,
@@ -5557,6 +5774,7 @@ async def dhan_watchlist_quote_stream(
                 )
                 instrument.provider_identifiers.append(mapping)
                 db.add(mapping)
+                mapping_value = mapping.provider_instrument_id
             else:
                 exchange_segment = (
                     "NSE_EQ"
@@ -5569,6 +5787,18 @@ async def dhan_watchlist_quote_stream(
                 mapping.provider_instrument_id,
             )
             current_market_instruments[str(instrument.id)] = instrument
+            logger.info(
+                "watchlist_instrument_session symbol=%s exchange=%s "
+                "provider_mapping=%s mapping_segment=%s session_state=%s "
+                "supported=true evaluated_at_utc=%s evaluated_at_ist=%s",
+                instrument.symbol,
+                instrument.venue,
+                mapping_value,
+                mapping_segment,
+                session_state,
+                session_now.isoformat(),
+                session_now_ist.isoformat(),
+            )
         db.commit()
         if len(subscriptions) > 5000:
             raise HTTPException(
@@ -5585,11 +5815,14 @@ async def dhan_watchlist_quote_stream(
         except ValueError:
             return None
 
+    client_messages_sent = 0
+
     async def send_status(
         status: str,
         message: str | None = None,
         last_snapshot_at: datetime | None = None,
     ) -> None:
+        nonlocal client_messages_sent
         await websocket.send_json({
             "type": "status",
             "status": status,
@@ -5600,6 +5833,7 @@ async def dhan_watchlist_quote_stream(
                 else None
             ),
         })
+        client_messages_sent += 1
 
     def watchlist_snapshot_time() -> datetime | None:
         instrument_ids = db.scalars(
@@ -5627,6 +5861,13 @@ async def dhan_watchlist_quote_stream(
         await websocket.close(code=4404)
         return
     if not initial_subscriptions:
+        logger.info(
+            "watchlist_market_session_summary supported_count=%d open_count=%d "
+            "initial_subscriptions=%d",
+            supported_count,
+            open_count,
+            len(initial_subscriptions),
+        )
         status = "market_closed" if supported_count and not open_count else "unavailable"
         message = (
             "Market closed - live feed resumes at 09:15 IST"
@@ -5654,6 +5895,7 @@ async def dhan_watchlist_quote_stream(
         await websocket.close(code=4401)
         return
 
+    logger.info("dhan_credentials_resolved route=watchlist_stream")
     group_id = str(uuid4())
     try:
         feed_queue = await dhan_live_feed_hub.join(
@@ -5665,7 +5907,13 @@ async def dhan_watchlist_quote_stream(
         )
     except BrokerAdapterError as error:
         await send_status("unavailable", str(error))
-        await websocket.close(code=4403)
+        reason = "Watchlist Dhan subscription rejected"
+        logger.warning(
+            "ws_close code=4403 site=watchlist_dhan_subscription_rejected reason=%s error=%s",
+            reason,
+            str(error),
+        )
+        await websocket.close(code=4403, reason=reason)
         return
 
     logger.info(
@@ -5677,10 +5925,14 @@ async def dhan_watchlist_quote_stream(
         len(initial_subscriptions),
         watchlist_id,
     )
-    client_ticks_sent = 0
     stream_task = asyncio.current_task()
+    client_exit_reason = "handler_completed"
+    market_closed_status_sent = False
 
     async def monitor_client() -> None:
+        nonlocal client_exit_reason
+        nonlocal market_closed_status_sent
+        nonlocal client_messages_sent
         try:
             while True:
                 message = await websocket.receive_text()
@@ -5689,15 +5941,13 @@ async def dhan_watchlist_quote_stream(
                         _market_session_state(instrument) == "open"
                         for instrument in current_market_instruments.values()
                     ):
-                        await send_status(
-                            "market_closed",
-                            "Market closed - live feed resumes at 09:15 IST",
-                            watchlist_snapshot_time(),
-                        )
-                        await websocket.close(code=1000)
-                        if stream_task is not None:
-                            stream_task.cancel()
-                        return
+                        if not market_closed_status_sent:
+                            await send_status(
+                                "market_closed",
+                                "Market closed - live feed resumes at 09:15 IST",
+                                watchlist_snapshot_time(),
+                            )
+                            market_closed_status_sent = True
                     continue
                 try:
                     payload = json.loads(message)
@@ -5710,11 +5960,13 @@ async def dhan_watchlist_quote_stream(
                 try:
                     desired, valid_count, open_count = await resolve_subscriptions(detail_id)
                 except HTTPException:
+                    client_exit_reason = "subscription_limit"
                     await websocket.send_json({
                         "type": "status",
                         "status": "unavailable",
                         "message": "This watchlist exceeds Dhan's 5000-instrument connection limit.",
                     })
+                    client_messages_sent += 1
                     await websocket.close(code=4404)
                     if stream_task is not None:
                         stream_task.cancel()
@@ -5731,27 +5983,32 @@ async def dhan_watchlist_quote_stream(
                         watchlist_snapshot_time() if status == "market_closed" else None,
                     )
                     await websocket.close(code=1000)
+                    client_exit_reason = (
+                        "market_closed" if status == "market_closed"
+                        else "no_eligible_subscriptions"
+                    )
                     if stream_task is not None:
                         stream_task.cancel()
                     return
                 await dhan_live_feed_hub.update("ticker", group_id, desired)
         except WebSocketDisconnect:
+            client_exit_reason = "client_disconnect"
             if stream_task is not None:
                 stream_task.cancel()
 
     client_monitor = asyncio.create_task(monitor_client())
 
     async def log_watchlist_counters() -> None:
+        nonlocal client_messages_sent
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
             logger.info(
-                "Dhan watchlist client delivery counter watchlist_id=%s "
-                "messages_sent=%d upstream_connections=%d subscriptions=%d",
+                "Dhan watchlist delivery counter C_messages_sent_per_client "
+                "watchlist_id=%s count=%d",
                 watchlist_id,
-                client_ticks_sent,
-                dhan_live_feed_hub._connection_counts["ticker"],
-                len(dhan_live_feed_hub._all_subscriptions("ticker")),
+                client_messages_sent,
             )
+            client_messages_sent = 0
 
     client_counter_task = asyncio.create_task(log_watchlist_counters())
     try:
@@ -5761,32 +6018,58 @@ async def dhan_watchlist_quote_stream(
                 await send_status(event["status"])
                 continue
             if event["type"] == "error":
+                client_exit_reason = "upstream_error"
                 await send_status("unavailable", event["message"])
+                reason = event["message"][:120]
+                close_code = _dhan_feed_close_code(
+                    event.get("status_code"), "watchlist_upstream_http_rejected"
+                )
+                logger.warning(
+                    "ws_close code=%s site=watchlist_upstream_http_rejected reason=%s",
+                    close_code,
+                    reason,
+                )
                 await websocket.close(
-                    code=_dhan_feed_close_code(event.get("status_code")),
-                    reason=event["message"][:120],
+                    code=close_code,
+                    reason=reason,
                 )
                 return
             if event["type"] != "tick":
                 continue
+            logger.info(
+                "dhan_tick_received route=watchlist_stream instrument_id=%s",
+                event["instrument_id"],
+            )
             instrument_id = event["instrument_id"]
             bar = event["bar"]
             instrument = current_market_instruments.get(instrument_id)
             if instrument is None:
                 continue
-            if _market_session_state(instrument, bar.timestamp) == "closed":
-                last_snapshot_at = db.scalar(
-                    select(func.max(MarketQuote.retrieved_at)).where(
-                        MarketQuote.instrument_id == instrument.id
+            current_utc = datetime.now(timezone.utc)
+            raw_ltt = int(
+                bar.timestamp.astimezone(ZoneInfo("Asia/Kolkata"))
+                .replace(tzinfo=timezone.utc)
+                .timestamp()
+            )
+            if _market_session_state(
+                instrument,
+                current_utc,
+                raw_ltt=raw_ltt,
+                parsed_ltt_utc=bar.timestamp,
+            ) == "closed":
+                if not market_closed_status_sent:
+                    last_snapshot_at = db.scalar(
+                        select(func.max(MarketQuote.retrieved_at)).where(
+                            MarketQuote.instrument_id == instrument.id
+                        )
                     )
-                )
-                await send_status(
-                    "market_closed",
-                    "Market closed - live feed resumes at 09:15 IST",
-                    last_snapshot_at,
-                )
-                await websocket.close(code=1000)
-                return
+                    await send_status(
+                        "market_closed",
+                        "Market closed - live feed resumes at 09:15 IST",
+                        last_snapshot_at,
+                    )
+                    market_closed_status_sent = True
+                continue
             quote = db.scalar(
                 select(MarketQuote).where(
                     MarketQuote.instrument_id == instrument.id,
@@ -5828,23 +6111,65 @@ async def dhan_watchlist_quote_stream(
                 "absolute_change": absolute_change,
                 "percent_change": percent_change,
             })
-            await websocket.send_json({
+            payload = {
                 "type": "tick",
-                "quote": response.model_dump(mode="json"),
-            })
-            client_ticks_sent += 1
+                "quote": response.model_dump(mode="python"),
+            }
+            payload_keys = list(payload)
+            payload_types = {
+                key: (
+                    {field: type(value).__name__ for field, value in value.items()}
+                    if isinstance(value, dict)
+                    else type(value).__name__
+                )
+                for key, value in payload.items()
+            }
+            logger.info(
+                "ws_send_attempt instrument=%s payload_keys=%s payload_types=%s",
+                instrument_id,
+                payload_keys,
+                payload_types,
+            )
+            try:
+                await websocket.send_json(
+                    jsonable_encoder(payload, custom_encoder={Decimal: str})
+                )
+            except Exception as error:
+                client_exit_reason = "send_exception"
+                logger.exception(
+                    "ws_send_failed instrument=%s error=%s: %s",
+                    instrument_id,
+                    type(error).__name__,
+                    error,
+                )
+                raise
+            logger.info("ws_send_ok instrument=%s", instrument_id)
+            client_messages_sent += 1
     except WebSocketDisconnect:
+        client_exit_reason = "client_disconnect"
         return
     except asyncio.CancelledError:
+        if client_exit_reason == "handler_completed":
+            client_exit_reason = "cancelled"
         return
     except BrokerReconnectRequired:
+        client_exit_reason = "broker_reconnect_required"
         credential.expires_at = datetime.now(timezone.utc)
         db.commit()
         await send_status("unavailable")
         await websocket.close(code=4401)
     except (BrokerAdapterError, HTTPException):
+        client_exit_reason = "broker_or_http_exception"
         await send_status("unavailable")
         await websocket.close(code=1011)
+    except Exception:
+        if client_exit_reason == "handler_completed":
+            client_exit_reason = "exception"
+        logger.exception(
+            "Dhan watchlist stream handler failed exit_reason=%s",
+            client_exit_reason,
+        )
+        raise
     finally:
         client_monitor.cancel()
         client_counter_task.cancel()
@@ -5852,7 +6177,11 @@ async def dhan_watchlist_quote_stream(
             await asyncio.gather(client_monitor, client_counter_task)
         except asyncio.CancelledError:
             pass
-        await dhan_live_feed_hub.leave("ticker", group_id)
+        await dhan_live_feed_hub.leave(
+            "ticker",
+            group_id,
+            exit_reason=client_exit_reason,
+        )
 
 
 @router.get("/instruments/{instrument_id}/quote", response_model=QuoteResponse)
@@ -6837,27 +7166,54 @@ def _backfill_instrument(
         }
     end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     start = (end - timedelta(days=365 * years)).replace(hour=0)
-    dhan_first_bar = db.scalar(
-        select(func.min(MarketBar.timestamp)).where(
-            MarketBar.instrument_id == instrument.id,
-            MarketBar.interval == "1d",
-            MarketBar.source == "dhan",
-            MarketBar.is_synthetic.is_(False),
+    requested_start = start
+    dhan_mapping = db.scalar(
+        select(InstrumentProviderIdentifier).where(
+            InstrumentProviderIdentifier.instrument_id == instrument.id,
+            InstrumentProviderIdentifier.provider == "dhan",
+            InstrumentProviderIdentifier.is_verified.is_(True),
         )
     )
-    if dhan_first_bar is not None:
-        available_start = _utc(dhan_first_bar).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        if start < available_start:
-            logger.info(
-                "Clamping market-data backfill to earliest stored Dhan bar "
-                "(instrument_id=%s from=%s to=%s)",
-                instrument.id,
-                start.date(),
-                available_start.date(),
+    if dhan_mapping is not None:
+        try:
+            master_details = DhanAdapter.get_instrument_master_details(
+                dhan_mapping.provider_instrument_id,
+                instrument.venue,
+                instrument.symbol,
             )
-            start = available_start
+        except BrokerAdapterError as error:
+            logger.warning(
+                "Dhan listing date unavailable for history backfill "
+                "(instrument_id=%s reason=%s)",
+                instrument.id,
+                str(error),
+            )
+            master_details = None
+        listing_date_value = (
+            master_details.get("listing_date") if master_details else None
+        )
+        listing_date = None
+        if listing_date_value:
+            for date_format in ("%Y-%m-%d", "%d-%m-%Y", "%d-%b-%Y", "%Y%m%d"):
+                try:
+                    listing_date = datetime.strptime(
+                        listing_date_value.strip(), date_format
+                    ).date()
+                    break
+                except ValueError:
+                    continue
+        if listing_date is not None:
+            start = max(
+                start,
+                datetime.combine(listing_date, datetime_time.min, timezone.utc),
+            )
+            logger.info(
+                "Dhan backfill start bounded by instrument listing "
+                "instrument_id=%s listing_date=%s requested_start=%s",
+                instrument.id,
+                listing_date,
+                requested_start.date(),
+            )
     bars_before = _count_real_daily_bars(db, instrument.id, start, end)
     chunks: list[BackfillChunkDetail] = []
     chunks_failed = 0
@@ -6957,13 +7313,23 @@ def _backfill_instrument(
                         error.status_code,
                         error.response_body or "unavailable",
                     )
-                _log_market_data_failure(
-                    "Market history backfill chunk failed (provider=%s instrument_id=%s)",
-                    error,
-                    error.code,
-                    active_provider.name,
-                    instrument.id,
-                )
+                if error.code == "provider_no_history_for_range":
+                    logger.info(
+                        "Market history chunk returned no bars "
+                        "(provider=%s instrument_id=%s start=%s end=%s)",
+                        active_provider.name,
+                        instrument.id,
+                        chunk_start.date(),
+                        chunk_end.date(),
+                    )
+                else:
+                    _log_market_data_failure(
+                        "Market history backfill chunk failed (provider=%s instrument_id=%s)",
+                        error,
+                        error.code,
+                        active_provider.name,
+                        instrument.id,
+                    )
                 detail["response_status"] = error.status_code or getattr(
                     active_provider, "last_response_status", None
                 )
@@ -7091,7 +7457,7 @@ def _backfill_instrument(
 @router.post("/instruments/{instrument_id}/history/backfill")
 def backfill_instrument_history(
     instrument_id: UUID,
-    years: int = Query(default=2, ge=1, le=10),
+    years: int = Query(default=10, ge=1, le=10),
     active_session: UserSession = Depends(require_verified_market_session),
     _: UserSession = Depends(require_csrf),
     provider: MarketDataProvider = Depends(get_market_data_provider),
@@ -7110,7 +7476,7 @@ def backfill_instrument_history(
 
 @router.post("/backfill/holdings")
 def backfill_open_holdings(
-    years: int = Query(default=2, ge=1, le=10),
+    years: int = Query(default=10, ge=1, le=10),
     active_session: UserSession = Depends(require_verified_market_session),
     _: UserSession = Depends(require_csrf),
     provider: MarketDataProvider = Depends(get_market_data_provider),
