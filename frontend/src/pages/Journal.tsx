@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import {
-  CalendarDays, ChevronLeft, ChevronRight, CircleDollarSign, Pencil, Plus, Search, Trash2, X,
+  CalendarDays, ChevronLeft, ChevronRight, CircleDollarSign, Pencil, Plus, Search, Trash2, Upload, X,
 } from 'lucide-react';
+import { apiRequest } from '../api';
 import {
   formatMoney, formatQuantity, localDateTime, type WorkspaceState,
 } from '../components/useWorkspace';
@@ -22,6 +23,7 @@ function localDate(value: string): string {
 }
 
 function activityDate(trade: JournalTrade): string {
+  if (trade.calendar_date) return trade.calendar_date;
   return localDate(trade.exit_time ?? trade.entry_time);
 }
 
@@ -30,7 +32,7 @@ function optionDescription(trade: JournalTrade): string {
   return [trade.option_type, trade.strike, trade.expiry?.slice(0, 10)].filter(Boolean).join(' · ');
 }
 
-export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'cancelEditingTrade' | 'currency' | 'editingTrade' | 'journalAnalytics' | 'journalAssetClass' | 'journalBreakdown' | 'journalCurrency' | 'journalHasExit' | 'journalTrades' | 'removeJournalTrade' | 'setJournalAssetClass' | 'setJournalCurrency' | 'setJournalHasExit' | 'startEditingTrade' | 'submitJournalTrade' | 'valuation'> }) {
+export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'cancelEditingTrade' | 'currency' | 'editingTrade' | 'journalAnalytics' | 'journalAssetClass' | 'journalBreakdown' | 'journalCurrency' | 'journalHasExit' | 'journalTrades' | 'removeJournalTrade' | 'refreshJournalTrades' | 'setJournalAssetClass' | 'setJournalCurrency' | 'setJournalHasExit' | 'startEditingTrade' | 'submitJournalTrade' | 'valuation'> }) {
   const {
     cancelEditingTrade,
     editingTrade,
@@ -41,6 +43,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
     journalHasExit,
     journalTrades,
     removeJournalTrade,
+    refreshJournalTrades,
     setJournalAssetClass,
     setJournalCurrency,
     setJournalHasExit,
@@ -60,6 +63,9 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  const [backfillBusy, setBackfillBusy] = useState(false);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [brokerImportMessage, setBrokerImportMessage] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({
     key: 'entry_time',
     direction: 'desc',
@@ -73,22 +79,10 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
     () => [...new Set(journalTrades.map((trade) => trade.setup?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b)),
     [journalTrades],
   );
-  const dayCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    const query = search.trim().toLocaleLowerCase();
-    for (const trade of journalTrades) {
-      if (trade.currency !== journalCurrency
-        || (strategyFilter && trade.strategy !== strategyFilter)
-        || (setupFilter && trade.setup !== setupFilter)
-        || (sideFilter && trade.side !== sideFilter)
-        || (assetFilter && trade.asset_class !== assetFilter)) continue;
-      const day = activityDate(trade);
-      if (!day || (dateFrom && day < dateFrom) || (dateTo && day > dateTo)) continue;
-      if (query && ![trade.instrument, trade.strategy, trade.setup, trade.notes, ...trade.tags].some((value) => value?.toLocaleLowerCase().includes(query))) continue;
-      counts.set(day, (counts.get(day) ?? 0) + 1);
-    }
-    return counts;
-  }, [journalTrades, journalCurrency, strategyFilter, setupFilter, sideFilter, assetFilter, dateFrom, dateTo, search]);
+  const daySummaries = useMemo(
+    () => new Map((journalAnalytics?.daily ?? []).map((item) => [item.date, item])),
+    [journalAnalytics],
+  );
   const filteredTrades = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const rows = journalTrades.filter((trade) => {
@@ -146,6 +140,60 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
     setSelectedDate('');
   }
 
+  async function backfillDhanTrades() {
+    setBackfillBusy(true);
+    setBrokerImportMessage('');
+    try {
+      const result = await apiRequest<{
+        inserted: number;
+        updated: number;
+        years: {
+          year: number;
+          http_status: number | null;
+          trades_imported: number;
+          status: string;
+          reason?: string;
+        }[];
+      }>('/brokers/dhan/trades/backfill', { method: 'POST' });
+      await refreshJournalTrades();
+      setBrokerImportMessage(
+        `Backfill complete: ${result.years.map((item) => `${item.year} HTTP ${item.http_status ?? '—'} · ${item.trades_imported} trades${item.reason ? ` (${item.reason})` : ''}`).join(' | ')}`,
+      );
+    } catch (error) {
+      setBrokerImportMessage(error instanceof Error ? error.message : 'Dhan trade backfill failed.');
+    } finally {
+      setBackfillBusy(false);
+    }
+  }
+
+  async function importDhanCsv(file: File | undefined) {
+    if (!file) return;
+    if (file.size > 4_000_000) {
+      setBrokerImportMessage('Dhan CSV files must be 4 MB or smaller.');
+      return;
+    }
+    setCsvBusy(true);
+    setBrokerImportMessage('');
+    try {
+      const result = await apiRequest<{
+        inserted: number;
+        updated: number;
+        records_received: number;
+      }>('/brokers/dhan/trades/import-csv', {
+        method: 'POST',
+        body: JSON.stringify({ csv_content: await file.text() }),
+      });
+      await refreshJournalTrades();
+      setBrokerImportMessage(
+        `Imported ${result.inserted} Dhan CSV trades; updated ${result.updated} of ${result.records_received} rows.`,
+      );
+    } catch (error) {
+      setBrokerImportMessage(error instanceof Error ? error.message : 'Dhan CSV import failed.');
+    } finally {
+      setCsvBusy(false);
+    }
+  }
+
   const sortButton = (label: string, key: SortKey) => (
     <button className="journal-sort-button" type="button" onClick={() => toggleSort(key)}>
       {label}{sort.key === key ? <span aria-hidden="true">{sort.direction === 'asc' ? ' ↑' : ' ↓'}</span> : null}
@@ -160,14 +208,27 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
           <h2>Trading journal</h2>
           <p>Review recorded decisions, realized outcomes, and patterns across your trades.</p>
         </div>
-        <button className="primary-button journal-add-button" type="button" onClick={() => {
+        <div className="journal-heading-actions">
+        <button className="secondary-button journal-add-button" type="button" onClick={() => {
           if (editingTrade) cancelEditingTrade();
           setEntryOpen(true);
           setJournalHasExit(false);
         }}>
           <Plus size={16} /> Add trade
         </button>
+        <button className="secondary-button" type="button" onClick={() => void backfillDhanTrades()} disabled={backfillBusy || csvBusy}>
+          {backfillBusy ? 'Backfilling…' : 'Backfill trade history'}
+        </button>
+        <label className="secondary-button journal-import-button">
+          <Upload size={15} /> {csvBusy ? 'Importing…' : 'Import Dhan CSV'}
+          <input type="file" accept=".csv,text/csv" disabled={csvBusy || backfillBusy} onChange={(event) => {
+            void importDhanCsv(event.currentTarget.files?.[0]);
+            event.currentTarget.value = '';
+          }} />
+        </label>
+        </div>
       </header>
+      {brokerImportMessage && <p className="data-note" role="status">{brokerImportMessage}</p>}
 
       <div className="journal-toolbar" aria-label="Trade filters">
         <label>From<input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
@@ -180,16 +241,16 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
         {(dateFrom || dateTo || selectedDate || strategyFilter || setupFilter || sideFilter || assetFilter || search) && <button className="journal-clear-filters" type="button" onClick={clearFilters}><X size={13} /> Clear filters</button>}
       </div>
 
-      <div className="data-note journal-data-note"><CircleDollarSign size={16} /><span>Figures use saved trades and existing analytics only. No market prices are fetched; account attribution and daily P&amp;L aggregates are not available in the current journal API.</span></div>
+      <div className="data-note journal-data-note"><CircleDollarSign size={16} /><span>Broker executions from Dhan are read-only; manual trades remain separately labelled. Realized broker P&amp;L is calculated from matched fills with FIFO and is unavailable when provider charges are missing.</span></div>
 
       {journalAnalytics && (
         <section className="journal-kpis" aria-label="Journal performance">
-          <article className="journal-kpi journal-kpi-primary"><span>Net realized P&amp;L</span><strong className={Number(journalAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{formatMoney(journalAnalytics.net_pnl, journalCurrency)}</strong><small>{journalCurrency} · all closed trades</small></article>
+          <article className="journal-kpi journal-kpi-primary"><span>Net realized P&amp;L</span><strong className={journalAnalytics.net_pnl === null ? '' : Number(journalAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{journalAnalytics.net_pnl === null ? '—' : formatMoney(journalAnalytics.net_pnl, journalCurrency)}</strong><small>{journalAnalytics.unpriced_closed_trades ? `${journalAnalytics.unpriced_closed_trades} closed fills lack charge data` : `${journalCurrency} · all closed trades`}</small></article>
           <article className="journal-kpi"><span>Win rate</span><strong>{journalAnalytics.win_rate === null ? '—' : `${journalAnalytics.win_rate}%`}</strong><small>{journalAnalytics.wins} wins · {journalAnalytics.losses} losses</small></article>
           <article className="journal-kpi"><span>Profit factor</span><strong>{journalAnalytics.profit_factor ?? '—'}</strong><small>Closed-trade analytics</small></article>
           <article className="journal-kpi"><span>Expectancy</span><strong>{journalAnalytics.expectancy === null ? '—' : formatMoney(journalAnalytics.expectancy, journalCurrency)}</strong><small>Per closed trade</small></article>
-          <article className="journal-kpi"><span>Max drawdown</span><strong className={Number(journalAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{formatMoney(journalAnalytics.max_drawdown, journalCurrency)}</strong><small>Closed-trade sequence</small></article>
-          <article className="journal-kpi"><span>Trades logged</span><strong>{journalAnalytics.closed_trades + journalAnalytics.open_trades}</strong><small>{journalAnalytics.closed_trades} closed · {journalAnalytics.open_trades} open</small></article>
+          <article className="journal-kpi"><span>Max drawdown</span><strong className={journalAnalytics.max_drawdown !== null && Number(journalAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{journalAnalytics.max_drawdown === null ? '—' : formatMoney(journalAnalytics.max_drawdown, journalCurrency)}</strong><small>Closed-trade sequence</small></article>
+          <article className="journal-kpi"><span>Trades logged</span><strong>{journalAnalytics.trades_logged}</strong><small>{journalAnalytics.closed_trades} closed · {journalAnalytics.open_trades} open</small></article>
         </section>
       )}
 
@@ -198,7 +259,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
           <div className="section-heading">
             <div><p className="eyebrow">TRADE ACTIVITY</p><h2>Monthly calendar</h2></div>
             <div className="journal-calendar-controls">
-              <button type="button" aria-label="Previous month" onClick={() => setCalendarMonth(new Date(year, month - 1, 1))}><ChevronLeft size={16} /></button>
+              <button type="button" aria-label="Previous month" disabled={year === 2023 && month === 0} onClick={() => setCalendarMonth(new Date(year, month - 1, 1))}><ChevronLeft size={16} /></button>
               <strong>{monthLabel}</strong>
               <button type="button" aria-label="Next month" onClick={() => setCalendarMonth(new Date(year, month + 1, 1))}><ChevronRight size={16} /></button>
             </div>
@@ -208,10 +269,11 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
             {calendarDays.map((day, index) => {
               if (day === null) return <span className="journal-calendar-empty" role="gridcell" key={`empty-${index}`} />;
               const date = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const count = dayCounts.get(date) ?? 0;
+              const activity = daySummaries.get(date);
+              const count = activity?.trade_count ?? 0;
               return (
                 <button
-                  className={`journal-calendar-day${count ? ' has-trades' : ''}${selectedDate === date ? ' selected' : ''}`}
+                  className={`journal-calendar-day${count ? ' has-trades' : ''}${selectedDate === date ? ' selected' : ''}${activity?.realized_pnl === null || activity?.realized_pnl === undefined ? '' : Number(activity.realized_pnl) >= 0 ? ' positive' : ' negative'}`}
                   type="button"
                   role="gridcell"
                   aria-label={`${date}, ${count} recorded trades${selectedDate === date ? ', selected' : ''}`}
@@ -221,15 +283,16 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
                 >
                   <span>{day}</span>
                   {count > 0 && <small>{count} trade{count === 1 ? '' : 's'}</small>}
+                  {count > 0 && <small className="journal-day-pnl">{activity?.realized_pnl === null || activity?.realized_pnl === undefined ? '—' : formatMoney(activity.realized_pnl, journalCurrency)}</small>}
                 </button>
               );
             })}
           </div>
-          <p className="journal-calendar-note"><CalendarDays size={13} /> Select a date to filter the history. Closed trades use exit date; open trades use entry date. Daily P&amp;L aggregates are not provided by the current API.</p>
+          <p className="journal-calendar-note"><CalendarDays size={13} /> Select a date to filter the history. Dates and realized P&amp;L use the exchange-local close day.</p>
         </section>
 
         <section className="data-section journal-breakdown-panel">
-          <div className="section-heading"><div><p className="eyebrow">PERFORMANCE REVIEW</p><h2>By strategy</h2></div></div>
+          <div className="section-heading"><div><p className="eyebrow">PERFORMANCE REVIEW</p><h2>Manual trades by strategy</h2></div></div>
           {journalBreakdown.length === 0 ? <div className="table-empty">No strategy results for {journalCurrency}.</div> : (
             <div className="table-scroll">
               <table>
@@ -242,7 +305,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
               </table>
             </div>
           )}
-          <div className="journal-limitation">The current API groups analytics by strategy only; setup/side breakdown, average win/loss and equity-curve points are not provided. Screenshots and account attribution are not part of the current trade model.</div>
+          <div className="journal-limitation">Broker executions do not include strategy metadata; this breakdown covers manual journal trades only.</div>
         </section>
       </div>
 
@@ -257,29 +320,30 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
               <thead><tr>
                 <th>{sortButton('Instrument', 'instrument')}</th><th>{sortButton('Market', 'asset_class')}</th><th>{sortButton('Side', 'side')}</th>
                 <th>{sortButton('Size', 'quantity')}</th><th>{sortButton('Entry', 'entry_time')}</th><th>{sortButton('Exit', 'exit_time')}</th>
-                <th>{sortButton('Net P&L', 'net_pnl')}</th><th>Fees</th><th>{sortButton('Strategy / setup', 'strategy')}</th><th>Notes &amp; tags</th><th>Actions</th>
+                <th>{sortButton('Net P&L', 'net_pnl')}</th><th>Fees</th><th>{sortButton('Strategy / setup', 'strategy')}</th><th>Notes &amp; tags</th><th>Source</th><th>Actions</th>
               </tr></thead>
               <tbody>{filteredTrades.map((trade) => (
                 <tr key={trade.id}>
                   <td className="instrument-cell">{trade.instrument}<small className="trade-subtext">{trade.currency}</small></td>
                   <td>{optionDescription(trade)}</td>
-                  <td><span className={`journal-side-badge ${trade.side === 'long' ? 'long' : 'short'}`}>{trade.side}</span></td>
+                  <td>{trade.source_side ? trade.source_side : <span className={`journal-side-badge ${trade.side === 'long' ? 'long' : 'short'}`}>{trade.side}</span>}</td>
                   <td>{formatQuantity(trade.quantity)} × {formatQuantity(trade.multiplier)}</td>
                   <td>{new Date(trade.entry_time).toLocaleString()}</td>
                   <td>{trade.exit_time ? new Date(trade.exit_time).toLocaleString() : <span className="journal-open-badge">Open</span>}</td>
                   <td className={trade.net_pnl === null ? '' : Number(trade.net_pnl) >= 0 ? 'positive' : 'negative'}>{trade.net_pnl === null ? '—' : formatMoney(trade.net_pnl, trade.currency)}</td>
-                  <td>{formatMoney(trade.fees, trade.currency)}</td>
+                  <td>{trade.fees === null ? '—' : formatMoney(trade.fees, trade.currency)}</td>
                   <td>{trade.strategy || '—'}<small className="trade-subtext">{trade.setup || 'No setup'}</small></td>
                   <td className="journal-notes-cell">
                     <div className="journal-tags">{trade.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
                     {trade.notes && <details><summary>View notes</summary><p>{trade.notes}</p></details>}
                   </td>
+                  <td>{trade.source === 'dhan' ? 'Dhan' : trade.source === 'dhan_csv' ? 'Dhan CSV' : 'Manual'}</td>
                   <td className="journal-row-actions">
-                    <button className="icon-button" type="button" onClick={() => {
+                    {trade.source === 'manual' && <button className="icon-button" type="button" onClick={() => {
                       startEditingTrade(trade);
                       setEntryOpen(true);
-                    }} aria-label={`Edit ${trade.instrument} trade`}><Pencil size={14} /></button>
-                    <button className="icon-button" type="button" onClick={() => void removeJournalTrade(trade.id)} aria-label={`Delete ${trade.instrument} trade`}><Trash2 size={14} /></button>
+                    }} aria-label={`Edit ${trade.instrument} trade`}><Pencil size={14} /></button>}
+                    {trade.source === 'manual' && <button className="icon-button" type="button" onClick={() => void removeJournalTrade(trade.id)} aria-label={`Delete ${trade.instrument} trade`}><Trash2 size={14} /></button>}
                   </td>
                 </tr>
               ))}</tbody>
@@ -300,7 +364,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
           </div>
           <form key={editingTrade?.id ?? 'new-trade'} className="form-stack journal-form" onSubmit={submitJournalTrade}>
             <label>Market<select name="asset_class" value={journalAssetClass} onChange={(event) => setJournalAssetClass(event.target.value)}><option value="equity">Equity</option><option value="future">Future</option><option value="option">Option</option><option value="crypto">Crypto</option></select></label>
-            <label>Currency<select name="currency" defaultValue={editingTrade?.currency ?? 'USD'}><option value="USD">USD</option><option value="INR">INR</option></select></label>
+            <label>Currency<select name="currency" defaultValue={editingTrade?.currency ?? 'INR'}><option value="INR">INR</option><option value="USD">USD</option></select></label>
             <label>Instrument<input name="instrument" placeholder="Symbol or contract" maxLength={64} defaultValue={editingTrade?.instrument ?? ''} required /></label>
             <label>Side<select name="side" defaultValue={editingTrade?.side ?? 'long'}><option value="long">Long</option><option value="short">Short</option></select></label>
             <label>Quantity<input name="quantity" type="number" min="0.00000001" step="0.00000001" defaultValue={editingTrade?.quantity ?? ''} required /></label>

@@ -26,6 +26,7 @@ type IndicatorSeries = Record<string, IndicatorPoint[]>;
 
 type Props = {
   bars: Candle[];
+  liveBar?: Candle | null;
   currency: string;
   interval: string;
   preferredSource?: string | null;
@@ -91,6 +92,7 @@ function price(value: number, currency: string) {
 
 export function CandleChart({
   bars,
+  liveBar = null,
   currency,
   interval,
   preferredSource,
@@ -380,6 +382,30 @@ export function CandleChart({
       to: data[data.length - 1].time,
     });
   }, [bars, indicatorSeries, preferredSource]);
+
+  useEffect(() => {
+    if (!liveBar || bars.length === 0) return;
+    const sortedBars = [...bars].sort(
+      (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
+    );
+    const latestBar = sortedBars[sortedBars.length - 1];
+    if (!latestBar) return;
+    const liveDay = new Date(liveBar.timestamp).toISOString().slice(0, 10);
+    const latestDay = new Date(latestBar.timestamp).toISOString().slice(0, 10);
+    if (liveDay !== latestDay) return;
+    const time = Math.floor(new Date(latestBar.timestamp).getTime() / 1000) as Time;
+    const open = interval === '1d' ? Number(liveBar.open) : Number(latestBar.open);
+    const high = Math.max(Number(latestBar.high), Number(liveBar.high), Number(liveBar.close));
+    const low = Math.min(Number(latestBar.low), Number(liveBar.low), Number(liveBar.close));
+    const close = Number(liveBar.close);
+    candleSeriesRef.current?.update({ time, open, high, low, close });
+    lineSeriesRef.current?.update({ time, value: close });
+    volumeSeriesRef.current?.update({
+      time,
+      value: interval === '1d' ? Number(liveBar.volume) : Number(latestBar.volume),
+      color: close >= open ? '#3fd99a66' : '#ef777766',
+    });
+  }, [bars, interval, liveBar]);
 
   useEffect(() => {
     candleSeriesRef.current?.applyOptions({ visible: chartMode === 'candles' });

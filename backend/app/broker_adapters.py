@@ -1098,6 +1098,161 @@ class DhanAdapter(BrokerAdapter):
                     break
         raise BrokerAdapterError("Dhan live feed disconnected after retrying")
 
+    async def stream_watchlist_market_quotes(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        initial_subscriptions: Mapping[str, tuple[str, str]],
+        subscription_updates: asyncio.Queue[Mapping[str, tuple[str, str]]],
+        status_callback: Callable[[str], Awaitable[None]],
+    ) -> AsyncIterator[tuple[str, HistoricalBar]]:
+        segment_codes = {
+            1: "NSE_EQ",
+            2: "NSE_FNO",
+            3: "NSE_CURRENCY",
+            4: "BSE_EQ",
+            5: "MCX_COMM",
+            7: "BSE_CURRENCY",
+            8: "BSE_FNO",
+        }
+
+        def subscription_items(
+            subscriptions: Mapping[str, tuple[str, str]],
+        ) -> dict[tuple[str, str], str]:
+            if len(subscriptions) > 5000:
+                raise BrokerAdapterError("Dhan feed subscription exceeds its 5000-instrument limit")
+            items: dict[tuple[str, str], str] = {}
+            for instrument_id, (exchange_segment, security_id) in subscriptions.items():
+                key = (exchange_segment, str(security_id))
+                if key not in items:
+                    items[key] = instrument_id
+            return items
+
+        def request_message(
+            request_code: int,
+            instruments: list[tuple[str, str]],
+        ) -> str:
+            return json.dumps(
+                {
+                    "RequestCode": request_code,
+                    "InstrumentCount": len(instruments),
+                    "InstrumentList": [
+                        {"ExchangeSegment": segment, "SecurityId": security_id}
+                        for segment, security_id in instruments
+                    ],
+                }
+            )
+
+        query = urlencode({
+            "version": "2",
+            "token": access_token,
+            "clientId": tokens["client_id"],
+            "authType": "2",
+        })
+        url = f"wss://api-feed.dhan.co?{query}"
+        current = subscription_items(initial_subscriptions)
+        retry_delay = 1
+        reconnects = 0
+        while True:
+            await status_callback("connecting" if reconnects == 0 else "reconnecting")
+            try:
+                async with websocket_connect(
+                    url, ping_interval=10, ping_timeout=40, close_timeout=5
+                ) as connection:
+                    for start in range(0, len(current), 100):
+                        batch = list(current)[start : start + 100]
+                        await connection.send(request_message(17, batch))
+                    logger.info(
+                        "Dhan live feed connected subscriptions=%d",
+                        len(current),
+                    )
+                    await status_callback("active")
+                    retry_delay = 1
+                    receive_task = asyncio.create_task(connection.recv())
+                    update_task = asyncio.create_task(subscription_updates.get())
+                    try:
+                        while True:
+                            done, _ = await asyncio.wait(
+                                (receive_task, update_task),
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if update_task in done:
+                                desired = subscription_items(update_task.result())
+                                removed = list(current.keys() - desired.keys())
+                                added = list(desired.keys() - current.keys())
+                                for start in range(0, len(removed), 100):
+                                    await connection.send(
+                                        request_message(18, removed[start : start + 100])
+                                    )
+                                for start in range(0, len(added), 100):
+                                    await connection.send(
+                                        request_message(17, added[start : start + 100])
+                                    )
+                                current = desired
+                                logger.info(
+                                    "Dhan live feed subscriptions updated subscribed=%d unsubscribed=%d total=%d",
+                                    len(added),
+                                    len(removed),
+                                    len(current),
+                                )
+                                update_task = asyncio.create_task(subscription_updates.get())
+                            if receive_task in done:
+                                message = receive_task.result()
+                                receive_task = asyncio.create_task(connection.recv())
+                                if not isinstance(message, bytes):
+                                    continue
+                                if message and message[0] == 50:
+                                    raise BrokerFeedDisconnected(
+                                        "Dhan feed requested reconnection"
+                                    )
+                                try:
+                                    if len(message) < 8:
+                                        raise BrokerAdapterError(
+                                            "Dhan live feed packet has an invalid header"
+                                        )
+                                    segment = segment_codes.get(message[3])
+                                    security_id = str(
+                                        int.from_bytes(message[4:8], "little", signed=True)
+                                    )
+                                    instrument_id = current.get((segment or "", security_id))
+                                    if instrument_id is None:
+                                        continue
+                                    quote = self.decode_market_feed_packet(
+                                        message, segment or "", security_id
+                                    )
+                                except BrokerAdapterError as error:
+                                    logger.warning(
+                                        "Dhan live feed packet parse failed error_class=%s",
+                                        type(error).__name__,
+                                    )
+                                    continue
+                                if quote is not None:
+                                    yield instrument_id, quote
+                    finally:
+                        receive_task.cancel()
+                        update_task.cancel()
+                        await asyncio.gather(
+                            receive_task, update_task, return_exceptions=True
+                        )
+            except BrokerReconnectRequired:
+                raise
+            except InvalidStatus as error:
+                if error.response.status_code == 401:
+                    raise BrokerReconnectRequired(
+                        "Reconnect to this broker to renew the session"
+                    ) from None
+                logger.warning(
+                    "Dhan live feed connection failed status=%s",
+                    error.response.status_code,
+                )
+            except (BrokerFeedDisconnected, OSError, TimeoutError, WebSocketException):
+                logger.warning("Dhan live feed disconnected; reconnecting")
+            reconnects += 1
+            logger.info("Dhan live feed reconnect attempt=%d", reconnects)
+            await status_callback("reconnecting")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 30)
+
     def get_positions(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:
         return self._get_dhan_account_data(
             "/v2/positions", "positions_api_request", access_token, tokens

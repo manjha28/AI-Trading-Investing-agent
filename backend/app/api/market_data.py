@@ -61,6 +61,7 @@ from app.models import (
     UserMarketDataSettings,
     User,
     UserSession,
+    Watchlist,
     WatchlistInstrument,
 )
 from app.services.indicators import IndicatorValue, atr, compute_indicators, ema, rsi, sma
@@ -1468,6 +1469,8 @@ class QuoteResponse(BaseModel):
     feed_active: bool = False
     market_timestamp: datetime
     market_age_seconds: float
+    absolute_change: Decimal | None = None
+    percent_change: Decimal | None = None
     data_type: Literal[
         "provider_quote", "provider_snapshot", "live_tick", "daily_close"
     ]
@@ -1502,6 +1505,8 @@ class WatchlistQuoteResponse(BaseModel):
         "provider_quote", "provider_snapshot", "live_tick", "daily_close"
     ]
     close: Decimal
+    absolute_change: Decimal | None = None
+    percent_change: Decimal | None = None
 
 
 class WatchlistEntryResponse(BaseModel):
@@ -1514,6 +1519,17 @@ class WatchlistEntryResponse(BaseModel):
     is_synthetic: bool
     relink_required: bool
     quote: WatchlistQuoteResponse | None
+
+
+class WatchlistRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class WatchlistResponse(BaseModel):
+    id: UUID
+    name: str
+    instrument_count: int
+    created_at: datetime
 
 
 def _instrument_response(instrument: Instrument) -> InstrumentResponse:
@@ -2785,10 +2801,11 @@ def get_instrument_indicators(
 
 @router.get("/watchlist", response_model=list[WatchlistEntryResponse])
 def get_watchlist(
+    watchlist_id: UUID | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    entries = db.scalars(
+    statement = (
         select(WatchlistInstrument)
         .where(WatchlistInstrument.user_id == user.id)
         .options(
@@ -2797,7 +2814,14 @@ def get_watchlist(
             )
         )
         .order_by(WatchlistInstrument.created_at, WatchlistInstrument.id)
-    ).all()
+    )
+    selected_watchlist = _get_owned_watchlist(
+        db, user.id, watchlist_id
+    ) if watchlist_id is not None else _get_default_watchlist(db, user.id)
+    statement = statement.where(
+        WatchlistInstrument.watchlist_id == selected_watchlist.id
+    )
+    entries = db.scalars(statement).all()
     quotes_by_instrument: dict[UUID, MarketQuote] = {}
     if entries:
         cached_quotes = db.scalars(
@@ -2817,6 +2841,39 @@ def get_watchlist(
     for entry in entries:
         instrument = entry.instrument
         quote = quotes_by_instrument.get(instrument.id)
+        daily_bars = db.scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.instrument_id == instrument.id,
+                MarketBar.interval == "1d",
+                MarketBar.is_synthetic.is_(instrument.is_synthetic),
+            )
+            .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
+            .limit(10)
+        ).all()
+        distinct_bars: list[MarketBar] = []
+        seen_timestamps: set[datetime] = set()
+        for bar in daily_bars:
+            if bar.timestamp in seen_timestamps:
+                continue
+            seen_timestamps.add(bar.timestamp)
+            distinct_bars.append(bar)
+            if len(distinct_bars) == 2:
+                break
+        last_price = quote.close if quote is not None else (
+            distinct_bars[0].close if distinct_bars else None
+        )
+        previous_close = distinct_bars[1].close if len(distinct_bars) > 1 else None
+        absolute_change = (
+            last_price - previous_close
+            if last_price is not None and previous_close is not None
+            else None
+        )
+        percent_change = (
+            absolute_change / previous_close * Decimal("100")
+            if absolute_change is not None and previous_close not in (None, Decimal("0"))
+            else None
+        )
         quote_response = None
         if quote is not None:
             retrieved_at = _utc(quote.retrieved_at)
@@ -2847,6 +2904,41 @@ def get_watchlist(
                 market_age_seconds=max(0.0, quote_evidence["quote_timestamp_age_seconds"]),
                 data_type=quote_evidence["quote_data_type"],
                 close=quote.close,
+                absolute_change=absolute_change,
+                percent_change=percent_change,
+            )
+        elif distinct_bars:
+            latest_bar = distinct_bars[0]
+            freshness = _freshness(
+                db,
+                instrument.id,
+                "1d",
+                source=latest_bar.source,
+                now=now,
+            )
+            quote_timestamp = _utc(latest_bar.timestamp)
+            quote_response = WatchlistQuoteResponse(
+                source=latest_bar.source,
+                retrieved_at=_utc(latest_bar.retrieved_at),
+                freshness="fresh" if freshness.status == "fresh" else "stale",
+                freshness_status=(
+                    freshness.status
+                    if freshness.status != "never_fetched"
+                    else "unavailable"
+                ),
+                is_synthetic=latest_bar.is_synthetic,
+                is_verified=any(
+                    mapping.provider == latest_bar.source and mapping.is_verified
+                    for mapping in instrument.provider_identifiers
+                ),
+                market_timestamp=quote_timestamp,
+                market_age_seconds=max(
+                    0.0, (now - quote_timestamp).total_seconds()
+                ),
+                data_type="daily_close",
+                close=latest_bar.close,
+                absolute_change=absolute_change,
+                percent_change=percent_change,
             )
         result.append(
             WatchlistEntryResponse(
@@ -3263,6 +3355,203 @@ def get_market_data_coverage(
     return {"instruments": result}
 
 
+def _get_default_watchlist(db: Session, user_id: UUID) -> Watchlist:
+    watchlist = db.scalar(
+        select(Watchlist)
+        .where(Watchlist.user_id == user_id)
+        .order_by(Watchlist.created_at, Watchlist.id)
+        .limit(1)
+    )
+    if watchlist is None:
+        watchlist = Watchlist(
+            user_id=user_id,
+            name="Default",
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(watchlist)
+        db.commit()
+        db.refresh(watchlist)
+    return watchlist
+
+
+def _get_owned_watchlist(db: Session, user_id: UUID, watchlist_id: UUID) -> Watchlist:
+    watchlist = db.scalar(
+        select(Watchlist).where(
+            Watchlist.id == watchlist_id,
+            Watchlist.user_id == user_id,
+        )
+    )
+    if watchlist is None:
+        raise HTTPException(status_code=404, detail="Watchlist not found")
+    return watchlist
+
+
+@router.get("/watchlists", response_model=list[WatchlistResponse])
+def list_watchlists(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_default_watchlist(db, user.id)
+    watchlists = db.scalars(
+        select(Watchlist)
+        .where(Watchlist.user_id == user.id)
+        .options(selectinload(Watchlist.entries))
+        .order_by(Watchlist.created_at, Watchlist.id)
+    ).all()
+    return [
+        WatchlistResponse(
+            id=watchlist.id,
+            name=watchlist.name,
+            instrument_count=len(watchlist.entries),
+            created_at=watchlist.created_at,
+        )
+        for watchlist in watchlists
+    ]
+
+
+@router.post("/watchlists", response_model=WatchlistResponse, status_code=201)
+def create_watchlist(
+    payload: WatchlistRequest,
+    user: User = Depends(get_current_user),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Watchlist name cannot be blank")
+    existing = db.scalar(
+        select(Watchlist.id).where(
+            Watchlist.user_id == user.id,
+            func.lower(Watchlist.name) == name.casefold(),
+        )
+    )
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="A watchlist with that name already exists")
+    watchlist = Watchlist(
+        user_id=user.id,
+        name=name,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(watchlist)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A watchlist with that name already exists"
+        ) from error
+    db.refresh(watchlist)
+    return WatchlistResponse(
+        id=watchlist.id,
+        name=watchlist.name,
+        instrument_count=0,
+        created_at=watchlist.created_at,
+    )
+
+
+@router.patch("/watchlists/{watchlist_id}", response_model=WatchlistResponse)
+def rename_watchlist(
+    watchlist_id: UUID,
+    payload: WatchlistRequest,
+    user: User = Depends(get_current_user),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    watchlist = _get_owned_watchlist(db, user.id, watchlist_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Watchlist name cannot be blank")
+    existing = db.scalar(
+        select(Watchlist.id).where(
+            Watchlist.user_id == user.id,
+            Watchlist.id != watchlist.id,
+            func.lower(Watchlist.name) == name.casefold(),
+        )
+    )
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="A watchlist with that name already exists")
+    watchlist.name = name
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A watchlist with that name already exists"
+        ) from error
+    return WatchlistResponse(
+        id=watchlist.id,
+        name=watchlist.name,
+        instrument_count=len(watchlist.entries),
+        created_at=watchlist.created_at,
+    )
+
+
+@router.delete("/watchlists/{watchlist_id}", status_code=204)
+def delete_watchlist(
+    watchlist_id: UUID,
+    user: User = Depends(get_current_user),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    watchlist = _get_owned_watchlist(db, user.id, watchlist_id)
+    db.delete(watchlist)
+    db.commit()
+
+
+@router.post(
+    "/watchlists/{watchlist_id}/instruments/{instrument_id}", status_code=204
+)
+def add_instrument_to_watchlist(
+    watchlist_id: UUID,
+    instrument_id: UUID,
+    user: User = Depends(get_current_user),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    watchlist = _get_owned_watchlist(db, user.id, watchlist_id)
+    _get_instrument(db, instrument_id)
+    existing = db.scalar(
+        select(WatchlistInstrument.id).where(
+            WatchlistInstrument.watchlist_id == watchlist.id,
+            WatchlistInstrument.instrument_id == instrument_id,
+        )
+    )
+    if existing is None:
+        db.add(
+            WatchlistInstrument(
+                user_id=user.id,
+                watchlist_id=watchlist.id,
+                instrument_id=instrument_id,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+    return None
+
+
+@router.delete(
+    "/watchlists/{watchlist_id}/instruments/{instrument_id}", status_code=204
+)
+def remove_instrument_from_watchlist(
+    watchlist_id: UUID,
+    instrument_id: UUID,
+    user: User = Depends(get_current_user),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    watchlist = _get_owned_watchlist(db, user.id, watchlist_id)
+    entry = db.scalar(
+        select(WatchlistInstrument).where(
+            WatchlistInstrument.watchlist_id == watchlist.id,
+            WatchlistInstrument.instrument_id == instrument_id,
+        )
+    )
+    if entry is not None:
+        db.delete(entry)
+        db.commit()
+    return None
+
+
 @router.post("/watchlist/{instrument_id}", status_code=204)
 def add_watchlist_instrument(
     instrument_id: UUID,
@@ -3271,9 +3560,10 @@ def add_watchlist_instrument(
     db: Session = Depends(get_db),
 ):
     _get_instrument(db, instrument_id)
+    watchlist = _get_default_watchlist(db, user.id)
     existing = db.scalar(
         select(WatchlistInstrument).where(
-            WatchlistInstrument.user_id == user.id,
+            WatchlistInstrument.watchlist_id == watchlist.id,
             WatchlistInstrument.instrument_id == instrument_id,
         )
     )
@@ -3281,6 +3571,7 @@ def add_watchlist_instrument(
         db.add(
             WatchlistInstrument(
                 user_id=user.id,
+                watchlist_id=watchlist.id,
                 instrument_id=instrument_id,
                 created_at=datetime.now(timezone.utc),
             )
@@ -3296,9 +3587,10 @@ def remove_watchlist_instrument(
     _: UserSession = Depends(require_csrf),
     db: Session = Depends(get_db),
 ):
+    watchlist = _get_default_watchlist(db, user.id)
     item = db.scalar(
         select(WatchlistInstrument).where(
-            WatchlistInstrument.user_id == user.id,
+            WatchlistInstrument.watchlist_id == watchlist.id,
             WatchlistInstrument.instrument_id == instrument_id,
         )
     )
@@ -3894,6 +4186,425 @@ async def dhan_quote_stream(
         await send_status("unavailable")
         await websocket.close(code=4401)
     except BrokerAdapterError:
+        await send_status("unavailable")
+        await websocket.close(code=1011)
+    finally:
+        client_monitor.cancel()
+        try:
+            await client_monitor
+        except asyncio.CancelledError:
+            pass
+
+
+def _live_quote_change(
+    db: Session,
+    instrument: Instrument,
+    quote_timestamp: datetime,
+    close: Decimal,
+) -> tuple[Decimal | None, Decimal | None]:
+    zone = ZoneInfo(instrument.timezone)
+    quote_day = quote_timestamp.astimezone(zone).date()
+    bars = db.scalars(
+        select(MarketBar)
+        .where(
+            MarketBar.instrument_id == instrument.id,
+            MarketBar.interval == "1d",
+            MarketBar.is_synthetic.is_(instrument.is_synthetic),
+        )
+        .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
+        .limit(30)
+    ).all()
+    previous = next(
+        (
+            bar.close
+            for bar in bars
+            if _utc(bar.timestamp).astimezone(zone).date() < quote_day
+        ),
+        None,
+    )
+    if previous is None:
+        return None, None
+    absolute_change = close - previous
+    percent_change = (
+        (absolute_change / previous * Decimal("100")).quantize(Decimal("0.0001"))
+        if previous != 0
+        else None
+    )
+    return absolute_change, percent_change
+
+
+@router.websocket("/watchlists/{watchlist_id}/stream")
+async def dhan_watchlist_quote_stream(
+    websocket: WebSocket,
+    watchlist_id: UUID,
+    db: Session = Depends(get_db),
+) -> None:
+    await websocket.accept()
+    origin = websocket.headers.get("origin")
+    parsed_origin = urlsplit(origin or "")
+    allowed_origin = origin == settings.frontend_origin or (
+        parsed_origin.scheme == "https"
+        and parsed_origin.hostname is not None
+        and parsed_origin.hostname.endswith(".app.github.dev")
+    )
+    if origin and not allowed_origin:
+        await websocket.close(code=4403)
+        return
+    raw_token = websocket.cookies.get("session_token")
+    active_session = (
+        db.scalar(
+            select(UserSession)
+            .where(
+                UserSession.token_hash == hash_token(raw_token),
+                UserSession.revoked_at.is_(None),
+            )
+            .options(selectinload(UserSession.user))
+        )
+        if raw_token
+        else None
+    )
+    expires_at = active_session.expires_at if active_session is not None else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if active_session is None or expires_at <= datetime.now(timezone.utc):
+        await websocket.send_json({
+            "type": "status",
+            "status": "unavailable",
+            "message": "Sign in again to use the live feed.",
+        })
+        await websocket.close(code=4401)
+        return
+    if (
+        not active_session.user.email_verified
+        or not active_session.user.two_factor_enabled
+        or not active_session.two_factor_verified
+    ):
+        await websocket.send_json({
+            "type": "status",
+            "status": "unavailable",
+            "message": "Verify this session before using broker market data.",
+        })
+        await websocket.close(code=4403)
+        return
+    if _default_market_data_source(db, active_session.user_id) != "dhan":
+        await websocket.send_json({
+            "type": "status",
+            "status": "unavailable",
+            "message": "Select Dhan as the market-data source to use this feed.",
+        })
+        await websocket.close(code=4404)
+        return
+
+    watchlist = db.scalar(
+        select(Watchlist).where(
+            Watchlist.id == watchlist_id,
+            Watchlist.user_id == active_session.user_id,
+        )
+    )
+    if watchlist is None:
+        await websocket.send_json({
+            "type": "status",
+            "status": "unavailable",
+            "message": "Selected watchlist is unavailable.",
+        })
+        await websocket.close(code=4404)
+        return
+    credential = db.scalar(
+        select(BrokerCredential).where(
+            BrokerCredential.user_id == active_session.user_id,
+            BrokerCredential.broker == "dhan",
+        )
+    )
+    if credential is None:
+        await websocket.send_json({
+            "type": "status",
+            "status": "unavailable",
+            "message": "Connect Dhan on the Brokers page to enable live market data.",
+        })
+        await websocket.close(code=4404)
+        return
+
+    adapter = DhanAdapter()
+    current_market_instruments: dict[str, Instrument] = {}
+
+    async def resolve_subscriptions(
+        detail_id: UUID | None,
+    ) -> tuple[dict[str, tuple[str, str]], int, int]:
+        entry_ids = set(
+            db.scalars(
+                select(WatchlistInstrument.instrument_id).where(
+                    WatchlistInstrument.watchlist_id == watchlist_id,
+                    WatchlistInstrument.user_id == active_session.user_id,
+                )
+            ).all()
+        )
+        if detail_id is not None:
+            entry_ids.add(detail_id)
+        instruments = db.scalars(
+            select(Instrument)
+            .where(Instrument.id.in_(entry_ids))
+            .options(selectinload(Instrument.provider_identifiers))
+        ).all() if entry_ids else []
+        subscriptions: dict[str, tuple[str, str]] = {}
+        current_market_instruments.clear()
+        supported_count = 0
+        open_count = 0
+        for instrument in instruments:
+            if (
+                instrument.country.upper() != "IN"
+                or instrument.currency.upper() != "INR"
+                or instrument.asset_class != "equity"
+                or instrument.is_synthetic
+            ):
+                continue
+            supported_count += 1
+            if _market_session_state(instrument) != "open":
+                continue
+            open_count += 1
+            mapping = next(
+                (
+                    item
+                    for item in instrument.provider_identifiers
+                    if item.provider == adapter.slug and item.is_verified
+                ),
+                None,
+            )
+            if mapping is None:
+                mapping_values = await asyncio.to_thread(
+                    adapter.find_verified_equity_mapping,
+                    instrument.symbol,
+                    instrument.venue,
+                )
+                if mapping_values is None:
+                    continue
+                security_id, exchange_segment = mapping_values
+                owner = db.scalar(
+                    select(InstrumentProviderIdentifier.instrument_id).where(
+                        InstrumentProviderIdentifier.provider == adapter.slug,
+                        InstrumentProviderIdentifier.provider_instrument_id == security_id,
+                        InstrumentProviderIdentifier.instrument_id != instrument.id,
+                    )
+                )
+                if owner is not None:
+                    continue
+                mapping = InstrumentProviderIdentifier(
+                    instrument_id=instrument.id,
+                    provider=adapter.slug,
+                    provider_instrument_id=security_id,
+                    provider_symbol=instrument.symbol,
+                    is_verified=True,
+                    last_seen_at=datetime.now(timezone.utc),
+                )
+                instrument.provider_identifiers.append(mapping)
+                db.add(mapping)
+            else:
+                exchange_segment = (
+                    "NSE_EQ"
+                    if instrument.venue.upper() in {"NSE", "XNSE"}
+                    else "BSE_EQ"
+                )
+            mapping.last_seen_at = datetime.now(timezone.utc)
+            subscriptions[str(instrument.id)] = (
+                exchange_segment,
+                mapping.provider_instrument_id,
+            )
+            current_market_instruments[str(instrument.id)] = instrument
+        db.commit()
+        if len(subscriptions) > 5000:
+            raise HTTPException(
+                status_code=422,
+                detail="Dhan supports at most 5000 instruments on one connection.",
+            )
+        return subscriptions, supported_count, open_count
+
+    def valid_detail_id(value: Any) -> UUID | None:
+        if value in (None, ""):
+            return None
+        try:
+            return UUID(str(value))
+        except ValueError:
+            return None
+
+    async def send_status(status: str) -> None:
+        await websocket.send_json({"type": "status", "status": status})
+
+    subscription_queue: asyncio.Queue[dict[str, tuple[str, str]]] = asyncio.Queue(maxsize=1)
+    try:
+        initial_subscriptions, supported_count, open_count = await resolve_subscriptions(None)
+    except HTTPException:
+        await websocket.send_json({
+            "type": "status",
+            "status": "unavailable",
+            "message": "This watchlist exceeds Dhan's 5000-instrument connection limit.",
+        })
+        await websocket.close(code=4404)
+        return
+    if not initial_subscriptions:
+        status = "market_closed" if supported_count and not open_count else "unavailable"
+        message = (
+            "Market closed; stored end-of-day data remains in use."
+            if status == "market_closed"
+            else "No eligible Dhan-mapped instruments are in this watchlist."
+        )
+        await websocket.send_json({
+            "type": "status",
+            "status": status,
+            "message": message,
+        })
+        await websocket.close(code=1000)
+        return
+
+    try:
+        from app.api.brokers import _fresh_tokens
+
+        tokens = _fresh_tokens(db, adapter, credential)
+    except HTTPException:
+        await websocket.send_json({
+            "type": "status",
+            "status": "unavailable",
+            "message": "Reconnect Dhan on the Brokers page to renew its session.",
+        })
+        await websocket.close(code=4401)
+        return
+
+    stream_task = asyncio.current_task()
+
+    async def monitor_client() -> None:
+        try:
+            while True:
+                message = await websocket.receive_text()
+                if message == "ping":
+                    if current_market_instruments and not any(
+                        _market_session_state(instrument) == "open"
+                        for instrument in current_market_instruments.values()
+                    ):
+                        await websocket.send_json({
+                            "type": "status",
+                            "status": "market_closed",
+                            "message": "Market closed; stored end-of-day data remains in use.",
+                        })
+                        await websocket.close(code=1000)
+                        if stream_task is not None:
+                            stream_task.cancel()
+                        return
+                    continue
+                try:
+                    payload = json.loads(message)
+                except json.JSONDecodeError:
+                    logger.warning("Dhan watchlist stream received invalid client JSON")
+                    continue
+                if not isinstance(payload, dict) or payload.get("type") != "subscriptions":
+                    continue
+                detail_id = valid_detail_id(payload.get("detail_instrument_id"))
+                try:
+                    desired, valid_count, open_count = await resolve_subscriptions(detail_id)
+                except HTTPException:
+                    await websocket.send_json({
+                        "type": "status",
+                        "status": "unavailable",
+                        "message": "This watchlist exceeds Dhan's 5000-instrument connection limit.",
+                    })
+                    await websocket.close(code=4404)
+                    if stream_task is not None:
+                        stream_task.cancel()
+                    return
+                if not desired:
+                    status = "market_closed" if valid_count and not open_count else "unavailable"
+                    await websocket.send_json({
+                        "type": "status",
+                        "status": status,
+                        "message": (
+                            "Market closed; stored end-of-day data remains in use."
+                            if status == "market_closed"
+                            else "No eligible Dhan-mapped instruments are selected."
+                        ),
+                    })
+                    await websocket.close(code=1000)
+                    if stream_task is not None:
+                        stream_task.cancel()
+                    return
+                if subscription_queue.full():
+                    subscription_queue.get_nowait()
+                subscription_queue.put_nowait(desired)
+        except WebSocketDisconnect:
+            if stream_task is not None:
+                stream_task.cancel()
+
+    client_monitor = asyncio.create_task(monitor_client())
+    try:
+        async for instrument_id, bar in adapter.stream_watchlist_market_quotes(
+            tokens["access_token"],
+            tokens,
+            initial_subscriptions,
+            subscription_queue,
+            send_status,
+        ):
+            instrument = current_market_instruments.get(instrument_id)
+            if instrument is None:
+                continue
+            if _market_session_state(instrument, bar.timestamp) == "closed":
+                await websocket.send_json({
+                    "type": "status",
+                    "status": "market_closed",
+                    "message": "Market closed; stored end-of-day data remains in use.",
+                })
+                await websocket.close(code=1000)
+                return
+            quote = db.scalar(
+                select(MarketQuote).where(
+                    MarketQuote.instrument_id == instrument.id,
+                    MarketQuote.source == "dhan_ws",
+                )
+            )
+            if quote is None:
+                quote = MarketQuote(
+                    instrument_id=instrument.id,
+                    source="dhan_ws",
+                )
+                db.add(quote)
+            quote.timestamp = bar.timestamp
+            quote.open = bar.open
+            quote.high = bar.high
+            quote.low = bar.low
+            quote.close = bar.close
+            quote.volume = bar.volume
+            quote.retrieved_at = datetime.now(timezone.utc)
+            quote.is_synthetic = False
+            db.commit()
+            db.refresh(quote)
+            absolute_change, percent_change = _live_quote_change(
+                db, instrument, bar.timestamp, bar.close
+            )
+            response = _quote_response(
+                instrument,
+                quote,
+                freshness="fresh",
+                freshness_message="Live Dhan WebSocket quote packet received.",
+                is_cached=False,
+                is_verified=True,
+                provider_request_status="succeeded",
+            ).model_copy(update={
+                "delivery_mode": "websocket_tick",
+                "stream_status": "active",
+                "provider_connection_status": "connected",
+                "feed_active": True,
+                "absolute_change": absolute_change,
+                "percent_change": percent_change,
+            })
+            await websocket.send_json({
+                "type": "tick",
+                "quote": response.model_dump(mode="json"),
+            })
+    except WebSocketDisconnect:
+        return
+    except asyncio.CancelledError:
+        return
+    except BrokerReconnectRequired:
+        credential.expires_at = datetime.now(timezone.utc)
+        db.commit()
+        await send_status("unavailable")
+        await websocket.close(code=4401)
+    except (BrokerAdapterError, HTTPException):
         await send_status("unavailable")
         await websocket.close(code=1011)
     finally:

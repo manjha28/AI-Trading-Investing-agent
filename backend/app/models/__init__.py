@@ -263,7 +263,7 @@ class InstrumentSnapshot(Base):
 class WatchlistInstrument(Base):
     __tablename__ = "watchlist_instruments"
     __table_args__ = (
-        UniqueConstraint("user_id", "instrument_id", name="uq_watchlist_user_instrument"),
+        UniqueConstraint("watchlist_id", "instrument_id", name="uq_watchlist_instrument"),
         Index("ix_watchlist_instruments_instrument", "instrument_id"),
     )
 
@@ -271,11 +271,33 @@ class WatchlistInstrument(Base):
     user_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    watchlist_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=False
+    )
     instrument_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     instrument: Mapped[Instrument] = relationship(back_populates="watchlist_entries")
+    watchlist: Mapped["Watchlist"] = relationship(back_populates="entries")
+
+
+class Watchlist(Base):
+    __tablename__ = "watchlists"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_watchlists_user_name"),
+        Index("ix_watchlists_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    entries: Mapped[list[WatchlistInstrument]] = relationship(
+        back_populates="watchlist", cascade="all, delete-orphan"
+    )
 
 
 class CorporateAction(Base):
@@ -619,7 +641,9 @@ class DhanTradeMirror(Base):
         String(32), nullable=False, default="dhan", server_default="dhan"
     )
     trade_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_trade_id: Mapped[str | None] = mapped_column(String(64))
     order_id: Mapped[str | None] = mapped_column(String(64))
+    exchange_order_id: Mapped[str | None] = mapped_column(String(64))
     symbol: Mapped[str | None] = mapped_column(String(64))
     security_id: Mapped[str | None] = mapped_column(String(64))
     exchange_segment: Mapped[str | None] = mapped_column(String(32))

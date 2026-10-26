@@ -1,7 +1,7 @@
 import {
   ArrowUpRight, Clock3, Pencil, Plus, Search, ShieldCheck, Trash2, Wallet,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { apiRequest } from '../api';
 import { CandleChart } from '../components/CandleChart';
 import { ThesisEditor } from '../components/ThesisEditor';
@@ -96,15 +96,20 @@ type MarketDataSettings = {
   selected_provider: string | null;
   sources: MarketDataSource[];
 };
-type MarketStreamStatus = 'not_configured' | 'connecting' | 'active' | 'reconnecting' | 'unavailable';
+type NamedWatchlist = {
+  id: string;
+  name: string;
+  instrument_count: number;
+  created_at: string;
+};
+type WatchlistTab = 'Chart' | 'Info' | 'Financials' | 'Depth' | 'Options';
+type MarketStreamStatus = 'not_configured' | 'connecting' | 'active' | 'reconnecting' | 'unavailable' | 'market_closed';
 type MarketStreamMessage =
-  | { type: 'status'; status: MarketStreamStatus }
+  | { type: 'status'; status: MarketStreamStatus; message?: string }
   | { type: 'tick'; quote: NonNullable<WorkspaceState['marketQuote']> };
 
-export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 'addInstrumentToWatchlist' | 'addSelectedInstrumentToWatchlist' | 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'removeInstrumentFromWatchlist' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation' | 'watchlist'> }) {
+export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
   const {
-  addInstrumentToWatchlist,
-  addSelectedInstrumentToWatchlist,
   attachSelectedInstrument,
   currency,
   loadInstrumentIndicators,
@@ -123,7 +128,6 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   marketQuery,
   marketQuote,
   marketStart,
-  removeInstrumentFromWatchlist,
   searchMarketInstruments,
   searchingMarket,
   selectMarketInstrument,
@@ -135,7 +139,6 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   setMarketStart,
   summary,
   valuation,
-  watchlist
 } = workspace;
   const [fundamentals, setFundamentals] = useState<FundamentalsData | null>(null);
   const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
@@ -143,6 +146,7 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   const [fundamentalsMessage, setFundamentalsMessage] = useState('');
   const [fundamentalPeriodType, setFundamentalPeriodType] = useState<'annual' | 'quarterly'>('annual');
   const selectedInstrumentId = useRef<string | null>(null);
+  const dhanStreamRef = useRef<WebSocket | null>(null);
   selectedInstrumentId.current = selectedInstrument?.id ?? null;
   const [coverage, setCoverage] = useState<CoverageInstrument[]>([]);
   const [coverageLoading, setCoverageLoading] = useState(true);
@@ -158,6 +162,18 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   const [marketDataSettings, setMarketDataSettings] = useState<MarketDataSettings | null>(null);
   const [marketDataSettingsLoading, setMarketDataSettingsLoading] = useState(true);
   const [marketDataSettingsError, setMarketDataSettingsError] = useState('');
+  const [namedWatchlists, setNamedWatchlists] = useState<NamedWatchlist[]>([]);
+  const [activeWatchlistId, setActiveWatchlistId] = useState('');
+  const [watchlistEntries, setWatchlistEntries] = useState<WorkspaceState['watchlist']>([]);
+  const [watchlistLoading, setWatchlistLoading] = useState(true);
+  const [watchlistError, setWatchlistError] = useState('');
+  const [watchlistMessage, setWatchlistMessage] = useState('');
+  const [newWatchlistName, setNewWatchlistName] = useState('');
+  const [renameWatchlistName, setRenameWatchlistName] = useState('');
+  const [activeWatchlistInstrument, setActiveWatchlistInstrument] = useState('');
+  const [legacyInstrumentSelected, setLegacyInstrumentSelected] = useState(false);
+  const [activeDetailTab, setActiveDetailTab] = useState<WatchlistTab>('Chart');
+  const [watchlistInstrumentLoading, setWatchlistInstrumentLoading] = useState(false);
   const displayedMarketQuote = liveMarketQuote ?? marketQuote;
   const selectedProvider = marketDataSettings?.selected_provider;
   const selectedSourceLabel = marketDataSettings?.sources.find(
@@ -166,6 +182,16 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   const liveStreamSupported = ['dhan', 'angel_one'].includes(
     marketDataSettings?.selected_provider ?? '',
   );
+  const activeDetailInstrumentId = activeWatchlistInstrument
+    || (legacyInstrumentSelected ? selectedInstrument?.id ?? '' : '');
+  const activeDetailInstrumentIdRef = useRef(activeDetailInstrumentId);
+  activeDetailInstrumentIdRef.current = activeDetailInstrumentId;
+  const hasWatchlistInstruments = watchlistEntries.length > 0;
+  const hasActiveDetailInstrument = Boolean(activeDetailInstrumentId);
+  const watchlistInstrumentSignature = watchlistEntries
+    .map((entry) => entry.instrument_id)
+    .sort()
+    .join(',');
 
   async function refreshMarketDataSettings() {
     setMarketDataSettingsError('');
@@ -178,6 +204,139 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
       throw error;
     } finally {
       setMarketDataSettingsLoading(false);
+    }
+  }
+
+  const refreshNamedWatchlists = useCallback(async (preferredId?: string) => {
+    const lists = await apiRequest<NamedWatchlist[]>('/market-data/watchlists');
+    setNamedWatchlists(lists);
+    const storedId = window.localStorage.getItem('market-data-selected-watchlist');
+    const nextId = [preferredId, storedId].find(
+      (candidate) => candidate && lists.some((watchlist) => watchlist.id === candidate),
+    ) ?? lists[0]?.id ?? '';
+    setActiveWatchlistId(nextId);
+    const selected = lists.find((watchlist) => watchlist.id === nextId);
+    setRenameWatchlistName(selected?.name ?? '');
+    return lists;
+  }, []);
+
+  const refreshSelectedWatchlist = useCallback(async (watchlistId = activeWatchlistId) => {
+    if (!watchlistId) {
+      setWatchlistEntries([]);
+      setActiveWatchlistInstrument('');
+      setWatchlistLoading(false);
+      return;
+    }
+    setWatchlistLoading(true);
+    setWatchlistError('');
+    try {
+      const entries = await apiRequest<WorkspaceState['watchlist']>(
+        `/market-data/watchlist?watchlist_id=${encodeURIComponent(watchlistId)}`,
+      );
+      setWatchlistEntries(entries);
+      setActiveWatchlistInstrument((current) =>
+        entries.some((entry) => entry.instrument_id === current) ? current : '',
+      );
+    } catch (error) {
+      setWatchlistError(error instanceof Error ? error.message : 'Watchlist could not be loaded.');
+    } finally {
+      setWatchlistLoading(false);
+    }
+  }, [activeWatchlistId]);
+
+  useEffect(() => {
+    void refreshNamedWatchlists().catch((error: Error) => {
+      setWatchlistError(error.message);
+      setWatchlistLoading(false);
+    });
+  }, [refreshNamedWatchlists]);
+
+  useEffect(() => {
+    if (!activeWatchlistId) return;
+    window.localStorage.setItem('market-data-selected-watchlist', activeWatchlistId);
+    void refreshSelectedWatchlist(activeWatchlistId);
+  }, [activeWatchlistId, refreshSelectedWatchlist]);
+
+  async function createNamedWatchlist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newWatchlistName.trim();
+    if (!name) return;
+    setWatchlistError('');
+    try {
+      const created = await apiRequest<NamedWatchlist>('/market-data/watchlists', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      setNewWatchlistName('');
+      await refreshNamedWatchlists(created.id);
+    } catch (error) {
+      setWatchlistError(error instanceof Error ? error.message : 'Watchlist could not be created.');
+    }
+  }
+
+  async function renameNamedWatchlist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeWatchlistId || !renameWatchlistName.trim()) return;
+    setWatchlistError('');
+    try {
+      await apiRequest<NamedWatchlist>(`/market-data/watchlists/${activeWatchlistId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: renameWatchlistName.trim() }),
+      });
+      await refreshNamedWatchlists(activeWatchlistId);
+    } catch (error) {
+      setWatchlistError(error instanceof Error ? error.message : 'Watchlist could not be renamed.');
+    }
+  }
+
+  async function deleteNamedWatchlist() {
+    if (!activeWatchlistId) return;
+    setWatchlistError('');
+    try {
+      await apiRequest<void>(`/market-data/watchlists/${activeWatchlistId}`, {
+        method: 'DELETE',
+      });
+      setActiveWatchlistInstrument('');
+      await refreshNamedWatchlists();
+    } catch (error) {
+      setWatchlistError(error instanceof Error ? error.message : 'Watchlist could not be deleted.');
+    }
+  }
+
+  async function changeWatchlistInstrument(instrumentId: string, add: boolean, symbol: string) {
+    if (!activeWatchlistId) return;
+    setWatchlistError('');
+    try {
+      await apiRequest<void>(
+        `/market-data/watchlists/${activeWatchlistId}/instruments/${instrumentId}`,
+        { method: add ? 'POST' : 'DELETE' },
+      );
+      await Promise.all([
+        refreshSelectedWatchlist(activeWatchlistId),
+        refreshNamedWatchlists(activeWatchlistId),
+      ]);
+      setWatchlistMessage(`${symbol} ${add ? 'added to' : 'removed from'} ${namedWatchlists.find((item) => item.id === activeWatchlistId)?.name ?? 'watchlist'}.`);
+    } catch (error) {
+      setWatchlistError(error instanceof Error ? error.message : 'Watchlist could not be updated.');
+    }
+  }
+
+  async function openWatchlistInstrument(instrumentId: string) {
+    setActiveWatchlistInstrument(instrumentId);
+    setLegacyInstrumentSelected(false);
+    setActiveDetailTab('Chart');
+    setWatchlistInstrumentLoading(true);
+    setWatchlistError('');
+    try {
+      const instrument = await apiRequest<WorkspaceState['selectedInstrument']>(
+        `/market-data/instruments/${instrumentId}`,
+      );
+      if (!instrument) throw new Error('Instrument details are unavailable.');
+      await selectMarketInstrument(instrument);
+    } catch (error) {
+      setWatchlistError(error instanceof Error ? error.message : 'Instrument details could not be loaded.');
+    } finally {
+      setWatchlistInstrumentLoading(false);
     }
   }
 
@@ -202,6 +361,7 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
   }
 
   useEffect(() => {
+    if (marketDataSettings?.selected_provider === 'dhan') return;
     if (!liveFeedEnabled || !selectedInstrument || !liveStreamSupported) {
       setLiveMarketQuote(null);
       setLiveFeedStatus('not_configured');
@@ -214,6 +374,7 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
     );
     streamUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     let intentionalClose = false;
+    let marketClosed = false;
     let retryTimer: number | undefined;
     setLiveMarketQuote(null);
     setLiveFeedStatus('connecting');
@@ -232,13 +393,16 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
         return;
       }
       if (message.type === 'status') {
+        marketClosed = message.status === 'market_closed';
         setLiveFeedStatus(message.status);
         if (message.status === 'unavailable') {
           setLiveFeedMessage(`${selectedSourceLabel} live feed is unavailable. Check the connection, permissions, and instrument mapping.`);
         }
         return;
       }
-      setLiveMarketQuote(message.quote);
+      if (selectedInstrumentId.current === message.quote.instrument_id) {
+        setLiveMarketQuote(message.quote);
+      }
       setLiveFeedStatus('active');
       setLiveFeedMessage('');
     };
@@ -265,6 +429,127 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
       socket.close();
     };
   }, [liveFeedEnabled, liveStreamSupported, marketDataSettings?.selected_provider, selectedInstrument?.id, selectedSourceLabel, streamRetryKey]);
+
+  useEffect(() => {
+    if (
+      !liveFeedEnabled
+      || marketDataSettings?.selected_provider !== 'dhan'
+      || !activeWatchlistId
+      || (!hasWatchlistInstruments && !hasActiveDetailInstrument)
+    ) {
+      if (marketDataSettings?.selected_provider === 'dhan' && !liveFeedEnabled) {
+        setLiveMarketQuote(null);
+        setLiveFeedStatus('not_configured');
+        setLiveFeedMessage('');
+      }
+      return;
+    }
+    const streamUrl = new URL(
+      `/api/v1/market-data/watchlists/${activeWatchlistId}/stream`,
+      window.location.href,
+    );
+    streamUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let intentionalClose = false;
+    let marketClosed = false;
+    let retryTimer: number | undefined;
+    setLiveMarketQuote(null);
+    setLiveFeedStatus('connecting');
+    setLiveFeedMessage('');
+    const socket = new WebSocket(streamUrl);
+    dhanStreamRef.current = socket;
+    const heartbeat = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send('ping');
+    }, 15_000);
+    socket.onopen = () => {
+      socket.send(JSON.stringify({
+        type: 'subscriptions',
+        detail_instrument_id: activeDetailInstrumentIdRef.current || null,
+      }));
+    };
+    socket.onmessage = (event) => {
+      let message: MarketStreamMessage;
+      try {
+        message = JSON.parse(event.data) as MarketStreamMessage;
+      } catch {
+        setLiveFeedStatus('unavailable');
+        setLiveFeedMessage('The live feed returned an invalid message.');
+        return;
+      }
+      if (message.type === 'status') {
+        marketClosed = message.status === 'market_closed';
+        setLiveFeedStatus(message.status);
+        setLiveFeedMessage(message.message ?? (
+          message.status === 'unavailable'
+            ? 'Dhan live feed is unavailable. Check the connection and instrument mapping.'
+            : ''
+        ));
+        if (message.status === 'market_closed') {
+          setLiveMarketQuote(null);
+          void apiRequest<WorkspaceState['watchlist']>(
+            `/market-data/watchlist?watchlist_id=${encodeURIComponent(activeWatchlistId)}`,
+          ).then(setWatchlistEntries).catch((error: Error) => setWatchlistError(error.message));
+        }
+        return;
+      }
+      if (selectedInstrumentId.current === message.quote.instrument_id) {
+        setLiveMarketQuote(message.quote);
+      }
+      setLiveFeedStatus('active');
+      setLiveFeedMessage('');
+      setWatchlistEntries((entries) => entries.map((entry) => {
+        if (entry.instrument_id !== message.quote.instrument_id) return entry;
+        return {
+          ...entry,
+          quote: {
+            source: message.quote.source,
+            retrieved_at: message.quote.retrieved_at,
+            freshness: message.quote.freshness,
+            freshness_status: message.quote.freshness_status,
+            is_synthetic: message.quote.is_synthetic,
+            is_verified: message.quote.is_verified,
+            market_timestamp: message.quote.market_timestamp,
+            market_age_seconds: message.quote.market_age_seconds,
+            data_type: message.quote.data_type,
+            close: message.quote.bar.close,
+            absolute_change: message.quote.absolute_change,
+            percent_change: message.quote.percent_change,
+          },
+        };
+      }));
+    };
+    socket.onerror = () => {
+      setLiveFeedStatus('unavailable');
+      setLiveFeedMessage('The Dhan live feed connection failed.');
+    };
+    socket.onclose = (event) => {
+      if (!intentionalClose && event.code === 1000 && marketClosed) {
+        retryTimer = window.setTimeout(() => setStreamRetryKey((key) => key + 1), 30_000);
+      } else if (!intentionalClose && ![4401, 4403, 4404, 1000].includes(event.code)) {
+        setLiveFeedStatus('reconnecting');
+        setLiveFeedMessage('Dhan live feed disconnected. Reconnecting…');
+        retryTimer = window.setTimeout(() => setStreamRetryKey((key) => key + 1), 2000);
+      }
+    };
+    return () => {
+      intentionalClose = true;
+      window.clearInterval(heartbeat);
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      if (dhanStreamRef.current === socket) dhanStreamRef.current = null;
+      socket.close();
+    };
+  }, [liveFeedEnabled, marketDataSettings?.selected_provider, activeWatchlistId, hasWatchlistInstruments, hasActiveDetailInstrument, streamRetryKey]);
+
+  useEffect(() => {
+    const socket = dhanStreamRef.current;
+    if (
+      marketDataSettings?.selected_provider !== 'dhan'
+      || socket?.readyState !== WebSocket.OPEN
+    ) return;
+    socket.send(JSON.stringify({
+      type: 'subscriptions',
+      detail_instrument_id: activeDetailInstrumentId || null,
+    }));
+  }, [activeWatchlistId, activeDetailInstrumentId, watchlistInstrumentSignature, marketDataSettings?.selected_provider, liveFeedEnabled]);
 
   async function loadCoverage() {
     setCoverageLoading(true);
@@ -471,9 +756,30 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
 
   const displayFundamental = (value: string | null, suffix = '') =>
     value === null ? 'Unavailable' : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 })}${suffix}`;
+  const financialsFetchedAt = fundamentals?.snapshot?.fetched_at
+    ?? (fundamentals?.fundamentals.reduce(
+      (latest, row) => !latest || row.fetched_at > latest ? row.fetched_at : latest,
+      '',
+    ) || null);
   const eligibleSources = (marketDataSettings?.sources ?? []).filter(
     (source) => source.available && source.enabled,
   );
+  const selectedList = namedWatchlists.find((watchlist) => watchlist.id === activeWatchlistId);
+  const activeWatchlistEntry = watchlistEntries.find(
+    (entry) => entry.instrument_id === activeWatchlistInstrument,
+  );
+  const detailQuote = activeWatchlistEntry?.quote
+    ?? (displayedMarketQuote && displayedMarketQuote.instrument_id === activeWatchlistInstrument
+      ? displayedMarketQuote
+      : null);
+  const detailPrice = activeWatchlistEntry?.quote?.close
+    ?? (displayedMarketQuote?.instrument_id === activeWatchlistInstrument
+      ? displayedMarketQuote.bar.close
+      : null);
+  const detailLiveBar = liveFeedStatus === 'active'
+    && liveMarketQuote?.instrument_id === activeWatchlistInstrument
+    ? { ...liveMarketQuote.bar, source: liveMarketQuote.source }
+    : null;
   return (
               <section className="market-page">
                 <section className="data-section">
@@ -490,6 +796,228 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                     </select>
                   </label>
                   {marketDataSettingsError && <p className="market-source-message error" role="alert">{marketDataSettingsError}</p>}
+                </section>
+                <section className="watchlist-master-detail" aria-label="Watchlists and instrument details">
+                  <aside className="watchlist-rail data-section">
+                    <div className="section-heading">
+                      <div><p className="eyebrow">LOCAL WATCHLISTS</p><h2>Markets to watch</h2></div>
+                      <span className="section-count">{watchlistEntries.length} instruments</span>
+                    </div>
+                    <div className="watchlist-management">
+                      <label>Watchlist
+                        <select
+                          value={activeWatchlistId}
+                          onChange={(event) => {
+                            setActiveWatchlistId(event.target.value);
+                            setActiveWatchlistInstrument('');
+                            setLegacyInstrumentSelected(false);
+                          }}
+                        >
+                          {namedWatchlists.map((watchlist) => (
+                            <option value={watchlist.id} key={watchlist.id}>{watchlist.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <form onSubmit={(event) => void createNamedWatchlist(event)}>
+                        <label className="visually-hidden" htmlFor="new-watchlist-name">New watchlist name</label>
+                        <input
+                          id="new-watchlist-name"
+                          value={newWatchlistName}
+                          onChange={(event) => setNewWatchlistName(event.target.value)}
+                          maxLength={64}
+                          placeholder="New watchlist"
+                        />
+                        <button type="submit" aria-label="Create watchlist" disabled={!newWatchlistName.trim()}>
+                          <Plus size={15} />
+                        </button>
+                      </form>
+                      {activeWatchlistId && (
+                        <form onSubmit={(event) => void renameNamedWatchlist(event)}>
+                          <label className="visually-hidden" htmlFor="rename-watchlist-name">Rename watchlist</label>
+                          <input
+                            id="rename-watchlist-name"
+                            value={renameWatchlistName}
+                            onChange={(event) => setRenameWatchlistName(event.target.value)}
+                            maxLength={64}
+                            aria-label="Rename selected watchlist"
+                          />
+                          <button type="submit" aria-label="Save watchlist name" disabled={!renameWatchlistName.trim()}>
+                            <Pencil size={14} />
+                          </button>
+                          <button type="button" aria-label="Delete selected watchlist" onClick={() => void deleteNamedWatchlist()}>
+                            <Trash2 size={14} />
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                    {watchlistError && <p className="market-source-message error" role="alert">{watchlistError}</p>}
+                    {watchlistMessage && <p className="market-source-message" role="status">{watchlistMessage}</p>}
+                    {watchlistLoading ? <p className="table-empty">Loading stored quotes…</p> : watchlistEntries.length === 0 ? (
+                      <p className="table-empty">This watchlist is empty. Search an instrument below to add it.</p>
+                    ) : (
+                      <div className="watchlist-instrument-list" aria-label={`${selectedList?.name ?? 'Selected'} instruments`}>
+                        <div className="watchlist-row watchlist-row-heading">
+                          <span>Instrument</span><span>Last</span><span>Change</span><span>%</span>
+                        </div>
+                        {watchlistEntries.map((entry) => {
+                          const change = entry.quote?.absolute_change ?? null;
+                          const changeClass = change === null ? '' : Number(change) >= 0 ? 'positive' : 'negative';
+                          return (
+                            <div className="watchlist-row" key={entry.instrument_id}>
+                              <button
+                                type="button"
+                                className={`watchlist-instrument-button${activeWatchlistInstrument === entry.instrument_id ? ' selected' : ''}`}
+                                onClick={() => void openWatchlistInstrument(entry.instrument_id)}
+                              >
+                                <span className="watchlist-symbol">
+                                  <strong>{entry.symbol}</strong>
+                                  <small>{entry.venue}</small>
+                                </span>
+                                <span className="watchlist-number">{entry.quote ? formatMoney(entry.quote.close, entry.currency) : '—'}</span>
+                                <span className={`watchlist-number ${changeClass}`}>
+                                  {change === null ? '—' : formatMoney(change, entry.currency)}
+                                </span>
+                                <span className={`watchlist-number ${changeClass}`}>
+                                  {entry.quote?.percent_change === null || entry.quote?.percent_change === undefined
+                                    ? '—'
+                                    : `${Number(entry.quote.percent_change).toFixed(2)}%`}
+                                </span>
+                              </button>
+                              <button
+                                className="watchlist-remove"
+                                type="button"
+                                aria-label={`Remove ${entry.symbol} from ${selectedList?.name ?? 'watchlist'}`}
+                                onClick={() => void changeWatchlistInstrument(entry.instrument_id, false, entry.symbol)}
+                              ><Trash2 size={13} /></button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </aside>
+                  <section className="watchlist-detail data-section">
+                    <header className="watchlist-detail-header">
+                      <div>
+                        <p className="eyebrow">INSTRUMENT DETAIL</p>
+                        <h2>{activeWatchlistEntry?.symbol ?? 'Select an instrument'}</h2>
+                        <span>{activeWatchlistEntry?.venue ?? ''}</span>
+                      </div>
+                      <div className="watchlist-detail-price">
+                        <strong>
+                          {detailPrice
+                            ? formatMoney(detailPrice, activeWatchlistEntry?.currency ?? selectedInstrument?.currency ?? 'INR')
+                            : '—'}
+                        </strong>
+                        {activeWatchlistEntry?.quote?.absolute_change !== null
+                          && activeWatchlistEntry?.quote?.absolute_change !== undefined
+                          && activeWatchlistEntry.quote.percent_change !== null
+                          && activeWatchlistEntry.quote.percent_change !== undefined && (
+                            <small className={Number(activeWatchlistEntry.quote.absolute_change) >= 0 ? 'positive' : 'negative'}>
+                              {formatMoney(activeWatchlistEntry.quote.absolute_change, activeWatchlistEntry.currency)} · {Number(activeWatchlistEntry.quote.percent_change).toFixed(2)}%
+                            </small>
+                          )}
+                        {detailQuote && <small>
+                          {detailQuote.source} · {detailQuote.freshness_status.replaceAll('_', ' ')} · {new Date(detailQuote.retrieved_at).toLocaleString()}
+                        </small>}
+                        {liveStreamSupported && (
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => setLiveFeedEnabled((enabled) => !enabled)}
+                          >{liveFeedEnabled ? 'Pause live feed' : 'Start live feed'}</button>
+                        )}
+                        {liveFeedEnabled && liveFeedStatus !== 'not_configured' && (
+                          <small role="status">
+                            Live feed: {liveFeedStatus.replaceAll('_', ' ')}{liveFeedMessage ? ` · ${liveFeedMessage}` : ''}
+                          </small>
+                        )}
+                      </div>
+                    </header>
+                    <nav className="watchlist-detail-tabs" aria-label="Instrument detail">
+                      {(['Chart', 'Info', 'Financials', 'Depth', 'Options'] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          type="button"
+                          className={activeDetailTab === tab ? 'active' : ''}
+                          aria-current={activeDetailTab === tab ? 'page' : undefined}
+                          onClick={() => setActiveDetailTab(tab)}
+                        >{tab}</button>
+                      ))}
+                    </nav>
+                    {activeDetailTab === 'Chart' ? (
+                      <div className="watchlist-chart-content">
+                        {watchlistInstrumentLoading ? <p className="table-empty">Loading chart and stored quote…</p>
+                          : !activeWatchlistInstrument ? <p className="table-empty">Choose an instrument from the watchlist.</p>
+                            : marketHistory?.bars.length && selectedInstrument?.id === activeWatchlistInstrument ? (
+                              <CandleChart
+                                bars={marketHistory.bars}
+                                liveBar={detailLiveBar}
+                                currency={selectedInstrument.currency}
+                                interval={marketInterval}
+                                preferredSource={marketIndicators?.source}
+                                indicatorSeries={marketIndicators?.indicator_series}
+                                indicatorBarsAvailable={marketIndicators?.bars_available}
+                                onLoadOlder={loadOlderMarketHistory}
+                                loadingOlder={loadingOlderMarketHistory}
+                                hasOlder={hasOlderMarketHistory}
+                              />
+                            ) : <p className="table-empty">No stored bars are available for this instrument and range.</p>}
+                      </div>
+                    ) : activeDetailTab === 'Financials' ? (
+                      <div className="watchlist-financial-content">
+                        <div className="section-heading">
+                          <div>
+                            <p className="eyebrow">COMPANY FUNDAMENTALS</p>
+                            <h3>{selectedInstrument?.symbol ?? activeWatchlistEntry?.symbol ?? 'Financials'}</h3>
+                          </div>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => void syncFundamentals()}
+                            disabled={!selectedInstrument || fundamentalsSyncing || selectedInstrument.is_synthetic}
+                          >{fundamentalsSyncing ? 'Syncing…' : 'Refresh from Yahoo Finance'}</button>
+                        </div>
+                        <p className="market-provenance">
+                          Source: Yahoo Finance · Last updated: {financialsFetchedAt
+                            ? new Date(financialsFetchedAt).toLocaleString()
+                            : 'Not available'}
+                        </p>
+                        {fundamentalsMessage && <p className="market-provenance" role="status">{fundamentalsMessage}</p>}
+                        {fundamentalsLoading ? <p className="loading-inline">Loading financials…</p>
+                          : !selectedInstrument ? <p className="table-empty">Select an instrument to load its Yahoo Finance financials.</p>
+                            : fundamentals?.unavailable ? <p className="table-empty">{fundamentals.message} Financials are unavailable; no values are inferred.</p>
+                              : fundamentals && fundamentals.fundamentals.length > 0 ? (
+                                <div className="table-scroll">
+                                  <table>
+                                    <thead><tr><th>Period end</th><th>Revenue</th><th>Net income</th><th>Operating margin</th><th>EPS</th><th>Free cash flow</th><th>Source / updated</th></tr></thead>
+                                    <tbody>{fundamentals.fundamentals.map((row) => (
+                                      <tr key={row.id}>
+                                        <td>{row.period_end}</td>
+                                        <td>{row.revenue === null ? '—' : formatMoney(row.revenue, row.currency)}</td>
+                                        <td>{row.net_income === null ? '—' : formatMoney(row.net_income, row.currency)}</td>
+                                        <td>{row.operating_margin === null ? '—' : displayFundamental(row.operating_margin, '%')}</td>
+                                        <td>{row.eps === null ? '—' : displayFundamental(row.eps)}</td>
+                                        <td>{row.free_cash_flow === null ? '—' : formatMoney(row.free_cash_flow, row.currency)}</td>
+                                        <td>{row.source}<small className="trade-subtext">{new Date(row.fetched_at).toLocaleString()} · {row.stale ? 'stale' : 'fresh'}</small></td>
+                                      </tr>
+                                    ))}</tbody>
+                                  </table>
+                                </div>
+                              ) : <p className="table-empty">No financial periods are available from Yahoo Finance for this instrument.</p>}
+                      </div>
+                    ) : (
+                      <div className="watchlist-tab-placeholder">
+                        <strong>{activeDetailTab} unavailable</strong>
+                        <span>
+                          {activeDetailTab === 'Info'
+                            ? 'Source: Dhan Company Info · Last updated: Not available. No documented Dhan v2 company-info endpoint is available to this integration.'
+                            : activeDetailTab === 'Depth'
+                              ? 'Source: Dhan Market Depth · Last updated: Not available. Dhan documents depth as POST /marketfeed/quote with five levels; this integration is GET-only and does not return the requested 20 levels.'
+                              : 'Source: Dhan Option Chain · Last updated: Not available. Dhan documents option-chain retrieval as POST; this integration is GET-only.'}
+                        </span>
+                      </div>
+                    )}
+                  </section>
                 </section>
                 <Panel
                   title="Market data coverage"
@@ -531,12 +1059,12 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                     {marketInstruments.length === 0 ? <div className="table-empty">{searchingMarket ? 'Searching instrument master…' : 'Search available equities and crypto markets.'}</div> : (
                       <div className="market-instrument-list" aria-label="Instrument search results">
                         {marketInstruments.map((instrument) => {
-                          const isWatchlisted = watchlist.some((item) => item.instrument_id === instrument.id);
+                          const isWatchlisted = watchlistEntries.some((item) => item.instrument_id === instrument.id);
                           return <div className="market-instrument-result" key={instrument.id}>
-                            <button className={selectedInstrument?.id === instrument.id ? 'market-instrument selected' : 'market-instrument'} type="button" onClick={() => void selectMarketInstrument(instrument)}>
+                            <button className={selectedInstrument?.id === instrument.id ? 'market-instrument selected' : 'market-instrument'} type="button" onClick={() => { setActiveWatchlistInstrument(''); setLegacyInstrumentSelected(true); void selectMarketInstrument(instrument); }}>
                               <span><strong>{instrument.symbol}</strong><small>{instrument.display_name}</small></span><span className="market-instrument-meta">{instrument.venue} · {instrument.currency}<small>{instrument.asset_class}</small></span>
                             </button>
-                            <button className="secondary-button" type="button" onClick={() => void (isWatchlisted ? removeInstrumentFromWatchlist(instrument.id) : addInstrumentToWatchlist(instrument.id, instrument.symbol))}>{isWatchlisted ? 'Remove' : 'Add to watchlist'}</button>
+                            <button className="secondary-button" type="button" onClick={() => void changeWatchlistInstrument(instrument.id, !isWatchlisted, instrument.symbol)}>{isWatchlisted ? 'Remove' : 'Add to watchlist'}</button>
                           </div>;
                         })}
                       </div>
@@ -554,9 +1082,9 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                         {selectedInstrument.provider_identifiers.map((mapping) => <span key={`${mapping.provider}-${mapping.provider_instrument_id}`}>Provider ID: {mapping.provider}:{mapping.provider_instrument_id} · {mapping.is_verified ? 'verified mapping' : 'unverified mapping'}</span>)}
                       </div>
                       {summary?.positions.some((position) => position.symbol === selectedInstrument.symbol) && selectedInstrument.currency === currency && <button className="secondary-button" type="button" onClick={() => void attachSelectedInstrument()}>Link to portfolio holding</button>}
-                      {watchlist.some((item) => item.instrument_id === selectedInstrument.id)
-                        ? <button className="secondary-button" type="button" onClick={() => void removeInstrumentFromWatchlist(selectedInstrument.id)}>Remove from refresh watchlist</button>
-                        : <button className="secondary-button" type="button" onClick={() => void addSelectedInstrumentToWatchlist()}>Add to refresh watchlist</button>}
+                      {watchlistEntries.some((item) => item.instrument_id === selectedInstrument.id)
+                        ? <button className="secondary-button" type="button" onClick={() => void changeWatchlistInstrument(selectedInstrument.id, false, selectedInstrument.symbol)}>Remove from watchlist</button>
+                        : <button className="secondary-button" type="button" onClick={() => void changeWatchlistInstrument(selectedInstrument.id, true, selectedInstrument.symbol)}>Add to watchlist</button>}
                       <button className="secondary-button" type="button" onClick={() => void loadMarketQuote(selectedInstrument, true)} disabled={loadingMarketQuote}>{loadingMarketQuote ? 'Loading quote…' : 'Refresh instrument price'}</button>
                       {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedStatus.replaceAll('_', ' ')}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}</p>}
                       {displayedMarketQuote && <div className="market-quote" aria-live="polite">
@@ -575,7 +1103,7 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                     </> : <p className="table-empty">Choose a search result to inspect instrument details and available bars.</p>}
                   </section>
                 </div>
-                {selectedInstrument && <section className="data-section instrument-detail-panel">
+                {selectedInstrument && legacyInstrumentSelected && <section className="data-section instrument-detail-panel">
                   <div className="fundamentals-panel">
                     <div className="section-heading">
                       <div><p className="eyebrow">PROVIDER-REPORTED COMPANY DATA</p><h2>{selectedInstrument.symbol} fundamentals</h2></div>
@@ -620,7 +1148,7 @@ export function MarketDataPage({ workspace }: { workspace: Pick<WorkspaceState, 
                     </> : <p className="table-empty">Fundamentals unavailable from providers.</p>}
                   </div>
                 </section>}
-                {marketHistory && selectedInstrument && <section className="data-section market-history">
+                {marketHistory && selectedInstrument && legacyInstrumentSelected && <section className="data-section market-history">
                   <div className="section-heading"><div><p className="eyebrow">PROVENANCE &amp; FRESHNESS</p><h2>{selectedInstrument.symbol} history</h2></div><span className={`freshness-badge freshness-${marketHistory.freshness.status}`}>{marketHistory.freshness.status.replace('_', ' ')}</span></div>
                   <p className="market-provenance">{marketHistory.freshness.message} Provider: {marketHistory.provider ?? marketHistory.freshness.source ?? 'unavailable'} · Interval: {marketHistory.interval} · Currency: {marketHistory.currency ?? selectedInstrument.currency} · Session: {marketHistory.session_state} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Retrieved: {marketHistory.fetched_at ? new Date(marketHistory.fetched_at).toLocaleString() : 'not recorded'} · Latest bar: {marketHistory.as_of ? new Date(marketHistory.as_of).toLocaleString() : marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'} · {marketHistory.is_cached ? 'Cached' : 'Provider response'} · Sync: {marketHistory.sync_status.replaceAll('_', ' ')}</p>
                   {marketHistory.fallback_reason && <p className="market-provenance">Fallback reason: {marketHistory.fallback_reason.replaceAll('_', ' ')}.</p>}
