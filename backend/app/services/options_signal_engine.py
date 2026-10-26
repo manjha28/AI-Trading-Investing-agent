@@ -95,6 +95,7 @@ class OptionsSignalInput:
     capital: Decimal | None = None
     risk_fraction: Decimal = D("0.005")
     active_position: ActiveOptionPosition | None = None
+    market_session_open: bool = True
 
 
 @dataclass(frozen=True)
@@ -218,6 +219,8 @@ def _session_vwap(
 def _freshness_blockers(data: OptionsSignalInput, config: SignalConfig) -> list[str]:
     now = data.as_of
     blockers: list[str] = []
+    if not data.market_session_open:
+        blockers.append("market_session_closed")
     dates = [now, data.spot_timestamp, data.chain_timestamp, data.expiry_at]
     dates.extend(bar.timestamp for bar in data.bars)
     dates.extend(quote.expiry_at for quote in data.chain)
