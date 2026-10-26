@@ -3419,6 +3419,8 @@ def get_instrument_option_signal(
     capital: Decimal | None = Query(default=None, gt=0),
     risk_fraction: Decimal = Query(default=Decimal("0.005"), gt=0, le=Decimal("0.02")),
     active_session: UserSession = Depends(require_verified_market_session),
+    provider: MarketDataProvider = Depends(get_market_data_provider),
+    _user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> OptionsSignalAPIResponse:
     """Evaluate an options setup from a fresh Dhan chain and real Dhan 5-minute bars.
@@ -3439,36 +3441,77 @@ def get_instrument_option_signal(
         )
 
     instrument = _get_instrument(db, instrument_id)
-    chain_response = get_instrument_option_chain(
-        instrument_id=instrument_id,
-        expiry=expiry,
-        active_session=active_session,
-        db=db,
-    )
-    now = datetime.now(timezone.utc)
     market_zone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone.utc)
+    session_date = now.astimezone(market_zone).date()
+    market_session_open = _market_session_state(instrument, now) == "open"
     expiry_at = datetime.combine(
         expiry,
         datetime_time(hour=15, minute=30),
         tzinfo=market_zone,
     )
-    session_date = now.astimezone(market_zone).date()
-    stored_rows = list(db.scalars(
-        select(MarketBar)
-        .where(
-            MarketBar.instrument_id == instrument.id,
-            MarketBar.interval == "5m",
-            MarketBar.source == "dhan",
-            MarketBar.is_synthetic.is_(False),
-        )
-        .order_by(MarketBar.timestamp.desc())
-        .limit(100)
-    ))
-    stored_rows.reverse()
-    current_session_rows = [
-        bar for bar in stored_rows
-        if _utc(bar.timestamp).astimezone(market_zone).date() == session_date
-    ]
+
+    def load_current_session_rows() -> list[MarketBar]:
+        rows = list(db.scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.instrument_id == instrument.id,
+                MarketBar.interval == "5m",
+                MarketBar.source == "dhan",
+                MarketBar.is_synthetic.is_(False),
+            )
+            .order_by(MarketBar.timestamp.desc())
+            .limit(100)
+        ))
+        rows.reverse()
+        return [
+            bar for bar in rows
+            if _utc(bar.timestamp).astimezone(market_zone).date() == session_date
+        ]
+
+    current_session_rows = load_current_session_rows()
+    bar_refresh_blocker: str | None = None
+    bars_need_refresh = (
+        not current_session_rows
+        or now - _utc(current_session_rows[-1].timestamp) > timedelta(minutes=10)
+    )
+    active_providers = _providers(provider)
+    dhan_provider = next(
+        (active for active in active_providers if active.name == "dhan"),
+        None,
+    )
+    if market_session_open and bars_need_refresh and dhan_provider is not None:
+        session_open = datetime.combine(
+            session_date,
+            datetime_time(hour=9, minute=15),
+            tzinfo=market_zone,
+        ).astimezone(timezone.utc)
+        try:
+            # Reuse the existing market-history sync path; only Dhan is supplied
+            # so no fallback can silently change the candle source.
+            sync_history(
+                instrument_id=instrument_id,
+                start=session_open,
+                end=now,
+                interval="5m",
+                limit=100,
+                provider=MarketDataProviderChain([dhan_provider]),
+                _user=_user,
+                db=db,
+            )
+        except HTTPException as error:
+            bar_refresh_blocker = "dhan_5m_history_refresh_failed"
+            logger.warning(
+                "options_signal_history_refresh_failed",
+                extra={
+                    "instrument_id": str(instrument.id),
+                    "status_code": error.status_code,
+                },
+            )
+        current_session_rows = load_current_session_rows()
+    elif market_session_open and bars_need_refresh and dhan_provider is None:
+        bar_refresh_blocker = "dhan_5m_history_provider_unavailable"
+
     bars = [
         SignalOHLCVBar(
             timestamp=_utc(bar.timestamp),
@@ -3482,6 +3525,16 @@ def get_instrument_option_signal(
         for bar in current_session_rows
     ]
 
+    # Fetch the chain after any candle refresh so freshness is measured against
+    # the newest possible chain retrieval time.
+    chain_response = get_instrument_option_chain(
+        instrument_id=instrument_id,
+        expiry=expiry,
+        active_session=active_session,
+        db=db,
+    )
+    now = datetime.now(timezone.utc)
+    market_session_open = _market_session_state(instrument, now) == "open"
     chain_quotes: list[SignalOptionQuote] = []
     for strike_row in chain_response.strikes:
         for option_type, contract in (("call", strike_row.ce), ("put", strike_row.pe)):
@@ -3533,7 +3586,14 @@ def get_instrument_option_signal(
         capital=capital,
         risk_fraction=risk_fraction,
         active_position=active_position,
+        market_session_open=market_session_open,
     ))
+    blockers = list(signal.blockers)
+    if bar_refresh_blocker is not None and bar_refresh_blocker not in blockers:
+        blockers.append(bar_refresh_blocker)
+    reasons = list(signal.reasons)
+    if bar_refresh_blocker is not None:
+        reasons.append("Dhan 5-minute bars could not be refreshed; no entry should be inferred.")
     return OptionsSignalAPIResponse(
         action=signal.action,
         underlying_symbol=signal.underlying_symbol,
@@ -3546,8 +3606,8 @@ def get_instrument_option_signal(
         estimated_premium_risk_per_lot=signal.estimated_premium_risk_per_lot,
         suggested_lots_by_risk_budget=signal.suggested_lots_by_risk_budget,
         option_return_pct_at_bid=signal.option_return_pct_at_bid,
-        reasons=list(signal.reasons),
-        blockers=list(signal.blockers),
+        reasons=reasons,
+        blockers=blockers,
         evidence=signal.evidence,
         underlying_source=signal.underlying_source,
         chain_source=signal.chain_source,
