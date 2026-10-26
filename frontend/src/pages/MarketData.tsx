@@ -1318,6 +1318,20 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     price === null ? '—' : `${displayOptionPrice(price)} · ${displayOptionCount(quantity)}`;
   const displayOptionGreek = (value: string | null) =>
     value === null ? '—' : displayFundamental(value);
+  const displaySignalMetric = (
+    evidence: OptionsSignalData['evidence'],
+    key: string,
+    suffix = '',
+  ) => {
+    const value = evidence[key];
+    if (value === null || value === undefined) return '—';
+    const number = Number(value);
+    return Number.isFinite(number) ? `${number.toFixed(2)}${suffix}` : String(value);
+  };
+  const displaySignalRaw = (evidence: OptionsSignalData['evidence'], key: string) => {
+    const value = evidence[key];
+    return value === null || value === undefined ? '—' : String(value);
+  };
   const financialsFetchedAt = fundamentals?.snapshot?.fetched_at
     ?? (fundamentals?.fundamentals.reduce(
       (latest, row) => !latest || row.fetched_at > latest ? row.fetched_at : latest,
@@ -1786,6 +1800,31 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                   <span>Lot size is not verified, so contract sizing is intentionally unavailable.</span>
                                 )}
                               </div>
+                              <p className="market-provenance">
+                                <strong>Price indicators:</strong>
+                                {' '}RSI(14) {displaySignalMetric(optionSignal.evidence, 'rsi_14')}
+                                {' · '}ATR(14) {displaySignalMetric(optionSignal.evidence, 'atr_14')}
+                                {' · '}VWAP {displaySignalMetric(optionSignal.evidence, 'session_vwap')}
+                                {' · '}Relative volume {displaySignalMetric(optionSignal.evidence, 'volume_multiple_vs_prior_median', '×')}
+                              </p>
+                              <p className="market-provenance">
+                                <strong>Options context:</strong>
+                                {' '}Near-spot PCR by OI {displaySignalMetric(optionSignal.evidence, 'near_spot_pcr_open_interest')}
+                                {' · '}PCR by volume {displaySignalMetric(optionSignal.evidence, 'near_spot_pcr_volume')}
+                                {' · '}Call OI wall {displaySignalRaw(optionSignal.evidence, 'call_oi_wall_strike')}
+                                {' · '}Put OI wall {displaySignalRaw(optionSignal.evidence, 'put_oi_wall_strike')}
+                              </p>
+                              <p className="market-provenance">
+                                <strong>Selected contract:</strong>
+                                {' '}Delta {displaySignalMetric(optionSignal.evidence, 'selected_delta')}
+                                {' · '}Gamma {displaySignalMetric(optionSignal.evidence, 'selected_gamma')}
+                                {' · '}Theta {displaySignalMetric(optionSignal.evidence, 'selected_theta')}
+                                {' · '}Vega {displaySignalMetric(optionSignal.evidence, 'selected_vega')}
+                                {' · '}IV (provider value) {displaySignalRaw(optionSignal.evidence, 'selected_implied_volatility')}
+                                {' · '}Spread {displaySignalMetric(optionSignal.evidence, 'selected_relative_spread_pct', '%')}
+                                {' · '}OI {displaySignalRaw(optionSignal.evidence, 'selected_open_interest')}
+                                {' · '}Volume {displaySignalRaw(optionSignal.evidence, 'selected_volume')}
+                              </p>
                               {optionSignal.reasons.length > 0 && (
                                 <p><strong>Why:</strong> {optionSignal.reasons.map((reason) => reason.replaceAll('_', ' ')).join(' · ')}</p>
                               )}
