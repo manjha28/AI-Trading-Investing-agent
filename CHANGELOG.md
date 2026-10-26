@@ -23,3 +23,4 @@
 - Migrations: keep revision IDs within Alembic's 32-character version column limit and validate their lengths.
 - Quality gate: block backend undefined names with Ruff F821 and add route smoke coverage.
 - Market data: compute chart indicators from complete source-matched stored history, add fixed-priority provider toggles and breaker reset, and move broker connection controls off the Market Data page.
+- Options signals: add deterministic long-premium breakout scoring, option liquidity/Greek/theta gates, freshness checks, evidence, and non-executing exit signals.
