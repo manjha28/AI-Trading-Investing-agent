@@ -210,7 +210,12 @@ def test_saved_provider_preference_does_not_reorder_fixed_fallback_priority(
         ]
         session.delete(session.get(UserMarketDataSettings, user_id))
         session.commit()
-        assert _default_market_data_source(session, user_id) == "angel_one"
+        assert _default_market_data_source(session, user_id) == "dhan"
+        assert [provider.name for provider in market_data._providers(chain)] == [
+            "dhan",
+            "angel_one",
+            "yfinance",
+        ]
     app.dependency_overrides.clear()
 
 
@@ -398,14 +403,14 @@ def test_recorded_fixture_reports_real_data_capabilities(client: TestClient) -> 
     assert response.json()["provider"]["status"] == "recorded_test_fixture"
 
 
-def test_market_data_source_selection_cannot_reorder_provider_routing(
+def test_market_data_source_selection_does_not_reorder_provider_routing(
     client: TestClient, test_engine, monkeypatch
 ) -> None:
     register(client, "source-selection@example.com")
     prepare_dhan_quote(client, test_engine, monkeypatch)
 
     initial = client.get("/api/v1/market-data/settings")
-    rejected = client.put(
+    selected = client.put(
         "/api/v1/market-data/settings/provider",
         json={"provider": "yfinance"},
         headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
@@ -414,12 +419,13 @@ def test_market_data_source_selection_cannot_reorder_provider_routing(
 
     assert initial.status_code == 200, initial.text
     assert initial.json()["selected_provider"] == "dhan"
-    assert rejected.status_code == 409
-    assert rejected.json()["detail"]["code"] == "provider_order_fixed"
-    assert refreshed.json()["selected_provider"] == "dhan"
+    assert selected.status_code == 200, selected.text
+    assert selected.json()["selected_provider"] == "yfinance"
+    assert refreshed.json()["selected_provider"] == "yfinance"
     with Session(test_engine) as session:
         preference = session.scalar(select(UserMarketDataSettings))
-        assert preference is None
+        assert preference is not None
+        assert preference.selected_provider == "yfinance"
 
 
 def test_market_data_settings_default_follows_provider_priority(
@@ -442,7 +448,7 @@ def test_market_data_settings_default_follows_provider_priority(
     response = client.get("/api/v1/market-data/settings")
 
     assert response.status_code == 200, response.text
-    assert response.json()["selected_provider"] == "angel_one"
+    assert response.json()["selected_provider"] == "dhan"
 
 
 def test_history_sync_is_idempotent_and_returns_provenance_and_freshness(
@@ -734,11 +740,11 @@ def test_quote_and_history_fall_back_to_yahoo_without_mixing_sources(
     assert quote.json()["source"] == "yfinance"
     assert quote.json()["freshness_status"] == "historical"
     assert [attempt["outcome"] for attempt in quote.json()["provider_attempts"]] == [
-        "stale",
         "unavailable",
         "stale",
+        "stale",
     ]
-    assert quote.json()["fallback_reason"] == "stale"
+    assert quote.json()["fallback_reason"] == "provider_network_error"
     assert history.status_code == 200, history.text
     assert history.json()["freshness"]["source"] == "yfinance"
     assert {bar["source"] for bar in history.json()["bars"]} == {"yfinance"}
@@ -755,21 +761,17 @@ def test_quote_and_history_fall_back_to_yahoo_without_mixing_sources(
         (
             "angel_one",
             "angel_one",
-            ["angel_one:quote"],
+            ["dhan:quote", "angel_one:quote"],
         ),
         (
             "dhan",
             "dhan",
-            [
-                "angel_one:quote", "dhan:quote",
-            ],
+            ["dhan:quote"],
         ),
         (
             "yfinance",
             "yfinance",
-            [
-                "angel_one:quote", "dhan:quote", "yfinance:quote",
-            ],
+            ["dhan:quote", "angel_one:quote", "yfinance:quote"],
         ),
     ],
 )
@@ -897,11 +899,11 @@ def test_quote_router_reports_all_provider_failures_without_fabricated_quote(
 
     assert response.status_code == 503
     assert call_order == [
-        "angel_one:quote", "dhan:quote", "yfinance:quote",
+        "dhan:quote", "angel_one:quote", "yfinance:quote",
     ]
     attempts = response.json()["detail"]["provider_attempts"]
     assert [item["provider"] for item in attempts] == [
-        "angel_one", "dhan", "yfinance"
+        "dhan", "angel_one", "yfinance"
     ]
     assert all(item["reason_category"] == "provider_request_failed" for item in attempts)
 
@@ -975,10 +977,10 @@ def test_history_provider_rejects_duplicate_or_unsorted_bars() -> None:
     assert error.value.code == "provider_returned_duplicate_or_unsorted_bars"
 
 
-def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
+def test_dhan_history_failure_falls_back_to_angel_one_and_reports_provenance(
     client: TestClient, test_engine, caplog
 ) -> None:
-    register(client, "angel-history-fallback@example.com")
+    register(client, "dhan-history-fallback@example.com")
     instrument_data = client.get(
         "/api/v1/market-data/instruments?query=ALPHA"
     ).json()[0]
@@ -989,14 +991,7 @@ def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
     )
     assert added.status_code == 204, added.text
 
-    class AngelMasterFailure:
-        name = "angel_one"
-        is_mock = False
-
-        def search_instruments(self, _query, _limit):
-            raise MarketDataProviderError("provider_response_too_large")
-
-    class DhanHistoryProvider:
+    class DhanHistoryFailure:
         name = "dhan"
         is_mock = False
 
@@ -1004,6 +999,31 @@ def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
             return [InstrumentCandidate(
                 provider=self.name,
                 provider_instrument_id="verified-dhan-alpha",
+                provider_symbol="ALPHA",
+                symbol="ALPHA",
+                display_name=instrument_data["display_name"],
+                asset_class="equity",
+                venue=instrument_data["venue"],
+                currency=instrument_data["currency"],
+                country="US",
+                timezone="UTC",
+                is_synthetic=False,
+                is_verified=True,
+            )]
+
+        def get_historical_bars(
+            self, _instrument, _interval, _start, _end, _limit
+        ):
+            raise MarketDataProviderError("provider_request_failed")
+
+    class AngelHistoryProvider:
+        name = "angel_one"
+        is_mock = False
+
+        def search_instruments(self, _query, _limit):
+            return [InstrumentCandidate(
+                provider=self.name,
+                provider_instrument_id="verified-angel-alpha",
                 provider_symbol="ALPHA",
                 symbol="ALPHA",
                 display_name=instrument_data["display_name"],
@@ -1032,7 +1052,7 @@ def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
             ]
 
     app.dependency_overrides[get_market_data_provider] = lambda: MarketDataProviderChain(
-        [AngelMasterFailure(), DhanHistoryProvider()]
+        [AngelHistoryProvider(), DhanHistoryFailure()]
     )
     start = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -1049,19 +1069,19 @@ def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["freshness"]["source"] == "dhan"
-    assert {bar["source"] for bar in payload["bars"]} == {"dhan"}
+    assert payload["freshness"]["source"] == "angel_one"
+    assert {bar["source"] for bar in payload["bars"]} == {"angel_one"}
     assert [item["outcome"] for item in payload["provider_attempts"]] == [
         "unavailable",
         "used",
     ]
     assert [
         item["reason_category"] for item in payload["provider_attempts"]
-    ] == ["provider_response_too_large", None]
+    ] == ["provider_request_failed", None]
     assert any(
         record.getMessage() == "market_data_provider_failure"
-        and getattr(record, "provider", None) == "angel_one"
-        and getattr(record, "error_category", None) == "provider_response_too_large"
+        and getattr(record, "provider", None) == "dhan"
+        and getattr(record, "error_category", None) == "provider_request_failed"
         for record in caplog.records
     )
 
@@ -1069,7 +1089,7 @@ def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
         sync = session.scalar(
             select(MarketDataSync).where(
                 MarketDataSync.instrument_id == UUID(instrument_id),
-                MarketDataSync.source == "dhan",
+                MarketDataSync.source == "angel_one",
             )
         )
         attempts = list(session.scalars(
@@ -1084,17 +1104,17 @@ def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
         ))
         assert sync is not None
         assert sync.status == "success"
-        assert sync.safe_reason == "fallback_after_angel_one_provider_response_too_large"
+        assert sync.safe_reason == "fallback_after_dhan_provider_request_failed"
         assert any(
-            item.provider == "angel_one"
-            and item.reason == "provider_response_too_large"
-            and item.reason_category == "provider_response_too_large"
+            item.provider == "dhan"
+            and item.reason == "provider_request_failed"
+            and item.reason_category == "provider_request_failed"
             for item in attempts
         )
         assert next(
-            item for item in attempts if item.provider == "dhan"
+            item for item in attempts if item.provider == "angel_one"
         ).reason_category is None
-        assert {bar.source for bar in bars} == {"dhan"}
+        assert {bar.source for bar in bars} == {"angel_one"}
 
     coverage = client.get("/api/v1/market-data/coverage")
     assert coverage.status_code == 200, coverage.text
@@ -1102,8 +1122,8 @@ def test_angel_one_history_failure_falls_back_to_dhan_and_reports_provenance(
         item for item in coverage.json()["instruments"]
         if item["instrument_id"] == instrument_id
     )
-    assert row["last_sync_provider"] == "dhan"
-    assert row["last_sync_reason"] == "fallback_after_angel_one_provider_response_too_large"
+    assert row["last_sync_provider"] == "angel_one"
+    assert row["last_sync_reason"] == "fallback_after_dhan_provider_request_failed"
 
 
 def test_history_sync_records_all_provider_failures_without_exposing_details(
@@ -1156,11 +1176,11 @@ def test_history_sync_records_all_provider_failures_without_exposing_details(
     assert [
         item["reason"] for item in response.json()["detail"]["providers"]
     ] == [
+        "provider_request_failed",
         "provider_response_too_large",
         "provider_request_failed",
-        "provider_request_failed",
     ]
-    assert call_order == ["angel_one", "dhan", "yfinance"]
+    assert call_order == ["dhan", "angel_one", "yfinance"]
     with Session(test_engine) as session:
         attempts = list(session.scalars(
             select(MarketDataSyncAttempt).where(
@@ -1168,11 +1188,11 @@ def test_history_sync_records_all_provider_failures_without_exposing_details(
             ).order_by(MarketDataSyncAttempt.attempted_at)
         ))
         assert [item.provider for item in attempts] == [
-            "angel_one", "dhan", "yfinance"
+            "dhan", "angel_one", "yfinance"
         ]
         assert [item.reason_category for item in attempts] == [
-            "provider_response_too_large",
             "provider_request_failed",
+            "provider_response_too_large",
             "provider_request_failed",
         ]
         assert all(
@@ -1248,11 +1268,11 @@ def test_history_sync_falls_back_through_yfinance_and_records_categories(
         (attempt["provider"], attempt["outcome"], attempt["reason_category"])
         for attempt in payload["provider_attempts"]
     ] == [
-        ("angel_one", "unavailable", "provider_response_too_large"),
         ("dhan", "unavailable", "provider_request_failed"),
+        ("angel_one", "unavailable", "provider_response_too_large"),
         ("yfinance", "used", None),
     ]
-    assert call_order == ["angel_one", "dhan", "yfinance"]
+    assert call_order == ["dhan", "angel_one", "yfinance"]
     with Session(test_engine) as session:
         attempts = list(session.scalars(
             select(MarketDataSyncAttempt).where(
@@ -1582,28 +1602,41 @@ def test_dhan_v2_intraday_epoch_is_parsed_as_utc_for_option_candles(monkeypatch)
     )
 
 
-def test_dhan_history_requests_are_chunked_to_ninety_days(
+def test_dhan_daily_history_requests_are_chunked_to_365_days(
     client: TestClient, test_engine, monkeypatch
 ) -> None:
     register(client, "dhan-history-chunks@example.com")
     prepare_dhan_quote(client, test_engine, monkeypatch)
-    instrument = next(
-        item
-        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
-        if item["venue"] == "DEMO_IN"
-    )
+    with Session(test_engine) as session:
+        instrument = Instrument(
+            symbol="SBIN",
+            display_name="State Bank of India",
+            asset_class="equity",
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone="Asia/Kolkata",
+            is_synthetic=False,
+            relink_required=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(instrument)
+        session.flush()
+        session.add(InstrumentProviderIdentifier(
+            instrument_id=instrument.id,
+            provider="dhan",
+            provider_instrument_id="3045|NSE_EQ",
+            provider_symbol="SBIN",
+            is_verified=True,
+            last_seen_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
+        instrument_id = instrument.id
     use_dhan_market_data_provider()
     requests = []
-    monkeypatch.setattr(
-        DhanAdapter,
-        "find_verified_equity_mapping",
-        lambda _self, _symbol, _venue: ("11536", "NSE_EQ"),
-    )
     monkeypatch.setattr("app.broker_adapters._wait_for_dhan_market_data", lambda: None)
 
-    def get_historical_bars(
-        _self, _token, _tokens, _segment, _security_id, _interval, start, end
-    ):
+    def get_historical_bars(_self, _segment, _security_id, _interval, start, end):
         requests.append((start, end))
         return [HistoricalBar(
             timestamp=start,
@@ -1614,12 +1647,14 @@ def test_dhan_history_requests_are_chunked_to_ninety_days(
             volume=Decimal("1200"),
         )]
 
-    monkeypatch.setattr(DhanAdapter, "get_historical_bars", get_historical_bars)
+    monkeypatch.setattr(
+        market_data.DhanV2Adapter, "get_historical_bars", get_historical_bars
+    )
     response = client.post(
-        f"/api/v1/market-data/instruments/{instrument['id']}/history/sync",
+        f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
         params={
             "interval": "1d",
-            "start": "2025-01-01T00:00:00Z",
+            "start": "2024-01-01T00:00:00Z",
             "end": "2025-08-01T00:00:00Z",
             "limit": 10,
         },
@@ -1627,32 +1662,47 @@ def test_dhan_history_requests_are_chunked_to_ninety_days(
 
     assert response.status_code == 200, response.text
     assert len(requests) > 1
-    assert all(end - start <= timedelta(days=90) for start, end in requests)
+    assert all(end - start <= timedelta(days=365) for start, end in requests)
 
 
 def test_dhan_empty_history_is_a_valid_empty_result(client: TestClient, test_engine, monkeypatch) -> None:
     register(client, "dhan-empty-history@example.com")
     prepare_dhan_quote(client, test_engine, monkeypatch)
-    instrument = next(
-        item
-        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
-        if item["venue"] == "DEMO_IN"
-    )
+    with Session(test_engine) as session:
+        instrument = Instrument(
+            symbol="SBIN",
+            display_name="State Bank of India",
+            asset_class="equity",
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone="Asia/Kolkata",
+            is_synthetic=False,
+            relink_required=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(instrument)
+        session.flush()
+        session.add(InstrumentProviderIdentifier(
+            instrument_id=instrument.id,
+            provider="dhan",
+            provider_instrument_id="3045|NSE_EQ",
+            provider_symbol="SBIN",
+            is_verified=True,
+            last_seen_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
+        instrument_id = instrument.id
     use_dhan_market_data_provider()
-    monkeypatch.setattr(
-        DhanAdapter,
-        "find_verified_equity_mapping",
-        lambda _self, _symbol, _venue: ("11536", "NSE_EQ"),
-    )
     monkeypatch.setattr("app.broker_adapters._wait_for_dhan_market_data", lambda: None)
     monkeypatch.setattr(
-        DhanAdapter,
+        market_data.DhanV2Adapter,
         "get_historical_bars",
         lambda *_args, **_kwargs: [],
     )
 
     response = client.post(
-        f"/api/v1/market-data/instruments/{instrument['id']}/history/sync",
+        f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
         params={
             "interval": "1d",
             "start": "2026-01-05T00:00:00Z",
@@ -1665,6 +1715,15 @@ def test_dhan_empty_history_is_a_valid_empty_result(client: TestClient, test_eng
     assert response.json()["bars"] == []
     assert response.json()["freshness"]["status"] == "unavailable"
     assert response.json()["freshness"]["source"] == "dhan"
+    with Session(test_engine) as session:
+        attempt = session.scalar(
+            select(MarketDataSyncAttempt).where(
+                MarketDataSyncAttempt.instrument_id == instrument_id
+            )
+        )
+        assert attempt is not None
+        assert attempt.outcome == "unchanged"
+        assert attempt.reason_category == "closed_session_no_new_bars"
 
 
 def test_dhan_expired_market_data_auth_preserves_broker_credential(
@@ -1672,24 +1731,45 @@ def test_dhan_expired_market_data_auth_preserves_broker_credential(
 ) -> None:
     register(client, "dhan-expired-history@example.com")
     prepare_dhan_quote(client, test_engine, monkeypatch)
-    instrument = next(
-        item
-        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
-        if item["venue"] == "DEMO_IN"
-    )
+    with Session(test_engine) as session:
+        instrument = Instrument(
+            symbol="SBIN",
+            display_name="State Bank of India",
+            asset_class="equity",
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone="Asia/Kolkata",
+            is_synthetic=False,
+            relink_required=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(instrument)
+        session.flush()
+        session.add(InstrumentProviderIdentifier(
+            instrument_id=instrument.id,
+            provider="dhan",
+            provider_instrument_id="3045|NSE_EQ",
+            provider_symbol="SBIN",
+            is_verified=True,
+            last_seen_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
+        instrument_id = instrument.id
     use_dhan_market_data_provider()
-    monkeypatch.setattr(
-        DhanAdapter,
-        "find_verified_equity_mapping",
-        lambda _self, _symbol, _venue: ("11536", "NSE_EQ"),
-    )
-    def expired_tokens(*_args, **_kwargs):
+    monkeypatch.setattr("app.broker_adapters._wait_for_dhan_market_data", lambda: None)
+
+    def expired_history(*_args, **_kwargs):
         raise BrokerReconnectRequired("private token-related detail")
 
-    monkeypatch.setattr(brokers, "_fresh_tokens", expired_tokens)
+    monkeypatch.setattr(
+        market_data.DhanV2Adapter,
+        "get_historical_bars",
+        expired_history,
+    )
 
     response = client.post(
-        f"/api/v1/market-data/instruments/{instrument['id']}/history/sync",
+        f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
         params={
             "interval": "1d",
             "start": "2026-01-05T00:00:00Z",
@@ -1698,10 +1778,11 @@ def test_dhan_expired_market_data_auth_preserves_broker_credential(
         },
     )
 
-    assert response.status_code == 401
-    assert response.json()["detail"] == (
-        "Dhan authentication expired. Reconnect and retry market-data sync."
-    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["providers"] == [
+        {"provider": "dhan", "reason": "authentication_expired"}
+    ]
+    assert "private token-related detail" not in response.text
     with Session(test_engine) as session:
         credential = session.scalar(
             select(BrokerCredential).where(BrokerCredential.broker == "dhan")
@@ -1709,11 +1790,12 @@ def test_dhan_expired_market_data_auth_preserves_broker_credential(
         assert credential is not None
         assert credential.connected_at is not None
         assert credential.expires_at is not None
-        assert (
+        credential_expiry = (
             credential.expires_at.replace(tzinfo=timezone.utc)
             if credential.expires_at.tzinfo is None
             else credential.expires_at
-        ) <= datetime.now(timezone.utc)
+        )
+        assert credential_expiry > datetime.now(timezone.utc)
 
 
 def test_dhan_websocket_route_authenticates_persists_and_reports_live_ticks(

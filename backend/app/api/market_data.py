@@ -7281,7 +7281,7 @@ def sync_history(
         rows_returned=provider_rows_returned[0],
         rows_written=rows_written,
         outcome=(
-            "no_new_bars"
+            "unchanged"
             if no_new_bars
             else "success"
             if rows_written
