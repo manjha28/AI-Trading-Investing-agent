@@ -7,6 +7,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
 import pytest
@@ -1464,28 +1465,44 @@ def test_dhan_history_sync_persists_verified_bars_and_reuses_cached_range(
 ) -> None:
     register(client, "dhan-history@example.com")
     prepare_dhan_quote(client, test_engine, monkeypatch)
-    instrument = next(
-        item
-        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
-        if item["venue"] == "DEMO_IN"
-    )
+    with Session(test_engine) as session:
+        instrument = Instrument(
+            symbol="SBIN",
+            display_name="State Bank of India",
+            asset_class="equity",
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone="Asia/Kolkata",
+            is_synthetic=False,
+            relink_required=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(instrument)
+        session.flush()
+        session.add(
+            InstrumentProviderIdentifier(
+                instrument_id=instrument.id,
+                provider="dhan",
+                provider_instrument_id="3045|NSE_EQ",
+                provider_symbol="SBIN",
+                is_verified=True,
+                last_seen_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+        instrument_id = instrument.id
     use_dhan_market_data_provider()
     timestamp = datetime(2026, 1, 5, tzinfo=timezone.utc)
     requests = []
-    monkeypatch.setattr(
-        DhanAdapter,
-        "find_verified_equity_mapping",
-        lambda _self, _symbol, _venue: ("11536", "NSE_EQ"),
-    )
     monkeypatch.setattr("app.broker_adapters._wait_for_dhan_market_data", lambda: None)
 
     def get_historical_bars(
-        _self, token, _tokens, segment, security_id, interval, start, end
+        _self, segment, security_id, interval, start, end
     ):
         requests.append((start, end))
-        assert token.startswith("header.")
         assert segment == "NSE_EQ"
-        assert security_id == "11536"
+        assert security_id == "3045"
         assert interval == "1d"
         return [HistoricalBar(
             timestamp=timestamp,
@@ -1496,8 +1513,12 @@ def test_dhan_history_sync_persists_verified_bars_and_reuses_cached_range(
             volume=Decimal("1200"),
         )]
 
-    monkeypatch.setattr(DhanAdapter, "get_historical_bars", get_historical_bars)
-    url = f"/api/v1/market-data/instruments/{instrument['id']}/history/sync"
+    monkeypatch.setattr(
+        market_data.DhanV2Adapter,
+        "get_historical_bars",
+        get_historical_bars,
+    )
+    url = f"/api/v1/market-data/instruments/{instrument_id}/history/sync"
     params = {
         "interval": "1d",
         "start": "2026-01-05T00:00:00Z",
@@ -1512,8 +1533,53 @@ def test_dhan_history_sync_persists_verified_bars_and_reuses_cached_range(
     assert second.status_code == 200, second.text
     assert first.json()["bars"][0]["source"] == "dhan"
     assert first.json()["bars"][0]["close"] == "101.00000000"
+    stored_timestamp = datetime.fromisoformat(
+        first.json()["bars"][0]["timestamp"].replace("Z", "+00:00")
+    )
+    retrieved_timestamp = datetime.fromisoformat(
+        first.json()["bars"][0]["retrieved_at"].replace("Z", "+00:00")
+    )
+    if stored_timestamp.tzinfo is None:
+        stored_timestamp = stored_timestamp.replace(tzinfo=timezone.utc)
+    if retrieved_timestamp.tzinfo is None:
+        retrieved_timestamp = retrieved_timestamp.replace(tzinfo=timezone.utc)
+    assert stored_timestamp == timestamp
+    assert retrieved_timestamp > stored_timestamp
     assert second.json()["bars"] == first.json()["bars"]
     assert len(requests) == 1
+
+
+def test_dhan_v2_intraday_epoch_is_parsed_as_utc_for_option_candles(monkeypatch) -> None:
+    adapter = market_data.DhanV2Adapter({"access_token": "test-token"})
+    timestamp = int(datetime(2026, 10, 26, 3, 46, tzinfo=timezone.utc).timestamp())
+    requests = []
+
+    def post_payload(path, body):
+        requests.append((path, body))
+        return {
+            "open": [100],
+            "high": [102],
+            "low": [99],
+            "close": [101],
+            "volume": [1200],
+            "timestamp": [timestamp],
+        }
+
+    monkeypatch.setattr(adapter, "_post_payload", post_payload)
+    bars = adapter.get_historical_bars(
+        "NSE_EQ",
+        "3045",
+        "5m",
+        datetime(2026, 10, 26, 3, 45, tzinfo=timezone.utc),
+        datetime(2026, 10, 26, 3, 50, tzinfo=timezone.utc),
+    )
+
+    assert requests[0][0] == "/charts/intraday"
+    assert requests[0][1]["interval"] == "5"
+    assert bars[0].timestamp == datetime(2026, 10, 26, 3, 46, tzinfo=timezone.utc)
+    assert bars[0].timestamp.astimezone(ZoneInfo("Asia/Kolkata")) == datetime(
+        2026, 10, 26, 9, 16, tzinfo=ZoneInfo("Asia/Kolkata")
+    )
 
 
 def test_dhan_history_requests_are_chunked_to_ninety_days(

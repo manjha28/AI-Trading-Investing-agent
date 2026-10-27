@@ -48,7 +48,7 @@ jobs:
         continue-on-error: true
       - name: Run backend tests
         working-directory: backend
-        run: pytest -q
+        run: python -m pytest -q
       - name: Install frontend dependencies
         working-directory: frontend
         if: always()

@@ -386,9 +386,9 @@ def test_dhan_quote_parser_returns_exchange_timestamp_and_decimal_values(monkeyp
 def test_dhan_historical_data_requests_one_minute_candles_and_converts_epoch(
     monkeypatch,
 ) -> None:
-    start = datetime(2026, 10, 25, 3, 45, tzinfo=timezone.utc)
-    end = datetime(2026, 10, 25, 4, 0, tzinfo=timezone.utc)
-    epoch = int(datetime(2026, 10, 25, 3, 46, tzinfo=timezone.utc).timestamp())
+    start = datetime(2026, 10, 26, 3, 45, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 26, 4, 0, tzinfo=timezone.utc)
+    epoch = int(datetime(2026, 10, 26, 3, 46, tzinfo=timezone.utc).timestamp())
     captured: dict[str, object] = {}
 
     def mocked_request(method, url, **kwargs):
@@ -420,10 +420,13 @@ def test_dhan_historical_data_requests_one_minute_candles_and_converts_epoch(
     assert captured["method"] == "POST"
     assert captured["url"] == "https://api.dhan.co/v2/charts/intraday"
     assert captured["json"]["interval"] == "1"
-    assert captured["json"]["fromDate"] == "2026-10-25 09:15:00"
-    assert captured["json"]["toDate"] == "2026-10-25 09:30:00"
+    assert captured["json"]["fromDate"] == "2026-10-26 09:15:00"
+    assert captured["json"]["toDate"] == "2026-10-26 09:30:00"
     assert len(bars) == 1
-    assert bars[0].timestamp == datetime(2026, 10, 25, 3, 46, tzinfo=timezone.utc)
+    assert bars[0].timestamp == datetime(2026, 10, 26, 3, 46, tzinfo=timezone.utc)
+    assert bars[0].timestamp.astimezone(ZoneInfo("Asia/Kolkata")) == datetime(
+        2026, 10, 26, 9, 16, tzinfo=ZoneInfo("Asia/Kolkata")
+    )
 
 
 def test_dhan_historical_response_rejects_misaligned_arrays(monkeypatch) -> None:
@@ -566,7 +569,9 @@ def test_dhan_ist_epoch_conversion_uses_zoneinfo(monkeypatch) -> None:
     monkeypatch.setattr(
         broker_adapters,
         "ZoneInfo",
-        lambda zone_name: zone_database_offset if zone_name == "Asia/Kolkata" else None,
+        lambda zone_name: (
+            zone_database_offset if zone_name == "Asia/Kolkata" else None
+        ),
     )
     dynamic_expected = encoded_wall_clock.replace(
         tzinfo=zone_database_offset
@@ -580,6 +585,7 @@ def test_dhan_ist_epoch_conversion_handles_utc_midnight_rollover() -> None:
         ZoneInfo("Asia/Kolkata")
     ).replace(tzinfo=timezone.utc)
     raw_timestamp = int(encoded_ist_wall_clock.timestamp())
+
     parsed_utc = broker_adapters._dhan_ist_epoch_to_utc(raw_timestamp)
 
     assert parsed_utc == expected_utc
