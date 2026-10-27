@@ -18,6 +18,7 @@ import {
   formatMoney, formatQuantity, localDateTime, marketRangeParams,
   type WorkspaceState,
 } from '../components/useWorkspace';
+import { watchlistCloseDisposition } from './watchlistCloseDisposition';
 
 type FundamentalPeriod = {
   id: string;
@@ -206,7 +207,7 @@ type OptionsSignalData = {
   disclaimer: string;
 };
 
-export function MarketDataPage({ workspace, userId }: { userId: string; workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
+export function MarketDataPage({ workspace, userId }: { userId: string; workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'openMarketInstrumentId' | 'setOpenMarketInstrumentId' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
   const {
   attachSelectedInstrument,
   currency,
@@ -226,6 +227,8 @@ export function MarketDataPage({ workspace, userId }: { userId: string; workspac
   marketQuery,
   marketQuote,
   marketStart,
+  openMarketInstrumentId,
+  setOpenMarketInstrumentId,
   searchMarketInstruments,
   searchingMarket,
   selectMarketInstrument,
@@ -351,6 +354,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [activeWatchlistId, setActiveWatchlistId] = useState('');
   const activeWatchlistIdRef = useRef(activeWatchlistId);
   activeWatchlistIdRef.current = activeWatchlistId;
+  const recentWatchlistInstrumentOpens = useRef(new Map<string, number>());
+  const recentWatchlistReads = useRef(new Map<string, number>());
+  const recentFundamentalsReads = useRef(new Map<
+    string,
+    { requestedAt: number; promise: Promise<FundamentalsData> }
+  >());
   const [watchlistEntries, setWatchlistEntries] = useState<WorkspaceState['watchlist']>([]);
   const [watchlistLoading, setWatchlistLoading] = useState(true);
   const [watchlistError, setWatchlistError] = useState('');
@@ -406,13 +415,20 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     return lists;
   }, []);
 
-  const refreshSelectedWatchlist = useCallback(async (watchlistId = activeWatchlistId) => {
+  const refreshSelectedWatchlist = useCallback(async (
+    watchlistId = activeWatchlistId,
+    force = false,
+  ) => {
     if (!watchlistId) {
       setWatchlistEntries([]);
       setActiveWatchlistInstrument('');
       setWatchlistLoading(false);
       return;
     }
+    const now = Date.now();
+    const previousRequest = recentWatchlistReads.current.get(watchlistId);
+    if (!force && previousRequest !== undefined && now - previousRequest < 3000) return;
+    recentWatchlistReads.current.set(watchlistId, now);
     setWatchlistLoading(true);
     setWatchlistError('');
     try {
@@ -498,7 +514,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
         { method: add ? 'POST' : 'DELETE' },
       );
       await Promise.all([
-        refreshSelectedWatchlist(activeWatchlistId),
+        refreshSelectedWatchlist(activeWatchlistId, true),
         refreshNamedWatchlists(activeWatchlistId),
       ]);
       setWatchlistMessage(`${symbol} ${add ? 'added to' : 'removed from'} ${namedWatchlists.find((item) => item.id === activeWatchlistId)?.name ?? 'watchlist'}.`);
@@ -508,23 +524,30 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   }
 
   async function openWatchlistInstrument(instrumentId: string) {
+    const now = Date.now();
+    const previousOpen = recentWatchlistInstrumentOpens.current.get(instrumentId);
+    if (previousOpen !== undefined && now - previousOpen < 3000) return;
+    recentWatchlistInstrumentOpens.current.set(instrumentId, now);
     setActiveWatchlistInstrument(instrumentId);
     setLegacyInstrumentSelected(false);
     setActiveDetailTab('Chart');
     setWatchlistInstrumentLoading(true);
     setWatchlistError('');
     try {
-      const instrument = await apiRequest<WorkspaceState['selectedInstrument']>(
-        `/market-data/instruments/${instrumentId}`,
-      );
-      if (!instrument) throw new Error('Instrument details are unavailable.');
-      await selectMarketInstrument(instrument);
+      await selectMarketInstrument({ id: instrumentId });
     } catch (error) {
       setWatchlistError(error instanceof Error ? error.message : 'Instrument details could not be loaded.');
     } finally {
       setWatchlistInstrumentLoading(false);
     }
   }
+  const openWatchlistInstrumentRef = useRef(openWatchlistInstrument);
+  openWatchlistInstrumentRef.current = openWatchlistInstrument;
+  useEffect(() => {
+    if (!openMarketInstrumentId) return;
+    void openWatchlistInstrumentRef.current(openMarketInstrumentId);
+    setOpenMarketInstrumentId(null);
+  }, [openMarketInstrumentId, setOpenMarketInstrumentId]);
 
   useEffect(() => {
     void refreshMarketDataSettings().catch(() => undefined);
@@ -667,6 +690,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     let intentionalClose = false;
     let marketClosed = false;
     let connectionTimedOut = false;
+    let connectionPending = false;
+    let unavailableStatusReceived = false;
+    let reconnectAttempts = 0;
     let retryTimer: number | undefined;
     let connectionTimer: number | undefined;
     let heartbeat: number | undefined;
@@ -713,6 +739,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
       if (
         !liveFeedEnabledRef.current
         || selectedProviderRef.current !== 'dhan'
+        || connectionPending
       ) return;
       const previousSocket = dhanStreamRef.current;
       if (
@@ -727,6 +754,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
       }
       intentionalClose = false;
       connectionTimedOut = false;
+      connectionPending = true;
       setLiveFeedStatus('connecting');
       setLiveFeedMessage('Connecting to Dhan; waiting for the first live tick.');
       const openAfterPreviousCloses = async () => {
@@ -749,9 +777,13 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           || activeWatchlistIdRef.current !== activeWatchlistId
           || !liveFeedEnabledRef.current
           || selectedProviderRef.current !== 'dhan'
-        ) return;
+        ) {
+          connectionPending = false;
+          return;
+        }
 
         socket = new WebSocket(streamUrl);
+        connectionPending = false;
         dhanStreamRef.current = socket;
         console.info('[dhan-watchlist-feed] connect attempt url=%s', streamUrl.href);
         const activeSocket = socket;
@@ -792,10 +824,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           marketClosed = message.status === 'market_closed';
           setLiveLastSnapshotAt(message.last_snapshot_at ?? null);
           if (message.status === 'active') {
+            unavailableStatusReceived = false;
             if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
             setLiveFeedStatus('connecting');
             setLiveFeedMessage('Dhan is connected; waiting for the first live tick.');
           } else {
+            if (message.status === 'unavailable') unavailableStatusReceived = true;
             setLiveFeedStatus(message.status);
             setLiveFeedMessage(message.message ?? (
               message.status === 'unavailable'
@@ -811,13 +845,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           }
           if (message.status === 'market_closed') {
             setLiveMarketQuote(null);
-            void apiRequest<WorkspaceState['watchlist']>(
-              `/market-data/watchlist?watchlist_id=${encodeURIComponent(activeWatchlistId)}`,
-            ).then(setWatchlistEntries).catch((error: Error) => setWatchlistError(error.message));
+            void refreshSelectedWatchlist(activeWatchlistId);
           }
           return;
           }
           if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
+          reconnectAttempts = 0;
           if (selectedInstrumentId.current === message.quote.instrument_id) {
           setLiveMarketQuote(message.quote);
           }
@@ -836,6 +869,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
               is_verified: message.quote.is_verified,
               market_timestamp: message.quote.market_timestamp,
               market_age_seconds: message.quote.market_age_seconds,
+              is_current_session: message.quote.is_current_session,
               data_type: message.quote.data_type,
               close: message.quote.bar.close,
               absolute_change: message.quote.absolute_change,
@@ -864,10 +898,38 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           intentionalClose
           || intentionalWatchlistSocketsRef.current.has(activeSocket)
           ) return;
+          const closeDisposition = watchlistCloseDisposition(
+            event.code,
+            event.reason,
+            marketClosed,
+            unavailableStatusReceived,
+          );
+          if (closeDisposition === 'market_closed') {
+            marketClosed = true;
+            setLiveFeedStatus('market_closed');
+            setLiveFeedMessage('Market closed - live feed resumes at 09:15 IST');
+            retryTimer = window.setTimeout(connect, 30_000);
+            return;
+          }
+          if (closeDisposition === 'unavailable') {
+            setLiveFeedStatus('unavailable');
+            if (!unavailableStatusReceived) setLiveFeedMessage(reason);
+            return;
+          }
+          if (closeDisposition === 'clean') {
+            setLiveFeedStatus('reconnecting');
+            setLiveFeedMessage('Live feed closed cleanly; reconnecting…');
+            retryTimer = window.setTimeout(connect, 2000);
+            return;
+          }
           if (connectionTimedOut) {
           setLiveFeedStatus('reconnecting');
           setLiveFeedMessage('Dhan live feed timed out before delivering a tick; reconnecting.');
-          retryTimer = window.setTimeout(connect, marketClosed ? 30_000 : 2000);
+          const delay = marketClosed
+            ? 30_000
+            : Math.min(1000 * (2 ** reconnectAttempts), 30_000);
+          reconnectAttempts += 1;
+          retryTimer = window.setTimeout(connect, delay);
           return;
           }
           if ([4401, 4403, 4404].includes(event.code)) {
@@ -876,11 +938,21 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           } else {
           setLiveFeedStatus('reconnecting');
           setLiveFeedMessage(reason);
-          retryTimer = window.setTimeout(connect, marketClosed ? 30_000 : 2000);
+          const delay = marketClosed
+            ? 30_000
+            : Math.min(1000 * (2 ** reconnectAttempts), 30_000);
+          reconnectAttempts += 1;
+          retryTimer = window.setTimeout(connect, delay);
           }
         };
       };
-      void openAfterPreviousCloses();
+      void openAfterPreviousCloses().catch((error: unknown) => {
+        connectionPending = false;
+        const reason = error instanceof Error ? error.message : 'WebSocket connection failed';
+        console.error('[dhan-watchlist-feed] connection setup failed', reason);
+        setLiveFeedStatus('unavailable');
+        setLiveFeedMessage(reason);
+      });
     };
 
     const reconcile = () => {
@@ -909,7 +981,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
         dhanStreamCleanupTimerRef.current = undefined;
       }, 50);
     };
-  }, [activeWatchlistId, userId]);
+  }, [activeWatchlistId, refreshSelectedWatchlist, userId]);
 
   useEffect(() => {
     watchlistStreamReconcileRef.current?.();
@@ -964,7 +1036,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     if (!value) return '—';
     const messages: Record<string, string> = {
       provider_data_already_stored: 'No new bars',
-      provider_no_history_for_range: 'No bars returned for this range',
+      provider_no_history_for_range: 'Provider has no data for this range',
       provider_rate_limit_exceeded: 'Rate limited; retry later',
       provider_request_cap_reached: 'Request cap reached',
       provider_request_failed: 'Provider request failed',
@@ -1079,7 +1151,22 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     setFundamentalsSyncing(false);
     setFundamentalsLoading(true);
     setFundamentalsMessage('');
-    apiRequest<FundamentalsData>(`/market-data/instruments/${selectedInstrument.id}/fundamentals?period_type=${fundamentalPeriodType}`)
+    const requestKey = `${selectedInstrument.id}:${fundamentalPeriodType}`;
+    const now = Date.now();
+    let request = recentFundamentalsReads.current.get(requestKey);
+    if (!request || now - request.requestedAt >= 3000) {
+      request = {
+        requestedAt: now,
+        promise: apiRequest<FundamentalsData>(
+          `/market-data/instruments/${selectedInstrument.id}/fundamentals?period_type=${fundamentalPeriodType}`,
+        ),
+      };
+      recentFundamentalsReads.current.set(requestKey, request);
+    }
+    for (const [key, cached] of recentFundamentalsReads.current) {
+      if (now - cached.requestedAt >= 10_000) recentFundamentalsReads.current.delete(key);
+    }
+    request.promise
       .then((data) => {
         if (active) setFundamentals(data);
       })
@@ -1567,27 +1654,59 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                           <span>Instrument</span><span>Last</span><span>Change</span><span>%</span>
                         </div>
                         {watchlistEntries.map((entry) => {
-                          const change = entry.quote?.absolute_change ?? null;
+                          const change = entry.quote?.is_current_session
+                            ? entry.quote.absolute_change
+                            : null;
+                          const percentChange = entry.quote?.is_current_session
+                            ? entry.quote.percent_change
+                            : null;
                           const changeClass = change === null ? '' : Number(change) >= 0 ? 'positive' : 'negative';
+                          const freshnessColor = entry.quote?.freshness_status === 'fresh'
+                            ? '#3fd99a'
+                            : entry.quote?.freshness_status === 'eod_close'
+                              ? '#7394cf'
+                              : entry.quote?.freshness_status === 'stale'
+                                ? '#e2a53a'
+                                : entry.quote?.freshness_status === 'synthetic'
+                                  ? '#b087d9'
+                                  : '#8993a1';
+                          const quoteTooltip = entry.quote
+                            ? `${entry.quote.source} · ${entry.quote.freshness_status.replaceAll('_', ' ')} · Observed ${new Date(entry.quote.market_timestamp).toLocaleString(undefined, { timeZone: entry.timezone })}`
+                            : 'Quote unavailable';
                           return (
                             <div className="watchlist-row" key={entry.instrument_id}>
                               <button
                                 type="button"
                                 className={`watchlist-instrument-button${activeWatchlistInstrument === entry.instrument_id ? ' selected' : ''}`}
                                 onClick={() => void openWatchlistInstrument(entry.instrument_id)}
+                                title={quoteTooltip}
                               >
                                 <span className="watchlist-symbol">
                                   <strong>{entry.symbol}</strong>
                                   <small>{entry.venue}</small>
+                                  <span
+                                    aria-label={entry.quote ? `Freshness: ${entry.quote.freshness_status.replaceAll('_', ' ')}` : 'Freshness: unavailable'}
+                                    style={{
+                                      display: 'inline-block',
+                                      width: 7,
+                                      height: 7,
+                                      marginLeft: 5,
+                                      borderRadius: '50%',
+                                      backgroundColor: freshnessColor,
+                                      verticalAlign: 'middle',
+                                    }}
+                                  />
                                 </span>
-                                <span className="watchlist-number">{entry.quote ? formatMoney(entry.quote.close, entry.currency) : '—'}</span>
+                                <span className="watchlist-number">
+                                  {entry.quote ? formatMoney(entry.quote.close, entry.currency) : '—'}
+                                </span>
                                 <span className={`watchlist-number ${changeClass}`}>
                                   {change === null ? '—' : formatMoney(change, entry.currency)}
                                 </span>
                                 <span className={`watchlist-number ${changeClass}`}>
-                                  {entry.quote?.percent_change === null || entry.quote?.percent_change === undefined
+                                  {percentChange === null || percentChange === undefined
                                     ? '—'
-                                    : `${Number(entry.quote.percent_change).toFixed(2)}%`}
+                                    : `${Number(percentChange).toFixed(2)}%`}
                                 </span>
                               </button>
                               <button
@@ -1615,7 +1734,8 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                             ? formatMoney(detailPrice, activeWatchlistEntry?.currency ?? selectedInstrument?.currency ?? 'INR')
                             : '—'}
                         </strong>
-                        {activeWatchlistEntry?.quote?.absolute_change !== null
+                        {activeWatchlistEntry?.quote?.is_current_session
+                          && activeWatchlistEntry.quote.absolute_change !== null
                           && activeWatchlistEntry?.quote?.absolute_change !== undefined
                           && activeWatchlistEntry.quote.percent_change !== null
                           && activeWatchlistEntry.quote.percent_change !== undefined && (
@@ -1678,6 +1798,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                 liveBar={detailLiveBar}
                                 tickSize={selectedInstrument.tick_size}
                                 currency={selectedInstrument.currency}
+                                timezone={selectedInstrument.timezone}
                                 interval={marketInterval}
                                 preferredSource={marketIndicators?.source}
                                 indicatorSeries={marketIndicators?.indicator_series}
@@ -2166,7 +2287,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                   {marketHistory.fallback_reason && <p className="market-provenance">Fallback reason: {marketHistory.fallback_reason.replaceAll('_', ' ')}.</p>}
                   {marketHistory.provider_attempts.length > 0 && <p className="market-provenance">Provider attempts: {marketHistory.provider_attempts.map((attempt) => `${attempt.provider}: ${attempt.outcome.replaceAll('_', ' ')}${attempt.reason_category ? ` [${attempt.reason_category.replaceAll('_', ' ')}]` : attempt.reason ? ` (${attempt.reason.replaceAll('_', ' ')})` : ''}${attempt.latency_ms !== null && attempt.latency_ms !== undefined ? `, ${Math.round(attempt.latency_ms)} ms` : ''}${attempt.bars ? `, ${attempt.bars} bars` : ''}`).join(' · ')}</p>}
                   {marketHistory.bars.length === 0 ? <div className="table-empty">No bars are available for that date range.</div> : <>
-                    <CandleChart bars={marketHistory.bars} tickSize={selectedInstrument.tick_size} currency={selectedInstrument.currency} interval={marketInterval} preferredSource={marketIndicators?.source} indicatorSeries={marketIndicators?.indicator_series} indicatorBarsAvailable={marketIndicators?.bars_available} onLoadOlder={loadOlderMarketHistory} loadingOlder={loadingOlderMarketHistory} hasOlder={hasOlderMarketHistory} />
+                    <CandleChart bars={marketHistory.bars} tickSize={selectedInstrument.tick_size} currency={selectedInstrument.currency} timezone={selectedInstrument.timezone} interval={marketInterval} preferredSource={marketIndicators?.source} indicatorSeries={marketIndicators?.indicator_series} indicatorBarsAvailable={marketIndicators?.bars_available} onLoadOlder={loadOlderMarketHistory} loadingOlder={loadingOlderMarketHistory} hasOlder={hasOlderMarketHistory} />
                     <details className="historical-bars-details"><summary>View stored OHLCV rows ({marketHistory.bars.length})</summary><div className="table-scroll"><table><thead><tr><th>{marketInterval === '1d' ? 'Session date' : 'Timestamp (UTC)'}</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody>{marketHistory.bars.map((bar) => {
                       const verified = selectedInstrument.provider_identifiers.find((mapping) => mapping.provider === bar.source)?.is_verified === true;
                       const displayedTimestamp = marketInterval === '1d'

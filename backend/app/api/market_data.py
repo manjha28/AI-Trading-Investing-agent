@@ -221,11 +221,53 @@ class DhanLiveFeedHub:
         self._counter_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        current_loop = asyncio.get_running_loop()
+        async with self._lock:
+            for feed, task in self._tasks.items():
+                if task is None:
+                    continue
+                if task.done():
+                    self._tasks[feed] = None
+                    self._updates[feed] = None
+                    self._credentials[feed] = None
+                    self._connection_counts[feed] = 0
+                    self._groups[feed].clear()
+                    continue
+                if task.get_loop() is current_loop:
+                    continue
+                previous_loop = task.get_loop()
+                logger.warning(
+                    "Dhan shared feed discarded stale task reference feed=%s",
+                    feed,
+                )
+                if not previous_loop.is_closed():
+                    if previous_loop.is_running():
+                        previous_loop.call_soon_threadsafe(task.cancel)
+                    else:
+                        task.cancel()
+                self._tasks[feed] = None
+                self._updates[feed] = None
+                self._credentials[feed] = None
+                self._connection_counts[feed] = 0
+                self._groups[feed].clear()
+            if self._counter_task is not None:
+                previous_loop = self._counter_task.get_loop()
+                if previous_loop is not current_loop:
+                    if not previous_loop.is_closed() and not self._counter_task.done():
+                        if previous_loop.is_running():
+                            previous_loop.call_soon_threadsafe(
+                                self._counter_task.cancel
+                            )
+                        else:
+                            self._counter_task.cancel()
+                    self._counter_task = None
         logger.info(
             "Dhan shared feed manager ready at application startup "
             "ticker_upstream_connections=0 depth_upstream_connections=0; "
             "authorized subscriptions open a single shared upstream per feed"
         )
+        if self._counter_task is not None and self._counter_task.done():
+            self._counter_task = None
         if self._counter_task is None:
             self._counter_task = asyncio.create_task(self._log_tick_counters())
 
@@ -246,22 +288,34 @@ class DhanLiveFeedHub:
         return self._depth_snapshot_times.get(str(instrument_id))
 
     async def stop(self) -> None:
+        current_loop = asyncio.get_running_loop()
         async with self._lock:
-            tasks = [task for task in self._tasks.values() if task is not None]
-            if self._counter_task is not None:
-                self._counter_task.cancel()
-                tasks.append(self._counter_task)
+            feed_tasks = self._tasks.copy()
+            tasks = [
+                task for task in feed_tasks.values()
+                if task is not None and task.get_loop() is current_loop
+            ]
+            counter_task = self._counter_task
+            if counter_task is not None and counter_task.get_loop() is current_loop:
+                tasks.append(counter_task)
             for task in tasks:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            self._counter_task = None
-            self._tasks = {"ticker": None, "depth": None}
-            self._updates = {"ticker": None, "depth": None}
-            self._credentials = {"ticker": None, "depth": None}
-            self._connection_counts = {"ticker": 0, "depth": 0}
-            for groups in self._groups.values():
-                groups.clear()
+            if (
+                counter_task is None
+                or counter_task.get_loop() is current_loop
+                or counter_task.done()
+            ):
+                self._counter_task = None
+            for feed, task in feed_tasks.items():
+                if task is not None and task.get_loop() is not current_loop and not task.done():
+                    continue
+                self._tasks[feed] = None
+                self._updates[feed] = None
+                self._credentials[feed] = None
+                self._connection_counts[feed] = 0
+                self._groups[feed].clear()
 
     async def join(
         self,
@@ -1459,7 +1513,7 @@ def _market_session_state(
         and (country != "IN" or local.date() not in NSE_HOLIDAYS)
         and session_open <= local < session_close
     )
-    if country == "IN" and not is_open:
+    if country == "IN" and not is_open and raw_ltt is not None:
         logger.info(
             "NSE session check raw_ltt=%s parsed_utc=%s session_time_utc=%s "
             "current_utc=%s "
@@ -1474,6 +1528,47 @@ def _market_session_state(
             is_open,
         )
     return "open" if is_open else "closed"
+
+
+def _expected_market_session_date(
+    instrument: Instrument | InstrumentCandidate,
+    now: datetime,
+) -> date:
+    country = instrument.country.upper()
+    zone = ZoneInfo(instrument.timezone)
+    local_now = _utc(now).astimezone(zone)
+    opening = (
+        datetime_time(9, 15)
+        if country == "IN"
+        else datetime_time(9, 30)
+        if country == "US"
+        else None
+    )
+
+    def is_trading_day(value: date) -> bool:
+        return value.weekday() < 5 and not (
+            country == "IN" and value in NSE_HOLIDAYS
+        )
+
+    candidate = local_now.date()
+    if not is_trading_day(candidate) or (
+        opening is not None and local_now.time() < opening
+    ):
+        candidate -= timedelta(days=1)
+        while not is_trading_day(candidate):
+            candidate -= timedelta(days=1)
+    return candidate
+
+
+def _is_current_market_session(
+    instrument: Instrument | InstrumentCandidate,
+    market_timestamp: datetime,
+    now: datetime,
+) -> bool:
+    observed_date = _utc(market_timestamp).astimezone(
+        ZoneInfo(instrument.timezone)
+    ).date()
+    return observed_date == _expected_market_session_date(instrument, now)
 
 
 def _venue_matches(instrument: Instrument, candidate: InstrumentCandidate) -> bool:
@@ -1952,6 +2047,7 @@ class QuoteResponse(BaseModel):
         "fresh", "stale", "historical", "eod_close", "unavailable", "synthetic",
         "unverified", "future_dated",
     ]
+    is_current_session: bool
     freshness_message: str
     is_cached: bool
     is_synthetic: bool
@@ -1994,6 +2090,7 @@ class WatchlistQuoteResponse(BaseModel):
         "fresh", "stale", "historical", "eod_close", "unavailable", "synthetic",
         "unverified", "future_dated",
     ]
+    is_current_session: bool
     is_synthetic: bool
     is_verified: bool
     market_timestamp: datetime
@@ -2013,6 +2110,7 @@ class WatchlistEntryResponse(BaseModel):
     asset_class: str
     venue: str
     currency: str
+    timezone: str
     is_synthetic: bool
     relink_required: bool
     quote: WatchlistQuoteResponse | None
@@ -2332,17 +2430,21 @@ def _freshness(
             is_synthetic=latest_bar.is_synthetic if latest_bar else False,
             message="Market data is unavailable for this instrument and interval.",
         )
-    freshness_seconds = (
-        settings.market_data_daily_freshness_seconds
-        if interval == "1d"
-        else settings.market_data_intraday_freshness_seconds
-    )
     reference_time = now or datetime.now(timezone.utc)
     succeeded_at = _utc(sync.succeeded_at)
+    if interval == "1d" and instrument is not None:
+        is_current_session = _is_current_market_session(
+            instrument,
+            latest_bar.timestamp,
+            reference_time,
+        )
+    else:
+        freshness_seconds = settings.market_data_intraday_freshness_seconds
+        is_current_session = (
+            reference_time - succeeded_at
+        ).total_seconds() <= freshness_seconds
     status: Literal["fresh", "stale", "unavailable", "never_fetched"] = (
-        "fresh"
-        if (reference_time - succeeded_at).total_seconds() <= freshness_seconds
-        else "stale"
+        "fresh" if is_current_session else "stale"
     )
     return FreshnessResponse(
         status=status,
@@ -3989,6 +4091,9 @@ def get_watchlist(
         if quote is not None:
             retrieved_at = _utc(quote.retrieved_at)
             quote_timestamp = _utc(quote.timestamp)
+            is_current_session = _is_current_market_session(
+                instrument, quote_timestamp, now
+            )
             _usable, quote_reason, quote_evidence = classify_quote(
                 quote, instrument, None, now
             )
@@ -4000,6 +4105,7 @@ def get_watchlist(
                     "fresh" if quote_reason is None else "stale"
                 ),
                 freshness_status=freshness_status,
+                is_current_session=is_current_session,
                 is_synthetic=quote.is_synthetic,
                 is_verified=any(
                     mapping.provider == (
@@ -4015,8 +4121,8 @@ def get_watchlist(
                 market_age_seconds=max(0.0, quote_evidence["quote_timestamp_age_seconds"]),
                 data_type=quote_evidence["quote_data_type"],
                 close=quote.close,
-                absolute_change=absolute_change,
-                percent_change=percent_change,
+                absolute_change=absolute_change if is_current_session else None,
+                percent_change=percent_change if is_current_session else None,
             )
         elif distinct_bars:
             latest_bar = distinct_bars[0]
@@ -4028,6 +4134,9 @@ def get_watchlist(
                 now=now,
             )
             quote_timestamp = _utc(latest_bar.timestamp)
+            is_current_session = _is_current_market_session(
+                instrument, quote_timestamp, now
+            )
             quote_response = WatchlistQuoteResponse(
                 source=latest_bar.source,
                 retrieved_at=_utc(latest_bar.retrieved_at),
@@ -4037,6 +4146,7 @@ def get_watchlist(
                     if freshness.status != "never_fetched"
                     else "unavailable"
                 ),
+                is_current_session=is_current_session,
                 is_synthetic=latest_bar.is_synthetic,
                 is_verified=any(
                     mapping.provider == latest_bar.source and mapping.is_verified
@@ -4048,8 +4158,8 @@ def get_watchlist(
                 ),
                 data_type="daily_close",
                 close=latest_bar.close,
-                absolute_change=absolute_change,
-                percent_change=percent_change,
+                absolute_change=absolute_change if is_current_session else None,
+                percent_change=percent_change if is_current_session else None,
             )
         result.append(
             WatchlistEntryResponse(
@@ -4059,6 +4169,7 @@ def get_watchlist(
                 asset_class=instrument.asset_class,
                 venue=instrument.venue,
                 currency=instrument.currency,
+                timezone=instrument.timezone,
                 is_synthetic=instrument.is_synthetic,
                 relink_required=instrument.relink_required,
                 quote=quote_response,
@@ -4422,6 +4533,7 @@ def get_market_data_coverage(
         .order_by(Instrument.symbol, Instrument.venue)
     ).all()
     result = []
+    coverage_now = datetime.now(timezone.utc)
     for instrument in instruments:
         bars = db.execute(
             select(func.count(MarketBar.id), func.min(MarketBar.timestamp), func.max(MarketBar.timestamp))
@@ -4444,9 +4556,11 @@ def get_market_data_coverage(
             freshness_status = "never-synced"
         elif sync.status != "success":
             freshness_status = "failed"
-        elif bars[2] is None or (
-            datetime.now(timezone.utc) - _utc(bars[2])
-        ).total_seconds() > settings.market_data_daily_freshness_seconds:
+        elif bars[2] is None or not _is_current_market_session(
+            instrument,
+            _utc(bars[2]),
+            coverage_now,
+        ):
             freshness_status = "stale"
         else:
             freshness_status = "fresh"
@@ -6069,7 +6183,10 @@ async def dhan_watchlist_quote_stream(
             message,
             watchlist_snapshot_time() if status == "market_closed" else None,
         )
-        await websocket.close(code=1000)
+        await websocket.close(
+            code=1000,
+            reason="Market closed" if status == "market_closed" else "No eligible subscriptions",
+        )
         return
 
     try:
@@ -6172,7 +6289,14 @@ async def dhan_watchlist_quote_stream(
                         ),
                         watchlist_snapshot_time() if status == "market_closed" else None,
                     )
-                    await websocket.close(code=1000)
+                    await websocket.close(
+                        code=1000,
+                        reason=(
+                            "Market closed"
+                            if status == "market_closed"
+                            else "No eligible subscriptions"
+                        ),
+                    )
                     client_exit_reason = (
                         "market_closed" if status == "market_closed"
                         else "no_eligible_subscriptions"
@@ -6796,6 +6920,7 @@ def _quote_response(
         and evidence["quote_data_type"] == "daily_close"
         and freshness_status == "historical"
         and _market_session_state(instrument, now) == "closed"
+        and _is_current_market_session(instrument, quote.timestamp, now)
     ):
         freshness_status = "eod_close"
         freshness_message = "EOD close from the last available NSE session; not a live quote."
@@ -6828,6 +6953,9 @@ def _quote_response(
         retrieved_at=_utc(quote.retrieved_at),
         freshness="fresh" if usable else "stale",
         freshness_status=freshness_status,
+        is_current_session=_is_current_market_session(
+            instrument, quote.timestamp, now
+        ),
         freshness_message=freshness_message,
         is_cached=is_cached,
         is_synthetic=quote.is_synthetic,
@@ -7492,7 +7620,10 @@ def _backfill_instrument(
                 succeeded = True
                 break
             except MarketDataProviderError as error:
-                if error.request_url is not None:
+                if (
+                    error.request_url is not None
+                    and error.code != "provider_no_history_for_range"
+                ):
                     logger.warning(
                         "Market history upstream failure provider=%s instrument_id=%s "
                         "url=%s request_body=%s status=%s response_snippet=%s",
@@ -7525,6 +7656,12 @@ def _backfill_instrument(
                 )
                 detail["rows_returned"] = provider_rows_returned[0]
                 detail["reason"] = error.code
+                no_data_for_range = (
+                    active_provider.name == "dhan"
+                    and error.code == "provider_no_history_for_range"
+                )
+                if no_data_for_range:
+                    detail["outcome"] = "unchanged"
                 _sync_record(
                     db,
                     instrument.id,
@@ -7551,13 +7688,16 @@ def _backfill_instrument(
                     response_status=detail["response_status"],
                     rows_returned=provider_rows_returned[0],
                     rows_written=0,
-                    outcome="unavailable",
+                    outcome="unchanged" if no_data_for_range else "unavailable",
                     reason=error.code,
                     reason_category=_reason_category(
                         _safe_provider_error_code(error.code)
                     ),
                     attempted_at=attempted_at,
                 )
+                if no_data_for_range:
+                    succeeded = True
+                    break
                 if error.status_code == 429:
                     rate_limited = True
                     break

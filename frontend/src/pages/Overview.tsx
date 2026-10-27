@@ -26,6 +26,7 @@ type Props = Pick<
   | 'removeInstrumentFromWatchlist'
   | 'riskMetrics'
   | 'setActiveView'
+  | 'setOpenMarketInstrumentId'
   | 'setCoverageVersion'
   | 'setThesisSymbol'
   | 'setTransactionType'
@@ -58,6 +59,21 @@ type DhanPortfolio = {
     security_id: string | null;
     quantity: string;
     average_price: string | null;
+    position_type: string | null;
+    realized_profit: string | null;
+    unrealized_profit: string | null;
+    synced_at: string;
+  }[];
+  closed_positions: {
+    symbol: string;
+    exchange: string;
+    product: string;
+    security_id: string | null;
+    quantity: string;
+    average_price: string | null;
+    position_type: string | null;
+    realized_profit: string | null;
+    unrealized_profit: string | null;
     synced_at: string;
   }[];
   funds: {
@@ -98,8 +114,16 @@ type BrokerPortfolioSummary = {
     day_change: string | null;
     holdings_count: number;
     positions_count: number;
+    unavailable_reasons: Partial<Record<string, string>>;
   }[];
 };
+
+function relativeAge(seconds: number): string {
+  if (seconds < 60) return 'Just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 48 * 3600) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
 
 export function OverviewPage({ workspace }: { workspace: Props }) {
   const [dhanPortfolio, setDhanPortfolio] = useState<DhanPortfolio | null>(null);
@@ -116,6 +140,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     portfolioId,
     removeInstrumentFromWatchlist,
     setActiveView,
+    setOpenMarketInstrumentId,
     setCoverageVersion,
     setThesisSymbol,
     summary,
@@ -170,6 +195,10 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     ?? coverage?.managed.find((entry) => entry.symbol === symbol)?.instrument_id
     ?? coverage?.unmanaged.find((entry) => entry.symbol === symbol)?.instrument_id
     ?? null;
+  const openMarketInstrument = (instrumentId: string) => {
+    setOpenMarketInstrumentId(instrumentId);
+    setActiveView('market-data');
+  };
 
   return (
     <div className="overview-page">
@@ -198,19 +227,27 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
               .map((broker) => (
                 `${broker.source}${broker.synced_at ? ` · synced ${new Date(broker.synced_at).toLocaleString()}` : ''}`
               )) ?? [];
+            const missingReasons = brokerSummary?.brokers
+              .filter((broker) => broker[field] === null)
+              .map((broker) => broker.unavailable_reasons[field])
+              .filter((reason): reason is string => Boolean(reason)) ?? [];
             return <article className="metric" key={field}>
               <span>{label}</span>
               <strong>{value === null ? '—' : formatMoney(value, 'INR')}</strong>
               <small>
                 {figureSources.length
-                  ? figureSources.join(' + ')
-                  : 'Broker mirror value unavailable'}
+                  ? field === 'cash'
+                    ? `Broker-supplied: ${figureSources.join(' + ')}`
+                    : `Derived from broker-supplied quantities and average costs: ${figureSources.join(' + ')}`
+                  : missingReasons.length
+                    ? [...new Set(missingReasons)].join(' ')
+                    : 'Missing input: no broker snapshot is available.'}
               </small>
             </article>;
           })}
         </section>
         <p className="valuation-footnote">
-          Values come only from broker mirrors; no manual-ledger amounts or FX conversion are included. Market value, total value, unrealized P&amp;L and day change remain blank when the broker mirror does not provide them.
+          Cash is broker-supplied; invested cost is derived from mirrored quantities and average costs. No manual-ledger amounts or FX conversion are included. Blank values identify the missing broker input; no quote-derived values are substituted.
         </p>
         {!!brokerSummary?.brokers.length && <div className="table-scroll">
           <table>
@@ -249,17 +286,64 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           {dhanError && <p className="broker-sync-time" role="alert">{dhanError}</p>}
           {dhanLoading ? <div className="table-empty">Loading stored Dhan account data…</div> : <>
             {dhanPortfolio?.synced_at && <p className="broker-sync-time">Source: Dhan · Last synced {new Date(dhanPortfolio.synced_at).toLocaleString()}</p>}
-            <div className="content-grid">
+            <div className="content-grid broker-data-grid">
               <section className="data-section">
                 <div className="section-heading"><div><h3>Holdings</h3></div><span className="section-count">{dhanPortfolio?.holdings.length ?? 0} records</span></div>
                 {!dhanPortfolio?.holdings.length ? <div className="table-empty">No Dhan holdings have been synced.</div> : <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Exchange</th><th>Quantity</th><th>Average cost</th><th>ISIN</th></tr></thead><tbody>{dhanPortfolio.holdings.map((holding) => <tr key={`${holding.security_id}-${holding.exchange}`}><td className="instrument-cell">{holding.symbol}<small className="trade-subtext">{holding.security_id ?? ''}</small></td><td>{holding.exchange}</td><td>{formatQuantity(holding.quantity)}</td><td>{holding.average_price ? formatMoney(holding.average_price, 'INR') : '—'}</td><td>{holding.isin ?? '—'}</td></tr>)}</tbody></table></div>}
               </section>
               <section className="data-section">
-                <div className="section-heading"><div><h3>Open positions</h3></div><span className="section-count">{dhanPortfolio?.positions.length ?? 0} records</span></div>
-                {!dhanPortfolio?.positions.length ? <div className="table-empty">No Dhan open positions have been synced.</div> : <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Exchange</th><th>Product</th><th>Net quantity</th><th>Cost price</th></tr></thead><tbody>{dhanPortfolio.positions.map((position) => <tr key={`${position.security_id}-${position.exchange}-${position.product}`}><td className="instrument-cell">{position.symbol}<small className="trade-subtext">{position.security_id ?? ''}</small></td><td>{position.exchange}</td><td>{position.product || '—'}</td><td>{formatQuantity(position.quantity)}</td><td>{position.average_price ? formatMoney(position.average_price, 'INR') : '—'}</td></tr>)}</tbody></table></div>}
+                <div className="section-heading"><div><h3>Open positions</h3><small className="trade-subtext">Dhan position classification and non-zero net quantity · P&amp;L is broker-supplied</small></div><span className="section-count">{dhanPortfolio?.positions.length ?? 0} records</span></div>
+                {!dhanPortfolio?.positions.length ? <div className="table-empty">No Dhan open positions have been synced.</div> : <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Exchange</th><th>Product / type</th><th>Net quantity</th><th>Cost price</th><th>Realized P&amp;L (Dhan)</th><th>Unrealized P&amp;L (Dhan)</th></tr></thead><tbody>{dhanPortfolio.positions.map((position) => <tr key={`${position.security_id}-${position.exchange}-${position.product}`}><td className="instrument-cell">{position.symbol}<small className="trade-subtext">{position.security_id ?? ''}</small></td><td>{position.exchange}</td><td>{position.product || '—'}{position.position_type ? ` · ${position.position_type}` : ''}</td><td>{formatQuantity(position.quantity)}</td><td>{position.average_price ? formatMoney(position.average_price, 'INR') : '—'}</td><td>{position.realized_profit === null ? '—' : formatMoney(position.realized_profit, 'INR')}</td><td>{position.unrealized_profit === null ? '—' : formatMoney(position.unrealized_profit, 'INR')}</td></tr>)}</tbody></table></div>}
+                {!!dhanPortfolio?.closed_positions.length && <details className="closed-positions-details">
+                  <summary>Closed today · {dhanPortfolio.closed_positions.length} records · realized P&amp;L retained</summary>
+                  <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Exchange</th><th>Product / type</th><th>Net quantity</th><th>Realized P&amp;L (Dhan)</th></tr></thead><tbody>{dhanPortfolio.closed_positions.map((position, index) => <tr key={`${position.security_id}-${position.exchange}-${position.product}-${index}`}><td className="instrument-cell">{position.symbol}<small className="trade-subtext">{position.security_id ?? ''}</small></td><td>{position.exchange}</td><td>{position.product || '—'}{position.position_type ? ` · ${position.position_type}` : ''}</td><td>{formatQuantity(position.quantity)}</td><td>{position.realized_profit === null ? '—' : formatMoney(position.realized_profit, 'INR')}</td></tr>)}</tbody></table></div>
+                </details>}
               </section>
             </div>
           </>}
+        </section>
+        <section className="data-section watchlist-section">
+          <div className="section-heading">
+            <div><p className="eyebrow">MARKET MONITORING</p><h2>Watchlist</h2></div>
+            <button className="text-button" type="button" onClick={() => setActiveView('market-data')}>Open markets</button>
+          </div>
+          {watchlist.length === 0 ? <div className="table-empty">No instruments on your watchlist. Add one from Markets to see its cached quote and data quality here.</div> : (
+            <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Market</th><th>Last cached quote</th><th>Quality</th><th>Observed</th><th /></tr></thead><tbody>
+              {watchlist.map((item) => {
+                const observedAt = item.quote ? new Date(item.quote.market_timestamp).toLocaleString() : '';
+                const quality = item.relink_required
+                  ? 'relink required'
+                  : item.is_synthetic || item.quote?.is_synthetic
+                    ? 'synthetic'
+                    : item.quote?.freshness_status.replaceAll('_', ' ') ?? 'unavailable';
+                const source = item.quote?.source ?? 'No cached quote';
+                return <tr
+                  key={item.instrument_id}
+                  className="overview-watchlist-row"
+                  role="link"
+                  tabIndex={0}
+                  onClick={() => openMarketInstrument(item.instrument_id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      openMarketInstrument(item.instrument_id);
+                    }
+                  }}
+                  title={`Open ${item.symbol} in Market data`}
+                >
+                  <td className="instrument-cell">{item.symbol}<small className="trade-subtext">{item.display_name}</small></td>
+                  <td>{item.venue} · {item.asset_class}</td>
+                  <td>{item.quote ? formatMoney(item.quote.close, item.currency) : '—'}</td>
+                  <td>
+                    {item.relink_required ? <span className="freshness-badge freshness-unavailable" title={`${quality} · ${source}`}>{quality}</span> : item.is_synthetic || item.quote?.is_synthetic ? <span className="freshness-badge freshness-synthetic" title={`${quality} · ${source}`}>{quality}</span> : item.quote ? <span className={`freshness-badge freshness-${item.quote.freshness_status}`} title={`${quality} · Source: ${source}`}>{quality}</span> : <span className="freshness-badge freshness-unavailable" title={`${quality} · ${source}`}>{quality}</span>}
+                  </td>
+                  <td title={item.quote ? `Observed ${observedAt}` : undefined}>{item.quote ? relativeAge(item.quote.market_age_seconds) : '—'}</td>
+                  <td><button className="text-button watchlist-row-action" type="button" onClick={(event) => { event.stopPropagation(); void removeInstrumentFromWatchlist(item.instrument_id); }}>Remove</button></td>
+                </tr>;
+              })}
+            </tbody></table></div>
+          )}
+          <div className="valuation-footnote">Cached quote data only; this overview does not request a fresh quote. Provider mappings, timestamps and observation age determine whether prices can be used. Synthetic data is clearly labeled.</div>
         </section>
         <div className="content-grid overview-workspace-grid">
           <section className="data-section">
@@ -301,28 +385,6 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           </section>
           <TransactionEntry {...workspace} />
         </div>
-        <section className="data-section watchlist-section">
-          <div className="section-heading">
-            <div><p className="eyebrow">MARKET MONITORING</p><h2>Watchlist</h2></div>
-            <button className="text-button" type="button" onClick={() => setActiveView('market-data')}>Open markets</button>
-          </div>
-          {watchlist.length === 0 ? <div className="table-empty">No instruments on your watchlist. Add one from Markets to see its cached quote and data quality here.</div> : (
-            <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Market</th><th>Last cached quote</th><th>Source</th><th>Data quality</th><th>Retrieved</th><th /></tr></thead><tbody>
-              {watchlist.map((item) => <tr key={item.instrument_id}>
-                <td className="instrument-cell">{item.symbol}<small className="trade-subtext">{item.display_name}</small></td>
-                <td>{item.venue} · {item.asset_class}</td>
-                <td>{item.quote ? formatMoney(item.quote.close, item.currency) : '—'}</td>
-                <td>{item.quote?.source ?? 'No cached quote'}</td>
-                <td>
-                  {item.relink_required ? <span className="freshness-badge freshness-unavailable">relink required</span> : item.is_synthetic || item.quote?.is_synthetic ? <span className="freshness-badge freshness-synthetic">synthetic</span> : item.quote ? <span className={`freshness-badge freshness-${item.quote.freshness_status}`}>{item.quote.freshness_status.replaceAll('_', ' ')}</span> : <span className="freshness-badge freshness-unavailable">unavailable</span>}
-                </td>
-                <td>{item.quote ? `${new Date(item.quote.market_timestamp).toLocaleString()} · ${Math.floor(item.quote.market_age_seconds)}s old` : '—'}</td>
-                <td><button className="text-button watchlist-row-action" type="button" onClick={() => void removeInstrumentFromWatchlist(item.instrument_id)}>Remove</button></td>
-              </tr>)}
-            </tbody></table></div>
-          )}
-          <div className="valuation-footnote">Cached quote data only; this overview does not request a fresh quote. Provider mappings, timestamps and observation age determine whether prices can be used. Synthetic data is clearly labeled.</div>
-        </section>
       </>}
     </div>
   );

@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.api import brokers
+from app.api import brokers, market_data
 from app import broker_adapters
 from app.broker_adapters import BrokerAdapterError, DhanAdapter, UpstoxAdapter
 from app.config import settings
@@ -42,6 +42,56 @@ def test_engine():
     yield engine
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+@pytest.fixture
+def dhan_position_mix():
+    return [
+        {
+            "tradingSymbol": "OPEN_LONG",
+            "securityId": "1001",
+            "exchangeSegment": "NSE_FNO",
+            "productType": "MARGIN",
+            "positionType": "LONG",
+            "netQty": 2,
+            "costPrice": "125.50",
+            "realizedProfit": "3.25",
+            "unrealizedProfit": "4.50",
+        },
+        {
+            "tradingSymbol": "OPEN_SHORT",
+            "securityId": "1002",
+            "exchangeSegment": "NSE_FNO",
+            "productType": "MARGIN",
+            "positionType": "SHORT",
+            "netQty": -1,
+            "costPrice": "75.00",
+            "realizedProfit": "1.00",
+            "unrealizedProfit": "-2.50",
+        },
+        {
+            "tradingSymbol": "ZERO_LONG",
+            "securityId": "1003",
+            "exchangeSegment": "NSE_FNO",
+            "productType": "MARGIN",
+            "positionType": "LONG",
+            "netQty": 0,
+            "costPrice": "10.00",
+            "realizedProfit": "0.00",
+            "unrealizedProfit": "0.00",
+        },
+        {
+            "tradingSymbol": "CLOSED_NONZERO",
+            "securityId": "1004",
+            "exchangeSegment": "NSE_FNO",
+            "productType": "MARGIN",
+            "positionType": "CLOSED",
+            "netQty": 1,
+            "costPrice": "20.00",
+            "realizedProfit": "15.00",
+            "unrealizedProfit": "0.00",
+        },
+    ]
 
 
 @pytest.fixture
@@ -163,6 +213,47 @@ def prepare_dhan_sync(client: TestClient, test_engine, encryption_key, monkeypat
             )
         )
         db.commit()
+
+
+def test_dhan_portfolio_only_lists_nonzero_long_short_positions_as_open(
+    clients, test_engine, dhan_position_mix
+) -> None:
+    first, _ = clients
+    register(first, "position-mix@example.com")
+    complete_broker_gate(first, test_engine)
+    session_token = first.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        db.add_all(brokers._normalize_rows(
+            dhan_position_mix,
+            "position",
+            datetime.now(timezone.utc),
+            user_session.user_id,
+            "dhan",
+        ))
+        db.commit()
+
+    response = first.get("/api/v1/brokers/dhan/portfolio")
+
+    assert response.status_code == 200
+    portfolio = response.json()
+    assert [row["symbol"] for row in portfolio["positions"]] == [
+        "OPEN_LONG",
+        "OPEN_SHORT",
+    ]
+    assert [row["symbol"] for row in portfolio["closed_positions"]] == [
+        "CLOSED_NONZERO",
+        "ZERO_LONG",
+    ]
+    assert portfolio["positions"][0]["position_type"] == "LONG"
+    assert Decimal(portfolio["positions"][0]["realized_profit"]) == Decimal("3.25")
+    assert Decimal(portfolio["positions"][0]["unrealized_profit"]) == Decimal("4.50")
+    assert Decimal(portfolio["closed_positions"][0]["realized_profit"]) == Decimal("15.00")
 
 
 @pytest.mark.parametrize(
@@ -543,6 +634,28 @@ def test_dhan_websocket_quote_packet_uses_documented_little_endian_fields() -> N
     assert quote.low == Decimal("3880.0")
     assert quote.close == Decimal("3900.25")
     assert quote.volume == Decimal("1200")
+
+
+def test_dhan_live_feed_stop_skips_tasks_from_another_event_loop() -> None:
+    hub = market_data.DhanLiveFeedHub()
+    foreign_loop = asyncio.new_event_loop()
+
+    async def wait_forever() -> None:
+        await asyncio.Future()
+
+    foreign_task = foreign_loop.create_task(wait_forever())
+    hub._counter_task = foreign_task
+    hub._tasks["ticker"] = foreign_task
+    try:
+        asyncio.run(hub.stop())
+        assert hub._counter_task is foreign_task
+        assert hub._tasks["ticker"] is foreign_task
+    finally:
+        foreign_task.cancel()
+        foreign_loop.run_until_complete(
+            asyncio.gather(foreign_task, return_exceptions=True)
+        )
+        foreign_loop.close()
 
 
 def test_dhan_websocket_ticker_packet_decodes_ist_epoch_as_utc() -> None:

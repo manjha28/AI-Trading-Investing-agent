@@ -361,12 +361,26 @@ def _normalize_rows(
         try:
             quantity = Decimal(str(raw_quantity))
             average_price = Decimal(str(raw_price)) if raw_price is not None else None
+            realized_profit = (
+                Decimal(str(record["realizedProfit"]))
+                if record.get("realizedProfit") is not None
+                else None
+            )
+            unrealized_profit = (
+                Decimal(str(record["unrealizedProfit"]))
+                if record.get("unrealizedProfit") is not None
+                else None
+            )
         except (InvalidOperation, ValueError) as error:
             raise BrokerAdapterError("Broker account data contains invalid quantities") from error
-        if not quantity.is_finite() or (average_price is not None and not average_price.is_finite()):
+        if any(
+            value is not None and not value.is_finite()
+            for value in (quantity, average_price, realized_profit, unrealized_profit)
+        ):
             raise BrokerAdapterError("Broker account data contains invalid quantities")
         exchange = str(_first(record, "exchange", "exchangeSegment", "exch_seg", default="")).upper()[:32]
         product = str(_first(record, "product", "productType", "producttype", default="")).upper()[:32]
+        position_type_value = _first(record, "positionType", "position_type")
         normalized.append(
             BrokerMirror(
                 user_id=user_id,
@@ -387,6 +401,13 @@ def _normalize_rows(
                 ),
                 quantity=quantity,
                 average_price=average_price,
+                position_type=(
+                    str(position_type_value).upper()[:16]
+                    if position_type_value is not None
+                    else None
+                ),
+                realized_profit=realized_profit,
+                unrealized_profit=unrealized_profit,
                 synced_at=synced_at,
             )
         )
@@ -1729,6 +1750,32 @@ def get_dhan_portfolio_mirror(
             BrokerAccountMirror.broker == "dhan",
         )
     )
+    position_rows = [row for row in rows if row.kind == "position"]
+
+    def serialize_position(row: BrokerMirror) -> dict[str, Any]:
+        return {
+            "symbol": row.symbol,
+            "exchange": row.exchange,
+            "product": row.product,
+            "security_id": row.security_id,
+            "quantity": row.quantity,
+            "average_price": row.average_price,
+            "position_type": row.position_type,
+            "realized_profit": row.realized_profit,
+            "unrealized_profit": row.unrealized_profit,
+            "synced_at": row.synced_at,
+        }
+
+    open_positions = [
+        row for row in position_rows
+        if row.quantity != 0 and (
+            row.position_type is None
+            or row.position_type in {"LONG", "SHORT"}
+        )
+    ]
+    closed_positions = [
+        row for row in position_rows if row not in open_positions
+    ]
     return {
         "source": "dhan",
         "currency": "INR",
@@ -1751,19 +1798,8 @@ def get_dhan_portfolio_mirror(
             for row in rows
             if row.kind == "holding"
         ],
-        "positions": [
-            {
-                "symbol": row.symbol,
-                "exchange": row.exchange,
-                "product": row.product,
-                "security_id": row.security_id,
-                "quantity": row.quantity,
-                "average_price": row.average_price,
-                "synced_at": row.synced_at,
-            }
-            for row in rows
-            if row.kind == "position"
-        ],
+        "positions": [serialize_position(row) for row in open_positions],
+        "closed_positions": [serialize_position(row) for row in closed_positions],
         "funds": (
             {
                 "available_balance": account.available_balance,
@@ -1846,6 +1882,28 @@ def get_broker_portfolio_summary(
             "total_value": None,
             "unrealized_pnl": None,
             "day_change": None,
+            "unavailable_reasons": {
+                "market_value": (
+                    "Missing input: last-traded prices; Dhan holdings and positions "
+                    "do not provide LTP, and this summary does not fetch quotes."
+                ),
+                "total_value": (
+                    "Missing input: market value, which requires last-traded prices."
+                ),
+                "unrealized_pnl": (
+                    "Missing input: holding-level unrealized P&L; Dhan supplies "
+                    "unrealizedProfit for positions only."
+                ),
+                "day_change": (
+                    "Missing input: day-change values; Dhan holdings and positions "
+                    "do not provide them."
+                ),
+            } if broker_name == "dhan" else {
+                "market_value": "Missing input: broker-supplied market value or last-traded prices.",
+                "total_value": "Missing input: market value.",
+                "unrealized_pnl": "Missing input: complete broker-supplied unrealized P&L.",
+                "day_change": "Missing input: broker-supplied day-change values.",
+            },
             "holdings_count": sum(row.kind == "holding" for row in rows),
             "positions_count": sum(row.kind == "position" for row in rows),
         })

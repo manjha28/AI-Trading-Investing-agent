@@ -358,6 +358,17 @@ class DhanV2Adapter:
             json.dumps(body, separators=(",", ":"), sort_keys=True),
             (self.access_token, self.client_id),
         )
+        if (
+            path in {"/charts/historical", "/charts/intraday"}
+            and re.search(r"\bDH-907\b", response_body, re.IGNORECASE)
+        ):
+            raise MarketDataProviderError(
+                "provider_no_history_for_range",
+                status_code=response.status_code,
+                response_body=safe_response_body,
+                request_url=safe_request_url,
+                request_body=safe_request_body,
+            )
         if response.status_code == 429:
             raise MarketDataProviderError(
                 "provider_rate_limit_exceeded",

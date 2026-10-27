@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowUpRight, Plus, ShieldCheck } from 'lucide-react';
 import { localDateTime, type TransactionType, type WorkspaceState } from './useWorkspace';
 
@@ -33,10 +34,50 @@ export function TransactionEntry({
   submitTransaction,
   transactionType,
 }: Props) {
+  const [entryOpen, setEntryOpen] = useState(Boolean(editingTransaction));
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    if (editingTransaction) setEntryOpen(true);
+  }, [editingTransaction]);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (entryOpen && !dialog.open) dialog.showModal();
+    if (!entryOpen && dialog.open) dialog.close();
+  }, [entryOpen]);
+
+  function closeEntry() {
+    setEntryOpen(false);
+    if (editingTransaction) cancelEditingTransaction();
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    if (await submitTransaction(event)) setEntryOpen(false);
+  }
+
   return (
-    <section className="entry-section">
-      <div className="section-heading"><div><p className="eyebrow">{editingTransaction ? 'EDIT ENTRY' : 'MANUAL ENTRY'}</p><h2>{editingTransaction ? 'Edit activity' : 'Record activity'}</h2></div>{editingTransaction ? <button className="text-button" type="button" onClick={cancelEditingTransaction}>Cancel</button> : <Plus size={18} />}</div>
-      <form key={editingTransaction?.id ?? 'new-transaction'} className="form-stack compact" onSubmit={submitTransaction}>
+    <section className="entry-section manual-entry-launcher">
+      <div className="section-heading"><div><p className="eyebrow">MANUAL LEDGER</p><h2>{editingTransaction ? 'Edit activity' : 'Manual entry'}</h2></div>
+        <button className="secondary-button" type="button" onClick={() => setEntryOpen(true)}>
+          <Plus size={16} /> {editingTransaction ? 'Edit activity' : 'Add manual entry'}
+        </button>
+      </div>
+      <dialog
+        ref={dialogRef}
+        className="manual-entry-dialog"
+        aria-labelledby="manual-entry-title"
+        onCancel={(event) => {
+          event.preventDefault();
+          closeEntry();
+        }}
+        onClose={() => setEntryOpen(false)}
+      >
+        <div className="section-heading"><div><p className="eyebrow">{editingTransaction ? 'EDIT ENTRY' : 'MANUAL ENTRY'}</p><h2 id="manual-entry-title">{editingTransaction ? 'Edit activity' : 'Record activity'}</h2></div>
+          <button className="text-button" type="button" onClick={closeEntry}>Close</button>
+        </div>
+      <form key={editingTransaction?.id ?? 'new-transaction'} className="form-stack compact" onSubmit={handleSubmit}>
         <label>Activity type<select name="transaction_type" value={transactionType} onChange={(event) => setTransactionType(event.target.value as TransactionType)}><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="dividend">Dividend</option><option value="buy">Buy equity</option><option value="sell">Sell equity</option></select></label>
         {['buy', 'sell', 'dividend'].includes(transactionType) && <label>Symbol<input name="symbol" placeholder="e.g. AAPL" maxLength={32} defaultValue={editingTransaction?.symbol ?? ''} required /></label>}
         {['buy', 'sell'].includes(transactionType) && <>
@@ -69,6 +110,7 @@ export function TransactionEntry({
         <p className="accounting-note">Expected columns: transaction_type, symbol, quantity, unit_price, amount, fee, occurred_at. Preview is required; duplicate rows are skipped.</p>
       </div>
       <p className="accounting-note"><ShieldCheck size={15} /> Long-only cash equities. Fees and cost basis use {currency} minor units; no FX conversion.</p>
+      </dialog>
     </section>
   );
 }

@@ -597,6 +597,9 @@ class BrokerMirror(Base):
     isin: Mapped[str | None] = mapped_column(String(16))
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     average_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    position_type: Mapped[str | None] = mapped_column(String(16))
+    realized_profit: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    unrealized_profit: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

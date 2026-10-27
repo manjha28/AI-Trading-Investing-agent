@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import logging
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,6 +19,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
+from starlette.websockets import WebSocketDisconnect
 
 from app.api.market_data import (
     DhanMarketDataProvider,
@@ -261,6 +263,7 @@ def test_watchlist_is_user_scoped_and_reports_cached_quote_provenance(
             "asset_class": instrument["asset_class"],
             "venue": instrument["venue"],
             "currency": instrument["currency"],
+            "timezone": instrument["timezone"],
             "is_synthetic": False,
             "relink_required": False,
             "quote": None,
@@ -297,6 +300,132 @@ def test_ist_epoch_dhan_tick_is_open_during_nse_session() -> None:
         SimpleNamespace(country="IN"),
         tick,
     ) == "open"
+
+
+def test_nse_expected_session_date_skips_weekends_and_holidays() -> None:
+    instrument = SimpleNamespace(country="IN", timezone="Asia/Kolkata")
+    monday_before_open = datetime(2026, 10, 26, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert market_data._expected_market_session_date(
+        instrument, monday_before_open
+    ) == date(2026, 10, 23)
+    assert market_data._is_current_market_session(
+        instrument,
+        datetime(2026, 10, 23, 15, 29, tzinfo=ZoneInfo("Asia/Kolkata")),
+        monday_before_open,
+    )
+
+    nse_holiday = datetime(2026, 10, 20, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert market_data._expected_market_session_date(
+        instrument, nse_holiday
+    ) == date(2026, 10, 19)
+
+
+def test_watchlist_suppresses_change_outside_expected_market_session(
+    client: TestClient, test_engine
+) -> None:
+    register(client, "watchlist-session@example.com")
+    instrument = next(
+        item
+        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
+        if item["venue"] == "DEMO_IN"
+    )
+    instrument_id = UUID(instrument["id"])
+    added = client.post(
+        f"/api/v1/market-data/watchlist/{instrument_id}",
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
+    )
+    assert added.status_code == 204, added.text
+
+    now = datetime.now(timezone.utc)
+    with Session(test_engine) as session:
+        db_instrument = session.get(Instrument, instrument_id)
+        assert db_instrument is not None
+        db_instrument.country = "IN"
+        db_instrument.timezone = "Asia/Kolkata"
+        session.flush()
+        session_date = market_data._expected_market_session_date(
+            db_instrument, now
+        )
+        zone = ZoneInfo(db_instrument.timezone)
+        for session_day, close in (
+            (session_date - timedelta(days=1), Decimal("85")),
+            (session_date, Decimal("90")),
+        ):
+            timestamp = datetime.combine(
+                session_day, datetime.min.time(), zone
+            ).astimezone(timezone.utc)
+            session.add(MarketBar(
+                instrument_id=instrument_id,
+                interval="1d",
+                timestamp=timestamp,
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                volume=Decimal("100"),
+                source="yfinance",
+                retrieved_at=now,
+                is_synthetic=False,
+            ))
+        session.add(MarketQuote(
+            instrument_id=instrument_id,
+            timestamp=datetime.combine(
+                session_date, datetime.min.time(), zone
+            ).replace(hour=15, minute=29).astimezone(timezone.utc),
+            open=Decimal("97"),
+            high=Decimal("98"),
+            low=Decimal("96"),
+            close=Decimal("97"),
+            volume=Decimal("1000"),
+            source="dhan_ws",
+            retrieved_at=now,
+            is_synthetic=False,
+        ))
+        session.commit()
+
+    response = client.get("/api/v1/market-data/watchlist")
+    assert response.status_code == 200, response.text
+    row = response.json()[0]
+    assert row["timezone"] == "Asia/Kolkata"
+    assert row["quote"]["source"] == "dhan_ws"
+    assert row["quote"]["is_current_session"] is True
+    assert row["quote"]["absolute_change"] == "12.00000000"
+    assert row["quote"]["percent_change"] is not None
+
+    with Session(test_engine) as session:
+        quote = session.scalar(select(MarketQuote))
+        assert quote is not None
+        quote.timestamp = datetime.combine(
+            session_date - timedelta(days=1),
+            datetime.min.time(),
+            zone,
+        ).replace(hour=15, minute=29).astimezone(timezone.utc)
+        quote.retrieved_at = datetime.now(timezone.utc)
+        session.commit()
+
+    stale_response = client.get("/api/v1/market-data/watchlist")
+    assert stale_response.status_code == 200, stale_response.text
+    stale_quote = stale_response.json()[0]["quote"]
+    assert stale_quote["is_current_session"] is False
+    assert stale_quote["absolute_change"] is None
+    assert stale_quote["percent_change"] is None
+
+
+def test_closed_market_session_check_logs_only_for_tick_evaluation(caplog) -> None:
+    instrument = SimpleNamespace(country="IN")
+    closed_at = datetime(2026, 1, 15, 12, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    with caplog.at_level(logging.INFO, logger="app.api.market_data"):
+        assert market_data._market_session_state(instrument, closed_at) == "closed"
+    assert not any("NSE session check" in record.message for record in caplog.records)
+
+    with caplog.at_level(logging.INFO, logger="app.api.market_data"):
+        market_data._market_session_state(
+            instrument,
+            closed_at,
+            raw_ltt=123,
+            parsed_ltt_utc=closed_at.astimezone(timezone.utc),
+        )
+    assert any("NSE session check" in record.message for record in caplog.records)
 
 
 def test_watchlist_stream_skips_closed_session_tick_without_closing(
@@ -381,6 +510,77 @@ def test_watchlist_stream_skips_closed_session_tick_without_closing(
         assert session.scalar(
             select(MarketQuote).where(MarketQuote.source == "dhan_ws")
         ) is None
+
+
+def test_watchlist_stream_early_return_sends_market_closed_before_clean_close(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    register(client, "dhan-market-closed-early-return@example.com")
+    prepare_dhan_quote(client, test_engine, monkeypatch)
+    instrument = next(
+        item
+        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
+        if item["venue"] == "DEMO_IN"
+    )
+    use_dhan_market_data_provider()
+    session_token = client.cookies.get("session_token")
+    with Session(test_engine) as session:
+        user_session = session.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        user_session.user.two_factor_enabled = True
+        user_session.two_factor_verified = True
+        session.add(MarketQuote(
+            instrument_id=UUID(instrument["id"]),
+            timestamp=datetime.now(timezone.utc),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=Decimal("10"),
+            source="yfinance",
+            retrieved_at=datetime.now(timezone.utc),
+            is_synthetic=False,
+        ))
+        session.commit()
+
+    csrf_headers = {"X-CSRF-Token": client.cookies.get("csrf_token", "")}
+    watchlist = client.post(
+        "/api/v1/market-data/watchlists",
+        json={"name": "Closed market early return"},
+        headers=csrf_headers,
+    )
+    assert watchlist.status_code == 201, watchlist.text
+    added = client.post(
+        f"/api/v1/market-data/watchlists/{watchlist.json()['id']}"
+        f"/instruments/{instrument['id']}",
+        headers=csrf_headers,
+    )
+    assert added.status_code == 204, added.text
+    monkeypatch.setattr(
+        market_data,
+        "_market_session_state",
+        lambda _instrument, _now=None, *, raw_ltt=None, parsed_ltt_utc=None: "closed",
+    )
+
+    async def fail_if_joined(*_args, **_kwargs):
+        raise AssertionError("closed-session early return must not join upstream feed")
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", fail_if_joined)
+    with client.websocket_connect(
+        f"/api/v1/market-data/watchlists/{watchlist.json()['id']}/stream",
+        headers={"Origin": settings.frontend_origin},
+    ) as stream:
+        status = stream.receive_json()
+        assert status["status"] == "market_closed"
+        assert status["message"] == "Market closed - live feed resumes at 09:15 IST"
+        assert status["last_snapshot_at"] is not None
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            stream.receive_json()
+        assert disconnect.value.code == 1000
 
 
 def test_search_keeps_same_symbol_in_different_venues_distinct(client: TestClient) -> None:
@@ -476,7 +676,7 @@ def test_history_sync_is_idempotent_and_returns_provenance_and_freshness(
     assert second.status_code == 200, second.text
     assert len(first.json()["bars"]) == 3
     assert second.json()["bars"] == first.json()["bars"]
-    assert first.json()["freshness"]["status"] == "fresh"
+    assert first.json()["freshness"]["status"] == "stale"
     assert first.json()["freshness"]["source"] == "recorded"
     assert first.json()["freshness"]["is_synthetic"] is False
     assert first.json()["freshness"]["latest_bar_timestamp"] == "2026-01-03T00:00:00Z"

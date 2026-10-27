@@ -66,6 +66,7 @@ type WatchlistEntry = {
   asset_class: string;
   venue: string;
   currency: string;
+  timezone: string;
   is_synthetic: boolean;
   relink_required: boolean;
   quote: {
@@ -77,6 +78,7 @@ type WatchlistEntry = {
     is_verified: boolean;
     market_timestamp: string;
     market_age_seconds: number;
+    is_current_session: boolean;
     absolute_change: string | null;
     percent_change: string | null;
     data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
@@ -313,6 +315,7 @@ type MarketQuote = {
   freshness: 'fresh' | 'stale';
   freshness_status: 'fresh' | 'stale' | 'historical' | 'eod_close' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
   freshness_message: string;
+  is_current_session: boolean;
   is_cached: boolean;
   is_synthetic: boolean;
   is_verified: boolean;
@@ -438,6 +441,7 @@ export function useWorkspace() {
   const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research'>(
     () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
   );
+  const [openMarketInstrumentId, setOpenMarketInstrumentId] = useState<string | null>(null);
   useEffect(() => {
     const url = new URL(window.location.href);
     if (!url.searchParams.has('broker_connected')) return;
@@ -460,6 +464,7 @@ export function useWorkspace() {
   const [loadingOlderMarketHistory, setLoadingOlderMarketHistory] = useState(false);
   const [hasOlderMarketHistory, setHasOlderMarketHistory] = useState(true);
   const olderHistoryRequest = useRef(false);
+  const recentMarketReads = useRef(new Map<string, number>());
   const [marketIndicators, setMarketIndicators] = useState<InstrumentIndicators | null>(null);
   const [marketQuote, setMarketQuote] = useState<MarketQuote | null>(null);
   const [marketInterval, setMarketInterval] = useState<MarketInterval>('1d');
@@ -477,6 +482,17 @@ export function useWorkspace() {
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+
+  function skipRecentMarketRead(key: string, force = false): boolean {
+    const now = Date.now();
+    const previous = recentMarketReads.current.get(key);
+    if (!force && previous !== undefined && now - previous < 3000) return true;
+    recentMarketReads.current.set(key, now);
+    for (const [requestKey, requestedAt] of recentMarketReads.current) {
+      if (now - requestedAt >= 10_000) recentMarketReads.current.delete(requestKey);
+    }
+    return false;
+  }
 
   useEffect(() => {
     if (!verificationToken || verificationStarted.current) return;
@@ -726,9 +742,9 @@ export function useWorkspace() {
     }
   }
 
-  async function submitTransaction(event: FormEvent<HTMLFormElement>) {
+  async function submitTransaction(event: FormEvent<HTMLFormElement>): Promise<boolean> {
     event.preventDefault();
-    if (!portfolioId) return;
+    if (!portfolioId) return false;
     setError('');
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
@@ -763,8 +779,10 @@ export function useWorkspace() {
       setEditingTransaction(null);
       formElement.reset();
       setTransactionType('deposit');
+      return true;
     } catch (requestError) {
       setError((requestError as Error).message);
+      return false;
     }
   }
 
@@ -964,7 +982,9 @@ export function useWorkspace() {
     }
   }
 
-  async function selectMarketInstrument(instrument: MarketInstrument) {
+  async function selectMarketInstrument(instrument: Pick<MarketInstrument, 'id'>) {
+    const requestKey = `select:${instrument.id}:${marketInterval}:${marketStart}:${marketEnd}`;
+    if (skipRecentMarketRead(requestKey)) return;
     setError('');
     setMarketHistory(null);
     setHasOlderMarketHistory(true);
@@ -992,6 +1012,7 @@ export function useWorkspace() {
     interval = marketInterval,
     source?: string | null,
   ) {
+    if (skipRecentMarketRead(`indicators:${instrument.id}:${interval}:${source ?? ''}`)) return;
     setMarketIndicators(null);
     setLoadingMarketIndicators(true);
     try {
@@ -1010,6 +1031,7 @@ export function useWorkspace() {
 
   async function loadMarketQuote(instrument = selectedInstrument, force = false) {
     if (!instrument) return;
+    if (skipRecentMarketRead(`quote:${instrument.id}`, force)) return;
     setError('');
     setMarketQuote(null);
     setLoadingMarketQuote(true);
@@ -1018,9 +1040,30 @@ export function useWorkspace() {
         `/market-data/instruments/${instrument.id}/quote${force ? '?refresh=true' : ''}`,
       );
       setMarketQuote(quote);
-      if (watchlist.some((item) => item.instrument_id === instrument.id)) {
-        await refreshWatchlist();
-      }
+      setWatchlist((current) => current.some((item) => item.instrument_id === instrument.id)
+        ? current.map((item) => (
+        item.instrument_id === instrument.id
+          ? {
+            ...item,
+            quote: {
+              source: quote.source,
+              retrieved_at: quote.retrieved_at,
+              freshness: quote.freshness,
+              freshness_status: quote.freshness_status,
+              is_synthetic: quote.is_synthetic,
+              is_verified: quote.is_verified,
+              market_timestamp: quote.market_timestamp,
+              market_age_seconds: quote.market_age_seconds,
+              is_current_session: quote.is_current_session,
+              absolute_change: quote.absolute_change,
+              percent_change: quote.percent_change,
+              data_type: quote.data_type,
+              close: quote.bar.close,
+            },
+          }
+          : item
+        ))
+        : current);
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
@@ -1037,7 +1080,7 @@ export function useWorkspace() {
         `/portfolios/${portfolioId}/valuation?refresh=true`,
       );
       setValuation(nextValuation);
-      if (watchlist.length > 0) await refreshWatchlist();
+      if (watchlist.length > 0) await refreshWatchlist(true);
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
@@ -1072,7 +1115,7 @@ export function useWorkspace() {
   async function addInstrumentToWatchlist(instrumentId: string, symbol: string) {
     try {
       await apiRequest<void>(`/market-data/watchlist/${instrumentId}`, { method: 'POST' });
-      await refreshWatchlist();
+      await refreshWatchlist(true);
       setNotice(`${symbol} added to the quote-refresh watchlist.`);
     } catch (requestError) {
       setError((requestError as Error).message);
@@ -1082,14 +1125,15 @@ export function useWorkspace() {
   async function removeInstrumentFromWatchlist(instrumentId: string) {
     try {
       await apiRequest<void>(`/market-data/watchlist/${instrumentId}`, { method: 'DELETE' });
-      await refreshWatchlist();
+      await refreshWatchlist(true);
       setNotice('Instrument removed from the quote-refresh watchlist.');
     } catch (requestError) {
       setError((requestError as Error).message);
     }
   }
 
-  async function refreshWatchlist() {
+  async function refreshWatchlist(force = false) {
+    if (skipRecentMarketRead('watchlist:default', force)) return;
     setWatchlist(await apiRequest<WatchlistEntry[]>('/market-data/watchlist'));
   }
 
@@ -1099,6 +1143,8 @@ export function useWorkspace() {
     endDate = marketEnd,
   ) {
     if (!selectedInstrument || !startDate || !endDate) return;
+    const requestKey = `history:${selectedInstrument.id}:${interval}:${startDate}:${endDate}`;
+    if (skipRecentMarketRead(requestKey)) return;
     setError('');
     setMarketHistory(null);
     setHasOlderMarketHistory(true);
@@ -1320,6 +1366,8 @@ export function useWorkspace() {
     setImportingCsv,
     activeView,
     setActiveView,
+    openMarketInstrumentId,
+    setOpenMarketInstrumentId,
     transactionType,
     setTransactionType,
     journalTrades,

@@ -29,6 +29,7 @@ type Props = {
   liveBar?: Candle | null;
   tickSize?: string | null;
   currency: string;
+  timezone: string;
   interval: string;
   preferredSource?: string | null;
   indicatorSeries?: IndicatorSeries;
@@ -129,11 +130,28 @@ function price(value: number, currency: string) {
   }).format(value);
 }
 
+function chartDate(time: Time): Date {
+  if (typeof time === 'number') return new Date(time * 1000);
+  if (typeof time === 'string') return new Date(`${time}T00:00:00.000Z`);
+  return new Date(Date.UTC(time.year, time.month - 1, time.day));
+}
+
+function formatChartTime(time: Time, timezone: string, includeTime = true): string {
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: timezone,
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    ...(includeTime ? { hour: '2-digit', minute: '2-digit' } : {}),
+  }).format(chartDate(time));
+}
+
 export function CandleChart({
   bars,
   liveBar = null,
   tickSize = null,
   currency,
+  timezone,
   interval,
   preferredSource,
   indicatorSeries = {},
@@ -181,9 +199,17 @@ export function CandleChart({
       layout: { background: { type: ColorType.Solid, color: '#0b0f16' }, textColor: '#94a1ad' },
       grid: { vertLines: { color: '#171e29' }, horzLines: { color: '#171e29' } },
       rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.25 } },
-      timeScale: { timeVisible: interval !== '1d', secondsVisible: false, borderColor: '#222b36' },
+      timeScale: {
+        timeVisible: interval !== '1d',
+        secondsVisible: false,
+        borderColor: '#222b36',
+        tickMarkFormatter: (time: Time) => formatChartTime(time, timezone, interval !== '1d'),
+      },
       crosshair: { mode: 0 },
-      localization: { priceFormatter: (value: number) => price(value, currency) },
+      localization: {
+        priceFormatter: (value: number) => price(value, currency),
+        timeFormatter: (time: Time) => formatChartTime(time, timezone),
+      },
     });
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#3fd99a',
@@ -232,9 +258,7 @@ export function CandleChart({
         return;
       }
       setReadout({
-        time: typeof event.time === 'number'
-          ? new Date(event.time * 1000).toLocaleString()
-          : String(event.time),
+        time: formatChartTime(event.time, timezone),
         open: candle.open,
         high: candle.high,
         low: candle.low,
@@ -271,7 +295,7 @@ export function CandleChart({
       macdHistogramRef.current = null;
       indicatorSeriesRef.current.clear();
     };
-  }, [currency, interval]);
+  }, [currency, interval, timezone]);
 
   useEffect(() => {
     liveCandleRef.current = null;

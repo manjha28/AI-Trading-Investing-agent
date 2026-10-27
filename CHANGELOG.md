@@ -41,3 +41,5 @@
 - Market data: account for 2026 NSE holidays in IST session checks, trust forwarded origins only from configured proxies, and backfill from the requested horizon bounded by Dhan listing dates.
 - Market data: keep watchlist WebSocket identity stable across feed updates and normalize Dhan security IDs before ticker subscriptions.
 - Market data: log watchlist instrument session states and evaluate all subscription eligibility against one shared UTC instant.
+- Market data: preserve the watchlist market-closed status through clean WebSocket closes and verify the no-upstream early-return path.
+- Overview: persist Dhan position type and P&L, separate closed positions, clarify missing broker-total inputs, and compact the watchlist and manual-entry UI.
