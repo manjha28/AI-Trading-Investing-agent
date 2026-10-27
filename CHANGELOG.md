@@ -1,3 +1,5 @@
+- Options data integrity: align feature-branch Dhan WebSocket timestamps with the zoneinfo-based IST epoch fix and correct the history-persistence test setup.
+- Options signals: reject unverifiable quote freshness and incomplete 5-minute candles, and keep signal GET requests free of history-sync side effects.
 - Options signals: combine Dhan option-chain quotes and verified real 5-minute bars with EMA/VWAP/RSI/ATR breakout, relative volume, Greeks/theta, OI walls, and advisory-only buy/exit signals.
 - Market data: bound and cache Angel One master loading, use SmartAPI scrip search for routine mappings, preserve fallback/error provenance, and update yfinance for pandas 3 compatibility.
 - A4: shorten the market-data settings migration revision, restore Angel One → Dhan → Yahoo fallback reporting, and document safe Angel One setup in Codespaces.

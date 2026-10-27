@@ -39,6 +39,13 @@ _LONG_NUMBER = re.compile(r"\b\d{5,}\b")
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
+def _dhan_ist_epoch_to_utc(timestamp: int) -> datetime:
+    encoded_wall_clock = datetime.fromtimestamp(timestamp, timezone.utc)
+    return encoded_wall_clock.replace(
+        tzinfo=ZoneInfo("Asia/Kolkata")
+    ).astimezone(timezone.utc)
+
+
 def _safe_provider_error(payload: Any) -> tuple[str | None, str | None]:
     if not isinstance(payload, dict):
         return None, None
@@ -1192,6 +1199,24 @@ class DhanAdapter(BrokerAdapter):
             or packet_security_id != int(security_id)
         ):
             raise BrokerAdapterError("Dhan live feed packet does not match its subscription")
+        if packet[0] == 2:
+            if packet_length != 16:
+                raise BrokerAdapterError("Dhan live feed ticker packet has an invalid length")
+            try:
+                last_price = Decimal(str(struct.unpack_from("<f", packet, 8)[0]))
+                trade_timestamp = struct.unpack_from("<i", packet, 12)[0]
+                price_precision = Decimal("0.00000001")
+                price = last_price.quantize(price_precision)
+                return HistoricalBar(
+                    timestamp=_dhan_ist_epoch_to_utc(trade_timestamp),
+                    open=price,
+                    high=price,
+                    low=price,
+                    close=price,
+                    volume=Decimal(0),
+                )
+            except (OverflowError, OSError, ValueError, TypeError, InvalidOperation) as error:
+                raise BrokerAdapterError("Dhan live feed ticker packet contains invalid values") from error
         if packet[0] != 4:
             return None
         if packet_length != 50:
@@ -1205,7 +1230,7 @@ class DhanAdapter(BrokerAdapter):
             low = struct.unpack_from("<f", packet, 46)[0]
             price_precision = Decimal("0.00000001")
             return HistoricalBar(
-                timestamp=datetime.fromtimestamp(trade_timestamp, timezone.utc),
+                timestamp=_dhan_ist_epoch_to_utc(trade_timestamp),
                 open=Decimal(str(opening)).quantize(price_precision),
                 high=Decimal(str(high)).quantize(price_precision),
                 low=Decimal(str(low)).quantize(price_precision),

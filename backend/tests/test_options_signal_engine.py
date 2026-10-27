@@ -34,7 +34,7 @@ def _fixture(*, bearish: bool = False, now: datetime | None = None) -> OptionsSi
             volume = D("300")
         bars.append(
             OHLCVBar(
-                timestamp=now - timedelta(minutes=5 * (29 - index)),
+                timestamp=now - timedelta(minutes=5 * (30 - index)),
                 open=close - D("0.05"),
                 high=high,
                 low=low,
@@ -104,6 +104,61 @@ def test_stale_chain_suppresses_action() -> None:
     result = evaluate_options_signal(stale)
     assert result.action == "NO_TRADE"
     assert "stale_option_chain" in result.blockers
+
+
+def test_future_source_timestamp_suppresses_action() -> None:
+    data = _fixture()
+    result = evaluate_options_signal(
+        replace(data, spot_timestamp=data.as_of + timedelta(seconds=1))
+    )
+
+    assert result.action == "NO_TRADE"
+    assert "market_timestamp_in_future" in result.blockers
+
+
+def test_stale_candle_timestamp_suppresses_action() -> None:
+    data = _fixture()
+    bars = tuple(
+        replace(bar, timestamp=bar.timestamp - timedelta(minutes=6))
+        for bar in data.bars
+    )
+    result = evaluate_options_signal(replace(data, bars=bars))
+
+    assert result.action == "NO_TRADE"
+    assert "stale_ohlcv_history" in result.blockers
+
+
+def test_future_candle_timestamp_suppresses_action() -> None:
+    data = _fixture()
+    bars = tuple(
+        replace(bar, timestamp=bar.timestamp + timedelta(minutes=6))
+        for bar in data.bars
+    )
+    result = evaluate_options_signal(replace(data, bars=bars))
+
+    assert result.action == "NO_TRADE"
+    assert "bar_timestamp_in_future" in result.blockers
+
+
+def test_missing_source_market_timestamps_suppress_action() -> None:
+    data = _fixture()
+    result = evaluate_options_signal(
+        replace(data, spot_timestamp=None, chain_timestamp=None)
+    )
+
+    assert result.action == "NO_TRADE"
+    assert "underlying_market_timestamp_unavailable" in result.blockers
+    assert "option_chain_market_timestamp_unavailable" in result.blockers
+
+
+def test_incomplete_five_minute_bar_suppresses_action() -> None:
+    data = _fixture()
+    bars = list(data.bars)
+    bars[-1] = replace(bars[-1], timestamp=data.as_of)
+    result = evaluate_options_signal(replace(data, bars=tuple(bars)))
+
+    assert result.action == "NO_TRADE"
+    assert "incomplete_5m_candle" in result.blockers
 
 
 def test_underlying_mismatch_suppresses_action() -> None:

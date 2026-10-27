@@ -3419,15 +3419,14 @@ def get_instrument_option_signal(
     capital: Decimal | None = Query(default=None, gt=0),
     risk_fraction: Decimal = Query(default=Decimal("0.005"), gt=0, le=Decimal("0.02")),
     active_session: UserSession = Depends(require_verified_market_session),
-    provider: MarketDataProvider = Depends(get_market_data_provider),
-    _user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> OptionsSignalAPIResponse:
-    """Evaluate an options setup from a fresh Dhan chain and real Dhan 5-minute bars.
+    """Evaluate an options setup from Dhan chain data and stored real Dhan 5m bars.
 
     This endpoint is advisory-only. It never submits or simulates orders. Both
     the option chain and intraday bars are sourced from Dhan to avoid mixing
-    candle histories from different providers.
+    candle histories from different providers. Retrieval time is not treated as
+    a source market timestamp, so unverifiable quote freshness blocks action.
     """
     provided_position_fields = (
         position_option_type is not None,
@@ -3444,7 +3443,6 @@ def get_instrument_option_signal(
     market_zone = ZoneInfo("Asia/Kolkata")
     now = datetime.now(timezone.utc)
     session_date = now.astimezone(market_zone).date()
-    market_session_open = _market_session_state(instrument, now) == "open"
     expiry_at = datetime.combine(
         expiry,
         datetime_time(hour=15, minute=30),
@@ -3470,47 +3468,6 @@ def get_instrument_option_signal(
         ]
 
     current_session_rows = load_current_session_rows()
-    bar_refresh_blocker: str | None = None
-    bars_need_refresh = (
-        not current_session_rows
-        or now - _utc(current_session_rows[-1].timestamp) > timedelta(minutes=10)
-    )
-    active_providers = _providers(provider)
-    dhan_provider = next(
-        (active for active in active_providers if active.name == "dhan"),
-        None,
-    )
-    if market_session_open and bars_need_refresh and dhan_provider is not None:
-        session_open = datetime.combine(
-            session_date,
-            datetime_time(hour=9, minute=15),
-            tzinfo=market_zone,
-        ).astimezone(timezone.utc)
-        try:
-            # Reuse the existing market-history sync path; only Dhan is supplied
-            # so no fallback can silently change the candle source.
-            sync_history(
-                instrument_id=instrument_id,
-                start=session_open,
-                end=now,
-                interval="5m",
-                limit=100,
-                provider=MarketDataProviderChain([dhan_provider]),
-                _user=_user,
-                db=db,
-            )
-        except HTTPException as error:
-            bar_refresh_blocker = "dhan_5m_history_refresh_failed"
-            logger.warning(
-                "options_signal_history_refresh_failed",
-                extra={
-                    "instrument_id": str(instrument.id),
-                    "status_code": error.status_code,
-                },
-            )
-        current_session_rows = load_current_session_rows()
-    elif market_session_open and bars_need_refresh and dhan_provider is None:
-        bar_refresh_blocker = "dhan_5m_history_provider_unavailable"
 
     bars = [
         SignalOHLCVBar(
@@ -3525,8 +3482,6 @@ def get_instrument_option_signal(
         for bar in current_session_rows
     ]
 
-    # Fetch the chain after any candle refresh so freshness is measured against
-    # the newest possible chain retrieval time.
     chain_response = get_instrument_option_chain(
         instrument_id=instrument_id,
         expiry=expiry,
@@ -3574,9 +3529,9 @@ def get_instrument_option_signal(
         chain_underlying_symbol=chain_response.symbol,
         as_of=now,
         spot=spot,
-        spot_timestamp=_utc(chain_response.fetched_at),
-        spot_source="dhan_option_chain_underlying_retrieved_at",
-        chain_timestamp=_utc(chain_response.fetched_at),
+        spot_timestamp=None,
+        spot_source="dhan_option_chain_underlying",
+        chain_timestamp=None,
         chain_source=chain_response.source,
         chain_spot=spot,
         expiry_at=expiry_at,
@@ -3588,12 +3543,6 @@ def get_instrument_option_signal(
         active_position=active_position,
         market_session_open=market_session_open,
     ))
-    blockers = list(signal.blockers)
-    if bar_refresh_blocker is not None and bar_refresh_blocker not in blockers:
-        blockers.append(bar_refresh_blocker)
-    reasons = list(signal.reasons)
-    if bar_refresh_blocker is not None:
-        reasons.append("Dhan 5-minute bars could not be refreshed; no entry should be inferred.")
     return OptionsSignalAPIResponse(
         action=signal.action,
         underlying_symbol=signal.underlying_symbol,
@@ -3606,8 +3555,8 @@ def get_instrument_option_signal(
         estimated_premium_risk_per_lot=signal.estimated_premium_risk_per_lot,
         suggested_lots_by_risk_budget=signal.suggested_lots_by_risk_budget,
         option_return_pct_at_bid=signal.option_return_pct_at_bid,
-        reasons=reasons,
-        blockers=blockers,
+        reasons=list(signal.reasons),
+        blockers=list(signal.blockers),
         evidence=signal.evidence,
         underlying_source=signal.underlying_source,
         chain_source=signal.chain_source,

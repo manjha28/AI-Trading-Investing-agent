@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import struct
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 import httpx
@@ -385,9 +386,9 @@ def test_dhan_quote_parser_returns_exchange_timestamp_and_decimal_values(monkeyp
 def test_dhan_historical_data_requests_one_minute_candles_and_converts_epoch(
     monkeypatch,
 ) -> None:
-    start = datetime(2026, 10, 25, 3, 45, tzinfo=timezone.utc)
-    end = datetime(2026, 10, 25, 4, 0, tzinfo=timezone.utc)
-    epoch = int(datetime(2026, 10, 25, 3, 46, tzinfo=timezone.utc).timestamp())
+    start = datetime(2026, 10, 26, 3, 45, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 26, 4, 0, tzinfo=timezone.utc)
+    epoch = int(datetime(2026, 10, 26, 3, 46, tzinfo=timezone.utc).timestamp())
     captured: dict[str, object] = {}
 
     def mocked_request(method, url, **kwargs):
@@ -419,10 +420,13 @@ def test_dhan_historical_data_requests_one_minute_candles_and_converts_epoch(
     assert captured["method"] == "POST"
     assert captured["url"] == "https://api.dhan.co/v2/charts/intraday"
     assert captured["json"]["interval"] == "1"
-    assert captured["json"]["fromDate"] == "2026-10-25 09:15:00"
-    assert captured["json"]["toDate"] == "2026-10-25 09:30:00"
+    assert captured["json"]["fromDate"] == "2026-10-26 09:15:00"
+    assert captured["json"]["toDate"] == "2026-10-26 09:30:00"
     assert len(bars) == 1
-    assert bars[0].timestamp == datetime(2026, 10, 25, 3, 46, tzinfo=timezone.utc)
+    assert bars[0].timestamp == datetime(2026, 10, 26, 3, 46, tzinfo=timezone.utc)
+    assert bars[0].timestamp.astimezone(ZoneInfo("Asia/Kolkata")) == datetime(
+        2026, 10, 26, 9, 16, tzinfo=ZoneInfo("Asia/Kolkata")
+    )
 
 
 def test_dhan_historical_response_rejects_misaligned_arrays(monkeypatch) -> None:
@@ -493,11 +497,27 @@ def _dhan_quote_packet() -> bytes:
     packet[3] = 1
     packet[4:8] = (11536).to_bytes(4, "little", signed=True)
     struct.pack_into("<f", packet, 8, 3900.25)
-    struct.pack_into("<i", packet, 14, int(datetime(2025, 4, 15, 5, tzinfo=timezone.utc).timestamp()))
+    struct.pack_into("<i", packet, 14, int(datetime(2025, 4, 15, 10, 30, tzinfo=timezone.utc).timestamp()))
     struct.pack_into("<i", packet, 22, 1200)
     struct.pack_into("<f", packet, 34, 3890)
     struct.pack_into("<f", packet, 42, 3910)
     struct.pack_into("<f", packet, 46, 3880)
+    return bytes(packet)
+
+
+def _dhan_ticker_packet() -> bytes:
+    packet = bytearray(16)
+    packet[0] = 2
+    packet[1:3] = (16).to_bytes(2, "little")
+    packet[3] = 1
+    packet[4:8] = (11536).to_bytes(4, "little", signed=True)
+    struct.pack_into("<f", packet, 8, 3900.25)
+    struct.pack_into(
+        "<i",
+        packet,
+        12,
+        int(datetime(2025, 4, 15, 10, 30, tzinfo=timezone.utc).timestamp()),
+    )
     return bytes(packet)
 
 
@@ -516,12 +536,57 @@ def test_dhan_websocket_quote_packet_uses_documented_little_endian_fields() -> N
     )
 
     assert quote is not None
-    assert quote.timestamp == datetime(2025, 4, 15, 5, tzinfo=timezone.utc)
+    assert quote.timestamp == datetime(2025, 4, 15, 5, 0, tzinfo=timezone.utc)
     assert quote.open == Decimal("3890.0")
     assert quote.high == Decimal("3910.0")
     assert quote.low == Decimal("3880.0")
     assert quote.close == Decimal("3900.25")
     assert quote.volume == Decimal("1200")
+
+
+def test_dhan_websocket_ticker_packet_decodes_ist_epoch_as_utc() -> None:
+    tick = DhanAdapter.decode_market_feed_packet(
+        _dhan_ticker_packet(), "NSE_EQ", "11536"
+    )
+
+    assert tick is not None
+    assert tick.timestamp == datetime(2025, 4, 15, 5, 0, tzinfo=timezone.utc)
+    assert tick.timestamp.tzinfo is timezone.utc
+
+
+def test_dhan_ist_epoch_conversion_uses_zoneinfo(monkeypatch) -> None:
+    raw_timestamp = int(datetime(2026, 10, 26, 14, 55, tzinfo=timezone.utc).timestamp())
+    encoded_wall_clock = datetime.fromtimestamp(raw_timestamp, timezone.utc)
+    expected = encoded_wall_clock.replace(
+        tzinfo=ZoneInfo("Asia/Kolkata")
+    ).astimezone(timezone.utc)
+    assert broker_adapters._dhan_ist_epoch_to_utc(raw_timestamp) == expected
+
+    database_zone = timezone(timedelta(hours=6, minutes=15))
+    monkeypatch.setattr(
+        broker_adapters,
+        "ZoneInfo",
+        lambda zone_name: database_zone if zone_name == "Asia/Kolkata" else None,
+    )
+    dynamic_expected = encoded_wall_clock.replace(
+        tzinfo=database_zone
+    ).astimezone(timezone.utc)
+    assert broker_adapters._dhan_ist_epoch_to_utc(raw_timestamp) == dynamic_expected
+
+
+def test_dhan_ist_epoch_conversion_handles_utc_midnight_rollover() -> None:
+    expected_utc = datetime(2026, 10, 26, 0, 10, tzinfo=timezone.utc)
+    encoded_ist_wall_clock = expected_utc.astimezone(
+        ZoneInfo("Asia/Kolkata")
+    ).replace(tzinfo=timezone.utc)
+    raw_timestamp = int(encoded_ist_wall_clock.timestamp())
+
+    parsed_utc = broker_adapters._dhan_ist_epoch_to_utc(raw_timestamp)
+
+    assert parsed_utc == expected_utc
+    assert parsed_utc.astimezone(ZoneInfo("Asia/Kolkata")).date().isoformat() == (
+        "2026-10-26"
+    )
 
 
 def test_dhan_websocket_resubscribe_after_disconnect(monkeypatch) -> None:

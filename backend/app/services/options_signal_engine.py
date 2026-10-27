@@ -12,7 +12,7 @@ source timestamps; and a known lot size when sizing is requested.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
 from statistics import median
 from typing import Literal, Sequence
@@ -82,9 +82,9 @@ class OptionsSignalInput:
     chain_underlying_symbol: str
     as_of: datetime
     spot: Decimal
-    spot_timestamp: datetime
+    spot_timestamp: datetime | None
     spot_source: str
-    chain_timestamp: datetime
+    chain_timestamp: datetime | None
     chain_source: str
     chain_spot: Decimal
     expiry_at: datetime
@@ -221,7 +221,16 @@ def _freshness_blockers(data: OptionsSignalInput, config: SignalConfig) -> list[
     blockers: list[str] = []
     if not data.market_session_open:
         blockers.append("market_session_closed")
-    dates = [now, data.spot_timestamp, data.chain_timestamp, data.expiry_at]
+    if data.spot_timestamp is None:
+        blockers.append("underlying_market_timestamp_unavailable")
+    if data.chain_timestamp is None:
+        blockers.append("option_chain_market_timestamp_unavailable")
+    dates = [now, data.expiry_at]
+    dates.extend(
+        timestamp
+        for timestamp in (data.spot_timestamp, data.chain_timestamp)
+        if timestamp is not None
+    )
     dates.extend(bar.timestamp for bar in data.bars)
     dates.extend(quote.expiry_at for quote in data.chain)
     if any(not _aware(value) for value in dates):
@@ -234,13 +243,24 @@ def _freshness_blockers(data: OptionsSignalInput, config: SignalConfig) -> list[
         blockers.append("missing_data_source_provenance")
     if data.spot <= ZERO or data.chain_spot <= ZERO:
         blockers.append("invalid_spot_price")
-    if data.spot_timestamp > now or data.chain_timestamp > now:
-        blockers.append("market_timestamp_in_future")
-    else:
-        if _age_seconds(now, data.spot_timestamp) > D(str(config.max_spot_quote_age.total_seconds())):
-            blockers.append("stale_underlying_quote")
-        if _age_seconds(now, data.chain_timestamp) > D(str(config.max_chain_quote_age.total_seconds())):
-            blockers.append("stale_option_chain")
+    for timestamp, max_age, stale_reason in (
+        (
+            data.spot_timestamp,
+            config.max_spot_quote_age,
+            "stale_underlying_quote",
+        ),
+        (
+            data.chain_timestamp,
+            config.max_chain_quote_age,
+            "stale_option_chain",
+        ),
+    ):
+        if timestamp is None:
+            continue
+        if timestamp > now:
+            blockers.append("market_timestamp_in_future")
+        elif _age_seconds(now, timestamp) > D(str(max_age.total_seconds())):
+            blockers.append(stale_reason)
     if data.spot > ZERO and data.chain_spot > ZERO:
         chain_diff = abs(data.spot - data.chain_spot) * HUNDRED / data.spot
         if chain_diff > config.max_chain_spot_difference_pct:
@@ -267,6 +287,14 @@ def _freshness_blockers(data: OptionsSignalInput, config: SignalConfig) -> list[
                 blockers.append("bar_timestamp_in_future")
             elif _age_seconds(now, latest.timestamp) > D(str(config.max_bar_age.total_seconds())):
                 blockers.append("stale_ohlcv_history")
+            current_local = now.astimezone(ZoneInfo(data.exchange_timezone))
+            current_bucket_start = current_local.replace(
+                minute=current_local.minute - current_local.minute % 5,
+                second=0,
+                microsecond=0,
+            ).astimezone(timezone.utc)
+            if latest.timestamp >= current_bucket_start:
+                blockers.append("incomplete_5m_candle")
             if data.spot > ZERO:
                 diff = abs(data.spot - latest.close) * HUNDRED / data.spot
                 if diff > config.max_bar_spot_difference_pct:

@@ -37,6 +37,23 @@ def _instrument(session: Session) -> Instrument:
     return instrument
 
 
+def test_market_session_state_uses_ist_open_and_close_boundaries_from_utc() -> None:
+    instrument = SimpleNamespace(country="IN")
+    market_zone = ZoneInfo("Asia/Kolkata")
+    cases = (
+        (datetime(2026, 10, 26, 9, 14, tzinfo=market_zone), "closed"),
+        (datetime(2026, 10, 26, 9, 15, tzinfo=market_zone), "open"),
+        (datetime(2026, 10, 26, 15, 29, tzinfo=market_zone), "open"),
+        (datetime(2026, 10, 26, 15, 30, tzinfo=market_zone), "closed"),
+    )
+
+    for local_time, expected in cases:
+        assert market_data._market_session_state(
+            instrument,
+            local_time.astimezone(timezone.utc),
+        ) == expected
+
+
 def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(monkeypatch) -> None:
     engine = create_engine(
         "sqlite://",
@@ -58,6 +75,17 @@ def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(mo
             fetched_at=fetched_at,
         )
         monkeypatch.setattr(market_data, "get_instrument_option_chain", lambda **_: response)
+        sync_calls: list[bool] = []
+        monkeypatch.setattr(
+            market_data,
+            "sync_history",
+            lambda **_: sync_calls.append(True),
+        )
+        monkeypatch.setattr(
+            market_data,
+            "_market_session_state",
+            lambda *_: "open",
+        )
 
         def override_db():
             yield session
@@ -71,7 +99,10 @@ def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(mo
         monkeypatch.setitem(
             app.dependency_overrides,
             market_data.get_market_data_provider,
-            lambda: SimpleNamespace(providers=[], unavailable_providers=[]),
+            lambda: SimpleNamespace(
+                providers=[SimpleNamespace(name="dhan")],
+                unavailable_providers=[],
+            ),
         )
         monkeypatch.setitem(
             app.dependency_overrides,
@@ -89,10 +120,14 @@ def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(mo
     payload = result.json()
     assert payload["action"] == "NO_TRADE"
     assert "insufficient_5m_history" in payload["blockers"]
+    assert "underlying_market_timestamp_unavailable" in payload["blockers"]
+    assert "option_chain_market_timestamp_unavailable" in payload["blockers"]
     assert payload["bar_source"] == "dhan"
     assert payload["chain_source"] == "Dhan"
+    assert datetime.fromisoformat(payload["chain_retrieved_at"]) == fetched_at
     assert payload["last_bar_timestamp"] is None
     assert "No order was placed" in payload["disclaimer"]
+    assert sync_calls == []
 
 
 def test_signal_endpoint_requires_all_open_position_fields(monkeypatch) -> None:
@@ -113,16 +148,6 @@ def test_signal_endpoint_requires_all_open_position_fields(monkeypatch) -> None:
             app.dependency_overrides,
             require_verified_market_session,
             lambda: SimpleNamespace(user_id=uuid4()),
-        )
-        monkeypatch.setitem(
-            app.dependency_overrides,
-            market_data.get_market_data_provider,
-            lambda: SimpleNamespace(providers=[], unavailable_providers=[]),
-        )
-        monkeypatch.setitem(
-            app.dependency_overrides,
-            market_data.get_current_user,
-            lambda: SimpleNamespace(id=uuid4(), email_verified=True),
         )
         with TestClient(app) as client:
             result = client.get(
