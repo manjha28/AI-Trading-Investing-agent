@@ -374,6 +374,8 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   );
   const activeDetailInstrumentId = activeWatchlistInstrument
     || (legacyInstrumentSelected ? selectedInstrument?.id ?? '' : '');
+  const activeDetailInstrumentIdRef = useRef(activeDetailInstrumentId);
+  activeDetailInstrumentIdRef.current = activeDetailInstrumentId;
   const hasWatchlistInstruments = watchlistEntries.length > 0;
   const hasActiveDetailInstrument = Boolean(activeDetailInstrumentId);
 
