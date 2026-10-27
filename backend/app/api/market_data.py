@@ -93,7 +93,7 @@ from app.security import hash_token
 
 router = APIRouter(prefix="/market-data", tags=["market data"])
 indicators_router = APIRouter(tags=["market data indicators"])
-BarInterval = Literal["1d", "1h", "60m", "25m", "15m", "5m", "1m"]
+BarInterval = Literal["1d", "1h", "60m", "15m", "5m", "1m"]
 MAX_BARS = 500
 MAX_BACKFILL_CHUNKS = 20
 MAX_BACKFILL_REQUESTS = 24

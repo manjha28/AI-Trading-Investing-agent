@@ -275,9 +275,16 @@ def test_watchlist_is_user_scoped_and_reports_cached_quote_provenance(
     assert entry["quote"]["is_verified"] is False
     assert entry["quote"]["close"] == quote.json()["bar"]["close"]
 
-    with TestClient(app) as other_client:
-        register(other_client, "other-market@example.com")
-        assert other_client.get("/api/v1/market-data/watchlist").json() == []
+    register(client, "other-market@example.com")
+    assert client.get("/api/v1/market-data/watchlist").json() == []
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "market@example.com",
+            "password": "correct-horse-battery",
+        },
+    )
+    assert login_response.status_code == 200, login_response.text
     assert len(client.get("/api/v1/market-data/watchlist").json()) == 1
 
 
@@ -532,7 +539,9 @@ def test_history_request_bounds_and_timezone_are_validated(client: TestClient) -
     assert too_many.status_code == 422
 
 
-def test_removed_25_minute_interval_is_rejected(client: TestClient) -> None:
+def test_removed_25_minute_interval_is_rejected(
+    client: TestClient, test_engine
+) -> None:
     register(client, "removed-interval@example.com")
     instrument_id = client.get("/api/v1/market-data/instruments?query=ALPHA").json()[0]["id"]
 
@@ -546,6 +555,13 @@ def test_removed_25_minute_interval_is_rejected(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+    with Session(test_engine) as session:
+        assert session.scalar(
+            select(func.count()).select_from(MarketDataSync)
+        ) == 0
+        assert session.scalar(
+            select(func.count()).select_from(MarketDataSyncAttempt)
+        ) == 0
 
 
 def test_unsupported_provider_interval_and_lookback_are_reported_without_requests(
@@ -1825,27 +1841,40 @@ def test_dhan_websocket_route_authenticates_persists_and_reports_live_ticks(
         "find_verified_equity_mapping",
         lambda _self, _symbol, _venue: ("11536", "NSE_EQ"),
     )
+    monkeypatch.setattr(
+        market_data,
+        "_market_session_state",
+        lambda *_args, **_kwargs: "open",
+    )
 
-    async def stream_quote(
-        _self, _token, _tokens, _segment, _security_id, status_callback
-    ):
-        await status_callback("active")
-        yield HistoricalBar(
-            timestamp=datetime.now(timezone.utc),
-            open=Decimal("3890"),
-            high=Decimal("3910"),
-            low=Decimal("3880"),
-            close=Decimal("3900.25"),
-            volume=Decimal("1200"),
-        )
-        await asyncio.Event().wait()
+    async def join_feed(_channel, _group_id, _subscriptions, _token, _tokens):
+        events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        events.put_nowait({"type": "status", "status": "active"})
+        events.put_nowait({
+            "type": "tick",
+            "bar": HistoricalBar(
+                timestamp=datetime.now(timezone.utc),
+                open=Decimal("3890"),
+                high=Decimal("3910"),
+                low=Decimal("3880"),
+                close=Decimal("3900.25"),
+                volume=Decimal("1200"),
+            ),
+        })
+        return events
 
-    monkeypatch.setattr(DhanAdapter, "stream_market_quotes", stream_quote)
+    async def leave_feed(_channel, _group_id):
+        return None
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join_feed)
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "leave", leave_feed)
     with client.websocket_connect(
         f"/api/v1/market-data/instruments/{instrument['id']}/stream",
         headers={"Origin": settings.frontend_origin},
     ) as stream:
-        assert stream.receive_json() == {"type": "status", "status": "active"}
+        messages = [stream.receive_json()]
+        while not any(message.get("status") == "active" for message in messages):
+            messages.append(stream.receive_json())
         tick = stream.receive_json()
         assert tick["type"] == "tick"
         assert tick["quote"]["source"] == "dhan_ws"
@@ -1888,25 +1917,21 @@ def test_angel_one_stream_persists_verified_ticks_and_quote_api_reuses_them(
         fixture_instrument.timezone = "Asia/Kolkata"
         session.commit()
     timestamp = datetime.now(timezone.utc)
-    candidate = InstrumentCandidate(
-        provider="angel_one",
-        provider_instrument_id="3045|NSE",
-        provider_symbol="ALPHA-EQ",
-        symbol="ALPHA",
-        display_name="Alpha India Fixture Limited",
-        asset_class="equity",
-        venue="NSE",
-        currency="INR",
-        country="IN",
-        timezone="Asia/Kolkata",
-        is_synthetic=False,
-        is_verified=True,
-    )
     monkeypatch.setattr(
-        AngelOneProvider,
-        "search_instruments",
-        lambda _self, _query, _limit: [candidate],
+        market_data,
+        "_market_session_state",
+        lambda *_args, **_kwargs: "open",
     )
+    with Session(test_engine) as session:
+        session.add(InstrumentProviderIdentifier(
+            instrument_id=UUID(instrument["id"]),
+            provider="angel_one",
+            provider_instrument_id="3045|NSE",
+            provider_symbol="ALPHA-EQ",
+            is_verified=True,
+            last_seen_at=timestamp,
+        ))
+        session.commit()
     session_token = client.cookies.get("session_token")
     with Session(test_engine) as session:
         user_session = session.scalar(
@@ -1957,8 +1982,11 @@ def test_angel_one_stream_persists_verified_ticks_and_quote_api_reuses_them(
         messages = [stream.receive_json()]
         while not any(message["type"] == "tick" for message in messages):
             messages.append(stream.receive_json())
-        assert messages[0] == {"type": "status", "status": "connecting"}
-        assert any(message == {"type": "status", "status": "reconnecting"} for message in messages)
+        assert messages[0]["type"] == "status"
+        assert messages[0]["status"] == "connecting"
+        assert any(
+            message.get("status") == "reconnecting" for message in messages
+        )
         tick = next(message for message in messages if message["type"] == "tick")
         assert tick["quote"]["source"] == "angel_one_ws"
         assert tick["quote"]["data_type"] == "live_tick"
