@@ -1,3 +1,6 @@
+- Market data: include the last completed IST date in daily holdings backfills, record no-data/already-stored outcomes, and compute day change from official daily closes with corporate-action adjustment provenance.
+- Overview: value broker holdings at the last completed NSE close while the market is shut, report exact close dates and exclusions, and include verified broker holdings in market-data coverage/backfill selection.
+- Overview: retain Dhan-first batched valuation quotes, resolve unresolved prices through Angel One and Yahoo with freshness and source evidence, and tighten responsive portfolio metrics.
 - Dhan: normalize live IST-naive LTT epochs, keep anomalous closed-session ticks from terminating watchlist streams, and fix browser delivery counters and reconnects.
 - Options data integrity: align feature-branch Dhan WebSocket timestamps with the zoneinfo-based IST epoch fix and correct the history-persistence test setup.
 - Options signals: reject unverifiable quote freshness and incomplete 5-minute candles, and keep signal GET requests free of history-sync side effects.
@@ -43,3 +46,9 @@
 - Market data: log watchlist instrument session states and evaluate all subscription eligibility against one shared UTC instant.
 - Market data: preserve the watchlist market-closed status through clean WebSocket closes and verify the no-upstream early-return path.
 - Overview: persist Dhan position type and P&L, separate closed positions, clarify missing broker-total inputs, and compact the watchlist and manual-entry UI.
+- Overview: derive broker portfolio market value, total value, holdings P&L and day change from fresh verified quotes with per-figure provenance.
+- Overview: resolve non-specific Dhan holding exchanges through verified instrument-master identities and move figure provenance into on-demand details.
+- Dhan live feed: decode concatenated v2 packets, bound reconnects, report feed health, and idle subscriptions outside market hours.
+- Delta Research (milestone 1): add disabled-by-default, read-only `/api/v1/delta-research/status` skeleton, a Delta Research nav page, and the isolated-SQLite boundary design (see `backend/app/delta_research/__init__.py`).
+- Delta Research (milestone 2): add disabled-by-default public REST/WebSocket collection, isolated SQLite persistence, authenticated read-only market/event APIs, SSE updates, and feed-health reporting.
+- Product policy: authorize guarded, disabled-by-default Dhan/Delta execution while requiring explicit owner activation and prohibiting real orders in development, automated tests, and CI; update repository policy and setup documentation.

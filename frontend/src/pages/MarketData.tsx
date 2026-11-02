@@ -104,10 +104,17 @@ type NamedWatchlist = {
   created_at: string;
 };
 type WatchlistTab = 'Chart' | 'Info' | 'Financials' | 'Depth' | 'Options';
-type MarketStreamStatus = 'not_configured' | 'connecting' | 'active' | 'reconnecting' | 'unavailable' | 'market_closed';
+type MarketStreamStatus = 'not_configured' | 'connecting' | 'active' | 'reconnecting' | 'unavailable' | 'market_closed' | 'failed';
+type DhanFeedHealth = {
+  connection_state: string;
+  last_successful_packet_at: string | null;
+  consecutive_failure_count: number;
+  unknown_response_count: number;
+};
 type MarketStreamMessage =
-  | { type: 'status'; status: MarketStreamStatus; message?: string; last_snapshot_at?: string | null }
-  | { type: 'tick'; quote: NonNullable<WorkspaceState['marketQuote']> };
+  | { type: 'status'; status: MarketStreamStatus; message?: string; last_snapshot_at?: string | null; feed_health?: DhanFeedHealth | null }
+  | { type: 'tick'; security_id?: string | null; quote: NonNullable<WorkspaceState['marketQuote']>; feed_health?: DhanFeedHealth | null };
+type LiveWatchlistQuote = NonNullable<WorkspaceState['watchlist'][number]['quote']>;
 type InstrumentMasterInfo = {
   isin: string | null;
   exchange: string | null;
@@ -136,7 +143,7 @@ type CompanyProfile = {
 };
 type DepthLevel = { quantity: number; orders: number; price: string };
 type DepthMessage =
-  | { type: 'status'; status: MarketStreamStatus; message?: string; last_snapshot_at?: string | null }
+  | { type: 'status'; status: MarketStreamStatus; message?: string; last_snapshot_at?: string | null; feed_health?: DhanFeedHealth | null }
   | {
     type: 'depth';
     timestamp: string;
@@ -337,18 +344,28 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [coverageMessage, setCoverageMessage] = useState('');
   const [coverageRunning, setCoverageRunning] = useState<string | null>(null);
   const [coverageBatchRunning, setCoverageBatchRunning] = useState(false);
-  const [liveFeedEnabled, setLiveFeedEnabled] = useState(false);
+  const [liveFeedManuallyEnabled, setLiveFeedManuallyEnabled] = useState(false);
+  const [liveFeedPaused, setLiveFeedPaused] = useState(false);
   const [liveFeedStatus, setLiveFeedStatus] = useState<MarketStreamStatus>('not_configured');
+  const [liveFeedHealth, setLiveFeedHealth] = useState<DhanFeedHealth | null>(null);
   const [liveFeedMessage, setLiveFeedMessage] = useState('');
   const [liveLastSnapshotAt, setLiveLastSnapshotAt] = useState<string | null>(null);
   const [streamRetryKey, setStreamRetryKey] = useState(0);
   const [liveMarketQuote, setLiveMarketQuote] = useState<NonNullable<WorkspaceState['marketQuote']> | null>(null);
+  const [liveQuotesBySecurityId, setLiveQuotesBySecurityId] = useState(new Map<
+    string,
+    {
+      instrumentId: string;
+      quote: LiveWatchlistQuote;
+      receivedAt: number;
+    }
+  >());
+  const [liveFeedClock, setLiveFeedClock] = useState(Date.now());
   const [marketDataSettings, setMarketDataSettings] = useState<MarketDataSettings | null>(null);
   const [marketDataSettingsLoading, setMarketDataSettingsLoading] = useState(true);
   const [marketDataSettingsError, setMarketDataSettingsError] = useState('');
-  const liveFeedEnabledRef = useRef(liveFeedEnabled);
+  const liveFeedEnabledRef = useRef(false);
   const selectedProviderRef = useRef(marketDataSettings?.selected_provider);
-  liveFeedEnabledRef.current = liveFeedEnabled;
   selectedProviderRef.current = marketDataSettings?.selected_provider;
   const [namedWatchlists, setNamedWatchlists] = useState<NamedWatchlist[]>([]);
   const [activeWatchlistId, setActiveWatchlistId] = useState('');
@@ -367,6 +384,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [newWatchlistName, setNewWatchlistName] = useState('');
   const [renameWatchlistName, setRenameWatchlistName] = useState('');
   const [activeWatchlistInstrument, setActiveWatchlistInstrument] = useState('');
+  const securityIdsByInstrumentRef = useRef(new Map<string, string>());
   const [legacyInstrumentSelected, setLegacyInstrumentSelected] = useState(false);
   const [activeDetailTab, setActiveDetailTab] = useState<WatchlistTab>('Chart');
   const [watchlistInstrumentLoading, setWatchlistInstrumentLoading] = useState(false);
@@ -375,6 +393,10 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     ? 'live'
     : liveFeedStatus.replaceAll('_', ' ');
   const selectedProvider = marketDataSettings?.selected_provider;
+  const liveFeedEnabled = selectedProvider === 'dhan'
+    ? Boolean(activeWatchlistId && !liveFeedPaused)
+    : liveFeedManuallyEnabled;
+  liveFeedEnabledRef.current = liveFeedEnabled;
   const selectedSourceLabel = marketDataSettings?.sources.find(
     (source) => source.name === selectedProvider,
   )?.label ?? 'Market-data';
@@ -387,6 +409,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   activeDetailInstrumentIdRef.current = activeDetailInstrumentId;
   const hasWatchlistInstruments = watchlistEntries.length > 0;
   const hasActiveDetailInstrument = Boolean(activeDetailInstrumentId);
+
+  useEffect(() => {
+    if (liveQuotesBySecurityId.size === 0) return;
+    const timer = window.setInterval(() => setLiveFeedClock(Date.now()), 10_000);
+    return () => window.clearInterval(timer);
+  }, [liveQuotesBySecurityId.size]);
 
   async function refreshMarketDataSettings() {
     setMarketDataSettingsError('');
@@ -574,7 +602,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     if (!liveFeedEnabled || !selectedInstrument || !liveStreamSupported) {
       setLiveMarketQuote(null);
       setLiveFeedStatus('not_configured');
-      if (liveFeedEnabled && !liveStreamSupported) setLiveFeedEnabled(false);
+      if (liveFeedManuallyEnabled && !liveStreamSupported) {
+        setLiveFeedManuallyEnabled(false);
+      }
       return;
     }
     const streamUrl = new URL(
@@ -821,6 +851,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           message.type === 'status' ? message.status : message.type,
           );
           if (message.type === 'status') {
+          setLiveFeedHealth(message.feed_health ?? null);
           marketClosed = message.status === 'market_closed';
           setLiveLastSnapshotAt(message.last_snapshot_at ?? null);
           if (message.status === 'active') {
@@ -851,8 +882,40 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           }
           if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
           reconnectAttempts = 0;
+          setLiveFeedHealth(message.feed_health ?? null);
+          const watchlistQuote: LiveWatchlistQuote = {
+            source: message.quote.source,
+            retrieved_at: message.quote.retrieved_at,
+            freshness: message.quote.freshness,
+            freshness_status: message.quote.freshness_status,
+            is_synthetic: message.quote.is_synthetic,
+            is_verified: message.quote.is_verified,
+            market_timestamp: message.quote.market_timestamp,
+            market_age_seconds: message.quote.market_age_seconds,
+            is_current_session: message.quote.is_current_session,
+            data_type: message.quote.data_type,
+            close: message.quote.bar.close,
+            absolute_change: message.quote.absolute_change,
+            percent_change: message.quote.percent_change,
+            change_basis: message.quote.change_basis,
+            change_reason: message.quote.change_reason,
+          };
           if (selectedInstrumentId.current === message.quote.instrument_id) {
           setLiveMarketQuote(message.quote);
+          }
+          if (message.security_id) {
+            securityIdsByInstrumentRef.current.set(
+              message.quote.instrument_id,
+              message.security_id,
+            );
+            setLiveQuotesBySecurityId((current) => new Map(current).set(
+              message.security_id!,
+              {
+                instrumentId: message.quote.instrument_id,
+                quote: watchlistQuote,
+                receivedAt: Date.now(),
+              },
+            ));
           }
           setLiveFeedStatus('active');
           setLiveFeedMessage('');
@@ -860,21 +923,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
           if (entry.instrument_id !== message.quote.instrument_id) return entry;
           return {
             ...entry,
-            quote: {
-              source: message.quote.source,
-              retrieved_at: message.quote.retrieved_at,
-              freshness: message.quote.freshness,
-              freshness_status: message.quote.freshness_status,
-              is_synthetic: message.quote.is_synthetic,
-              is_verified: message.quote.is_verified,
-              market_timestamp: message.quote.market_timestamp,
-              market_age_seconds: message.quote.market_age_seconds,
-              is_current_session: message.quote.is_current_session,
-              data_type: message.quote.data_type,
-              close: message.quote.bar.close,
-              absolute_change: message.quote.absolute_change,
-              percent_change: message.quote.percent_change,
-            },
+            quote: watchlistQuote,
           };
           }));
         };
@@ -1654,24 +1703,35 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                           <span>Instrument</span><span>Last</span><span>Change</span><span>%</span>
                         </div>
                         {watchlistEntries.map((entry) => {
-                          const change = entry.quote?.is_current_session
-                            ? entry.quote.absolute_change
-                            : null;
-                          const percentChange = entry.quote?.is_current_session
-                            ? entry.quote.percent_change
-                            : null;
+                          const securityId = securityIdsByInstrumentRef.current.get(
+                            entry.instrument_id,
+                          );
+                          const cached = securityId
+                            ? liveQuotesBySecurityId.get(securityId)
+                            : undefined;
+                          const cachedQuote = cached?.quote;
+                          const rowQuote = cachedQuote && cached
+                            && liveFeedClock - cached.receivedAt >= 60_000
+                            ? {
+                                ...cachedQuote,
+                                freshness: 'stale' as const,
+                                freshness_status: 'stale' as const,
+                              }
+                            : cachedQuote ?? entry.quote;
+                          const change = rowQuote?.absolute_change ?? null;
+                          const percentChange = rowQuote?.percent_change ?? null;
                           const changeClass = change === null ? '' : Number(change) >= 0 ? 'positive' : 'negative';
-                          const freshnessColor = entry.quote?.freshness_status === 'fresh'
+                          const freshnessColor = rowQuote?.freshness_status === 'fresh'
                             ? '#3fd99a'
-                            : entry.quote?.freshness_status === 'eod_close'
+                            : rowQuote?.freshness_status === 'eod_close'
                               ? '#7394cf'
-                              : entry.quote?.freshness_status === 'stale'
+                              : rowQuote?.freshness_status === 'stale'
                                 ? '#e2a53a'
-                                : entry.quote?.freshness_status === 'synthetic'
+                                : rowQuote?.freshness_status === 'synthetic'
                                   ? '#b087d9'
                                   : '#8993a1';
-                          const quoteTooltip = entry.quote
-                            ? `${entry.quote.source} · ${entry.quote.freshness_status.replaceAll('_', ' ')} · Observed ${new Date(entry.quote.market_timestamp).toLocaleString(undefined, { timeZone: entry.timezone })}`
+                          const quoteTooltip = rowQuote
+                            ? `${rowQuote.source} · ${rowQuote.freshness_status.replaceAll('_', ' ')} · Observed ${new Date(rowQuote.market_timestamp).toLocaleString(undefined, { timeZone: entry.timezone })}`
                             : 'Quote unavailable';
                           return (
                             <div className="watchlist-row" key={entry.instrument_id}>
@@ -1685,7 +1745,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                   <strong>{entry.symbol}</strong>
                                   <small>{entry.venue}</small>
                                   <span
-                                    aria-label={entry.quote ? `Freshness: ${entry.quote.freshness_status.replaceAll('_', ' ')}` : 'Freshness: unavailable'}
+                                    aria-label={rowQuote ? `Freshness: ${rowQuote.freshness_status.replaceAll('_', ' ')}` : 'Freshness: unavailable'}
                                     style={{
                                       display: 'inline-block',
                                       width: 7,
@@ -1698,15 +1758,23 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                   />
                                 </span>
                                 <span className="watchlist-number">
-                                  {entry.quote ? formatMoney(entry.quote.close, entry.currency) : '—'}
+                                  {rowQuote ? formatMoney(rowQuote.close, entry.currency) : '—'}
                                 </span>
-                                <span className={`watchlist-number ${changeClass}`}>
+                                <span
+                                  className={`watchlist-number ${changeClass}`}
+                                  title={rowQuote?.change_basis ?? rowQuote?.change_reason ?? 'Change unavailable'}
+                                >
                                   {change === null ? '—' : formatMoney(change, entry.currency)}
+                                  {rowQuote?.change_basis?.includes('unadjusted') && <sup title={rowQuote.change_basis} aria-label={rowQuote.change_basis}>*</sup>}
                                 </span>
-                                <span className={`watchlist-number ${changeClass}`}>
+                                <span
+                                  className={`watchlist-number ${changeClass}`}
+                                  title={entry.quote?.change_basis ?? entry.quote?.change_reason ?? 'Change unavailable'}
+                                >
                                   {percentChange === null || percentChange === undefined
                                     ? '—'
                                     : `${Number(percentChange).toFixed(2)}%`}
+                                  {entry.quote?.change_basis?.includes('unadjusted') && <sup title={entry.quote.change_basis} aria-label={entry.quote.change_basis}>*</sup>}
                                 </span>
                               </button>
                               <button
@@ -1734,8 +1802,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                             ? formatMoney(detailPrice, activeWatchlistEntry?.currency ?? selectedInstrument?.currency ?? 'INR')
                             : '—'}
                         </strong>
-                        {activeWatchlistEntry?.quote?.is_current_session
-                          && activeWatchlistEntry.quote.absolute_change !== null
+                        {activeWatchlistEntry?.quote?.absolute_change !== null
                           && activeWatchlistEntry?.quote?.absolute_change !== undefined
                           && activeWatchlistEntry.quote.percent_change !== null
                           && activeWatchlistEntry.quote.percent_change !== undefined && (
@@ -1750,12 +1817,19 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                           <button
                             className="secondary-button"
                             type="button"
-                            onClick={() => setLiveFeedEnabled((enabled) => !enabled)}
+                            onClick={() => {
+                              if (selectedProvider === 'dhan') {
+                                setLiveFeedPaused((paused) => !paused);
+                              } else {
+                                setLiveFeedManuallyEnabled((enabled) => !enabled);
+                              }
+                            }}
                           >{liveFeedEnabled ? 'Pause live feed' : 'Start live feed'}</button>
                         )}
                         {liveFeedEnabled && liveFeedStatus !== 'not_configured' && (
                           <small role="status">
                             Live feed: {liveFeedLabel}{liveFeedMessage ? ` · ${liveFeedMessage}` : ''}
+                            {liveFeedHealth && ` · Last packet: ${liveFeedHealth.last_successful_packet_at ? new Date(liveFeedHealth.last_successful_packet_at).toLocaleTimeString() : 'none'} · Consecutive failures: ${liveFeedHealth.consecutive_failure_count}`}
                             {liveFeedStatus === 'market_closed' && ` · Last snapshot: ${liveLastSnapshotAt ? new Date(liveLastSnapshotAt).toLocaleString() : 'Not available'}`}
                           </small>
                         )}
@@ -2219,7 +2293,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         ? <button className="secondary-button" type="button" onClick={() => void changeWatchlistInstrument(selectedInstrument.id, false, selectedInstrument.symbol)}>Remove from watchlist</button>
                         : <button className="secondary-button" type="button" onClick={() => void changeWatchlistInstrument(selectedInstrument.id, true, selectedInstrument.symbol)}>Add to watchlist</button>}
                       <button className="secondary-button" type="button" onClick={() => void loadMarketQuote(selectedInstrument, true)} disabled={loadingMarketQuote}>{loadingMarketQuote ? 'Loading quote…' : 'Refresh instrument price'}</button>
-                      {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedLabel}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}</p>}
+                      {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedLabel}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}{liveFeedHealth && <> Last successful packet: {liveFeedHealth.last_successful_packet_at ? new Date(liveFeedHealth.last_successful_packet_at).toLocaleTimeString() : 'none'}.{liveFeedHealth.consecutive_failure_count > 0 && ` Consecutive failures: ${liveFeedHealth.consecutive_failure_count}.`}</>}</p>}
                       {displayedMarketQuote && <div className="market-quote" aria-live="polite">
                         <div className="section-heading"><div><p className="eyebrow">{displayedMarketQuote.data_type === 'daily_close' ? 'HISTORICAL DAILY CLOSE' : displayedMarketQuote.data_type === 'live_tick' ? 'LIVE WEBSOCKET TICK' : displayedMarketQuote.data_type === 'provider_snapshot' ? 'LATEST REST SNAPSHOT' : 'LATEST PROVIDER QUOTE'}</p><h3>{formatMoney(displayedMarketQuote.bar.close, displayedMarketQuote.currency)}</h3></div><span className={`freshness-badge freshness-${displayedMarketQuote.freshness_status}`}>{displayedMarketQuote.freshness_status.replaceAll('_', ' ')}</span></div>
                         <p className="market-provenance">{displayedMarketQuote.freshness_message} Source: {displayedMarketQuote.source} · Market timestamp: {new Date(displayedMarketQuote.market_timestamp).toLocaleString()} · Observation age: {Math.floor(displayedMarketQuote.market_age_seconds)}s · Retrieved: {new Date(displayedMarketQuote.retrieved_at).toLocaleString()} · {displayedMarketQuote.is_cached ? 'Cached' : 'Provider response'} · {displayedMarketQuote.is_synthetic ? 'Synthetic' : displayedMarketQuote.is_verified ? 'Verified mapping' : 'Unverified mapping'}</p>

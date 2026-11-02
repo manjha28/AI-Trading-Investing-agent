@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 import app.models
 import app.models.alerts
+import app.models.strategies
 from app.config import settings
 from app.db import Base
 

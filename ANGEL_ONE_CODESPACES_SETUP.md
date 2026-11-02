@@ -1,8 +1,13 @@
 # Angel One SmartAPI setup in GitHub Codespaces
 
 This guide configures Angel One for **market data** in Trading Copilot. It does
-not connect an Angel One broker account for holdings, and it cannot place
-orders. All prices and analysis are decision support, not investment advice.
+not configure an Angel One execution account or perform any order operation;
+follow only the market-data steps below. The current broker API surface remains
+read-only. The separately authorized Dhan/Delta execution direction is not
+implemented by this guide and, when implemented, must be disabled by default,
+explicitly activated by the owner, and never submit real orders during
+development, automated tests, or CI. All prices and analysis are decision
+support, not investment advice.
 
 ## 1. Get the SmartAPI API key
 
@@ -200,7 +205,8 @@ or migrations are not ready; resolve that before connecting a provider.
    returned the data.
 
 Do not treat a successful login or broker connection as proof that market data
-is live. Do not place orders; the application is read-only.
+is live. These steps only configure market-data access; they do not activate or
+validate trading execution.
 
 ## Troubleshooting
 

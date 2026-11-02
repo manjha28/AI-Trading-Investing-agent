@@ -1,6 +1,6 @@
 # Trading Copilot
 
-A mobile-first foundation for an integrated AI trading and investing copilot. Broker integrations are read-only and disabled by default; there is no broker order placement.
+A mobile-first foundation for an integrated AI trading and investing copilot, evolving to support automated execution through Dhan and Delta Exchange India. The current broker API surface remains read-only: order execution is authorized product scope but has not yet been implemented.
 
 ## Prerequisites
 - Python 3.11 or newer
@@ -90,7 +90,7 @@ curl -i http://127.0.0.1:5173/api/v1/ready
 - FastAPI application with CORS configuration
 - Liveness and database-readiness endpoints
 - PostgreSQL connection, Alembic migrations, user registration/login/logout, and session-backed identity
-- Single-use email verification, encrypted app-based TOTP secrets, per-session 2FA verification, and read-only broker connections
+- Single-use email verification, encrypted app-based TOTP secrets, per-session 2FA verification, and broker connections; the current broker API surface is read-only
 - Owner-scoped portfolio create/list/read endpoints with ISO currency validation
 - Password hashing, HttpOnly session cookies, CSRF checks on authenticated mutations, and user-isolation tests
 - Portfolio transaction ledger for deposits, withdrawals, dividends, and long-only cash-equity buys/sells
@@ -138,7 +138,7 @@ Migration `0015_research_sources` adds `research_sources` and `research_notes`. 
 
 ## Position theses (M6.1)
 
-A thesis records why you hold a position. Routes live under `/api/v1/portfolios/{portfolio_id}/theses`, require a verified email, and use CSRF on mutations. Output is decision support, not investment advice; nothing places or simulates an order.
+A thesis records why you hold a position. Routes live under `/api/v1/portfolios/{portfolio_id}/theses`, require a verified email, and use CSRF on mutations. Thesis output is decision support, not investment advice; execution is a separately authorized product capability and is not implemented in the current source.
 
 - `GET/POST /theses`, `GET/PATCH/DELETE /theses/{id}`, `GET /theses/{id}/revisions`, and `GET /theses/coverage`.
 - A thesis is tied to a portfolio holding that is linked to a market instrument. Only one `active` thesis may exist per (user, portfolio, instrument); `invalidated` and `closed` theses are kept.
@@ -196,16 +196,26 @@ MARKET_DATA_SCHEDULER_ENABLED=false
 
 Provider keys belong in the backend environment only. The default chain does not read Twelve Data or Finnhub credentials; add either provider explicitly to `MARKET_DATA_PROVIDERS` to opt in. yfinance requires no API key. The detail-page history uses lightweight-charts for native candlesticks and volume, with a line toggle and crosshair OHLC readout. Values remain full precision in the API and CSV; the history table displays prices to two decimal places.
 
-## Read-only broker connections (M3)
+## Delta public research (M2)
 
-Broker endpoints only read profile, holdings, positions, order history, and funds. There is deliberately no broker order placement, modification, or cancellation method or endpoint. Broker holdings and positions are stored in a separate user-scoped mirror and do not modify the manual portfolio ledger. Reconciliation imports create ordinary manual buy/sell ledger entries only after the user confirms each difference. The `mock_broker` is always available but returns fixed, clearly synthetic demo values.
+Delta Research is disabled by default and uses only public product, ticker, and candle data. It does not use Delta credentials, account channels, or trading endpoints. Enable it with `DELTA_RESEARCH_ENABLED=true`; set `DELTA_RESEARCH_DB_PATH` to an SQLite file on a persistent mounted volume (for example, `/var/lib/trading-copilot/delta-research.sqlite3`). The file contains public research data only and is separate from the application ledger and PostgreSQL database. If the path is unset or points to ephemeral storage, collection is unavailable or data will be lost when that storage is replaced.
+
+`DELTA_RESEARCH_REFRESH_SECONDS` controls the public REST snapshot cadence (default 60 seconds; minimum 30). The module uses the public India REST API and `wss://public-socket.india.delta.exchange`; feed connection state, last packet time, reconnects, and dropped event counts are available through the authenticated Delta Research status page/API. All Delta Research API routes are authenticated and email-verified, read-only, and labeled decision support, not investment advice.
+
+## Broker connections and authorized execution direction
+
+The current broker endpoints read profile, holdings, positions, order history, and funds. Broker order placement, modification, cancellation, and live execution are not implemented in the current source. Broker holdings and positions are stored in a separate user-scoped mirror and do not modify the manual portfolio ledger. Reconciliation imports create ordinary manual buy/sell ledger entries only after the user confirms each difference. The `mock_broker` is always available but returns fixed, clearly synthetic demo values.
+
+The approved product direction authorizes Dhan and Delta Exchange India execution adapters, strategy-driven entries and exits, order/fill lifecycle management, position reconciliation, stop-losses, targets, trailing stops, risk management, and isolated paper-trading research. This documentation change does not implement those capabilities or authorize any broker account. When implemented, live execution must be disabled by default and require explicit owner activation. Development, automated tests, and CI must never submit real broker orders. Paper-trading records must remain clearly labelled and isolated from live orders, fills, and accounting.
+
+Execution functionality must retain verified authentication, per-session two-factor verification where required, CSRF protection on mutations, owner-scoped access, backend-only credentials, and audit records for order intents, risk decisions, and lifecycle changes. Risk checks must fail closed when required evidence is missing, stale, synthetic, unverifiable, or currency-incompatible. Signals alone never authorize an order.
 
 Broker API routes are under `/api/v1/brokers`:
 
 - `GET /api/v1/brokers` — supported brokers and the current user's connection status.
 - `POST /api/v1/brokers/{slug}/connect` — starts the broker's official redirect/consent flow. Angel One is explicitly pending; Trading Copilot never collects broker passwords, PINs, or OTPs.
 - `GET /api/v1/brokers/{slug}/callback` — handles broker callback and stores encrypted tokens.
-- `POST /api/v1/brokers/{slug}/sync` — refreshes the read-only holdings/positions mirror idempotently.
+- `POST /api/v1/brokers/{slug}/sync` — refreshes the current read-only holdings/positions mirror idempotently.
 - `GET /api/v1/brokers/{slug}/mirror?kind=holding|position` — reads the current user's mirror.
 - `GET /api/v1/brokers/{slug}/account` — reads profile, funds, and order history from the connected broker; never returns credentials.
 - `GET /api/v1/brokers/{slug}/reconciliation?portfolio_id=...` — compares broker holdings with the selected manual portfolio.
@@ -257,7 +267,7 @@ Never put API keys in frontend code or commit `.env` files. Market data licences
 
 ## Continuation checkpoint (2026-10-22)
 
-The current source includes email verification, app-based TOTP, read-only broker connections, Phase 4 market-data/valuation, M5.1 corporate actions, and M5.2 sourced research, and M6.1 position theses. Migration `0016_position_theses` is the repository's current Alembic head and must be applied with `cd backend && alembic upgrade head` in each environment. Corporate-action tests cover split, bonus, dividend, idempotent application, reversal, and user isolation. Research tests cover unsourced rejection, the SSRF guard, hash deduplication and user isolation. Thesis tests cover ladder validation, currency mismatch, the one-active rule, coverage, revisions and user isolation. Remaining milestones are deterministic indicators/risk and alert-rule validation (Phase 6), evidence packs/reports/optional narration/Telegram (Phase 7), and Phase 8 polish and deployment verification. Public market-data provider availability and live broker credentials still require environment-specific validation.
+This dated checkpoint records an earlier source snapshot: email verification, app-based TOTP, broker connections with a read-only API surface, market-data/valuation, corporate actions, sourced research, and position theses. The product direction has since been authorized to include guarded automated execution, but execution remains unimplemented until separately built, tested, and provider-validated. Public market-data provider availability and live broker credentials still require environment-specific validation.
 
 ## UI Redesign Handoff
 

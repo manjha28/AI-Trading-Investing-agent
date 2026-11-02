@@ -900,3 +900,4 @@ class PositionThesisRevision(Base):
 
 
 from app.models.alerts import AlertEvent, AlertRule  # noqa: F401
+from app.models.strategies import Strategy, StrategySignal, StrategyVersion  # noqa: F401

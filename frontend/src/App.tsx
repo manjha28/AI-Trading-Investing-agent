@@ -1,4 +1,4 @@
-import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ReceiptText, ShieldCheck, Wallet } from 'lucide-react';
+import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, FlaskConical, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ReceiptText, ShieldCheck, Target, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { apiRequest } from './api';
 import { useWorkspace } from './components/useWorkspace';
@@ -7,7 +7,9 @@ import { Alerts } from './pages/Alerts';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
 import { CorporateActions } from './pages/CorporateActions';
+import { DeltaResearchPage } from './pages/DeltaResearch';
 import { JournalPage } from './pages/Journal';
+import { Strategies } from './pages/Strategies';
 import { MarketDataPage } from './pages/MarketData';
 import { OverviewPage } from './pages/Overview';
 import { PortfolioSetupPage } from './pages/PortfolioSetup';
@@ -145,6 +147,10 @@ export default function App() {
                 ? 'Corporate actions'
                 : activeView === 'research'
                   ? 'Research'
+                  : activeView === 'delta-research'
+                    ? 'Delta Research'
+                    : activeView === 'strategies'
+                      ? 'Strategies'
               : 'Transactions';
 
   return (
@@ -172,6 +178,8 @@ export default function App() {
           <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={17} /><span>Alerts</span></button>
           <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={17} /><span>Corporate actions</span></button>
           <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={17} /><span>Research</span></button>
+          <button className={activeView === 'delta-research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('delta-research')}><FlaskConical size={17} /><span>Delta Research</span></button>
+          <button className={activeView === 'strategies' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('strategies')}><Target size={17} /><span>Strategies</span></button>
         </nav>
         <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span>Paper ledger only</span><span>Market data: {marketDataStatus}</span></div>
         <button className="signout-button" onClick={signOut}><LogOut size={16} /><span>Sign out</span></button>
@@ -209,10 +217,14 @@ export default function App() {
 
         {activeView === 'corporate-actions' ? (
           <CorporateActions portfolioId={portfolioId} watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
+        ) : activeView === 'delta-research' ? (
+          <DeltaResearchPage />
         ) : activeView === 'research' ? (
           <Research watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
         ) : activeView === 'alerts' ? (
           <Alerts portfolios={portfolios} portfolioId={portfolioId} />
+        ) : activeView === 'strategies' ? (
+          <Strategies />
         ) : activeView === 'brokers' ? (
           <>
             {user.email_verified && twoFactorStatus && !twoFactorStatus.session_verified && twoFactorPanel}
@@ -270,8 +282,10 @@ export default function App() {
         <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={18} /><span>Markets</span></button>
         <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={18} /><span>Brokers</span></button>
         <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={18} /><span>Alerts</span></button>
+        <button className={activeView === 'strategies' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('strategies')}><Target size={18} /><span>Strategies</span></button>
         <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={18} /><span>Actions</span></button>
         <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={18} /><span>Research</span></button>
+        <button className={activeView === 'delta-research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('delta-research')}><FlaskConical size={18} /><span>Delta</span></button>
       </nav>
     </div>
   );

@@ -44,6 +44,7 @@ from app.market_data import (
     ProviderHealth,
 )
 from app.models import (
+    CorporateAction,
     Instrument,
     InstrumentFundamental,
     InstrumentProviderIdentifier,
@@ -60,6 +61,7 @@ from app.models import (
     InstrumentResearchRun,
     InstrumentSourceLink,
     BrokerCredential,
+    BrokerMirror,
     UserMarketDataSettings,
     User,
     UserSession,
@@ -216,9 +218,30 @@ class DhanLiveFeedHub:
             "depth": None,
         }
         self._connection_counts = {"ticker": 0, "depth": 0}
+        self._feed_health: dict[str, dict[str, Any]] = {
+            feed: {
+                "connection_state": "idle",
+                "last_successful_packet_at": None,
+                "consecutive_failure_count": 0,
+                "unknown_response_count": 0,
+                "last_market_status_at": None,
+                "last_market_status_packet_hex": None,
+            }
+            for feed in ("ticker", "depth")
+        }
         self._depth_snapshot_times: dict[str, datetime] = {}
         self._tick_counters = {"upstream_received": 0, "clients_fanned_out": 0}
         self._counter_task: asyncio.Task[None] | None = None
+
+    def health(self, feed: str) -> dict[str, Any]:
+        state = self._feed_health[feed]
+        last_packet_at = state["last_successful_packet_at"]
+        return {
+            **state,
+            "last_successful_packet_at": (
+                last_packet_at.isoformat() if last_packet_at is not None else None
+            ),
+        }
 
     async def start(self) -> None:
         current_loop = asyncio.get_running_loop()
@@ -417,6 +440,7 @@ class DhanLiveFeedHub:
         instrument_id: str | None = None,
     ) -> int:
         delivered = 0
+        message = {**message, "feed_health": self.health(feed)}
         for subscriptions, queue in self._groups[feed].values():
             if instrument_id is not None and instrument_id not in subscriptions:
                 continue
@@ -448,15 +472,66 @@ class DhanLiveFeedHub:
         updates: asyncio.Queue[dict[str, tuple[str, str]]],
     ) -> None:
         async def status_callback(status: str) -> None:
+            health = self._feed_health[feed]
+            if status == "market_status_received":
+                health["last_market_status_at"] = datetime.now(timezone.utc)
+                health["connection_state"] = "active"
+                self._publish(
+                    feed,
+                    {
+                        "type": "status",
+                        "status": "active",
+                        "message": "Dhan market-status packet received.",
+                    },
+                )
+                return
+            if status == "packet_received":
+                health["last_successful_packet_at"] = datetime.now(timezone.utc)
+                health["consecutive_failure_count"] = 0
+                return
+            if status == "connection_failure":
+                health["consecutive_failure_count"] += 1
+                return
+            if status == "unknown_response":
+                health["unknown_response_count"] += 1
+                return
+            health["connection_state"] = status
             self._connection_counts[feed] = 1 if status == "active" else 0
-            self._publish(feed, {"type": "status", "status": status})
+            self._publish(
+                feed,
+                {
+                    "type": "status",
+                    "status": "market_closed" if status == "idle" else status,
+                },
+            )
             self._log_counts(feed)
 
         try:
             if feed == "ticker":
-                async for instrument_id, bar in self._adapter.stream_watchlist_market_quotes(
+                async for feed_event in self._adapter.stream_watchlist_market_quotes(
                     access_token, tokens, initial, updates, status_callback
                 ):
+                    if isinstance(feed_event[1], str):
+                        instrument_id, event_type, value = feed_event
+                        if event_type == "previous_close":
+                            self._publish(
+                                feed,
+                                {
+                                    "type": "previous_close",
+                                    "instrument_id": instrument_id,
+                                    "previous_close": value,
+                                    "source": "Dhan previous-close packet",
+                                },
+                                instrument_id,
+                            )
+                        elif event_type == "market_status":
+                            if isinstance(value, bytes):
+                                self._feed_health[feed][
+                                    "last_market_status_packet_hex"
+                                ] = value.hex()
+                            await status_callback("market_status_received")
+                        continue
+                    instrument_id, bar = feed_event
                     self._tick_counters["upstream_received"] += 1
                     self._tick_counters["clients_fanned_out"] += self._publish(
                         feed,
@@ -503,6 +578,11 @@ class DhanLiveFeedHub:
             )
         finally:
             self._connection_counts[feed] = 0
+            if self._feed_health[feed]["connection_state"] not in {
+                "failed",
+                "unavailable",
+            }:
+                self._feed_health[feed]["connection_state"] = "idle"
             self._log_counts(feed)
             if self._tasks[feed] is asyncio.current_task():
                 self._tasks[feed] = None
@@ -2064,6 +2144,8 @@ class QuoteResponse(BaseModel):
     market_age_seconds: float
     absolute_change: Decimal | None = None
     percent_change: Decimal | None = None
+    change_basis: str | None = None
+    change_reason: str | None = None
     data_type: Literal[
         "provider_quote", "provider_snapshot", "live_tick", "daily_close"
     ]
@@ -2101,6 +2183,8 @@ class WatchlistQuoteResponse(BaseModel):
     close: Decimal
     absolute_change: Decimal | None = None
     percent_change: Decimal | None = None
+    change_basis: str | None = None
+    change_reason: str | None = None
 
 
 class WatchlistEntryResponse(BaseModel):
@@ -4062,7 +4146,7 @@ def get_watchlist(
                 MarketBar.is_synthetic.is_(instrument.is_synthetic),
             )
             .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
-            .limit(10)
+            .limit(30)
         ).all()
         distinct_bars: list[MarketBar] = []
         seen_timestamps: set[datetime] = set()
@@ -4071,29 +4155,84 @@ def get_watchlist(
                 continue
             seen_timestamps.add(bar.timestamp)
             distinct_bars.append(bar)
-            if len(distinct_bars) == 2:
-                break
-        last_price = quote.close if quote is not None else (
-            distinct_bars[0].close if distinct_bars else None
+        zone = ZoneInfo(instrument.timezone)
+
+        def bar_for_date(session_date: date) -> MarketBar | None:
+            return next(
+                (
+                    bar for bar in distinct_bars
+                    if _utc(bar.timestamp).astimezone(zone).date() == session_date
+                ),
+                None,
+            )
+
+        market_state = _market_session_state(instrument, now)
+        quote_timestamp = _utc(quote.timestamp) if quote is not None else None
+        is_current_session = (
+            quote_timestamp is not None
+            and market_state == "open"
+            and _is_current_market_session(instrument, quote_timestamp, now)
         )
-        previous_close = distinct_bars[1].close if len(distinct_bars) > 1 else None
-        absolute_change = (
-            last_price - previous_close
-            if last_price is not None and previous_close is not None
-            else None
-        )
-        percent_change = (
-            absolute_change / previous_close * Decimal("100")
-            if absolute_change is not None and previous_close not in (None, Decimal("0"))
-            else None
-        )
+        usable_live_quote = False
+        if is_current_session and quote is not None:
+            usable_live_quote, _quote_reason, _quote_evidence = classify_quote(
+                quote, instrument, None, now
+            )
+            usable_live_quote = (
+                usable_live_quote
+                and _quote_evidence["quote_freshness_status"] == "fresh"
+            )
+
+        current_price: Decimal | None = None
+        price_date: date | None = None
+        previous_bar: MarketBar | None = None
+        close_basis_bar: MarketBar | None = None
+        if usable_live_quote and quote is not None and quote_timestamp is not None:
+            current_price = quote.close
+            price_date = quote_timestamp.astimezone(zone).date()
+            prior_reference = datetime.combine(
+                price_date, datetime.min.time(), tzinfo=zone
+            ).astimezone(timezone.utc)
+            previous_bar = bar_for_date(
+                _expected_market_session_date(instrument, prior_reference)
+            )
+        elif market_state == "closed":
+            expected_date = _expected_market_session_date(instrument, now)
+            close_basis_bar = bar_for_date(expected_date)
+            if close_basis_bar is not None:
+                current_price = close_basis_bar.close
+                price_date = expected_date
+                prior_reference = datetime.combine(
+                    expected_date, datetime.min.time(), tzinfo=zone
+                ).astimezone(timezone.utc)
+                previous_bar = bar_for_date(
+                    _expected_market_session_date(instrument, prior_reference)
+                )
+
+        absolute_change = percent_change = None
+        change_basis = None
+        change_reason = None
+        if current_price is not None and price_date is not None:
+            (
+                absolute_change,
+                percent_change,
+                change_basis,
+                change_reason,
+            ) = _daily_close_change(
+                db,
+                user.id,
+                instrument,
+                current_price,
+                price_date,
+                previous_bar,
+                basis="live" if usable_live_quote else "at close",
+            )
+        else:
+            change_reason = "stored real daily close for the expected session unavailable"
         quote_response = None
-        if quote is not None:
+        if usable_live_quote and quote is not None:
             retrieved_at = _utc(quote.retrieved_at)
             quote_timestamp = _utc(quote.timestamp)
-            is_current_session = _is_current_market_session(
-                instrument, quote_timestamp, now
-            )
             _usable, quote_reason, quote_evidence = classify_quote(
                 quote, instrument, None, now
             )
@@ -4121,11 +4260,13 @@ def get_watchlist(
                 market_age_seconds=max(0.0, quote_evidence["quote_timestamp_age_seconds"]),
                 data_type=quote_evidence["quote_data_type"],
                 close=quote.close,
-                absolute_change=absolute_change if is_current_session else None,
-                percent_change=percent_change if is_current_session else None,
+                absolute_change=absolute_change,
+                percent_change=percent_change,
+                change_basis=change_basis,
+                change_reason=change_reason,
             )
-        elif distinct_bars:
-            latest_bar = distinct_bars[0]
+        elif close_basis_bar is not None:
+            latest_bar = close_basis_bar
             freshness = _freshness(
                 db,
                 instrument.id,
@@ -4134,9 +4275,6 @@ def get_watchlist(
                 now=now,
             )
             quote_timestamp = _utc(latest_bar.timestamp)
-            is_current_session = _is_current_market_session(
-                instrument, quote_timestamp, now
-            )
             quote_response = WatchlistQuoteResponse(
                 source=latest_bar.source,
                 retrieved_at=_utc(latest_bar.retrieved_at),
@@ -4146,7 +4284,7 @@ def get_watchlist(
                     if freshness.status != "never_fetched"
                     else "unavailable"
                 ),
-                is_current_session=is_current_session,
+                is_current_session=False,
                 is_synthetic=latest_bar.is_synthetic,
                 is_verified=any(
                     mapping.provider == latest_bar.source and mapping.is_verified
@@ -4158,8 +4296,41 @@ def get_watchlist(
                 ),
                 data_type="daily_close",
                 close=latest_bar.close,
-                absolute_change=absolute_change if is_current_session else None,
-                percent_change=percent_change if is_current_session else None,
+                absolute_change=absolute_change,
+                percent_change=percent_change,
+                change_basis=change_basis,
+                change_reason=change_reason,
+            )
+        elif quote is not None:
+            retrieved_at = _utc(quote.retrieved_at)
+            quote_timestamp = _utc(quote.timestamp)
+            _usable, quote_reason, quote_evidence = classify_quote(
+                quote, instrument, None, now
+            )
+            quote_response = WatchlistQuoteResponse(
+                source=quote.source,
+                retrieved_at=retrieved_at,
+                freshness="fresh" if quote_reason is None else "stale",
+                freshness_status=quote_evidence["quote_freshness_status"],
+                is_current_session=False,
+                is_synthetic=quote.is_synthetic,
+                is_verified=any(
+                    mapping.provider == (
+                        "dhan"
+                        if quote.source == "dhan_ws"
+                        else "angel_one"
+                        if quote.source == "angel_one_ws"
+                        else quote.source
+                    ) and mapping.is_verified
+                    for mapping in instrument.provider_identifiers
+                ),
+                market_timestamp=quote_timestamp,
+                market_age_seconds=max(
+                    0.0, quote_evidence["quote_timestamp_age_seconds"]
+                ),
+                data_type=quote_evidence["quote_data_type"],
+                close=quote.close,
+                change_reason=change_reason,
             )
         result.append(
             WatchlistEntryResponse(
@@ -4440,6 +4611,48 @@ def _user_market_data_instrument_ids(db: Session, user_id: UUID) -> set[UUID]:
             if symbol in open_symbols and symbol not in linked:
                 linked[symbol] = instrument_id
         instrument_ids.update(linked.values())
+    broker_rows = list(db.scalars(
+        select(BrokerMirror).where(
+            BrokerMirror.user_id == user_id,
+            BrokerMirror.quantity != 0,
+            (
+                (BrokerMirror.kind == "holding")
+                | (
+                    (BrokerMirror.kind == "position")
+                    & (
+                        BrokerMirror.position_type.is_(None)
+                        | (BrokerMirror.position_type != "CLOSED")
+                    )
+                )
+            ),
+        )
+    ))
+    for row in broker_rows:
+        if not row.security_id:
+            continue
+        mappings = db.scalars(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.provider == row.broker,
+                InstrumentProviderIdentifier.is_verified.is_(True),
+                (
+                    InstrumentProviderIdentifier.provider_instrument_id
+                    == row.security_id
+                )
+                | InstrumentProviderIdentifier.provider_instrument_id.like(
+                    f"{row.security_id}|%"
+                ),
+            )
+        )
+        for mapping in mappings:
+            instrument = db.get(Instrument, mapping.instrument_id)
+            if (
+                instrument is not None
+                and instrument.symbol.strip().upper().removesuffix("-EQ")
+                == row.symbol.strip().upper().removesuffix("-EQ")
+                and mapping.provider_symbol.strip().upper().removesuffix("-EQ")
+                == row.symbol.strip().upper().removesuffix("-EQ")
+            ):
+                instrument_ids.add(instrument.id)
     return instrument_ids
 
 
@@ -5810,12 +6023,39 @@ async def dhan_quote_stream(
 
 def _live_quote_change(
     db: Session,
+    user_id: UUID,
     instrument: Instrument,
     quote_timestamp: datetime,
     close: Decimal,
-) -> tuple[Decimal | None, Decimal | None]:
+    feed_previous_close: Decimal | None = None,
+) -> tuple[Decimal | None, Decimal | None, str | None]:
     zone = ZoneInfo(instrument.timezone)
     quote_day = quote_timestamp.astimezone(zone).date()
+    prior_reference = datetime.combine(
+        quote_day, datetime.min.time(), tzinfo=zone
+    ).astimezone(timezone.utc)
+    expected_previous_date = _expected_market_session_date(
+        instrument, prior_reference
+    )
+    if feed_previous_close is not None:
+        previous, adjustment = _adjust_previous_daily_close(
+            db, user_id, instrument, feed_previous_close, quote_day
+        )
+        change_basis = (
+            f"live · {quote_day.isoformat()} vs {expected_previous_date.isoformat()} "
+            f"· Dhan previous-close packet · {adjustment}"
+        )
+        if previous is None:
+            return None, None, change_basis
+        absolute_change = close - previous
+        percent_change = (
+            (absolute_change / previous * Decimal("100")).quantize(
+                Decimal("0.0001")
+            )
+            if previous != 0
+            else None
+        )
+        return absolute_change, percent_change, change_basis
     bars = db.scalars(
         select(MarketBar)
         .where(
@@ -5826,23 +6066,98 @@ def _live_quote_change(
         .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
         .limit(30)
     ).all()
-    previous = next(
+    previous_bar = next(
         (
-            bar.close
+            bar
             for bar in bars
-            if _utc(bar.timestamp).astimezone(zone).date() < quote_day
+            if _utc(bar.timestamp).astimezone(zone).date()
+            == expected_previous_date
         ),
         None,
     )
+    absolute_change, percent_change, basis, _reason = _daily_close_change(
+        db,
+        user_id,
+        instrument,
+        close,
+        quote_day,
+        previous_bar,
+        basis="live",
+    )
+    return absolute_change, percent_change, basis
+
+
+def _adjust_previous_daily_close(
+    db: Session,
+    user_id: UUID,
+    instrument: Instrument,
+    previous_close: Decimal,
+    price_date: date,
+) -> tuple[Decimal | None, str]:
+    actions = db.scalars(
+        select(CorporateAction)
+        .where(
+            CorporateAction.user_id == user_id,
+            CorporateAction.instrument_id == instrument.id,
+            CorporateAction.ex_date == price_date,
+        )
+        .order_by(CorporateAction.id)
+    ).all()
+    if not actions:
+        return previous_close, "unadjusted; corporate-action adjustment unavailable"
+
+    adjusted_close = previous_close
+    for action in actions:
+        if action.action_type == "split" and action.ratio is not None:
+            adjusted_close /= action.ratio
+        elif action.action_type == "bonus" and action.ratio is not None:
+            adjusted_close /= Decimal("1") + action.ratio
+        elif action.action_type == "dividend" and action.amount is not None:
+            adjusted_close -= action.amount
+        else:
+            return None, "unadjusted; corporate-action record is incomplete"
+    if adjusted_close <= Decimal("0"):
+        return None, "unadjusted; corporate-action adjustment is invalid"
+    sources = ", ".join(sorted({action.source for action in actions}))
+    return adjusted_close, f"adjusted; corporate-action source {sources}"
+
+
+def _daily_close_change(
+    db: Session,
+    user_id: UUID,
+    instrument: Instrument,
+    current_price: Decimal,
+    price_date: date,
+    previous_bar: MarketBar | None,
+    *,
+    basis: str,
+) -> tuple[Decimal | None, Decimal | None, str, str | None]:
+    if previous_bar is None:
+        return (
+            None,
+            None,
+            f"{basis} · {price_date.isoformat()}",
+            "stored real previous-session daily close unavailable",
+        )
+    previous_date = _utc(previous_bar.timestamp).astimezone(
+        ZoneInfo(instrument.timezone)
+    ).date()
+    previous, adjustment = _adjust_previous_daily_close(
+        db, user_id, instrument, previous_bar.close, price_date
+    )
+    change_basis = (
+        f"{basis} · {price_date.isoformat()} vs {previous_date.isoformat()} "
+        f"· {adjustment}"
+    )
     if previous is None:
-        return None, None
-    absolute_change = close - previous
+        return None, None, change_basis, adjustment
+    absolute_change = current_price - previous
     percent_change = (
         (absolute_change / previous * Decimal("100")).quantize(Decimal("0.0001"))
         if previous != 0
         else None
     )
-    return absolute_change, percent_change
+    return absolute_change, percent_change, change_basis, None
 
 
 @router.websocket("/watchlists/{watchlist_id}/stream")
@@ -5943,6 +6258,7 @@ async def dhan_watchlist_quote_stream(
 
     adapter = DhanAdapter()
     current_market_instruments: dict[str, Instrument] = {}
+    current_market_security_ids: dict[str, str] = {}
 
     async def resolve_subscriptions(
         detail_id: UUID | None,
@@ -5955,6 +6271,59 @@ async def dhan_watchlist_quote_stream(
                 )
             ).all()
         )
+        broker_rows = db.scalars(
+            select(BrokerMirror).where(
+                BrokerMirror.user_id == active_session.user_id,
+                BrokerMirror.quantity != 0,
+                (
+                    (BrokerMirror.kind == "holding")
+                    | (
+                        (BrokerMirror.kind == "position")
+                        & (
+                            BrokerMirror.position_type.is_(None)
+                            | (BrokerMirror.position_type != "CLOSED")
+                        )
+                    )
+                ),
+            )
+        ).all()
+        for broker_row in broker_rows:
+            if (
+                broker_row.kind == "position"
+                and (broker_row.product or "").strip().upper() == "CNC"
+                and broker_row.quantity < 0
+            ):
+                continue
+            if not broker_row.security_id:
+                continue
+            portfolio_mappings = db.scalars(
+                select(InstrumentProviderIdentifier).where(
+                    InstrumentProviderIdentifier.provider == adapter.slug,
+                    InstrumentProviderIdentifier.is_verified.is_(True),
+                    (
+                        InstrumentProviderIdentifier.provider_instrument_id
+                        == broker_row.security_id
+                    )
+                    | InstrumentProviderIdentifier.provider_instrument_id.like(
+                        f"{broker_row.security_id}|%"
+                    ),
+                )
+            ).all()
+            normalized_symbol = (
+                broker_row.symbol.strip().upper().removesuffix("-EQ")
+            )
+            for portfolio_mapping in portfolio_mappings:
+                portfolio_instrument = db.get(
+                    Instrument, portfolio_mapping.instrument_id
+                )
+                if (
+                    portfolio_instrument is not None
+                    and portfolio_instrument.symbol.strip().upper().removesuffix("-EQ")
+                    == normalized_symbol
+                    and portfolio_mapping.provider_symbol.strip().upper().removesuffix("-EQ")
+                    == normalized_symbol
+                ):
+                    entry_ids.add(portfolio_instrument.id)
         if detail_id is not None:
             entry_ids.add(detail_id)
         instruments = db.scalars(
@@ -5964,6 +6333,7 @@ async def dhan_watchlist_quote_stream(
         ).all() if entry_ids else []
         subscriptions: dict[str, tuple[str, str]] = {}
         current_market_instruments.clear()
+        current_market_security_ids.clear()
         supported_count = 0
         open_count = 0
         session_now = datetime.now(timezone.utc)
@@ -5995,10 +6365,25 @@ async def dhan_watchlist_quote_stream(
                     instrument.country,
                     session_now.isoformat(),
                 )
+            supported_mapping_segments = {
+                "NSE_EQ",
+                "NSE_FNO",
+                "NSE_CURRENCY",
+                "BSE_EQ",
+                "BSE_FNO",
+                "BSE_CURRENCY",
+                "MCX_COMM",
+            }
+            mapping_has_supported_segment = (
+                mapping_segment in supported_mapping_segments
+            )
             if (
                 instrument.country.upper() != "IN"
                 or instrument.currency.upper() != "INR"
-                or instrument.asset_class != "equity"
+                or (
+                    instrument.asset_class != "equity"
+                    and not mapping_has_supported_segment
+                )
                 or instrument.is_synthetic
             ):
                 logger.info(
@@ -6031,6 +6416,8 @@ async def dhan_watchlist_quote_stream(
                 continue
             open_count += 1
             if mapping is None:
+                if instrument.asset_class != "equity":
+                    continue
                 mapping_values = await asyncio.to_thread(
                     adapter.find_verified_equity_mapping,
                     instrument.symbol,
@@ -6080,17 +6467,22 @@ async def dhan_watchlist_quote_stream(
                 db.add(mapping)
                 mapping_value = mapping.provider_instrument_id
             else:
-                exchange_segment = (
+                exchange_segment = mapping_segment or (
                     "NSE_EQ"
                     if instrument.venue.upper() in {"NSE", "XNSE"}
                     else "BSE_EQ"
                 )
+            if exchange_segment not in supported_mapping_segments:
+                continue
             mapping.last_seen_at = datetime.now(timezone.utc)
             subscriptions[str(instrument.id)] = (
                 exchange_segment,
                 mapping.provider_instrument_id,
             )
             current_market_instruments[str(instrument.id)] = instrument
+            current_market_security_ids[str(instrument.id)] = (
+                mapping.provider_instrument_id.partition("|")[0]
+            )
             logger.info(
                 "watchlist_instrument_session symbol=%s exchange=%s "
                 "provider_mapping=%s mapping_segment=%s session_state=%s "
@@ -6125,12 +6517,18 @@ async def dhan_watchlist_quote_stream(
         status: str,
         message: str | None = None,
         last_snapshot_at: datetime | None = None,
+        feed_health: dict[str, Any] | None = None,
     ) -> None:
         nonlocal client_messages_sent
         await websocket.send_json({
             "type": "status",
             "status": status,
             "message": message,
+            "feed_health": (
+                feed_health
+                if feed_health is not None
+                else dhan_live_feed_hub.health("ticker")
+            ),
             "last_snapshot_at": (
                 _utc(last_snapshot_at).isoformat()
                 if last_snapshot_at is not None
@@ -6235,19 +6633,23 @@ async def dhan_watchlist_quote_stream(
     stream_task = asyncio.current_task()
     client_exit_reason = "handler_completed"
     market_closed_status_sent = False
+    active_detail_id: UUID | None = None
+    feed_previous_closes: dict[str, Decimal] = {}
 
     async def monitor_client() -> None:
         nonlocal client_exit_reason
         nonlocal market_closed_status_sent
         nonlocal client_messages_sent
+        nonlocal active_detail_id
         try:
             while True:
                 message = await websocket.receive_text()
                 if message == "ping":
-                    if current_market_instruments and not any(
+                    market_is_open = any(
                         _market_session_state(instrument) == "open"
                         for instrument in current_market_instruments.values()
-                    ):
+                    )
+                    if current_market_instruments and not market_is_open:
                         if not market_closed_status_sent:
                             await send_status(
                                 "market_closed",
@@ -6255,6 +6657,18 @@ async def dhan_watchlist_quote_stream(
                                 watchlist_snapshot_time(),
                             )
                             market_closed_status_sent = True
+                            await dhan_live_feed_hub.update(
+                                "ticker", group_id, {}
+                            )
+                    elif market_closed_status_sent and market_is_open:
+                        desired, _valid_count, _open_count = await resolve_subscriptions(
+                            active_detail_id
+                        )
+                        if desired:
+                            await dhan_live_feed_hub.update(
+                                "ticker", group_id, desired
+                            )
+                            market_closed_status_sent = False
                     continue
                 try:
                     payload = json.loads(message)
@@ -6264,6 +6678,7 @@ async def dhan_watchlist_quote_stream(
                 if not isinstance(payload, dict) or payload.get("type") != "subscriptions":
                     continue
                 detail_id = valid_detail_id(payload.get("detail_instrument_id"))
+                active_detail_id = detail_id
                 try:
                     desired, valid_count, open_count = await resolve_subscriptions(detail_id)
                 except HTTPException:
@@ -6329,11 +6744,23 @@ async def dhan_watchlist_quote_stream(
         while True:
             event = await feed_queue.get()
             if event["type"] == "status":
-                await send_status(event["status"])
+                await send_status(
+                    event["status"],
+                    feed_health=event.get("feed_health"),
+                )
+                continue
+            if event["type"] == "previous_close":
+                previous_close = event.get("previous_close")
+                if isinstance(previous_close, Decimal):
+                    feed_previous_closes[event["instrument_id"]] = previous_close
                 continue
             if event["type"] == "error":
                 client_exit_reason = "upstream_error"
-                await send_status("unavailable", event["message"])
+                await send_status(
+                    "unavailable",
+                    event["message"],
+                    feed_health=event.get("feed_health"),
+                )
                 reason = event["message"][:120]
                 close_code = _dhan_feed_close_code(
                     event.get("status_code"), "watchlist_upstream_http_rejected"
@@ -6406,8 +6833,13 @@ async def dhan_watchlist_quote_stream(
             quote.is_synthetic = False
             db.commit()
             db.refresh(quote)
-            absolute_change, percent_change = _live_quote_change(
-                db, instrument, bar.timestamp, bar.close
+            absolute_change, percent_change, change_basis = _live_quote_change(
+                db,
+                active_session.user_id,
+                instrument,
+                bar.timestamp,
+                bar.close,
+                feed_previous_closes.get(instrument_id),
             )
             response = _quote_response(
                 instrument,
@@ -6424,10 +6856,14 @@ async def dhan_watchlist_quote_stream(
                 "feed_active": True,
                 "absolute_change": absolute_change,
                 "percent_change": percent_change,
+                "change_basis": change_basis,
             })
             payload = {
                 "type": "tick",
+                "instrument_id": instrument_id,
+                "security_id": current_market_security_ids.get(instrument_id),
                 "quote": response.model_dump(mode="python"),
+                "feed_health": event.get("feed_health"),
             }
             payload_keys = list(payload)
             payload_types = {
@@ -6917,6 +7353,7 @@ def _quote_response(
     if (
         quote.source == "yfinance"
         and instrument.country.upper() == "IN"
+        and is_verified
         and evidence["quote_data_type"] == "daily_close"
         and freshness_status == "historical"
         and _market_session_state(instrument, now) == "closed"
@@ -7482,9 +7919,76 @@ def _backfill_instrument(
             "chunks": [],
             "reason": "synthetic_instrument_requires_relink",
         }
-    end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    start = (end - timedelta(days=365 * years)).replace(hour=0)
+    local_today = datetime.now(timezone.utc).astimezone(
+        ZoneInfo(instrument.timezone)
+    ).date()
+    end = datetime.combine(
+        local_today,
+        datetime_time.min,
+        ZoneInfo(instrument.timezone),
+    ).astimezone(timezone.utc)
+    start = (end - timedelta(days=365 * years)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     requested_start = start
+    bars_before = _count_real_daily_bars(db, instrument.id, start, end)
+    active_providers = _providers(provider)
+    if not active_providers:
+        attempted_at = datetime.now(timezone.utc)
+        reason = "no_real_provider_available"
+        _sync_record(
+            db,
+            instrument.id,
+            "1d",
+            source="unavailable",
+            attempted_at=attempted_at,
+            status="unavailable",
+            rows_received=0,
+            safe_error_code=reason,
+            requested_start=start,
+            requested_end=end,
+            requested_limit=MAX_BARS,
+            rows_written=0,
+            response_status=None,
+            safe_reason=reason,
+        )
+        _record_sync_attempt(
+            db,
+            instrument_id=instrument.id,
+            interval="1d",
+            provider="unavailable",
+            start=start,
+            end=end,
+            limit=MAX_BARS,
+            response_status=None,
+            rows_returned=0,
+            rows_written=0,
+            outcome="unavailable",
+            reason=reason,
+            reason_category=ReasonCategory.NO_MARKET_DATA_PROVIDER_CONFIGURED,
+            attempted_at=attempted_at,
+        )
+        db.commit()
+        return {
+            "instrument_id": str(instrument.id),
+            "symbol": instrument.symbol,
+            "status": "unavailable",
+            "bars_before": bars_before,
+            "bars_after": bars_before,
+            "chunks_attempted": 1,
+            "chunks_failed": 1,
+            "chunks": [{
+                "start": start,
+                "end": end,
+                "provider": "unavailable",
+                "response_status": None,
+                "rows_returned": 0,
+                "rows_written": 0,
+                "outcome": "unavailable",
+                "reason": reason,
+            }],
+            "reason": reason,
+        }
     dhan_mapping = db.scalar(
         select(InstrumentProviderIdentifier).where(
             InstrumentProviderIdentifier.instrument_id == instrument.id,
@@ -7550,7 +8054,7 @@ def _backfill_instrument(
         }
         succeeded = False
         rate_limited = False
-        for active_provider in _providers(provider):
+        for active_provider in active_providers:
             attempted_at = datetime.now(timezone.utc)
             detail["provider"] = active_provider.name
             provider_rows_returned = [0]
@@ -7583,7 +8087,7 @@ def _backfill_instrument(
                     "success" if detail["rows_written"] else "unchanged"
                 )
                 detail["reason"] = (
-                    None if detail["rows_written"] else "no_new_bars_written"
+                    None if detail["rows_written"] else "provider_data_already_stored"
                 )
                 _sync_record(
                     db,
@@ -7614,7 +8118,11 @@ def _backfill_instrument(
                     rows_written=detail["rows_written"],
                     outcome=detail["outcome"],
                     reason=detail["reason"],
-                    reason_category=_reason_category(detail["reason"]),
+                    reason_category=(
+                        None
+                        if detail["rows_written"]
+                        else ReasonCategory.PROVIDER_DATA_ALREADY_STORED
+                    ),
                     attempted_at=attempted_at,
                 )
                 succeeded = True
@@ -7824,6 +8332,48 @@ def backfill_open_holdings(
     results = []
     for instrument in instruments:
         if request_budget[0] <= 0:
+            now = datetime.now(timezone.utc)
+            zone = ZoneInfo(instrument.timezone)
+            end = datetime.combine(
+                now.astimezone(zone).date(),
+                datetime_time.min,
+                zone,
+            ).astimezone(timezone.utc)
+            start = end - timedelta(days=365 * years)
+            reason = "provider_request_cap_reached"
+            _sync_record(
+                db,
+                instrument.id,
+                "1d",
+                source="unavailable",
+                attempted_at=now,
+                status="unavailable",
+                rows_received=0,
+                safe_error_code=reason,
+                requested_start=start,
+                requested_end=end,
+                requested_limit=MAX_BARS,
+                rows_written=0,
+                response_status=None,
+                safe_reason=reason,
+            )
+            _record_sync_attempt(
+                db,
+                instrument_id=instrument.id,
+                interval="1d",
+                provider="unavailable",
+                start=start,
+                end=end,
+                limit=MAX_BARS,
+                response_status=None,
+                rows_returned=0,
+                rows_written=0,
+                outcome="partial",
+                reason=reason,
+                reason_category=ReasonCategory.PROVIDER_REQUEST_CAP_REACHED,
+                attempted_at=now,
+            )
+            db.commit()
             results.append({
                 "instrument_id": str(instrument.id),
                 "symbol": instrument.symbol,
@@ -7833,7 +8383,7 @@ def backfill_open_holdings(
                 "chunks_attempted": 0,
                 "chunks_failed": 0,
                 "chunks": [],
-                "reason": "provider_request_cap_reached",
+                "reason": reason,
             })
             continue
         results.append(_backfill_instrument(

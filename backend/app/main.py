@@ -10,7 +10,10 @@ from app.api.auth import router as auth_router
 from app.api.alerts import router as alerts_router
 from app.api.brokers import router as brokers_router
 from app.api.corporate_actions import router as corporate_actions_router
+from app.api.delta_research import router as delta_research_router
+from app.delta_research.collector import delta_research_manager
 from app.api.position_theses import router as position_theses_router
+from app.api.strategies import router as strategies_router
 from app.api.research import router as research_router
 from app.api.health import router as health_router
 from app.api.market_data import (
@@ -42,12 +45,17 @@ logging.getLogger("uvicorn.access").addFilter(BrokerCallbackAccessLogFilter())
 async def lifespan(_app: FastAPI):
     await dhan_live_feed_hub.start()
     scheduler_task = None
+    delta_task = None
     if settings.market_data_scheduler_enabled and "pytest" not in sys.modules:
         scheduler_task = asyncio.create_task(market_data_refresh_loop())
+    if settings.delta_research_enabled and "pytest" not in sys.modules:
+        delta_task = asyncio.create_task(delta_research_manager.start())
     try:
         yield
     finally:
         await dhan_live_feed_hub.stop()
+        if delta_task is not None:
+            await delta_research_manager.stop()
         if scheduler_task is not None:
             scheduler_task.cancel()
             try:
@@ -83,6 +91,8 @@ app.include_router(brokers_router, prefix="/api/v1")
 app.include_router(corporate_actions_router, prefix="/api/v1")
 app.include_router(research_router, prefix="/api/v1")
 app.include_router(position_theses_router, prefix="/api/v1")
+app.include_router(delta_research_router, prefix="/api/v1")
+app.include_router(strategies_router, prefix="/api/v1")
 
 
 @app.get("/")

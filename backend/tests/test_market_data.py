@@ -44,6 +44,7 @@ from app.market_data import (
     MarketDataProviderError,
 )
 from app.models import (
+    BrokerMirror,
     BrokerCredential,
     InstrumentProviderIdentifier,
     Instrument,
@@ -53,6 +54,7 @@ from app.models import (
     MarketQuote,
     UserMarketDataSettings,
     UserSession,
+    WatchlistInstrument,
 )
 from app.security import hash_token
 from app.provider_adapters import AngelOneProvider, BinanceProvider, DeltaExchangeProvider, UpstoxProvider
@@ -321,8 +323,11 @@ def test_nse_expected_session_date_skips_weekends_and_holidays() -> None:
 
 
 def test_watchlist_suppresses_change_outside_expected_market_session(
-    client: TestClient, test_engine
+    client: TestClient, test_engine, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        market_data, "_market_session_state", lambda *_args, **_kwargs: "closed"
+    )
     register(client, "watchlist-session@example.com")
     instrument = next(
         item
@@ -347,8 +352,14 @@ def test_watchlist_suppresses_change_outside_expected_market_session(
             db_instrument, now
         )
         zone = ZoneInfo(db_instrument.timezone)
+        previous_session_date = market_data._expected_market_session_date(
+            db_instrument,
+            datetime.combine(
+                session_date, datetime.min.time(), zone
+            ).astimezone(timezone.utc),
+        )
         for session_day, close in (
-            (session_date - timedelta(days=1), Decimal("85")),
+            (previous_session_date, Decimal("85")),
             (session_date, Decimal("90")),
         ):
             timestamp = datetime.combine(
@@ -367,11 +378,28 @@ def test_watchlist_suppresses_change_outside_expected_market_session(
                 retrieved_at=now,
                 is_synthetic=False,
             ))
+        previous_timestamp = datetime.combine(
+            previous_session_date, datetime.min.time(), zone
+        ).astimezone(timezone.utc)
+        quote_timestamp = datetime.combine(
+            session_date, datetime.min.time(), zone
+        ).replace(hour=15, minute=29).astimezone(timezone.utc)
+        session.add(MarketBar(
+            instrument_id=instrument_id,
+            interval="1m",
+            timestamp=previous_timestamp.replace(hour=10),
+            open=Decimal("50"),
+            high=Decimal("51"),
+            low=Decimal("49"),
+            close=Decimal("50"),
+            volume=Decimal("100"),
+            source="dhan",
+            retrieved_at=now,
+            is_synthetic=False,
+        ))
         session.add(MarketQuote(
             instrument_id=instrument_id,
-            timestamp=datetime.combine(
-                session_date, datetime.min.time(), zone
-            ).replace(hour=15, minute=29).astimezone(timezone.utc),
+            timestamp=quote_timestamp,
             open=Decimal("97"),
             high=Decimal("98"),
             low=Decimal("96"),
@@ -381,22 +409,82 @@ def test_watchlist_suppresses_change_outside_expected_market_session(
             retrieved_at=now,
             is_synthetic=False,
         ))
+        user_id = session.scalar(
+            select(market_data.WatchlistInstrument.user_id).where(
+                market_data.WatchlistInstrument.instrument_id == instrument_id
+            )
+        )
+        assert user_id is not None
+        live_change, _, _ = market_data._live_quote_change(
+            session,
+            user_id,
+            db_instrument,
+            quote_timestamp,
+            Decimal("97"),
+        )
+        assert live_change == Decimal("12")
+        feed_live_change, _, feed_change_basis = market_data._live_quote_change(
+            session,
+            user_id,
+            db_instrument,
+            quote_timestamp,
+            Decimal("97"),
+            feed_previous_close=Decimal("90"),
+        )
+        assert feed_live_change == Decimal("7")
+        assert feed_change_basis is not None
+        assert "Dhan previous-close packet" in feed_change_basis
         session.commit()
 
     response = client.get("/api/v1/market-data/watchlist")
     assert response.status_code == 200, response.text
     row = response.json()[0]
     assert row["timezone"] == "Asia/Kolkata"
-    assert row["quote"]["source"] == "dhan_ws"
-    assert row["quote"]["is_current_session"] is True
-    assert row["quote"]["absolute_change"] == "12.00000000"
+    assert row["quote"]["source"] == "yfinance"
+    assert row["quote"]["is_current_session"] is False
+    assert row["quote"]["absolute_change"] == "5.00000000"
     assert row["quote"]["percent_change"] is not None
+    assert "at close" in row["quote"]["change_basis"]
+    assert "unadjusted" in row["quote"]["change_basis"]
+
+    with Session(test_engine) as session:
+        user_id = session.scalar(
+            select(market_data.WatchlistInstrument.user_id).where(
+                market_data.WatchlistInstrument.instrument_id == instrument_id
+            )
+        )
+        assert user_id is not None
+        session.add(market_data.CorporateAction(
+            user_id=user_id,
+            instrument_id=instrument_id,
+            action_type="split",
+            ex_date=session_date,
+            ratio=Decimal("2"),
+            source="test",
+            created_at=now,
+        ))
+        session.commit()
+
+    adjusted_response = client.get("/api/v1/market-data/watchlist")
+    assert adjusted_response.status_code == 200, adjusted_response.text
+    adjusted_quote = adjusted_response.json()[0]["quote"]
+    assert adjusted_quote["absolute_change"] == "47.50000000"
+    assert "adjusted; corporate-action source test" in adjusted_quote["change_basis"]
 
     with Session(test_engine) as session:
         quote = session.scalar(select(MarketQuote))
         assert quote is not None
+        previous_bar = session.scalar(
+            select(MarketBar).where(
+                MarketBar.instrument_id == instrument_id,
+                MarketBar.interval == "1d",
+                MarketBar.timestamp == previous_timestamp,
+            )
+        )
+        assert previous_bar is not None
+        session.delete(previous_bar)
         quote.timestamp = datetime.combine(
-            session_date - timedelta(days=1),
+            previous_session_date,
             datetime.min.time(),
             zone,
         ).replace(hour=15, minute=29).astimezone(timezone.utc)
@@ -409,6 +497,7 @@ def test_watchlist_suppresses_change_outside_expected_market_session(
     assert stale_quote["is_current_session"] is False
     assert stale_quote["absolute_change"] is None
     assert stale_quote["percent_change"] is None
+    assert "previous-session daily close unavailable" in stale_quote["change_reason"]
 
 
 def test_closed_market_session_check_logs_only_for_tick_evaluation(caplog) -> None:
@@ -510,6 +599,174 @@ def test_watchlist_stream_skips_closed_session_tick_without_closing(
         assert session.scalar(
             select(MarketQuote).where(MarketQuote.source == "dhan_ws")
         ) is None
+
+
+def test_watchlist_stream_subscribes_watchlist_and_verified_portfolio_instruments(
+    client: TestClient, test_engine, monkeypatch
+) -> None:
+    register(client, "dhan-all-instruments@example.com")
+    prepare_dhan_quote(client, test_engine, monkeypatch)
+    use_dhan_market_data_provider()
+    session_token = client.cookies.get("session_token")
+    now = datetime.now(timezone.utc)
+    with Session(test_engine) as session:
+        user_session = session.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        user_session.user.two_factor_enabled = True
+        user_session.two_factor_verified = True
+        session.commit()
+        user_id = user_session.user_id
+
+    watchlist_response = client.post(
+        "/api/v1/market-data/watchlists",
+        json={"name": "All feed instruments"},
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
+    )
+    assert watchlist_response.status_code == 201, watchlist_response.text
+    watchlist_id = UUID(watchlist_response.json()["id"])
+
+    instruments = []
+    with Session(test_engine) as session:
+        for symbol in ("WATCHONE", "WATCHTWO", "PORTFOLIOHOLD", "PORTFOLIOPOS"):
+            instruments.append(Instrument(
+                symbol=symbol,
+                display_name=symbol,
+                asset_class="equity",
+                venue="NSE",
+                currency="INR",
+                country="IN",
+                timezone="Asia/Kolkata",
+                is_synthetic=False,
+                relink_required=False,
+                created_at=now,
+            ))
+        session.add_all(instruments)
+        session.flush()
+        for index, instrument in enumerate(instruments, start=101):
+            security_id = str(index)
+            session.add(InstrumentProviderIdentifier(
+                instrument_id=instrument.id,
+                provider="dhan",
+                provider_instrument_id=f"{security_id}|NSE_EQ",
+                provider_symbol=instrument.symbol,
+                is_verified=True,
+                last_seen_at=now,
+            ))
+        session.add_all([
+            WatchlistInstrument(
+                user_id=user_id,
+                watchlist_id=watchlist_id,
+                instrument_id=instruments[0].id,
+                created_at=now,
+            ),
+            WatchlistInstrument(
+                user_id=user_id,
+                watchlist_id=watchlist_id,
+                instrument_id=instruments[1].id,
+                created_at=now,
+            ),
+            BrokerMirror(
+                user_id=user_id,
+                broker="dhan",
+                kind="holding",
+                symbol="PORTFOLIOHOLD",
+                exchange="NSE",
+                product="CNC",
+                security_id="103",
+                quantity=Decimal("2"),
+                average_price=Decimal("50"),
+                synced_at=now,
+            ),
+            BrokerMirror(
+                user_id=user_id,
+                broker="dhan",
+                kind="position",
+                symbol="PORTFOLIOPOS",
+                exchange="NSE",
+                product="INTRADAY",
+                security_id="104",
+                quantity=Decimal("1"),
+                average_price=Decimal("60"),
+                position_type="LONG",
+                synced_at=now,
+            ),
+        ])
+        session.commit()
+        watchlist_instrument_id = str(instruments[1].id)
+        portfolio_holding_id = str(instruments[2].id)
+        all_instrument_ids = {str(instrument.id) for instrument in instruments}
+        portfolio_instrument_ids = {
+            str(instruments[2].id),
+            str(instruments[3].id),
+        }
+
+    monkeypatch.setattr(
+        market_data,
+        "_market_session_state",
+        lambda *_args, **_kwargs: "open",
+    )
+    captured_subscriptions: dict[str, tuple[str, str]] = {}
+    feed_events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    feed_events.put_nowait({"type": "status", "status": "active"})
+    feed_events.put_nowait({
+        "type": "tick",
+        "instrument_id": watchlist_instrument_id,
+        "bar": HistoricalBar(
+            timestamp=now,
+            open=Decimal("60"),
+            high=Decimal("61"),
+            low=Decimal("59"),
+            close=Decimal("60"),
+            volume=Decimal("100"),
+        ),
+    })
+    feed_events.put_nowait({
+        "type": "tick",
+        "instrument_id": portfolio_holding_id,
+        "bar": HistoricalBar(
+            timestamp=now,
+            open=Decimal("50"),
+            high=Decimal("52"),
+            low=Decimal("49"),
+            close=Decimal("51"),
+            volume=Decimal("200"),
+        ),
+    })
+
+    async def join_feed(_feed, _group_id, subscriptions, _token, _tokens):
+        captured_subscriptions.update(subscriptions)
+        return feed_events
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join_feed)
+    with client.websocket_connect(
+        f"/api/v1/market-data/watchlists/{watchlist_id}/stream",
+        headers={"Origin": settings.frontend_origin},
+    ) as stream:
+        assert stream.receive_json()["status"] == "active"
+        tick = stream.receive_json()
+        assert tick["type"] == "tick"
+        assert tick["quote"]["instrument_id"] == watchlist_instrument_id
+        assert tick["security_id"] == "102"
+        portfolio_tick = stream.receive_json()
+        assert portfolio_tick["type"] == "tick"
+        assert portfolio_tick["quote"]["instrument_id"] == portfolio_holding_id
+        assert portfolio_tick["security_id"] == "103"
+
+    assert set(captured_subscriptions) == all_instrument_ids
+    assert portfolio_instrument_ids <= captured_subscriptions.keys()
+    with Session(test_engine) as session:
+        quote = session.scalar(
+            select(MarketQuote).where(
+                MarketQuote.instrument_id == UUID(portfolio_holding_id),
+                MarketQuote.source == "dhan_ws",
+            )
+        )
+        assert quote is not None
+        assert quote.close == Decimal("51")
 
 
 def test_watchlist_stream_early_return_sends_market_closed_before_clean_close(
@@ -2389,6 +2646,56 @@ def test_freshness_calculation_transitions_to_stale(client: TestClient, test_eng
         params={"interval": "1d"},
     )
     assert response.json()["freshness"]["status"] == "stale"
+
+
+def test_eod_close_requires_a_verified_provider_mapping(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    instrument = SimpleNamespace(
+        id=uuid4(),
+        symbol="SBIN",
+        currency="INR",
+        country="IN",
+        provider_identifiers=[
+            SimpleNamespace(provider="yfinance", is_verified=False)
+        ],
+    )
+    quote = MarketQuote(
+        instrument_id=instrument.id,
+        source="yfinance",
+        timestamp=now - timedelta(days=1),
+        open=Decimal("99"),
+        high=Decimal("101"),
+        low=Decimal("98"),
+        close=Decimal("100"),
+        volume=Decimal("1000"),
+        retrieved_at=now,
+        is_synthetic=False,
+    )
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_args: "closed")
+    monkeypatch.setattr(market_data, "_is_current_market_session", lambda *_args: True)
+
+    unverified = market_data._quote_response(
+        instrument,
+        quote,
+        freshness="stale",
+        freshness_message="Historical daily close.",
+        is_cached=True,
+        is_verified=False,
+        provider_request_status="succeeded",
+    )
+    assert unverified.freshness_status == "historical"
+
+    instrument.provider_identifiers[0].is_verified = True
+    verified = market_data._quote_response(
+        instrument,
+        quote,
+        freshness="stale",
+        freshness_message="Historical daily close.",
+        is_cached=True,
+        is_verified=True,
+        provider_request_status="succeeded",
+    )
+    assert verified.freshness_status == "eod_close"
 
 
 def test_rest_providers_reject_quotes_without_market_timestamps() -> None:

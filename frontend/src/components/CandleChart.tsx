@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CandlestickSeries,
   ColorType,
@@ -38,8 +38,6 @@ type Props = {
   loadingOlder?: boolean;
   hasOlder?: boolean;
 };
-
-type Readout = { time: string; open: number; high: number; low: number; close: number } | null;
 
 const INDICATORS = [
   { key: 'sma_20', label: 'SMA 20', color: '#f4b860', pane: 0, kind: 'line' },
@@ -146,7 +144,7 @@ function formatChartTime(time: Time, timezone: string, includeTime = true): stri
   }).format(chartDate(time));
 }
 
-export function CandleChart({
+function CandleChartView({
   bars,
   liveBar = null,
   tickSize = null,
@@ -167,12 +165,14 @@ export function CandleChart({
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const macdHistogramRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
+  const readoutRef = useRef<HTMLDivElement>(null);
   const olderCallbackRef = useRef(onLoadOlder);
   const loadingOlderRef = useRef(loadingOlder);
   const hasOlderRef = useRef(hasOlder);
-  const liveBarRef = useRef<Candle | null>(null);
+  const liveBarsRef = useRef<Candle[]>([]);
   const liveTimerRef = useRef<number | null>(null);
-  const liveConfigRef = useRef({ bars, interval, tickSize });
+  const liveConfigRef = useRef({ bars, interval, tickSize, currency, timezone });
+  const chartConfigRef = useRef({ currency, timezone, interval });
   const liveCandleRef = useRef<{
     time: number;
     open: string;
@@ -183,12 +183,24 @@ export function CandleChart({
   const [chartMode, setChartMode] = useState<'candles' | 'line'>('candles');
   const [enabledIndicators, setEnabledIndicators] = useState<string[]>(INITIAL_INDICATORS);
   const [indicatorsOpen, setIndicatorsOpen] = useState(false);
-  const [readout, setReadout] = useState<Readout>(null);
 
   olderCallbackRef.current = onLoadOlder;
   loadingOlderRef.current = loadingOlder;
   hasOlderRef.current = hasOlder;
-  liveConfigRef.current = { bars, interval, tickSize };
+  liveConfigRef.current = { bars, interval, tickSize, currency, timezone };
+  chartConfigRef.current = { currency, timezone, interval };
+  const indicatorData = useMemo(
+    () => Object.fromEntries(
+      Object.entries(indicatorSeries).map(([key, points]) => [
+        key,
+        points.map((point) => ({
+          time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
+          value: Number(point.value),
+        })),
+      ]),
+    ) as Record<string, { time: Time; value: number }[]>,
+    [indicatorSeries],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -200,15 +212,19 @@ export function CandleChart({
       grid: { vertLines: { color: '#171e29' }, horzLines: { color: '#171e29' } },
       rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.25 } },
       timeScale: {
-        timeVisible: interval !== '1d',
+        timeVisible: chartConfigRef.current.interval !== '1d',
         secondsVisible: false,
         borderColor: '#222b36',
-        tickMarkFormatter: (time: Time) => formatChartTime(time, timezone, interval !== '1d'),
+        tickMarkFormatter: (time: Time) => formatChartTime(
+          time,
+          chartConfigRef.current.timezone,
+          chartConfigRef.current.interval !== '1d',
+        ),
       },
       crosshair: { mode: 0 },
       localization: {
-        priceFormatter: (value: number) => price(value, currency),
-        timeFormatter: (time: Time) => formatChartTime(time, timezone),
+        priceFormatter: (value: number) => price(value, chartConfigRef.current.currency),
+        timeFormatter: (time: Time) => formatChartTime(time, chartConfigRef.current.timezone),
       },
     });
     const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -228,7 +244,6 @@ export function CandleChart({
     });
     const indicatorSeries = new Map<string, ISeriesApi<'Line'>>();
     INDICATORS.forEach((indicator) => {
-      if (indicator.pane !== 0) return;
       indicatorSeries.set(
         indicator.key,
         chart.addSeries(
@@ -239,31 +254,33 @@ export function CandleChart({
             priceLineVisible: false,
             lastValueVisible: false,
           },
-          0,
+          indicator.pane,
         ),
       );
     });
+    const macdHistogram = chart.addSeries(
+      HistogramSeries,
+      { priceLineVisible: false, lastValueVisible: false },
+      2,
+    );
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     lineSeriesRef.current = lineSeries;
     volumeSeriesRef.current = volumeSeries;
-    macdHistogramRef.current = null;
+    macdHistogramRef.current = macdHistogram;
     indicatorSeriesRef.current = indicatorSeries;
 
     const onCrosshairMove = (event: MouseEventParams<Time>) => {
+      const readout = readoutRef.current;
+      if (!readout) return;
       const candle = event.seriesData.get(candleSeries);
       if (!candle || !('open' in candle) || typeof event.time === 'undefined') {
-        setReadout(null);
+        readout.textContent = 'Move crosshair over chart for OHLC';
         return;
       }
-      setReadout({
-        time: formatChartTime(event.time, timezone),
-        open: candle.open,
-        high: candle.high,
-        low: candle.low,
-        close: candle.close,
-      });
+      const config = chartConfigRef.current;
+      readout.textContent = `${formatChartTime(event.time, config.timezone)} · O ${price(candle.open, config.currency)} H ${price(candle.high, config.currency)} L ${price(candle.low, config.currency)} C ${price(candle.close, config.currency)}`;
     };
     const onVisibleRangeChange = () => {
       const visibleRange = chart.timeScale().getVisibleLogicalRange();
@@ -295,6 +312,21 @@ export function CandleChart({
       macdHistogramRef.current = null;
       indicatorSeriesRef.current.clear();
     };
+  }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.applyOptions({
+      timeScale: {
+        timeVisible: interval !== '1d',
+        tickMarkFormatter: (time: Time) => formatChartTime(time, timezone, interval !== '1d'),
+      },
+      localization: {
+        priceFormatter: (value: number) => price(value, currency),
+        timeFormatter: (time: Time) => formatChartTime(time, timezone),
+      },
+    });
   }, [currency, interval, timezone]);
 
   useEffect(() => {
@@ -356,57 +388,25 @@ export function CandleChart({
       { key: 'macd', enabled: enabledIndicators.includes('macd') && Boolean(indicatorSeries.macd?.length && indicatorSeries.macd_signal?.length && indicatorSeries.macd_histogram?.length) },
       { key: 'atr_14', enabled: enabledIndicators.includes('atr_14') && Boolean(indicatorSeries.atr_14?.length) },
     ].filter((item) => item.enabled);
+    const paneByKey = new Map(
+      activeOscillators.map(({ key }, index) => [key, index + 1]),
+    );
+    const activeMacdPane = paneByKey.get('macd') ?? 0;
     for (const key of ['rsi_14', 'macd', 'macd_signal', 'atr_14']) {
-      const existing = series.get(key);
-      if (existing) {
-        chart.removeSeries(existing);
-        series.delete(key);
-      }
+      const line = series.get(key);
+      if (!line) continue;
+      const activeKey = key === 'macd_signal' ? 'macd' : key;
+      line.moveToPane(paneByKey.get(activeKey) ?? 0);
+      line.applyOptions({
+        visible: key === 'macd_signal'
+          ? activeMacdPane > 0
+          : paneByKey.has(key),
+      });
     }
-    if (macdHistogramRef.current) {
-      chart.removeSeries(macdHistogramRef.current);
-      macdHistogramRef.current = null;
-    }
-    activeOscillators.forEach(({ key }, index) => {
-      const paneIndex = index + 1;
-      const addLine = (seriesKey: string) => {
-        if (series.has(seriesKey)) return;
-        const indicator = INDICATORS.find((item) => item.key === seriesKey);
-        if (!indicator) return;
-        const line = chart.addSeries(LineSeries, {
-          color: indicator.color,
-          lineWidth: 2,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        }, paneIndex);
-        line.setData((indicatorSeries[seriesKey] ?? []).map((point) => ({
-          time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
-          value: Number(point.value),
-        })));
-        series.set(seriesKey, line);
-      };
-      if (key === 'macd') {
-        addLine('macd');
-        addLine('macd_signal');
-        if (!macdHistogramRef.current) {
-          const histogram = chart.addSeries(
-            HistogramSeries,
-            { priceLineVisible: false, lastValueVisible: false },
-            paneIndex,
-          );
-          histogram.setData((indicatorSeries.macd_histogram ?? []).map((point) => ({
-            time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
-            value: Number(point.value),
-            color: Number(point.value) >= 0 ? '#3fd99a99' : '#ef777799',
-          })));
-          macdHistogramRef.current = histogram;
-        }
-      } else {
-        addLine(key);
-      }
-    });
+    macdHistogramRef.current?.moveToPane(activeMacdPane);
+    macdHistogramRef.current?.applyOptions({ visible: activeMacdPane > 0 });
     chart.panes().forEach((pane, index) => pane.setStretchFactor(index === 0 ? 3 : 1));
-  }, [enabledIndicators, indicatorSeries]);
+  }, [enabledIndicators, indicatorSeries, indicatorData]);
 
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;
@@ -446,14 +446,10 @@ export function CandleChart({
       })),
     );
     indicatorSeriesRef.current.forEach((series, key) => {
-      series.setData((indicatorSeries[key] ?? []).map((point) => ({
-        time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
-        value: Number(point.value),
-      })));
+      series.setData(indicatorData[key] ?? []);
     });
-    macdHistogramRef.current?.setData((indicatorSeries.macd_histogram ?? []).map((point) => ({
-      time: Math.floor(new Date(point.timestamp).getTime() / 1000) as Time,
-      value: Number(point.value),
+    macdHistogramRef.current?.setData((indicatorData.macd_histogram ?? []).map((point) => ({
+      ...point,
       color: Number(point.value) >= 0 ? '#3fd99a99' : '#ef777799',
     })));
     if (visibleRange) {
@@ -464,25 +460,26 @@ export function CandleChart({
         to: data[data.length - 1].time,
       });
     }
-  }, [bars, indicatorSeries, preferredSource]);
+  }, [bars, indicatorSeries, indicatorData, preferredSource]);
 
   useEffect(() => {
     if (!liveBar) return;
-    liveBarRef.current = liveBar;
+    liveBarsRef.current.push(liveBar);
     if (liveTimerRef.current !== null) return;
-    liveTimerRef.current = window.setTimeout(() => {
+    liveTimerRef.current = window.requestAnimationFrame(() => {
       liveTimerRef.current = null;
-      const tick = liveBarRef.current;
+      const ticks = liveBarsRef.current.splice(0);
       const config = liveConfigRef.current;
       const candleSeries = candleSeriesRef.current;
-      if (!tick || !candleSeries || !config.tickSize || config.bars.length === 0) return;
+      if (ticks.length === 0 || !candleSeries || !config.tickSize || config.bars.length === 0) return;
       const latestBar = config.bars.reduce((latest, bar) => (
         new Date(bar.timestamp).getTime() > new Date(latest.timestamp).getTime()
           ? bar
           : latest
       ));
+      for (const tick of ticks) {
       const tickTimestamp = new Date(tick.timestamp).getTime();
-      if (!Number.isFinite(tickTimestamp)) return;
+      if (!Number.isFinite(tickTimestamp)) continue;
       const intervalMs: Record<string, number> = {
         '1m': 60_000,
         '5m': 300_000,
@@ -500,12 +497,12 @@ export function CandleChart({
         else bucketTimestamp = new Date(`${tickDay}T00:00:00.000Z`).getTime();
       } else {
         const duration = intervalMs[config.interval];
-        if (!duration) return;
+        if (!duration) continue;
         const istOffset = 330 * 60_000;
         bucketTimestamp = Math.floor((tickTimestamp + istOffset) / duration) * duration - istOffset;
       }
       const latestTimestamp = new Date(latestBar.timestamp).getTime();
-      if (bucketTimestamp < latestTimestamp) return;
+      if (bucketTimestamp < latestTimestamp) continue;
       const previousLiveCandle = liveCandleRef.current;
       const sameBucket = bucketTimestamp === latestTimestamp
         || previousLiveCandle?.time === bucketTimestamp;
@@ -559,11 +556,12 @@ export function CandleChart({
         color: close >= open ? '#3fd99a66' : '#ef777766',
       });
       window.dispatchEvent(new Event('market-chart-update-applied'));
-    }, 150);
+      }
+    });
   }, [bars, interval, liveBar, tickSize]);
 
   useEffect(() => () => {
-    if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current);
+    if (liveTimerRef.current !== null) window.cancelAnimationFrame(liveTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -647,10 +645,8 @@ export function CandleChart({
             </div>
           )}
         </div>
-        <div className="crosshair-readout" aria-live="polite">
-          {readout
-            ? `${readout.time} · O ${price(readout.open, currency)} H ${price(readout.high, currency)} L ${price(readout.low, currency)} C ${price(readout.close, currency)}`
-            : 'Move crosshair over chart for OHLC'}
+        <div className="crosshair-readout" aria-live="polite" ref={readoutRef}>
+          Move crosshair over chart for OHLC
         </div>
       </div>
       <div className="ohlc-chart" ref={containerRef} aria-label={`${interval} chart with price, volume, and indicator panes`} />
@@ -659,3 +655,5 @@ export function CandleChart({
     </div>
   );
 }
+
+export const CandleChart = memo(CandleChartView);

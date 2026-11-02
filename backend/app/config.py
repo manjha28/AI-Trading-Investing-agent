@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     indicator_lookback_bars: int = Field(default=500, gt=0)
     market_data_refresh_seconds: int = Field(default=300, gt=0)
     market_data_scheduler_enabled: bool = False
+    delta_research_enabled: bool = False
+    delta_research_db_path: str | None = None
+    delta_research_refresh_seconds: int = Field(default=60, ge=30, le=3600)
     broker_encryption_key: SecretStr | None = None
     two_factor_encryption_key: SecretStr | None = None
     broker_zerodha_enabled: bool = False

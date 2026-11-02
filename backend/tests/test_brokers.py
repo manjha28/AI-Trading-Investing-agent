@@ -1,11 +1,13 @@
 import asyncio
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
 from datetime import datetime, timezone
 import struct
+from types import SimpleNamespace
+from time import monotonic
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -22,11 +24,28 @@ from sqlalchemy.pool import StaticPool
 
 from app.api import brokers, market_data
 from app import broker_adapters
-from app.broker_adapters import BrokerAdapterError, DhanAdapter, UpstoxAdapter
+from app.broker_adapters import (
+    BrokerAdapterError,
+    DhanAdapter,
+    HistoricalBar,
+    UpstoxAdapter,
+)
 from app.config import settings
 from app.db import Base, get_db
 from app.main import BrokerCallbackAccessLogFilter, app
-from app.models import BrokerCredential, BrokerMirror, PortfolioTransaction, UserSession
+from app.models import (
+    BrokerAccountMirror,
+    BrokerCredential,
+    BrokerMirror,
+    Instrument,
+    InstrumentProviderIdentifier,
+    MarketBar,
+    MarketDataSync,
+    MarketQuote,
+    PortfolioTransaction,
+    UserSession,
+)
+from app.provider_adapters import DhanAccountRequestError
 from app.security import hash_token
 from app.two_factor import code_for_counter
 
@@ -213,6 +232,1417 @@ def prepare_dhan_sync(client: TestClient, test_engine, encryption_key, monkeypat
             )
         )
         db.commit()
+
+
+def seed_dhan_portfolio_summary(
+    client: TestClient,
+    test_engine,
+    encryption_key,
+    monkeypatch,
+) -> datetime:
+    prepare_dhan_sync(client, test_engine, encryption_key, monkeypatch)
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(brokers, "_now", lambda: now)
+    monkeypatch.setattr(
+        market_data, "_market_session_state", lambda *_args: "open"
+    )
+    session_token = client.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        sbin = Instrument(
+            symbol="SBIN",
+            display_name="State Bank of India",
+            asset_class="equity",
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone="Asia/Kolkata",
+            is_synthetic=False,
+            relink_required=False,
+            created_at=now,
+        )
+        xyz = Instrument(
+            symbol="XYZ",
+            display_name="XYZ Limited",
+            asset_class="equity",
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone="Asia/Kolkata",
+            is_synthetic=False,
+            relink_required=False,
+            created_at=now,
+        )
+        db.add_all([sbin, xyz])
+        db.flush()
+        db.add_all([
+            InstrumentProviderIdentifier(
+                instrument_id=sbin.id,
+                provider="dhan",
+                provider_instrument_id="3045|NSE_EQ",
+                provider_symbol="SBIN",
+                is_verified=True,
+                last_seen_at=now,
+            ),
+            InstrumentProviderIdentifier(
+                instrument_id=xyz.id,
+                provider="dhan",
+                provider_instrument_id="9999|NSE_EQ",
+                provider_symbol="XYZ",
+                is_verified=True,
+                last_seen_at=now,
+            ),
+            BrokerAccountMirror(
+                user_id=user_session.user_id,
+                broker="dhan",
+                currency="INR",
+                available_balance=Decimal("50"),
+                synced_at=now,
+            ),
+            BrokerMirror(
+                user_id=user_session.user_id,
+                broker="dhan",
+                kind="holding",
+                symbol="SBIN",
+                exchange="NSE",
+                product="",
+                security_id="3045",
+                quantity=Decimal("2"),
+                average_price=Decimal("90"),
+                synced_at=now,
+            ),
+            BrokerMirror(
+                user_id=user_session.user_id,
+                broker="dhan",
+                kind="position",
+                symbol="SBIN",
+                exchange="NSE",
+                product="INTRADAY",
+                security_id="3045",
+                quantity=Decimal("1"),
+                average_price=Decimal("100"),
+                position_type="LONG",
+                unrealized_profit=Decimal("7.50"),
+                synced_at=now,
+            ),
+            BrokerMirror(
+                user_id=user_session.user_id,
+                broker="dhan",
+                kind="holding",
+                symbol="XYZ",
+                exchange="NSE",
+                product="",
+                security_id="9999",
+                quantity=Decimal("1"),
+                average_price=Decimal("40"),
+                synced_at=now,
+            ),
+            MarketBar(
+                instrument_id=sbin.id,
+                interval="1d",
+                timestamp=now - timedelta(days=1),
+                open=Decimal("94"),
+                high=Decimal("96"),
+                low=Decimal("93"),
+                close=Decimal("95"),
+                volume=Decimal("1000"),
+                source="dhan",
+                retrieved_at=now,
+                is_synthetic=False,
+            ),
+        ])
+        db.commit()
+    return now
+
+
+def _add_portfolio_close_bars(
+    test_engine,
+    session_dates: tuple[date, date],
+    current_prices: dict[str, Decimal] | None = None,
+) -> None:
+    current_prices = current_prices or {
+        "SBIN": Decimal("110"),
+        "XYZ": Decimal("50"),
+    }
+    previous_prices = {"SBIN": Decimal("105"), "XYZ": Decimal("48")}
+    zone = ZoneInfo("Asia/Kolkata")
+    with Session(test_engine) as db:
+        instruments = {
+            instrument.symbol: instrument
+            for instrument in db.scalars(select(Instrument))
+        }
+        instrument_ids = {instrument.id for instrument in instruments.values()}
+        for existing_bar in db.scalars(
+            select(MarketBar).where(
+                MarketBar.instrument_id.in_(instrument_ids)
+            )
+        ):
+            db.delete(existing_bar)
+        for symbol, instrument in instruments.items():
+            if symbol not in current_prices:
+                continue
+            for session_date, close in (
+                (session_dates[0], current_prices[symbol]),
+                (session_dates[1], previous_prices[symbol]),
+            ):
+                timestamp = datetime.combine(
+                    session_date,
+                    time(15, 30),
+                    tzinfo=zone,
+                ).astimezone(timezone.utc)
+                db.add(MarketBar(
+                    instrument_id=instrument.id,
+                    interval="1d",
+                    timestamp=timestamp,
+                    open=close,
+                    high=close,
+                    low=close,
+                    close=close,
+                    volume=Decimal("1000"),
+                    source="dhan",
+                    retrieved_at=timestamp + timedelta(minutes=1),
+                    is_synthetic=False,
+                ))
+        db.commit()
+
+
+def test_broker_summary_uses_one_batched_quote_and_keeps_value_provenance(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    now = seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    session_token = first.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        delivery_holding = db.scalar(
+            select(BrokerMirror).where(
+                BrokerMirror.user_id == user_session.user_id,
+                BrokerMirror.symbol == "XYZ",
+                BrokerMirror.kind == "holding",
+            )
+        )
+        assert delivery_holding is not None
+        delivery_holding.product = "CNC"
+        db.add(BrokerMirror(
+            user_id=user_session.user_id,
+            broker="dhan",
+            kind="position",
+            symbol="SBIN",
+            exchange="NSE",
+            product="CNC",
+            security_id="3045",
+            quantity=Decimal("-1"),
+            average_price=Decimal("100"),
+            position_type="SHORT",
+            realized_profit=Decimal("0"),
+            unrealized_profit=Decimal("0"),
+            synced_at=now,
+        ))
+        db.commit()
+    requests: list[dict[str, list[str]]] = []
+
+    def get_market_quotes_batch(_self, _token, _tokens, instruments_by_segment):
+        requests.append(instruments_by_segment)
+        return {
+            "NSE_EQ": {
+                "3045": HistoricalBar(
+                    timestamp=now,
+                    open=Decimal("109"),
+                    high=Decimal("111"),
+                    low=Decimal("108"),
+                    close=Decimal("110"),
+                    volume=Decimal("1000"),
+                ),
+                "9999": HistoricalBar(
+                    timestamp=now,
+                    open=Decimal("49"),
+                    high=Decimal("51"),
+                    low=Decimal("48"),
+                    close=Decimal("50"),
+                    volume=Decimal("1000"),
+                ),
+            }
+        }
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    assert len(requests) == 1
+    assert requests[0] == {"NSE_EQ": ["3045", "9999"]}
+    dhan = response.json()["brokers"][0]
+    assert Decimal(dhan["market_value"]) == Decimal("380")
+    assert Decimal(dhan["total_value"]) == Decimal("430")
+    assert Decimal(dhan["invested_cost"]) == Decimal("220")
+    assert Decimal(dhan["positions_exposure"]) == Decimal("100")
+    assert Decimal(dhan["holdings_unrealized_pnl"]) == Decimal("50")
+    assert Decimal(dhan["positions_unrealized_pnl"]) == Decimal("7.50")
+    assert dhan["holdings_count"] == 2
+    assert dhan["positions_count"] == 1
+    assert Decimal(dhan["unrealized_pnl"]) == Decimal("57.50")
+    assert dhan["day_change"] is None
+    assert dhan["provenance"]["unrealized_pnl"]["type"] == "combined"
+    assert "broker-supplied unrealizedProfit" in (
+        dhan["provenance"]["unrealized_pnl"]["description"]
+    )
+    assert any(
+        "XYZ: previous-session history"
+        in item
+        for item in dhan["provenance"]["day_change"]["exclusions"]
+    )
+    assert dhan["provenance"]["market_value"]["quote_observations"][0]["timestamp"]
+    portfolio = first.get("/api/v1/brokers/dhan/portfolio").json()
+    assert portfolio["positions"][0]["product"] == "INTRADAY"
+    assert any(
+        row["product"] == "CNC" for row in portfolio["holdings"]
+    )
+    assert len(portfolio["delivery_sales"]) == 1
+    assert portfolio["delivery_sales"][0]["product"] == "CNC"
+    assert Decimal(portfolio["delivery_sales"][0]["quantity"]) == Decimal("-1")
+
+
+def test_broker_summary_reports_known_empty_positions_as_zero_with_evidence(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    client, _ = clients
+    now = seed_dhan_portfolio_summary(
+        client, test_engine, encryption_key, monkeypatch
+    )
+    session_token = client.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        position = db.scalar(
+            select(BrokerMirror).where(
+                BrokerMirror.user_id == user_session.user_id,
+                BrokerMirror.kind == "position",
+            )
+        )
+        assert position is not None
+        position.quantity = Decimal("0")
+        position.realized_profit = Decimal("3.25")
+        position.unrealized_profit = Decimal("0")
+        db.commit()
+
+    def get_market_quotes_batch(_self, _token, _tokens, _instruments_by_segment):
+        return {"NSE_EQ": {
+            "3045": HistoricalBar(
+                timestamp=now, open=Decimal("110"), high=Decimal("110"),
+                low=Decimal("110"), close=Decimal("110"), volume=Decimal("1"),
+            ),
+            "9999": HistoricalBar(
+                timestamp=now, open=Decimal("50"), high=Decimal("50"),
+                low=Decimal("50"), close=Decimal("50"), volume=Decimal("1"),
+            ),
+        }}
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    summary_response = client.get("/api/v1/brokers/portfolio-summary")
+    assert summary_response.status_code == 200, summary_response.text
+    summary = summary_response.json()
+    dhan = summary["brokers"][0]
+    assert Decimal(dhan["positions_exposure"]) == Decimal("0")
+    assert Decimal(dhan["positions_unrealized_pnl"]) == Decimal("0")
+    assert Decimal(summary["totals"]["positions_exposure"]) == Decimal("0")
+    assert Decimal(summary["totals"]["positions_unrealized_pnl"]) == Decimal("0")
+    assert dhan["unavailable_reasons"]["positions_exposure"] is None
+    positions_evidence = dhan["provenance"]["positions_unrealized_pnl"]
+    assert positions_evidence["type"] == "broker_supplied"
+    assert "Dhan-supplied" in positions_evidence["description"]
+    assert positions_evidence["coverage"] == {
+        "priced": 0,
+        "total": 0,
+        "unit": "open positions",
+    }
+    assert positions_evidence["mirror_observations"][0]["source"] == (
+        "Dhan broker mirror snapshot"
+    )
+    assert positions_evidence["mirror_observations"][0]["timestamp"]
+    holdings_evidence = dhan["provenance"]["holdings_unrealized_pnl"]
+    assert holdings_evidence["quote_observations"][0]["source"] == "dhan"
+    assert holdings_evidence["quote_observations"][0]["timestamp"]
+    assert holdings_evidence["mirror_observations"][0]["timestamp"]
+
+    portfolio_response = client.get("/api/v1/brokers/dhan/portfolio")
+    assert portfolio_response.status_code == 200, portfolio_response.text
+    closed = portfolio_response.json()["closed_positions"]
+    assert len(closed) == 1
+    assert Decimal(closed[0]["realized_profit"]) == Decimal("3.25")
+
+
+def test_dhan_stale_master_refreshes_and_creates_unverified_candidate(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    client, _ = clients
+    now = seed_dhan_portfolio_summary(
+        client, test_engine, encryption_key, monkeypatch
+    )
+    session_token = client.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        row = db.scalar(
+            select(BrokerMirror).where(
+                BrokerMirror.user_id == user_session.user_id,
+                BrokerMirror.symbol == "XYZ",
+                BrokerMirror.kind == "holding",
+            )
+        )
+        assert row is not None
+        instrument = db.scalar(select(Instrument).where(Instrument.symbol == "XYZ"))
+        assert instrument is not None
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.instrument_id == instrument.id,
+                InstrumentProviderIdentifier.provider == "dhan",
+            )
+        )
+        assert mapping is not None
+        mapping.provider_instrument_id = "9999|OLD_SEGMENT"
+        mapping.provider_symbol = "OTHER"
+        mapping.is_verified = False
+        db.commit()
+
+    stale_master = [{
+        "EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "0001",
+        "INSTRUMENT": "EQUITY", "SERIES": "EQ", "ISIN": "OTHER",
+    }]
+    fresh_master = [
+        {
+            "EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "3045",
+            "INSTRUMENT": "EQUITY", "SERIES": "EQ", "ISIN": "SBINISIN",
+        },
+        {
+            "EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "9999",
+            "INSTRUMENT": "EQUITY", "SERIES": "EQ", "ISIN": "XYZISIN",
+            "LISTING_DATE": now.astimezone(ZoneInfo("Asia/Kolkata")).date().isoformat(),
+        },
+    ]
+    calls = 0
+
+    def cached_scrip_master(cls):
+        nonlocal calls
+        calls += 1
+        if cls._scrip_master_cache is None:
+            cls._scrip_master_cache = (monotonic(), fresh_master)
+        return cls._scrip_master_cache[1]
+
+    monkeypatch.setattr(
+        DhanAdapter,
+        "_scrip_master_cache",
+        (monotonic(), stale_master),
+    )
+    monkeypatch.setattr(DhanAdapter, "_equity_index_cache", None)
+    monkeypatch.setattr(brokers, "_dhan_master_miss_refresh_cache_time", None)
+    monkeypatch.setattr(
+        DhanAdapter, "_scrip_master", classmethod(cached_scrip_master)
+    )
+
+    response = client.get("/api/v1/brokers/dhan/portfolio")
+    assert response.status_code == 200, response.text
+    portfolio = response.json()
+    candidate = next(
+        item for item in portfolio["instrument_master"]["mapping_candidates"]
+        if item["symbol"] == "XYZ"
+    )
+    assert calls == 2
+    assert candidate["status"] == "pending_verification"
+    assert candidate["provider_instrument_id"] == "9999|NSE_EQ"
+    assert candidate["segment"] == "NSE_EQ"
+    assert "verify the mapping" in candidate["verification_required"]
+    assert portfolio["instrument_master"]["last_refreshed_at"] is not None
+    with Session(test_engine) as db:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.provider == "dhan",
+                InstrumentProviderIdentifier.provider_instrument_id
+                == "9999|NSE_EQ",
+            )
+        )
+        assert mapping is not None
+        assert mapping.is_verified is False
+
+
+def test_dhan_master_ambiguity_and_absence_have_specific_reasons(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    client, _ = clients
+    seed_dhan_portfolio_summary(
+        client, test_engine, encryption_key, monkeypatch
+    )
+    with Session(test_engine) as db:
+        for mapping in db.scalars(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.provider == "dhan"
+            )
+        ):
+            mapping.is_verified = False
+            mapping.provider_symbol = "UNMATCHED"
+        db.commit()
+    master_rows = [
+        {
+            "EXCH_ID": exchange, "SEGMENT": "E", "SECURITY_ID": "9999",
+            "INSTRUMENT": "EQUITY", "SERIES": "EQ", "ISIN": "XYZISIN",
+        }
+        for exchange in ("NSE", "BSE")
+    ]
+
+    def load_master(cls):
+        cls._scrip_master_cache = (monotonic(), master_rows)
+        return master_rows
+
+    monkeypatch.setattr(DhanAdapter, "_scrip_master_cache", None)
+    monkeypatch.setattr(
+        DhanAdapter, "_scrip_master", classmethod(load_master)
+    )
+    response = client.get("/api/v1/brokers/dhan/portfolio")
+    assert response.status_code == 200, response.text
+    candidates = response.json()["instrument_master"]["mapping_candidates"]
+    xyz = next(item for item in candidates if item["symbol"] == "XYZ")
+    sbin = next(item for item in candidates if item["symbol"] == "SBIN")
+    assert xyz["status"] == "ambiguous"
+    assert "Multiple exact" in xyz["reason"]
+    assert sbin["status"] == "not_found"
+    assert "No exact security ID or ISIN match" in sbin["reason"]
+
+
+def test_listing_day_without_previous_close_keeps_live_market_value(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    client, _ = clients
+    now = seed_dhan_portfolio_summary(
+        client, test_engine, encryption_key, monkeypatch
+    )
+    listing_date = now.astimezone(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    master_rows = [
+        {
+            "EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "3045",
+            "INSTRUMENT": "EQUITY", "SERIES": "EQ", "ISIN": "SBINISIN",
+        },
+        {
+            "EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "9999",
+            "INSTRUMENT": "EQUITY", "SERIES": "EQ", "ISIN": "XYZISIN",
+            "LISTING_DATE": listing_date,
+        },
+    ]
+
+    def load_master(cls):
+        cls._scrip_master_cache = (monotonic(), master_rows)
+        return master_rows
+
+    monkeypatch.setattr(
+        DhanAdapter, "_scrip_master_cache", None
+    )
+    monkeypatch.setattr(
+        DhanAdapter, "_scrip_master", classmethod(load_master)
+    )
+
+    def get_market_quotes_batch(_self, _token, _tokens, _instruments_by_segment):
+        return {"NSE_EQ": {
+            "3045": HistoricalBar(
+                timestamp=now, open=Decimal("110"), high=Decimal("110"),
+                low=Decimal("110"), close=Decimal("110"), volume=Decimal("1"),
+            ),
+            "9999": HistoricalBar(
+                timestamp=now, open=Decimal("50"), high=Decimal("50"),
+                low=Decimal("50"), close=Decimal("50"), volume=Decimal("1"),
+            ),
+        }}
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    response = client.get("/api/v1/brokers/portfolio-summary")
+    assert response.status_code == 200, response.text
+    dhan = response.json()["brokers"][0]
+    assert Decimal(dhan["market_value"]) == Decimal("380")
+    assert dhan["day_change"] is None
+    assert "no prior market session exists" in (
+        dhan["unavailable_reasons"]["day_change"].lower()
+    )
+    assert any(
+        "no prior market session exists" in exclusion.lower()
+        for exclusion in dhan["provenance"]["day_change"]["exclusions"]
+    )
+
+
+def test_provider_empty_history_is_distinct_from_unfetched_history(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    client, _ = clients
+    now = seed_dhan_portfolio_summary(
+        client, test_engine, encryption_key, monkeypatch
+    )
+    timezone_info = ZoneInfo("Asia/Kolkata")
+    quote_day = now.astimezone(timezone_info).date()
+    session_reference = datetime.combine(
+        quote_day, time.min, tzinfo=timezone_info
+    ).astimezone(timezone.utc)
+    with Session(test_engine) as db:
+        xyz = db.scalar(select(Instrument).where(Instrument.symbol == "XYZ"))
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash
+                == hash_token(client.cookies.get("session_token"))
+            )
+        )
+        assert xyz is not None
+        assert user_session is not None
+        expected_previous_date = market_data._expected_market_session_date(
+            xyz, session_reference
+        )
+        requested_start = datetime.combine(
+            expected_previous_date, time.min, tzinfo=timezone_info
+        ).astimezone(timezone.utc)
+        requested_end = datetime.combine(
+            expected_previous_date, time.max, tzinfo=timezone_info
+        ).astimezone(timezone.utc)
+        db.add(MarketDataSync(
+            instrument_id=xyz.id,
+            interval="1d",
+            source="dhan",
+            attempted_at=now,
+            succeeded_at=now,
+            status="success",
+            rows_received=0,
+            requested_start=requested_start,
+            requested_end=requested_end,
+            rows_written=0,
+        ))
+        db.commit()
+    master_rows = [
+        {
+            "EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "9999",
+            "INSTRUMENT": "EQUITY", "SERIES": "EQ", "ISIN": "XYZISIN",
+            "LISTING_DATE": (expected_previous_date - timedelta(days=30)).isoformat(),
+        }
+    ]
+
+    def load_master(cls):
+        cls._scrip_master_cache = (monotonic(), master_rows)
+        return master_rows
+
+    monkeypatch.setattr(DhanAdapter, "_scrip_master_cache", None)
+    monkeypatch.setattr(
+        DhanAdapter, "_scrip_master", classmethod(load_master)
+    )
+
+    def get_market_quotes_batch(_self, _token, _tokens, _instruments_by_segment):
+        return {"NSE_EQ": {
+            "3045": HistoricalBar(
+                timestamp=now, open=Decimal("110"), high=Decimal("110"),
+                low=Decimal("110"), close=Decimal("110"), volume=Decimal("1"),
+            ),
+            "9999": HistoricalBar(
+                timestamp=now, open=Decimal("50"), high=Decimal("50"),
+                low=Decimal("50"), close=Decimal("50"), volume=Decimal("1"),
+            ),
+        }}
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    response = client.get("/api/v1/brokers/portfolio-summary")
+    assert response.status_code == 200, response.text
+    dhan = response.json()["brokers"][0]
+    assert "provider returned no daily data" in (
+        dhan["unavailable_reasons"]["day_change"].lower()
+    )
+
+
+@pytest.mark.parametrize(
+    ("quote_mode", "expected_reason"),
+    [
+        ("missing", "did not include LTP for XYZ"),
+        ("stale", "quote is stale"),
+    ],
+)
+def test_broker_summary_does_not_use_missing_or_stale_quote(
+    clients,
+    test_engine,
+    encryption_key,
+    monkeypatch,
+    quote_mode,
+    expected_reason,
+) -> None:
+    first, _ = clients
+    now = seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+
+    def get_market_quotes_batch(_self, _token, _tokens, _instruments_by_segment):
+        if quote_mode == "missing":
+            return {"NSE_EQ": {
+                "3045": HistoricalBar(
+                    timestamp=now,
+                    open=Decimal("109"),
+                    high=Decimal("111"),
+                    low=Decimal("108"),
+                    close=Decimal("110"),
+                    volume=Decimal("1000"),
+                )
+            }}
+        return {"NSE_EQ": {
+            security_id: HistoricalBar(
+                timestamp=now - timedelta(hours=2),
+                open=Decimal("109"),
+                high=Decimal("111"),
+                low=Decimal("108"),
+                close=Decimal("110"),
+                volume=Decimal("1000"),
+            )
+            for security_id in ("3045", "9999")
+        }}
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    monkeypatch.setattr(
+        market_data,
+        "market_data_provider_for_user",
+        lambda _db, _user_id: market_data.MarketDataProviderChain([]),
+    )
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    dhan = response.json()["brokers"][0]
+    assert dhan["market_value"] is None
+    assert dhan["total_value"] is None
+    assert dhan["unrealized_pnl"] is None
+    assert dhan["day_change"] is None
+    assert expected_reason in dhan["unavailable_reasons"]["market_value"]
+
+
+def test_broker_summary_falls_back_in_configured_provider_priority(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    now = seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    with Session(test_engine) as db:
+        instruments = list(db.scalars(select(Instrument)))
+        for instrument in instruments:
+            db.add(InstrumentProviderIdentifier(
+                instrument_id=instrument.id,
+                provider="angel_one",
+                provider_instrument_id=instrument.symbol,
+                provider_symbol=instrument.symbol,
+                is_verified=True,
+                last_seen_at=now,
+            ))
+        db.commit()
+
+    def get_market_quotes_batch(_self, _token, _tokens, instruments_by_segment):
+        return {
+            "NSE_EQ": {
+                security_id: HistoricalBar(
+                    timestamp=now - timedelta(hours=2),
+                    open=Decimal("109") if security_id == "3045" else Decimal("49"),
+                    high=Decimal("111") if security_id == "3045" else Decimal("51"),
+                    low=Decimal("108") if security_id == "3045" else Decimal("48"),
+                    close=Decimal("110") if security_id == "3045" else Decimal("50"),
+                    volume=Decimal("1000"),
+                )
+                for security_id in instruments_by_segment["NSE_EQ"]
+            }
+        }
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    fallback_chain = market_data.MarketDataProviderChain([
+        SimpleNamespace(name="yfinance"),
+        SimpleNamespace(name="angel_one"),
+    ])
+    monkeypatch.setattr(
+        market_data,
+        "market_data_provider_for_user",
+        lambda _db, _user_id: fallback_chain,
+    )
+    attempts: list[list[str]] = []
+
+    def resolve_quote(instrument_id, *, refresh, provider, _user, db):
+        assert refresh is False
+        provider_names = [item.name for item in provider.providers]
+        attempts.append(provider_names)
+        instrument = db.get(Instrument, instrument_id)
+        quote = db.scalar(select(market_data.MarketQuote).where(
+            market_data.MarketQuote.instrument_id == instrument_id,
+            market_data.MarketQuote.source == "angel_one",
+        ))
+        if quote is None:
+            quote = market_data.MarketQuote(
+                instrument_id=instrument_id,
+                source="angel_one",
+            )
+            db.add(quote)
+        quote.timestamp = now
+        quote.open = Decimal("109") if instrument.symbol == "SBIN" else Decimal("49")
+        quote.high = Decimal("111") if instrument.symbol == "SBIN" else Decimal("51")
+        quote.low = Decimal("108") if instrument.symbol == "SBIN" else Decimal("48")
+        quote.close = Decimal("110") if instrument.symbol == "SBIN" else Decimal("50")
+        quote.volume = Decimal("1000")
+        quote.retrieved_at = now
+        quote.is_synthetic = False
+        db.commit()
+        return SimpleNamespace(
+            freshness_status="fresh",
+            freshness_message="Fresh Angel One quote.",
+            source="angel_one",
+            provider_attempts=[
+                SimpleNamespace(
+                    provider="angel_one",
+                    outcome="used",
+                    reason=None,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(market_data, "latest_quote", resolve_quote)
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    assert attempts == [["angel_one", "yfinance"], ["angel_one", "yfinance"]]
+    dhan = response.json()["brokers"][0]
+    assert Decimal(dhan["market_value"]) == Decimal("380")
+    observation = dhan["provenance"]["market_value"]["quote_observations"][0]
+    assert observation["source"] == "angel_one"
+    assert any(
+        "dhan: quote stale" in attempt
+        for attempt in observation["provider_attempts"]
+    )
+
+
+def test_broker_summary_uses_live_quote_during_nse_session(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    real_session_state = market_data._market_session_state
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    now = datetime(2026, 10, 27, 4, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(brokers, "_now", lambda: now)
+    monkeypatch.setattr(market_data, "_market_session_state", real_session_state)
+    with Session(test_engine) as db:
+        for instrument in db.scalars(select(Instrument)):
+            close = Decimal("110") if instrument.symbol == "SBIN" else Decimal("50")
+            db.add(market_data.MarketQuote(
+                instrument_id=instrument.id,
+                source="dhan",
+                timestamp=now,
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                volume=Decimal("1000"),
+                retrieved_at=now,
+                is_synthetic=False,
+            ))
+        db.commit()
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    evidence = response.json()["brokers"][0]["provenance"]["market_value"]
+    assert {item["price_basis"] for item in evidence["quote_observations"]} == {
+        "live_quote"
+    }
+    assert {item["basis_date"] for item in evidence["quote_observations"]} == {
+        "2026-10-27"
+    }
+
+
+@pytest.mark.parametrize(
+    ("current_time", "current_session", "previous_session"),
+    [
+        (
+            datetime(2026, 10, 27, 16, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+            date(2026, 10, 27),
+            date(2026, 10, 26),
+        ),
+        (
+            datetime(2026, 10, 26, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+            date(2026, 10, 23),
+            date(2026, 10, 22),
+        ),
+        (
+            datetime(2026, 10, 20, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+            date(2026, 10, 19),
+            date(2026, 10, 16),
+        ),
+    ],
+    ids=["after-close", "monday-pre-open", "nse-holiday"],
+)
+def test_broker_summary_uses_last_completed_session_close(
+    clients,
+    test_engine,
+    encryption_key,
+    monkeypatch,
+    current_time,
+    current_session,
+    previous_session,
+) -> None:
+    first, _ = clients
+    real_session_state = market_data._market_session_state
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    monkeypatch.setattr(brokers, "_now", lambda: current_time)
+    monkeypatch.setattr(market_data, "_market_session_state", real_session_state)
+    _add_portfolio_close_bars(
+        test_engine,
+        (current_session, previous_session),
+    )
+    quote_requests: list[str] = []
+    monkeypatch.setattr(
+        DhanAdapter,
+        "get_market_quotes_batch",
+        lambda *_args: quote_requests.append("unexpected"),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "market_data_provider_for_user",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("live fallback attempted")),
+    )
+
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    assert quote_requests == []
+    dhan = response.json()["brokers"][0]
+    assert Decimal(dhan["market_value"]) == Decimal("380")
+    assert Decimal(dhan["total_value"]) == Decimal("430")
+    assert Decimal(dhan["unrealized_pnl"]) == Decimal("57.50")
+    assert Decimal(dhan["day_change"]) == Decimal("17")
+    market_evidence = dhan["provenance"]["market_value"]
+    assert {item["price_basis"] for item in market_evidence["quote_observations"]} == {
+        "eod_close"
+    }
+    assert {item["basis_date"] for item in market_evidence["quote_observations"]} == {
+        current_session.isoformat()
+    }
+    day_evidence = dhan["provenance"]["day_change"]
+    assert {
+        item["basis_date"] for item in day_evidence["quote_observations"]
+    } == {current_session.isoformat()}
+    assert {
+        item["basis_date"] for item in day_evidence["previous_close_observations"]
+    } == {previous_session.isoformat()}
+
+
+def test_broker_summary_does_not_partial_sum_without_last_session_close(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    real_session_state = market_data._market_session_state
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    current_time = datetime(2026, 10, 27, 16, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    monkeypatch.setattr(brokers, "_now", lambda: current_time)
+    monkeypatch.setattr(market_data, "_market_session_state", real_session_state)
+    _add_portfolio_close_bars(
+        test_engine,
+        (date(2026, 10, 27), date(2026, 10, 26)),
+        current_prices={"SBIN": Decimal("110")},
+    )
+    monkeypatch.setattr(
+        DhanAdapter,
+        "get_market_quotes_batch",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("live quote attempted")),
+    )
+
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    dhan = response.json()["brokers"][0]
+    assert dhan["market_value"] is None
+    assert dhan["total_value"] is None
+    assert dhan["day_change"] is None
+    assert "XYZ" in dhan["unavailable_reasons"]["market_value"]
+    assert "2026-10-27" in dhan["unavailable_reasons"]["market_value"]
+    assert dhan["provenance"]["market_value"]["coverage"] == {
+        "priced": 2,
+        "total": 3,
+        "unit": "open rows",
+    }
+    assert any("XYZ" in item for item in dhan["provenance"]["market_value"]["exclusions"])
+
+
+def test_broker_holdings_are_in_coverage_and_backfill_selection(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    coverage = first.get("/api/v1/market-data/coverage")
+
+    assert coverage.status_code == 200, coverage.text
+    assert {
+        row["symbol"] for row in coverage.json()["instruments"]
+    } >= {"SBIN", "XYZ"}
+
+    app.dependency_overrides[market_data.get_market_data_provider] = (
+        lambda: market_data.MarketDataProviderChain([])
+    )
+    response = first.post(
+        "/api/v1/market-data/backfill/holdings",
+        headers=csrf(first),
+    )
+
+    assert response.status_code == 200, response.text
+    assert {
+        row["symbol"] for row in response.json()["instruments"]
+    } >= {"SBIN", "XYZ"}
+    with Session(test_engine) as session:
+        sbin = session.scalar(
+            select(market_data.Instrument).where(
+                market_data.Instrument.symbol == "SBIN"
+            )
+        )
+        assert sbin is not None
+        attempt = session.scalar(
+            select(market_data.MarketDataSyncAttempt)
+            .where(
+                market_data.MarketDataSyncAttempt.instrument_id == sbin.id,
+                market_data.MarketDataSyncAttempt.interval == "1d",
+            )
+            .order_by(market_data.MarketDataSyncAttempt.attempted_at.desc())
+        )
+        assert attempt is not None
+        assert attempt.outcome == "unavailable"
+        assert attempt.reason == "no_real_provider_available"
+
+
+def test_daily_backfill_records_provider_data_already_stored(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    with Session(test_engine) as session:
+        instrument = session.scalar(
+            select(market_data.Instrument).where(
+                market_data.Instrument.symbol == "SBIN"
+            )
+        )
+        assert instrument is not None
+        monkeypatch.setattr(
+            "app.broker_adapters.DhanAdapter.get_instrument_master_details",
+            lambda *_args: None,
+        )
+        monkeypatch.setattr(
+            market_data, "_providers",
+            lambda _provider: [SimpleNamespace(name="yfinance")],
+        )
+        monkeypatch.setattr(
+            market_data,
+            "_resolve_provider_candidate",
+            lambda *_args: (SimpleNamespace(), None),
+        )
+        monkeypatch.setattr(
+            market_data,
+            "_count_real_daily_bars",
+            lambda *_args: 1,
+        )
+
+        def fetch_history(*_args, rows_returned, **_kwargs):
+            rows_returned[0] = 1
+            return [SimpleNamespace(timestamp=datetime.now(timezone.utc))]
+
+        monkeypatch.setattr(
+            market_data, "_fetch_provider_history", fetch_history
+        )
+        monkeypatch.setattr(
+            market_data, "_persist_real_bars", lambda *_args: 0
+        )
+        result = market_data._backfill_instrument(
+            session,
+            instrument,
+            SimpleNamespace(),
+            years=1,
+            request_budget=[10],
+        )
+
+        assert result["status"] == "unchanged"
+        local_today = datetime.now(timezone.utc).astimezone(
+            ZoneInfo(instrument.timezone)
+        ).date()
+        assert result["chunks"][0]["end"] == datetime.combine(
+            local_today,
+            datetime.min.time(),
+            ZoneInfo(instrument.timezone),
+        ).astimezone(timezone.utc)
+        assert result["chunks"][0]["reason"] == "provider_data_already_stored"
+        attempt = session.scalar(
+            select(market_data.MarketDataSyncAttempt)
+            .where(
+                market_data.MarketDataSyncAttempt.instrument_id == instrument.id,
+                market_data.MarketDataSyncAttempt.interval == "1d",
+            )
+            .order_by(market_data.MarketDataSyncAttempt.attempted_at.desc())
+        )
+        assert attempt is not None
+        assert attempt.outcome == "unchanged"
+        assert attempt.reason == "provider_data_already_stored"
+
+
+def test_broker_summary_resolves_all_exchange_from_isin_and_symbol(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    now = seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    session_token = first.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        xyz_holding = db.scalar(
+            select(BrokerMirror).where(
+                BrokerMirror.user_id == user_session.user_id,
+                BrokerMirror.symbol == "XYZ",
+            )
+        )
+        assert xyz_holding is not None
+        pcjeweller = Instrument(
+            symbol="PCJEWELLER",
+            display_name="PC Jeweller Limited",
+            asset_class="equity",
+            venue="NSE",
+            currency="INR",
+            country="IN",
+            timezone="Asia/Kolkata",
+            is_synthetic=False,
+            relink_required=False,
+            created_at=now,
+        )
+        db.add(pcjeweller)
+        db.flush()
+        db.add(InstrumentProviderIdentifier(
+            instrument_id=pcjeweller.id,
+            provider="dhan",
+            provider_instrument_id="7777|NSE_EQ",
+            provider_symbol="PCJEWELLER",
+            is_verified=False,
+            last_seen_at=now,
+        ))
+        xyz_holding.symbol = "PCJEWELLER"
+        xyz_holding.security_id = "7777"
+        xyz_holding.exchange = "ALL"
+        xyz_holding.isin = "KNOWNISIN123"
+        db.commit()
+    monkeypatch.setattr(
+        DhanAdapter,
+        "_scrip_master",
+        classmethod(lambda _cls: [{
+            "EXCH_ID": "NSE",
+            "SEGMENT": "E",
+            "SECURITY_ID": "7777",
+            "SYMBOL_NAME": "PCJEWELLER",
+            "UNDERLYING_SYMBOL": "PCJEWELLER",
+            "INSTRUMENT": "EQUITY",
+            "SERIES": "EQ",
+            "ISIN": "KNOWNISIN123",
+        }]),
+    )
+    requests = []
+
+    def get_market_quotes_batch(_self, _token, _tokens, instruments_by_segment):
+        requests.append(instruments_by_segment)
+        return {"NSE_EQ": {
+            security_id: HistoricalBar(
+                timestamp=now,
+                open=Decimal("109") if security_id == "3045" else Decimal("49"),
+                high=Decimal("111") if security_id == "3045" else Decimal("51"),
+                low=Decimal("108") if security_id == "3045" else Decimal("48"),
+                close=Decimal("110") if security_id == "3045" else Decimal("50"),
+                volume=Decimal("1000"),
+            )
+            for security_id in ("3045", "7777")
+        }}
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    assert requests == [{"NSE_EQ": ["3045", "7777"]}]
+    dhan = response.json()["brokers"][0]
+    assert Decimal(dhan["market_value"]) == Decimal("380")
+    assert dhan["provenance"]["market_value"]["coverage"] == {
+        "priced": 3,
+        "total": 3,
+        "unit": "open rows",
+    }
+    with Session(test_engine) as db:
+        mapping = db.scalar(
+            select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.provider == "dhan",
+                InstrumentProviderIdentifier.provider_instrument_id
+                == "7777|NSE_EQ",
+            )
+        )
+        assert mapping is not None
+        assert mapping.is_verified is True
+    portfolio = first.get("/api/v1/brokers/dhan/portfolio").json()
+    pcjeweller_row = next(
+        row for row in portfolio["holdings"] if row["symbol"] == "PCJEWELLER"
+    )
+    assert pcjeweller_row["exchange"] == "NSE_EQ"
+    assert pcjeweller_row["exchange_raw"] == "ALL"
+    assert pcjeweller_row["exchange_resolution_reason"] is None
+
+
+def test_broker_summary_leaves_unresolved_all_exchange_holding_blank(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    now = seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    session_token = first.cookies.get("session_token")
+    with Session(test_engine) as db:
+        user_session = db.scalar(
+            select(UserSession).where(
+                UserSession.token_hash == hash_token(session_token)
+            )
+        )
+        assert user_session is not None
+        unresolved = db.scalar(
+            select(BrokerMirror).where(
+                BrokerMirror.user_id == user_session.user_id,
+                BrokerMirror.symbol == "XYZ",
+            )
+        )
+        assert unresolved is not None
+        unresolved.symbol = "PCJEWELLER"
+        unresolved.exchange = "ALL"
+        unresolved.isin = "UNMATCHEDISIN"
+        db.commit()
+    monkeypatch.setattr(DhanAdapter, "_scrip_master", classmethod(lambda _cls: []))
+    requests = []
+
+    def get_market_quotes_batch(_self, _token, _tokens, instruments_by_segment):
+        requests.append(instruments_by_segment)
+        return {"NSE_EQ": {
+            "3045": HistoricalBar(
+                timestamp=now,
+                open=Decimal("109"),
+                high=Decimal("111"),
+                low=Decimal("108"),
+                close=Decimal("110"),
+                volume=Decimal("1000"),
+            )
+        }}
+
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch", get_market_quotes_batch
+    )
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    assert requests == [{"NSE_EQ": ["3045"]}]
+    dhan = response.json()["brokers"][0]
+    assert dhan["market_value"] is None
+    reason = dhan["unavailable_reasons"]["market_value"]
+    assert reason.startswith("Unverified Dhan provider mapping")
+    assert "Missing input:" not in reason
+    assert "PCJEWELLER" in reason
+    assert "UNMATCHEDISIN" in reason
+    assert "instrument master" in reason
+    portfolio = first.get("/api/v1/brokers/dhan/portfolio").json()
+    pcjeweller_row = next(
+        row for row in portfolio["holdings"] if row["symbol"] == "PCJEWELLER"
+    )
+    assert pcjeweller_row["exchange"] == "ALL"
+    assert pcjeweller_row["exchange_raw"] == "ALL"
+    assert "showing broker raw value" in pcjeweller_row["exchange_resolution_reason"]
+
+
+def test_dhan_cached_live_quote_revalues_portfolio_without_broker_request(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    client, _ = clients
+    now = seed_dhan_portfolio_summary(
+        client, test_engine, encryption_key, monkeypatch
+    )
+    with Session(test_engine) as db:
+        rows = db.scalars(
+            select(BrokerMirror).where(
+                BrokerMirror.broker == "dhan",
+                BrokerMirror.quantity != 0,
+                BrokerMirror.average_price.is_not(None),
+                BrokerMirror.security_id.is_not(None),
+            )
+        ).all()
+        selected = None
+        for row in rows:
+            if brokers._is_cnc_sale(row):
+                continue
+            mappings = db.scalars(
+                select(InstrumentProviderIdentifier).where(
+                    InstrumentProviderIdentifier.provider == "dhan",
+                    InstrumentProviderIdentifier.is_verified.is_(True),
+                    InstrumentProviderIdentifier.provider_instrument_id.like(
+                        f"{row.security_id}|%"
+                    ),
+                )
+            ).all()
+            normalized_symbol = row.symbol.strip().upper().removesuffix("-EQ")
+            mapping = next(
+                (
+                    candidate for candidate in mappings
+                    if candidate.provider_symbol.strip().upper().removesuffix("-EQ")
+                    == normalized_symbol
+                ),
+                None,
+            )
+            if mapping is not None:
+                instrument = db.get(Instrument, mapping.instrument_id)
+                if instrument is not None:
+                    selected = row, instrument
+                    break
+        assert selected is not None
+        row, instrument = selected
+        instrument_id = instrument.id
+        quote = db.scalar(
+            select(MarketQuote).where(
+                MarketQuote.instrument_id == instrument_id,
+                MarketQuote.source == "dhan_ws",
+            )
+        )
+        if quote is None:
+            quote = MarketQuote(
+                instrument_id=instrument.id,
+                source="dhan_ws",
+                timestamp=now,
+                open=Decimal("100"),
+                high=Decimal("100"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+                volume=Decimal("0"),
+                retrieved_at=now,
+                is_synthetic=False,
+            )
+            db.add(quote)
+        else:
+            quote.timestamp = now
+            quote.open = quote.high = quote.low = quote.close = Decimal("100")
+            quote.retrieved_at = now
+            quote.is_synthetic = False
+        security_id = row.security_id
+        db.commit()
+
+    def no_broker_request(*_args, **_kwargs):
+        pytest.fail("Portfolio valuation must use the cached live quote.")
+
+    monkeypatch.setattr(brokers, "DhanReadOnlyAccountAdapter", no_broker_request)
+    first = client.get("/api/v1/brokers/dhan/portfolio")
+    assert first.status_code == 200, first.text
+    first_payload = next(
+        item
+        for key in ("holdings", "positions")
+        for item in first.json()[key]
+        if item["security_id"] == security_id
+    )
+    assert first_payload["live_valuation"]["status"] == "live"
+    first_value = Decimal(first_payload["live_valuation"]["market_value"])
+    broker_pnl = first_payload.get("unrealized_profit")
+
+    with Session(test_engine) as db:
+        quote = db.scalar(
+            select(MarketQuote).where(
+                MarketQuote.source == "dhan_ws",
+                MarketQuote.instrument_id == instrument_id,
+            )
+        )
+        assert quote is not None
+        quote.close = Decimal("101")
+        quote.high = Decimal("101")
+        db.commit()
+
+    second = client.get("/api/v1/brokers/dhan/portfolio")
+    assert second.status_code == 200, second.text
+    second_payload = next(
+        item
+        for key in ("holdings", "positions")
+        for item in second.json()[key]
+        if item["security_id"] == security_id
+    )
+    assert Decimal(second_payload["live_valuation"]["market_value"]) != first_value
+    assert second_payload.get("unrealized_profit") == broker_pnl
+    assert second_payload["live_valuation"]["basis"] == "live_feed_ltp"
+
+
+def test_dhan_automatic_snapshot_is_session_and_cadence_gated(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    client, _ = clients
+    seed_dhan_portfolio_summary(client, test_engine, encryption_key, monkeypatch)
+    calls: list[str] = []
+
+    class SnapshotReader:
+        last_http_diagnostics: list[dict[str, str]] = []
+
+        def __init__(self, *_args) -> None:
+            pass
+
+        def get_holdings(self):
+            calls.append("holdings")
+            raise DhanAccountRequestError("provider_temporarily_unavailable")
+
+        def get_positions(self):
+            calls.append("positions")
+            raise DhanAccountRequestError("provider_temporarily_unavailable")
+
+        def get_fundlimit(self):
+            calls.append("funds")
+            raise DhanAccountRequestError("provider_temporarily_unavailable")
+
+        def get_past_trades(self, *_args):
+            pytest.fail("Automatic snapshots must not fetch historical trades.")
+
+        def get_ledger(self, *_args):
+            pytest.fail("Automatic snapshots must not fetch ledger history.")
+
+    monkeypatch.setattr(brokers, "DhanReadOnlyAccountAdapter", SnapshotReader)
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_args: "closed")
+    brokers._dhan_snapshot_attempts.clear()
+    closed = client.post(
+        "/api/v1/brokers/dhan/sync?snapshot_only=true",
+        headers=csrf(client),
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["reason"] == "market_closed"
+    assert calls == []
+
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_args: "open")
+    attempted = client.post(
+        "/api/v1/brokers/dhan/sync?snapshot_only=true",
+        headers=csrf(client),
+    )
+    assert attempted.status_code == 502
+    assert calls == ["holdings", "positions", "funds"]
+    throttled = client.post(
+        "/api/v1/brokers/dhan/sync?snapshot_only=true",
+        headers=csrf(client),
+    )
+    assert throttled.status_code == 200, throttled.text
+    assert throttled.json()["reason"] == "snapshot_cadence"
+    assert calls == ["holdings", "positions", "funds"]
 
 
 def test_dhan_portfolio_only_lists_nonzero_long_short_positions_as_open(
@@ -474,6 +1904,47 @@ def test_dhan_quote_parser_returns_exchange_timestamp_and_decimal_values(monkeyp
     assert quote.timestamp == datetime(2025, 4, 15, 5, 0, tzinfo=timezone.utc)
 
 
+def test_dhan_quote_batch_groups_segments_in_one_request(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(DhanAdapter, "_market_quote_cache", {})
+    monkeypatch.setattr(
+        "app.broker_adapters._wait_for_dhan_market_data", lambda: None
+    )
+
+    def mocked_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, **kwargs})
+        record = {
+            "last_price": 100,
+            "last_trade_time": "15/04/2025 10:30:00",
+            "volume": 1000,
+            "ohlc": {"open": 99, "high": 101, "low": 98},
+        }
+        return httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    "NSE_EQ": {"11536": record},
+                    "BSE_EQ": {"500112": record},
+                },
+            },
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(httpx, "request", mocked_request)
+    quotes = DhanAdapter().get_market_quotes_batch(
+        "access-token",
+        {"client_id": "client"},
+        {"NSE_EQ": ["11536"], "BSE_EQ": ["500112"]},
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["url"] == "https://api.dhan.co/v2/marketfeed/quote"
+    assert calls[0]["json"] == {"BSE_EQ": [500112], "NSE_EQ": [11536]}
+    assert quotes["NSE_EQ"]["11536"].close == Decimal("100")
+    assert quotes["BSE_EQ"]["500112"].close == Decimal("100")
+
+
 def test_dhan_historical_data_requests_one_minute_candles_and_converts_epoch(
     monkeypatch,
 ) -> None:
@@ -658,6 +2129,83 @@ def test_dhan_live_feed_stop_skips_tasks_from_another_event_loop() -> None:
         foreign_loop.close()
 
 
+def test_dhan_live_feed_health_tracks_packets_and_failures(monkeypatch) -> None:
+    hub = market_data.DhanLiveFeedHub()
+
+    async def fake_stream(
+        _access_token,
+        _tokens,
+        _initial,
+        _updates,
+        status_callback,
+    ):
+        await status_callback("active")
+        await status_callback("connection_failure")
+        await status_callback("packet_received")
+        await status_callback("unknown_response")
+        if False:
+            yield "instrument", None
+
+    monkeypatch.setattr(hub._adapter, "stream_watchlist_market_quotes", fake_stream)
+
+    asyncio.run(
+        hub._run_feed(
+            "ticker",
+            "",
+            {},
+            {},
+            asyncio.Queue(),
+        )
+    )
+
+    health = hub.health("ticker")
+    assert health["connection_state"] == "idle"
+    assert health["last_successful_packet_at"] is not None
+    assert health["consecutive_failure_count"] == 0
+    assert health["unknown_response_count"] == 1
+
+
+def test_dhan_live_feed_hub_forwards_previous_close_and_market_status(
+    monkeypatch,
+) -> None:
+    hub = market_data.DhanLiveFeedHub()
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    hub._groups["ticker"]["test-group"] = (
+        {"instrument": ("NSE_EQ", "11536")},
+        queue,
+    )
+
+    async def fake_stream(
+        _access_token,
+        _tokens,
+        _initial,
+        _updates,
+        _status_callback,
+    ):
+        yield "instrument", "previous_close", Decimal("3890.25")
+        yield "instrument", "market_status", b"\x07\x08\x00\x01\x10\x2d\x00\x00"
+
+    monkeypatch.setattr(
+        hub._adapter, "stream_watchlist_market_quotes", fake_stream
+    )
+
+    async def verify_feed() -> list[dict[str, object]]:
+        await hub._run_feed("ticker", "", {}, {}, asyncio.Queue())
+        messages = []
+        while not queue.empty():
+            messages.append(queue.get_nowait())
+        return messages
+
+    messages = asyncio.run(verify_feed())
+
+    previous_close = next(message for message in messages if message["type"] == "previous_close")
+    assert previous_close["previous_close"] == Decimal("3890.25")
+    market_status = next(message for message in messages if message["type"] == "status")
+    assert market_status["feed_health"]["last_market_status_packet_hex"] == (
+        "07080001102d0000"
+    )
+
+
 def test_dhan_websocket_ticker_packet_decodes_ist_epoch_as_utc() -> None:
     tick = DhanAdapter.decode_market_feed_packet(
         _dhan_ticker_packet(), "NSE_EQ", "11536"
@@ -709,6 +2257,10 @@ def test_dhan_ist_epoch_conversion_handles_utc_midnight_rollover() -> None:
 
 def test_dhan_websocket_resubscribe_after_disconnect(monkeypatch) -> None:
     class FakeConnection:
+        response = type("Response", (), {"status_code": 101, "reason_phrase": "OK"})()
+        close_code = None
+        close_reason = None
+
         def __init__(self, messages: list[bytes]):
             self.messages = messages
             self.subscriptions: list[dict[str, object]] = []
@@ -766,6 +2318,261 @@ def test_dhan_websocket_resubscribe_after_disconnect(monkeypatch) -> None:
             "InstrumentList": [{"ExchangeSegment": "NSE_EQ", "SecurityId": "11536"}],
         }]
     ] * 2
+
+
+def test_dhan_live_feed_decodes_multiple_packets_in_one_frame() -> None:
+    decoded, retained_packets, unknown_count = DhanAdapter.decode_market_feed_frame(
+        _dhan_ticker_packet() + _dhan_quote_packet(),
+        {("NSE_EQ", "11536"): "instrument"},
+    )
+
+    assert [instrument_id for instrument_id, _quote in decoded] == [
+        "instrument",
+        "instrument",
+    ]
+    assert [quote.close for _instrument_id, quote in decoded] == [
+        Decimal("3900.25"),
+        Decimal("3900.25"),
+    ]
+    assert retained_packets == []
+    assert unknown_count == 0
+
+
+def test_dhan_live_feed_disconnect_packet_is_not_a_header_error() -> None:
+    with pytest.raises(broker_adapters.BrokerFeedDisconnected):
+        DhanAdapter.decode_market_feed_frame(
+            _dhan_disconnect_packet(),
+            {("NSE_EQ", "11536"): "instrument"},
+        )
+
+
+def test_dhan_live_feed_previous_close_is_retained_and_not_unknown() -> None:
+    packet = bytearray(16)
+    packet[0] = 6
+    packet[1:3] = (16).to_bytes(2, "little")
+    packet[3] = 1
+    packet[4:8] = (11536).to_bytes(4, "little", signed=True)
+    struct.pack_into("<f", packet, 8, 3890.25)
+    struct.pack_into("<i", packet, 12, 0)
+
+    decoded, retained_packets, unknown_count = DhanAdapter.decode_market_feed_frame(
+        bytes(packet),
+        {("NSE_EQ", "11536"): "instrument"},
+    )
+
+    assert decoded == []
+    assert retained_packets == [
+        ("instrument", 6, Decimal("3890.25")),
+    ]
+    assert unknown_count == 0
+
+
+def test_dhan_live_feed_market_status_packet_is_retained() -> None:
+    packet = bytearray(8)
+    packet[0] = 7
+    packet[1:3] = (8).to_bytes(2, "little")
+    packet[3] = 1
+    packet[4:8] = (11536).to_bytes(4, "little", signed=True)
+
+    decoded, retained_packets, unknown_count = DhanAdapter.decode_market_feed_frame(
+        bytes(packet),
+        {("NSE_EQ", "11536"): "instrument"},
+    )
+
+    assert decoded == []
+    assert retained_packets == [("instrument", 7, bytes(packet))]
+    assert unknown_count == 0
+
+
+def test_dhan_live_feed_skips_and_counts_unknown_response_code() -> None:
+    packet = bytearray(8)
+    packet[0] = 99
+    packet[1:3] = (8).to_bytes(2, "little")
+
+    decoded, retained_packets, unknown_count = DhanAdapter.decode_market_feed_frame(
+        bytes(packet),
+        {},
+    )
+
+    assert decoded == []
+    assert retained_packets == []
+    assert unknown_count == 1
+
+
+def test_dhan_live_feed_does_not_decode_text_frames(monkeypatch) -> None:
+    class FakeConnection:
+        response = type("Response", (), {"status_code": 101, "reason_phrase": "OK"})()
+        close_code = None
+        close_reason = None
+
+        def __init__(self) -> None:
+            self.messages: list[str | bytes] = ["not a binary packet", _dhan_ticker_packet()]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send(self, _message: str) -> None:
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.messages:
+                raise StopAsyncIteration
+            return self.messages.pop(0)
+
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        broker_adapters,
+        "websocket_connect",
+        lambda *_args, **_kwargs: connection,
+    )
+
+    async def verify_stream() -> None:
+        stream = DhanAdapter().stream_market_quotes(
+            "",
+            {"client_id": ""},
+            "NSE_EQ",
+            "11536",
+            lambda _status: asyncio.sleep(0),
+        )
+        quote = await anext(stream)
+        assert quote is not None
+        assert quote.close == Decimal("3900.25")
+        await stream.aclose()
+
+    asyncio.run(verify_stream())
+
+
+def test_dhan_live_feed_stays_idle_without_reconnecting_when_unsubscribed(
+    monkeypatch,
+) -> None:
+    class FakeConnection:
+        response = type("Response", (), {"status_code": 101, "reason_phrase": "OK"})()
+        close_code = None
+        close_reason = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send(self, _message: str) -> None:
+            self.sent_messages.append(json.loads(_message))
+
+        async def recv(self) -> bytes:
+            await asyncio.Future()
+            return b""
+
+        def __init__(self) -> None:
+            self.sent_messages: list[dict[str, object]] = []
+
+    connection = FakeConnection()
+    connect_count = 0
+
+    def connect(*_args, **_kwargs):
+        nonlocal connect_count
+        connect_count += 1
+        return connection
+
+    monkeypatch.setattr(broker_adapters, "websocket_connect", connect)
+    subscription_updates: asyncio.Queue[dict[str, tuple[str, str]]] = asyncio.Queue()
+    active = asyncio.Event()
+    idle = asyncio.Event()
+    statuses: list[str] = []
+
+    async def capture_status(status: str) -> None:
+        statuses.append(status)
+        if status == "active":
+            active.set()
+        if status == "idle":
+            idle.set()
+
+    async def verify_stream() -> None:
+        stream = DhanAdapter().stream_watchlist_market_quotes(
+            "",
+            {"client_id": ""},
+            {"instrument": ("NSE_EQ", "11536")},
+            subscription_updates,
+            capture_status,
+        )
+        consumer = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(active.wait(), timeout=1)
+        assert connection.sent_messages[0]["RequestCode"] == 17
+        subscription_updates.put_nowait({})
+        await asyncio.wait_for(idle.wait(), timeout=1)
+        assert connect_count == 1
+        assert statuses[-1] == "idle"
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+        await stream.aclose()
+
+    asyncio.run(verify_stream())
+
+
+def test_dhan_live_feed_backs_off_caps_failures_and_summarizes_repeats(
+    monkeypatch, caplog
+) -> None:
+    class FakeConnection:
+        response = type("Response", (), {"status_code": 101, "reason_phrase": "OK"})()
+        close_code = None
+        close_reason = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send(self, _message: str) -> None:
+            return None
+
+        async def recv(self) -> bytes:
+            return b"\x02\x00\x00\x01\x00\x00\x00\x00"
+
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        broker_adapters,
+        "websocket_connect",
+        lambda *_args, **_kwargs: connection,
+    )
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(broker_adapters.asyncio, "sleep", record_sleep)
+    statuses: list[str] = []
+
+    async def capture_status(status: str) -> None:
+        statuses.append(status)
+
+    async def verify_stream() -> None:
+        stream = DhanAdapter().stream_watchlist_market_quotes(
+            "",
+            {"client_id": ""},
+            {"instrument": ("NSE_EQ", "11536")},
+            asyncio.Queue(),
+            capture_status,
+        )
+        with pytest.raises(BrokerAdapterError, match="5 consecutive failures"):
+            await anext(stream)
+
+    caplog.set_level(30, logger="app.broker_adapters")
+    asyncio.run(verify_stream())
+
+    assert delays == [1, 2, 4, 8]
+    assert statuses.count("connection_failure") == 5
+    assert statuses[-1] == "failed"
+    assert caplog.text.count(
+        "Dhan live feed failure reason=Dhan live feed packet has an invalid header"
+    ) == 1
+    assert "Dhan live feed repeated failure count=5" in caplog.text
 
 
 def test_dhan_instrument_master_mapping_requires_one_verified_equity(monkeypatch) -> None:

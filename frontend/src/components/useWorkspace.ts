@@ -81,6 +81,8 @@ type WatchlistEntry = {
     is_current_session: boolean;
     absolute_change: string | null;
     percent_change: string | null;
+    change_basis: string | null;
+    change_reason: string | null;
     data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
     close: string;
   } | null;
@@ -337,6 +339,8 @@ type MarketQuote = {
   market_age_seconds: number;
   absolute_change: string | null;
   percent_change: string | null;
+  change_basis: string | null;
+  change_reason: string | null;
   data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
   delivery_mode: 'on_demand_rest' | 'rest_snapshot' | 'websocket_tick';
   stream_status: 'not_configured' | 'active' | 'reconnecting' | 'stale' | 'unavailable';
@@ -438,7 +442,7 @@ export function useWorkspace() {
   const [csvContent, setCsvContent] = useState('');
   const [csvPreview, setCsvPreview] = useState<CsvImportPreview | null>(null);
   const [importingCsv, setImportingCsv] = useState(false);
-  const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research'>(
+  const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'delta-research' | 'strategies'>(
     () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
   );
   const [openMarketInstrumentId, setOpenMarketInstrumentId] = useState<string | null>(null);
@@ -1057,6 +1061,8 @@ export function useWorkspace() {
               is_current_session: quote.is_current_session,
               absolute_change: quote.absolute_change,
               percent_change: quote.percent_change,
+              change_basis: quote.change_basis,
+              change_reason: quote.change_reason,
               data_type: quote.data_type,
               close: quote.bar.close,
             },
