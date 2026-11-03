@@ -6,6 +6,7 @@ import { apiRequest } from '../api';
 import {
   formatMoney, formatQuantity, localDateTime, type WorkspaceState,
 } from '../components/useWorkspace';
+import { DhanTradeAndCashHistory } from './Activity';
 
 type JournalTrade = WorkspaceState['journalTrades'][number];
 type SortKey = 'instrument' | 'strategy' | 'setup' | 'side' | 'asset_class' | 'quantity' | 'entry_time' | 'exit_time' | 'net_pnl';
@@ -140,7 +141,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [csvBusy, setCsvBusy] = useState(false);
   const [brokerImportMessage, setBrokerImportMessage] = useState('');
-  const [journalView, setJournalView] = useState<'trades' | 'fills'>('trades');
+  const [journalView, setJournalView] = useState<'trades' | 'fills' | 'broker-history'>('trades');
   const [annotationOptions, setAnnotationOptions] = useState<AnnotationOptions>({ strategies: [], setups: [], tags: [] });
   const [sort, setSort] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({
     key: 'entry_time',
@@ -204,7 +205,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
       method: 'PATCH',
       body: JSON.stringify({ [field]: value }),
     });
-    await refreshJournalTrades(journalView);
+    await refreshJournalTrades(journalView === 'fills' ? 'fills' : 'trades');
     const refreshed = await apiRequest<AnnotationOptions>('/trades/annotation-options');
     setAnnotationOptions(refreshed);
   }
@@ -418,16 +419,17 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
           <div className="journal-view-toggle" role="tablist" aria-label="Journal view">
             <button type="button" role="tab" aria-selected={journalView === 'trades'} className={journalView === 'trades' ? 'active' : ''} onClick={() => void setJournalViewAndRefresh('trades')}>Trades</button>
             <button type="button" role="tab" aria-selected={journalView === 'fills'} className={journalView === 'fills' ? 'active' : ''} onClick={() => void setJournalViewAndRefresh('fills')}>Fills</button>
+            <button type="button" role="tab" aria-selected={journalView === 'broker-history'} className={journalView === 'broker-history' ? 'active' : ''} onClick={() => setJournalView('broker-history')}>Broker history</button>
           </div>
-          <label className="journal-search"><Search size={15} /><input aria-label="Search trades" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search instrument, strategy, setup, notes, tags…" /></label>
+          {journalView !== 'broker-history' && <label className="journal-search"><Search size={15} /><input aria-label="Search trades" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search instrument, strategy, setup, notes, tags…" /></label>}
         </div>
-        {journalAnalytics && <p className="journal-row-reconciliation">
+        {journalView !== 'broker-history' && journalAnalytics && <p className="journal-row-reconciliation">
           {journalView === 'trades'
             ? `${journalTrades.length} trade rows: ${journalAnalytics.fifo_match_slices} FIFO match slices + ${journalAnalytics.manual_trade_count} manual trade. ${journalTrades.length === journalAnalytics.matched_closed_trades ? 'Counts reconcile.' : `Count mismatch: expected ${journalAnalytics.matched_closed_trades} closed trades.`}`
             : `${journalTrades.length} fill rows · ${journalAnalytics.fill_count} Dhan fills. ${journalTrades.length === journalAnalytics.fill_count ? 'Counts reconcile.' : `Count mismatch: expected ${journalAnalytics.fill_count} fills.`}`}
         </p>}
-        {journalAnalytics && journalAnalytics.unattributed_fill_rows > 0 && <p className="journal-data-quality" role="status">Data quality: {journalAnalytics.unattributed_fill_rows} fill is unattributable (including security ID 0 with no symbol); excluded from real open positions.</p>}
-        {journalLoadState === 'idle' || journalLoadState === 'loading' ? <div className="table-empty">Loading trades…</div> : journalLoadState === 'failed' ? <div className="error-message" role="alert">Trades unavailable: {journalLoadError} <button type="button" onClick={() => void refreshJournalTrades(journalView).catch(() => undefined)}>Retry</button></div> : filteredTrades.length === 0 ? <div className="table-empty">{journalTrades.length ? 'No trades match these filters.' : 'No journal trades recorded yet.'}</div> : (
+        {journalView !== 'broker-history' && journalAnalytics && journalAnalytics.unattributed_fill_rows > 0 && <p className="journal-data-quality" role="status">Data quality: {journalAnalytics.unattributed_fill_rows} fill is unattributable (including security ID 0 with no symbol); excluded from real open positions.</p>}
+        {journalView === 'broker-history' ? <DhanTradeAndCashHistory /> : journalLoadState === 'idle' || journalLoadState === 'loading' ? <div className="table-empty">Loading trades…</div> : journalLoadState === 'failed' ? <div className="error-message" role="alert">Trades unavailable: {journalLoadError} <button type="button" onClick={() => void refreshJournalTrades(journalView === 'fills' ? 'fills' : 'trades').catch(() => undefined)}>Retry</button></div> : filteredTrades.length === 0 ? <div className="table-empty">{journalTrades.length ? 'No trades match these filters.' : 'No journal trades recorded yet.'}</div> : (
           <div className="table-scroll journal-table-scroll">
             <table className="journal-table">
               <thead><tr>

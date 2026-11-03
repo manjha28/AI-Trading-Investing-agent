@@ -1344,8 +1344,8 @@ class DhanAdapter(BrokerAdapter):
         start: datetime,
         end: datetime,
     ) -> list[HistoricalBar]:
-        if interval not in {"1d", "1m", "5m", "15m", "1h", "60m"}:
-            raise BrokerAdapterError("Dhan does not support this candle interval")
+        if interval not in {"1d", "1m"}:
+            raise BrokerAdapterError("Dhan history sync stores only 1m intraday and 1d candles")
         if start.utcoffset() is None or end.utcoffset() is None or start >= end:
             raise BrokerAdapterError("Dhan historical request range is invalid")
         intraday = interval != "1d"

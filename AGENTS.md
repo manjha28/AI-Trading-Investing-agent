@@ -7,14 +7,16 @@ unintended risk is being carried. The approved product direction also includes a
 automated trading platform for Dhan and Delta Exchange India.
 
 ## Authorized trading scope
-- Implementation of live broker execution, execution adapters, strategy-driven entries and exits,
-  order/fill lifecycle state, position reconciliation, stop-losses, targets, trailing stops, and
-  independent risk management is authorized.
-- Paper-trading or simulated execution may be implemented for research and testing only. It must
-  be unmistakably labelled and isolated from live broker state, orders, fills, and portfolio
-  accounting.
-- This authorization changes product scope; it does not mean execution is already implemented
-  or that a broker account is authorized. Report implementation and provider validation accurately.
+- Brokers are read-only by design. Order placement, order modification, order cancellation,
+  live execution, execution adapters, strategy-driven entries and exits, stop-losses, targets,
+  trailing stops, paper trading, and simulated fills are PERMANENTLY OUT OF SCOPE. They are
+  excluded by design, not deferred. Do not implement, scaffold, stub, or plan them.
+- Any request for execution must be refused and reported to the owner rather than built.
+
+## Historical evaluation and indicator scope
+- Historical evaluation (backtesting) is IN SCOPE. A backtest replays strategy logic over stored historical bars to produce statistics: trades, win rate, profit factor, expectancy, drawdown. It must use completed bars only, must never look ahead, and must state the data window, bar count, source and any cost assumptions used. Paper trading remains OUT OF SCOPE: no simulated positions tracked against live markets, no simulated order book, no pretend portfolio, no live-fill emulation. A backtest produces statistics about the past. It never represents a current position, an order, or money at risk.
+- Indicator computation (moving averages, RSI, ATR, VWAP, volume profile) MAY use float and pandas internally. These are statistical transforms, not monetary values. Indicator outputs keep full precision for comparison and strategy logic. Quantise a price-like indicator value to the instrument tick ONLY when displaying it. Any price, stop, target, P&L or other displayed or stored monetary figure MUST be converted to Decimal at that boundary. Decimal(float) is forbidden - convert via string. No float may be written to a money column or rendered as a currency figure.
+- Indicator and strategy logic ported from the del_trading_bot repository lives HERE. The del_trading_bot copy is frozen reference only and must not be edited or re-synced. There is exactly one home for this code.
 
 ## Hard constraints
 - Live execution must be disabled by default and unavailable until an owner explicitly activates
@@ -63,7 +65,11 @@ automated trading platform for Dhan and Delta Exchange India.
 ## Stack facts
 Backend: FastAPI + SQLAlchemy + Alembic + PostgreSQL, `backend/app/`, tests in `backend/tests/`.
 Frontend: React + TypeScript + Vite, `frontend/src/`.
-Current head: 0032_broker_position_metrics. Next migration: 0033.
+Current head: 0036_portfolio_valuation_history. Next migration: 0037.
+Migration 0035 has a non-additive key change, approved as a documented exception; its downgrade and pre-check are in place.
+
+## Diagnostics artifacts
+Milestone diagnostics live in `diagnostics/`, which is gitignored. Each milestone REPLACES its artifact rather than adding a new numbered one. Do not commit diagnostics output.
 Run backend from `backend/` so `.env` loads. `/api/v1/ready` fails when migrations are pending.
 
 ## Definition of done

@@ -21,7 +21,7 @@ import {
 import { DataFreshnessIndicator, type DataProvenance } from '../components/market/DataFreshnessIndicator';
 import { useSnapshotFallback, selectFreshestSource } from '../hooks/useSnapshotFallback';
 import { useWatchlistStream, type WatchlistStreamStatus } from '../hooks/useWatchlistStream';
-import { FRESHNESS_PRIOR_CLOSE } from '../lib/priceStates';
+import { FRESHNESS_PRIOR_CLOSE, resolveMarketPrice } from '../lib/priceStates';
 
 type FundamentalPeriod = {
   id: string;
@@ -84,6 +84,22 @@ type CoverageInstrument = {
   freshness_status: 'fresh' | 'stale' | 'failed' | 'never-synced' | 'unavailable';
 };
 type CoverageResponse = { instruments: CoverageInstrument[] };
+type IntradayBackfillJob = {
+  id: string;
+  instrument_id: string;
+  symbol: string;
+  status: 'queued' | 'running' | 'completed' | 'partial' | 'failed';
+  chunks_completed: number;
+  chunks_total: number;
+  bars_fetched?: number;
+  error?: string | null;
+};
+type IntradayBackfillResponse = {
+  status: string;
+  years: number;
+  instrument_count: number;
+  jobs: IntradayBackfillJob[];
+};
 type BackfillResponse = {
   status: 'success' | 'partial' | 'unchanged';
   instruments?: { status: string; symbol: string; chunks_failed: number }[];
@@ -139,6 +155,25 @@ function quoteStatusLabel(status: string): string {
   return status.replaceAll('_', ' ');
 }
 
+function resolvedQuoteLabel(
+  price: ReturnType<typeof resolveMarketPrice>,
+  venue: string,
+): string {
+  if (price.source === 'close') {
+    const date = price.as_of
+      ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' }).format(new Date(price.as_of))
+      : 'date unavailable';
+    const close = sessionCloseForVenue(venue);
+    const time = close ? `${String(close.hour).padStart(2, '0')}:${String(close.minute).padStart(2, '0')} ${close.zoneLabel}` : 'session close';
+    return `Close · ${date} ${time} · ${price.provider ?? 'market data'} · ${venue} closed`;
+  }
+  if (price.source === 'ltp') {
+    const stamp = price.as_of ? new Date(price.as_of).toLocaleString() : 'time unavailable';
+    return `LTP · ${stamp} · ${price.freshness === 'live' ? 'Live' : 'Delayed'}${price.close_pending ? ' · close pending' : ''} · ${price.provider ?? 'market data'}`;
+  }
+  return 'No usable market price';
+}
+
 function toMarketStreamStatus(status: WatchlistStreamStatus): MarketStreamStatus {
   return DHAN_TO_STREAM_STATUS[status];
 }
@@ -161,6 +196,10 @@ function toWatchlistEntryQuote(
     is_synthetic: detail.is_synthetic,
     is_verified: detail.is_verified,
     source: detail.source,
+    price_source: detail.price_source,
+    as_of: detail.as_of,
+    session_state: detail.session_state,
+    close_pending: detail.close_pending,
   };
 }
 type InstrumentMasterInfo = {
@@ -361,6 +400,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [coverageMessage, setCoverageMessage] = useState('');
   const [coverageRunning, setCoverageRunning] = useState<string | null>(null);
   const [coverageBatchRunning, setCoverageBatchRunning] = useState(false);
+  const [intradayBackfillYears, setIntradayBackfillYears] = useState(2);
+  const [intradayBackfillRunning, setIntradayBackfillRunning] = useState(false);
+  const [intradayBackfillMessage, setIntradayBackfillMessage] = useState('');
   const [liveFeedManuallyEnabled, setLiveFeedManuallyEnabled] = useState(false);
   const [liveFeedPaused, setLiveFeedPaused] = useState(false);
   // Angel One live state. Dhan values are derived from useWatchlistStream below.
@@ -416,9 +458,13 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const liveLastSnapshotAt = isDhanFeed ? dhanStream.lastSnapshotAt : angelLastSnapshotAt;
   const watchlistEntries = useMemo(() => storedWatchlistEntries.map((entry) => {
     const streamed = isDhanFeed ? dhanQuotes[entry.instrument_id] : undefined;
-    return streamed ? { ...entry, quote: toWatchlistEntryQuote(streamed.detail) } : entry;
-  }), [storedWatchlistEntries, dhanQuotes, isDhanFeed]);
-  const displayedMarketQuote = liveMarketQuote ?? marketQuote;
+    return streamed && dhanStream.status !== 'market_closed'
+      ? { ...entry, quote: toWatchlistEntryQuote(streamed.detail) }
+      : entry;
+  }), [storedWatchlistEntries, dhanQuotes, isDhanFeed, dhanStream.status]);
+  const displayedMarketQuote = liveFeedStatus === 'market_closed'
+    ? marketQuote
+    : liveMarketQuote ?? marketQuote;
   const liveFeedLabel = liveFeedStatus === 'active'
     ? 'live'
     : liveFeedStatus.replaceAll('_', ' ');
@@ -654,6 +700,11 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   }, [dhanStream.status, activeWatchlistId, refreshSelectedWatchlist]);
 
   useEffect(() => {
+    if (dhanStream.status !== 'market_closed' || !selectedInstrument) return;
+    void loadMarketQuote(selectedInstrument, true);
+  }, [dhanStream.status, selectedInstrument, loadMarketQuote]);
+
+  useEffect(() => {
     if (marketDataSettings?.selected_provider === 'dhan') return;
     if (!liveFeedEnabled || !selectedInstrument || !liveStreamSupported) {
       setLiveMarketQuote(null);
@@ -799,11 +850,54 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
         ? 'Backfill completed partially. Review each row’s status and last result.'
         : 'Backfill completed. Coverage has been refreshed.');
       await loadCoverage();
+      if (!instrumentId) await runIntradayBackfill();
     } catch (error) {
       setCoverageMessage(error instanceof Error ? error.message : 'Backfill failed.');
     } finally {
       setCoverageRunning(null);
       setCoverageBatchRunning(false);
+    }
+  }
+
+  async function runIntradayBackfill() {
+    setIntradayBackfillRunning(true);
+    setIntradayBackfillMessage('Starting 1m holdings and watchlist backfill…');
+    try {
+      const response = await apiRequest<IntradayBackfillResponse>(
+        `/market-data/backfill/intraday/watchlist?years=${intradayBackfillYears}`,
+        { method: 'POST' },
+      );
+      const jobs = response.jobs;
+      if (jobs.length === 0) {
+        setIntradayBackfillMessage('No holdings or watchlist instruments were available to backfill.');
+        return;
+      }
+      let current = jobs;
+      while (current.some((job) => job.status === 'queued' || job.status === 'running')) {
+        const completed = current.filter((job) => job.status === 'completed').length;
+        const chunksDone = current.reduce((sum, job) => sum + job.chunks_completed, 0);
+        const chunksTotal = current.reduce((sum, job) => sum + job.chunks_total, 0);
+        setIntradayBackfillMessage(
+          `1m backfill: ${completed}/${current.length} instruments complete · ${chunksDone}/${chunksTotal} chunks`,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        current = await Promise.all(jobs.map((job) =>
+          apiRequest<IntradayBackfillJob>(`/market-data/history/sync-jobs/${job.id}`),
+        ));
+      }
+      const chunksDone = current.reduce((sum, job) => sum + job.chunks_completed, 0);
+      const chunksTotal = current.reduce((sum, job) => sum + job.chunks_total, 0);
+      const failed = current.filter((job) => job.status !== 'completed');
+      setIntradayBackfillMessage(
+        failed.length
+          ? `1m backfill finished with ${failed.length} incomplete instrument(s) · ${chunksDone}/${chunksTotal} chunks. ${failed.map((job) => `${job.symbol}: ${job.error || job.status}`).join('; ')}`
+          : `1m backfill complete · ${current.length} instruments · ${chunksDone}/${chunksTotal} chunks.`,
+      );
+      await loadCoverage();
+    } catch (error) {
+      setIntradayBackfillMessage(error instanceof Error ? error.message : '1m backfill could not be started.');
+    } finally {
+      setIntradayBackfillRunning(false);
     }
   }
 
@@ -1347,6 +1441,18 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     ?? (displayedMarketQuote && displayedMarketQuote.instrument_id === activeWatchlistInstrument
       ? displayedMarketQuote
       : null);
+  const resolvedDetailQuote = detailQuote
+    ? resolveMarketPrice({
+      price: 'close' in detailQuote ? detailQuote.close : detailQuote.bar.close,
+      price_source: detailQuote.price_source,
+      provider: detailQuote.source,
+      as_of: detailQuote.as_of,
+      session_state: detailQuote.session_state,
+      freshness: detailQuote.freshness_status,
+      close_pending: detailQuote.close_pending,
+      is_synthetic: detailQuote.is_synthetic,
+    })
+    : null;
   const detailPrice = showSnapshotFallback && fallbackBar
     ? fallbackBar.close
     : activeWatchlistEntry?.quote?.close
@@ -1356,6 +1462,14 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const detailLiveBar = liveFeedStatus === 'active'
     && liveMarketQuote?.instrument_id === activeWatchlistInstrument
     ? { ...liveMarketQuote.bar, source: liveMarketQuote.source }
+    : null;
+  const latestStoredDate = marketHistory?.freshness.latest_bar_timestamp && selectedInstrument
+    ? new Intl.DateTimeFormat('en-CA', {
+      timeZone: selectedInstrument.timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(marketHistory.freshness.latest_bar_timestamp))
     : null;
   return (
               <section className="market-page">
@@ -1460,15 +1574,29 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                             ? null
                             : streamed && liveFeedClock - streamed.receivedAt >= 60_000
                             ? {
-                                ...entry.quote,
+                                ...toWatchlistEntryQuote(streamed.detail),
                                 freshness: 'stale' as const,
                                 freshness_status: 'stale' as const,
                               }
                             : entry.quote;
+                          const resolvedRowQuote = rowQuote
+                            ? resolveMarketPrice({
+                              price: rowQuote.close,
+                              price_source: rowQuote.price_source,
+                              provider: rowQuote.source,
+                              as_of: rowQuote.as_of,
+                              session_state: rowQuote.session_state,
+                              freshness: rowQuote.freshness_status,
+                              close_pending: rowQuote.close_pending,
+                              is_synthetic: rowQuote.is_synthetic,
+                            })
+                            : null;
                           const change = rowQuote?.absolute_change ?? null;
                           const percentChange = rowQuote?.percent_change ?? null;
                           const changeClass = change === null ? '' : Number(change) >= 0 ? 'positive' : 'negative';
-                          const freshnessColor = rowQuote?.freshness_status === 'fresh' || rowQuote?.freshness_status === 'live'
+                          const freshnessColor = resolvedRowQuote?.source === 'close'
+                            ? '#7394cf'
+                            : rowQuote?.freshness_status === 'fresh' || rowQuote?.freshness_status === 'live'
                             ? '#3fd99a'
                             : rowQuote?.freshness_status === 'session_close' || rowQuote?.freshness_status === FRESHNESS_PRIOR_CLOSE
                               ? '#7394cf'
@@ -1479,8 +1607,8 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                   : '#8993a1';
                           const quoteTooltip = instrumentError
                             ? `${instrumentError.symbol} unavailable: ${instrumentError.reason}`
-                            : rowQuote
-                            ? `${rowQuote.source} · ${quoteStatusLabel(rowQuote.freshness_status)} · Observed ${rowQuote.market_timestamp ? new Date(rowQuote.market_timestamp).toLocaleString(undefined, { timeZone: entry.timezone }) : 'unknown'}`
+                            : rowQuote && resolvedRowQuote
+                            ? resolvedQuoteLabel(resolvedRowQuote, entry.venue)
                             : 'Quote unavailable';
                           return (
                             <div className="watchlist-row" key={entry.instrument_id}>
@@ -1560,7 +1688,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                             </small>
                           )}
                         {detailQuote && <small>
-                          {detailQuote.source} · {quoteStatusLabel(detailQuote.freshness_status)} · {new Date(detailQuote.retrieved_at).toLocaleString()}
+                          {resolvedDetailQuote ? resolvedQuoteLabel(resolvedDetailQuote, activeWatchlistEntry?.venue ?? selectedInstrument?.venue ?? 'NSE') : `${detailQuote.source} · ${quoteStatusLabel(detailQuote.freshness_status)}`}
                         </small>}
                         {liveStreamSupported && (
                           <button
@@ -1582,7 +1710,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                             {liveFeedStatus === 'market_closed' && ` · Last snapshot: ${liveLastSnapshotAt ? new Date(liveLastSnapshotAt).toLocaleString() : 'Not available'}`}
                           </small>
                         )}
-                        {activeWatchlistInstrument && (
+                        {activeWatchlistInstrument && resolvedDetailQuote?.source === 'close' ? (
+                          <span role="status">{resolvedQuoteLabel(resolvedDetailQuote, activeWatchlistEntry?.venue ?? selectedInstrument?.venue ?? 'NSE')}</span>
+                        ) : activeWatchlistInstrument && (
                           <DataFreshnessIndicator
                             provenance={showSnapshotFallback ? 'cached' : headerProvenance}
                             observedAt={showSnapshotFallback && fallbackBar
@@ -1638,7 +1768,18 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                   onRetry={() => void selectMarketInstrument({ id: activeWatchlistInstrument })}
                                 />
                               ) : marketHistory.bars.length === 0 ? (
-                                <p className="table-empty">No stored bars are available for this instrument and range.</p>
+                                <div className="table-empty">
+                                  {latestStoredDate ? (
+                                    <>
+                                      <p>No bars in this range; latest available {latestStoredDate}.</p>
+                                      <button className="text-button" type="button" onClick={() => {
+                                        setMarketStart(latestStoredDate);
+                                        setMarketEnd(latestStoredDate);
+                                        void loadMarketHistory(marketInterval, latestStoredDate, latestStoredDate);
+                                      }}>Load latest available range</button>
+                                    </>
+                                  ) : 'No stored bars are available for this instrument at any date.'}
+                                </div>
                               ) : (
                                 <CandleChart
                                   bars={marketHistory.bars}
@@ -2010,7 +2151,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                 </section>
                 <Panel
                   title="Market data coverage"
-                  description="Stored real daily bars and the latest synchronization result for holdings and watchlist instruments."
+                  description="Stored real daily and 1m bars for linked holdings and watchlist instruments."
                   className="market-coverage-panel"
                   action={(
                     <button
@@ -2022,6 +2163,21 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                     </button>
                   )}
                 >
+                  <div className="coverage-message">
+                    <label htmlFor="intraday-backfill-years">1m holdings and watchlist history</label>{' '}
+                    <select
+                      id="intraday-backfill-years"
+                      value={intradayBackfillYears}
+                      onChange={(event) => setIntradayBackfillYears(Number(event.target.value))}
+                      disabled={intradayBackfillRunning}
+                    >
+                      {[1, 2, 3, 4, 5].map((years) => <option key={years} value={years}>{years} {years === 1 ? 'year' : 'years'}</option>)}
+                    </select>{' '}
+                    <button type="button" onClick={() => void runIntradayBackfill()} disabled={intradayBackfillRunning || coverage.length === 0}>
+                      {intradayBackfillRunning ? 'Backfilling 1m…' : 'Backfill 1m holdings + watchlist'}
+                    </button>
+                    {intradayBackfillMessage && <p role="status">{intradayBackfillMessage}</p>}
+                  </div>
                   {coverageMessage && <p className="coverage-message" role="status">{coverageMessage}</p>}
                   {coverageLoading ? <Skeleton rows={4} /> : coverageError ? (
                     <ErrorState title="Coverage unavailable" message={coverageError} onRetry={() => void loadCoverage()} />
@@ -2078,7 +2234,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                       {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedLabel}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}{liveFeedHealth && <> Last successful packet: {liveFeedHealth.last_successful_packet_at ? new Date(liveFeedHealth.last_successful_packet_at).toLocaleTimeString() : 'none'}.{liveFeedHealth.consecutive_failure_count > 0 && ` Consecutive failures: ${liveFeedHealth.consecutive_failure_count}.`}</>}</p>}
                       {displayedMarketQuote && <div className="market-quote" aria-live="polite">
                         <div className="section-heading"><div><p className="eyebrow">{displayedMarketQuote.data_type === 'daily_close' ? 'HISTORICAL DAILY CLOSE' : displayedMarketQuote.data_type === 'live_tick' ? 'LIVE WEBSOCKET TICK' : displayedMarketQuote.data_type === 'provider_snapshot' ? 'LATEST REST SNAPSHOT' : 'LATEST PROVIDER QUOTE'}</p><h3>{formatMoney(displayedMarketQuote.bar.close, displayedMarketQuote.currency)}</h3></div><span className={`freshness-badge freshness-${displayedMarketQuote.freshness_status}`}>{displayedMarketQuote.freshness_status.replaceAll('_', ' ')}</span></div>
-                        <p className="market-provenance">{displayedMarketQuote.freshness_message} Source: {displayedMarketQuote.source} · Market timestamp: {new Date(displayedMarketQuote.market_timestamp).toLocaleString()} · Observation age: {Math.floor(displayedMarketQuote.market_age_seconds)}s · Retrieved: {new Date(displayedMarketQuote.retrieved_at).toLocaleString()} · {displayedMarketQuote.is_cached ? 'Cached' : 'Provider response'} · {displayedMarketQuote.is_synthetic ? 'Synthetic' : displayedMarketQuote.is_verified ? 'Verified mapping' : 'Unverified mapping'}</p>
+                        <p className="market-provenance">{resolvedDetailQuote ? resolvedQuoteLabel(resolvedDetailQuote, activeWatchlistEntry?.venue ?? selectedInstrument?.venue ?? 'NSE') : displayedMarketQuote.freshness_message} · Retrieved: {new Date(displayedMarketQuote.retrieved_at).toLocaleString()} · {displayedMarketQuote.is_cached ? 'Cached' : 'Provider response'} · {displayedMarketQuote.is_synthetic ? 'Synthetic' : displayedMarketQuote.is_verified ? 'Verified mapping' : 'Unverified mapping'}{resolvedDetailQuote?.source === 'close' ? '' : ` · Observation age: ${Math.floor(displayedMarketQuote.market_age_seconds)}s`}</p>
                         <p className="market-provenance">Provider configured: {displayedMarketQuote.provider_configured ? 'yes' : 'no'} · Delivery: {displayedMarketQuote.delivery_mode.replaceAll('_', ' ')} · Latest request: {displayedMarketQuote.provider_request_status.replaceAll('_', ' ')} · Persistent connection: {displayedMarketQuote.provider_connection_status.replaceAll('_', ' ')} · Stream active: {displayedMarketQuote.feed_active ? 'yes' : 'no'} · Provider delay: unavailable.</p>
                         {displayedMarketQuote.fallback_reason && <p className="market-provenance">Fallback reason: {displayedMarketQuote.fallback_reason.replaceAll('_', ' ')}.</p>}
                         {displayedMarketQuote.provider_attempts.length > 0 && <p className="market-provenance">Provider attempts: {displayedMarketQuote.provider_attempts.map((attempt) => `${attempt.provider}: ${attempt.outcome.replaceAll('_', ' ')}${attempt.reason_category ? ` [${attempt.reason_category.replaceAll('_', ' ')}]` : attempt.reason ? ` (${attempt.reason.replaceAll('_', ' ')})` : ''}${attempt.http_status ? ` · HTTP ${attempt.http_status}` : ''}${attempt.provider_error_code ? ` · ${attempt.provider_error_code}` : ''}${attempt.provider_message ? `: ${attempt.provider_message}` : ''}${attempt.latency_ms !== null && attempt.latency_ms !== undefined ? `, ${Math.round(attempt.latency_ms)} ms` : ''}`).join(' · ')}</p>}
@@ -2141,7 +2297,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                   <div className="section-heading"><div><p className="eyebrow">PROVENANCE &amp; FRESHNESS</p><h2>{selectedInstrument.symbol} history</h2></div><span className={`freshness-badge freshness-${marketHistory.freshness.status}`}>{marketHistory.freshness.status.replace('_', ' ')}</span></div>
                   {marketHistory.sync_job && <p className="market-provenance" role="status">Intraday sync {marketHistory.sync_job.status} · {marketHistory.sync_job.chunks_completed}/{marketHistory.sync_job.chunks_total} chunks · {marketHistory.sync_job.bars_fetched} bars fetched{marketHistory.sync_job.current_window ? ` · ${new Date(marketHistory.sync_job.current_window.start).toLocaleString()} – ${new Date(marketHistory.sync_job.current_window.end).toLocaleString()}` : ''}</p>}
                   {marketHistory.is_cached && marketHistory.sync_status === 'unavailable' && marketHistory.bars.length > 0 && <p className="market-provenance stale-text" role="status">Saved historical data · last available session {marketHistory.bars[marketHistory.bars.length - 1].session_date ?? new Date(marketHistory.bars[marketHistory.bars.length - 1].timestamp).toISOString().slice(0, 10)} · refresh failed</p>}
-                  <p className="market-provenance">{marketHistory.freshness.message} Provider: {marketHistory.provider ?? marketHistory.freshness.source ?? 'unavailable'} · Interval: {marketHistory.interval} · Currency: {marketHistory.currency ?? selectedInstrument.currency} · Session: {marketHistory.session_state} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Retrieved: {marketHistory.fetched_at ? new Date(marketHistory.fetched_at).toLocaleString() : 'not recorded'} · Latest bar: {marketHistory.as_of ? new Date(marketHistory.as_of).toLocaleString() : marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'} · {marketHistory.is_cached ? 'Cached' : 'Provider response'} · Sync: {marketHistory.sync_status.replaceAll('_', ' ')}</p>
+                  <p className="market-provenance">{marketHistory.freshness.message} Provider: {marketHistory.provider ?? marketHistory.freshness.source ?? 'unavailable'} · Interval: {marketHistory.interval} · Currency: {marketHistory.currency ?? selectedInstrument.currency} · Session: {marketHistory.session_state} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Retrieved: {marketHistory.fetched_at ? new Date(marketHistory.fetched_at).toLocaleString() : 'not recorded'} · Latest bar: {marketHistory.as_of ? new Date(marketHistory.as_of).toLocaleString() : marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'} · {marketHistory.is_cached ? 'Cached' : 'Provider response'} · Sync: {marketHistory.sync_status.replaceAll('_', ' ')}{marketHistory.provider_intervals_requested.length ? ` · Requested from provider: ${marketHistory.provider_intervals_requested.join(', ')}` : ''}{marketHistory.interval !== '1d' && (marketHistory.coverage?.provider_fallback_bars ?? 0) > 0 ? ` · ${marketHistory.coverage?.provider_fallback_bars} provider-sourced fallback bars; 1m-derived bars take precedence` : ''}</p>
                   {marketHistory.fallback_reason && <p className="market-provenance">Fallback reason: {marketHistory.fallback_reason.replaceAll('_', ' ')}.</p>}
                   {marketHistory.provider_attempts.length > 0 && <p className="market-provenance">Provider attempts: {marketHistory.provider_attempts.map((attempt) => `${attempt.provider}: ${attempt.outcome.replaceAll('_', ' ')}${attempt.reason_category ? ` [${attempt.reason_category.replaceAll('_', ' ')}]` : attempt.reason ? ` (${attempt.reason.replaceAll('_', ' ')})` : ''}${attempt.http_status ? ` · HTTP ${attempt.http_status}` : ''}${attempt.provider_error_code ? ` · ${attempt.provider_error_code}` : ''}${attempt.provider_message ? `: ${attempt.provider_message}` : ''}${attempt.latency_ms !== null && attempt.latency_ms !== undefined ? `, ${Math.round(attempt.latency_ms)} ms` : ''}${attempt.bars ? `, ${attempt.bars} bars` : ''}`).join(' · ')}</p>}
                   {marketHistory.bars.length === 0 ? <div className="table-empty">No bars are available for that date range.</div> : <>

@@ -266,11 +266,6 @@ class DhanV2Adapter:
     _base_url = "https://api.dhan.co/v2"
     _intraday_intervals = {
         "1m": "1",
-        "5m": "5",
-        "15m": "15",
-        "25m": "25",
-        "1h": "60",
-        "60m": "60",
     }
 
     def __init__(self, tokens: dict[str, str]):

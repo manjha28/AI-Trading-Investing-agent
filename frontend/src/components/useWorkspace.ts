@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest, downloadCsv, isAbortError } from '../api';
-import { FRESHNESS_PRIOR_CLOSE, basisForFreshnessStatus, deriveMarketDataStatus, type PriceStateRow, type ValuationBasis } from '../lib/priceStates';
+import { BASIS_SESSION_CLOSE, FRESHNESS_PRIOR_CLOSE, basisForFreshnessStatus, deriveMarketDataStatus, resolveMarketPrice, type PriceStateRow, type ValuationBasis } from '../lib/priceStates';
 
 type User = {
   id: string;
@@ -89,6 +89,10 @@ type WatchlistEntry = {
     change_basis: string | null;
     change_reason: string | null;
     data_type: 'provider_quote' | 'provider_snapshot' | 'live_tick' | 'daily_close';
+    price_source: 'ltp' | 'close' | 'unavailable';
+    as_of: string | null;
+    session_state: 'open' | 'closed' | 'no_continuous_trading' | 'unknown';
+    close_pending: boolean;
     close: string;
   } | null;
 };
@@ -229,6 +233,7 @@ type MarketBar = {
   source: string;
   retrieved_at: string;
   is_synthetic: boolean;
+  provenance: 'provider' | 'derived_1m' | 'provider_fallback';
   session_date?: string | null;
 };
 type MarketInterval = '1d' | '1h' | '15m' | '5m' | '1m';
@@ -251,9 +256,13 @@ type MarketHistory = {
   fetched_at: string | null;
   as_of: string | null;
   currency: string | null;
-  session_state: 'open' | 'closed' | 'unknown';
+  session_state: 'open' | 'closed' | 'no_continuous_trading' | 'unknown';
+  price_source: 'ltp' | 'close' | 'unavailable';
+  close_pending: boolean;
   is_cached: boolean;
   sync_status: 'success' | 'unavailable' | 'no_new_bars';
+  provider_intervals_requested: string[];
+  coverage: { provider_fallback_bars?: number; derived_bars?: number } | null;
   sync_job?: {
     id: string;
     status: 'queued' | 'running' | 'completed' | 'failed';
@@ -350,6 +359,8 @@ type MarketQuote = {
   freshness: 'fresh' | 'stale';
   freshness_status: 'fresh' | 'stale' | 'historical' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated' | 'live' | 'delayed' | 'session_close' | typeof FRESHNESS_PRIOR_CLOSE | 'unknown';
   freshness_message: string;
+  price_source: 'ltp' | 'close' | 'unavailable';
+  close_pending: boolean;
   is_current_session: boolean;
   is_cached: boolean;
   is_synthetic: boolean;
@@ -384,7 +395,7 @@ type MarketQuote = {
   fetched_at: string | null;
   as_of: string | null;
   interval: string;
-  session_state: 'open' | 'closed' | 'unknown';
+  session_state: 'open' | 'closed' | 'no_continuous_trading' | 'unknown';
   bar: {
     timestamp: string;
     open: string;
@@ -482,7 +493,7 @@ export function useWorkspace() {
   const [csvContent, setCsvContent] = useState('');
   const [csvPreview, setCsvPreview] = useState<CsvImportPreview | null>(null);
   const [importingCsv, setImportingCsv] = useState(false);
-  const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'signals'>(
+  const [activeView, setActiveView] = useState<'overview' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'signals'>(
     () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
   );
   const [openMarketInstrumentId, setOpenMarketInstrumentId] = useState<string | null>(null);
@@ -1128,6 +1139,10 @@ export function useWorkspace() {
               change_basis: quote.change_basis,
               change_reason: quote.change_reason,
               data_type: quote.data_type,
+              price_source: quote.price_source,
+              as_of: quote.as_of,
+              session_state: quote.session_state,
+              close_pending: quote.close_pending,
               close: quote.bar.close,
             },
           }
@@ -1302,6 +1317,9 @@ export function useWorkspace() {
         `/market-data/instruments/${selectedInstrument.id}/history/sync?${params}`,
         { method: 'POST' },
       );
+      // The history request determines whether older candles exist. Do not keep
+      // the chart spinner up while the separate indicator request is running.
+      setLoadingOlderMarketHistory(false);
       const mergedBars = new Map(
         [...marketHistory.bars, ...olderHistory.bars].map((bar) => [
           `${bar.timestamp}-${bar.source}`,
@@ -1312,11 +1330,11 @@ export function useWorkspace() {
         (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
       );
       setMarketHistory({ ...olderHistory, bars });
-      await loadInstrumentIndicators(selectedInstrument, marketInterval, olderHistory.provider);
       const newOldestTimestamp = bars.length
         ? new Date(bars[0].timestamp).getTime()
         : oldestTimestamp;
       if (newOldestTimestamp >= oldestTimestamp) setHasOlderMarketHistory(false);
+      await loadInstrumentIndicators(selectedInstrument, marketInterval, olderHistory.provider);
     } catch (requestError) {
       setError((requestError as Error).message);
       setHasOlderMarketHistory(false);
@@ -1406,11 +1424,23 @@ export function useWorkspace() {
     brokerPriceRows !== null || (ledgerPriceRows !== null && ledgerPriceRows.length > 0)
       ? [...(ledgerPriceRows ?? []), ...(brokerPriceRows ?? [])]
       : marketQuote
-        ? [{
-          freshness: marketQuote.freshness,
-          basis: basisForFreshnessStatus(marketQuote.freshness_status),
-          is_synthetic: marketQuote.is_synthetic,
-        }]
+        ? [(() => {
+          const resolved = resolveMarketPrice({
+            price: marketQuote.bar.close,
+            price_source: marketQuote.price_source,
+            provider: marketQuote.source,
+            as_of: marketQuote.as_of,
+            session_state: marketQuote.session_state,
+            freshness: marketQuote.freshness_status,
+            close_pending: marketQuote.close_pending,
+            is_synthetic: marketQuote.is_synthetic,
+          });
+          return {
+            freshness: resolved.freshness,
+            basis: resolved.source === 'close' ? BASIS_SESSION_CLOSE : resolved.freshness,
+            is_synthetic: marketQuote.is_synthetic,
+          };
+        })()]
         : null;
   const marketDataStatus = deriveMarketDataStatus(pricedRows);
   return {

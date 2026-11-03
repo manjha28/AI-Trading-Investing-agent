@@ -1,9 +1,8 @@
-import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ReceiptText, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
+import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { apiRequest } from './api';
 import { marketStatusLabel } from './lib/priceStates';
 import { useWorkspace } from './components/useWorkspace';
-import { ActivityPage } from './pages/Activity';
 import { Alerts } from './pages/Alerts';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
@@ -99,7 +98,10 @@ export default function App() {
         ? `; skipped ${skippedLedger} ledger entr${skippedLedger === 1 ? 'y' : 'ies'} (missing provider IDs)`
         : '; skipped 0 ledger entries';
       const failureText = failedEndpoints.length ? `; failed endpoints: ${failedEndpoints.join(', ')}` : '';
-      setNotice(`Dhan sync ${result.sync_status}: holdings updated ${result.holdings_count}; trades imported ${result.trades_count ?? 0}; ledger entries processed ${result.ledger_count ?? 0}${skippedText}${failureText}.`);
+      const closeRefreshText = result.endpoint_results.official_close_refresh?.status === 'failed'
+        ? ' Official close could not be re-fetched; the previous close and retrieval timestamp were retained.'
+        : '';
+      setNotice(`Dhan sync ${result.sync_status}: holdings updated ${result.holdings_count}; trades imported ${result.trades_count ?? 0}; ledger entries processed ${result.ledger_count ?? 0}${skippedText}${failureText}.${closeRefreshText}`);
       requestBrokerRefresh();
     } catch (syncError) {
       setError(syncError instanceof Error ? syncError.message : 'Dhan account sync failed.');
@@ -182,7 +184,7 @@ export default function App() {
                   ? 'Research'
                   : activeView === 'signals'
                     ? 'Signals'
-              : 'Transactions';
+                    : 'Overview';
 
   return (
     <div className={sidebarCollapsed ? 'app-frame sidebar-collapsed' : 'app-frame'}>
@@ -202,7 +204,6 @@ export default function App() {
         <p className="nav-label">WORKSPACE</p>
         <nav className="primary-nav" id="primary-navigation" aria-label="Workspace">
           <button className={activeView === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('overview')}><Wallet size={17} /><span>Overview</span></button>
-          <button className={activeView === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('activity')}><ReceiptText size={17} /><span>Transactions</span></button>
           <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={17} /><span>Trade journal</span></button>
           <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={17} /><span>Market data</span></button>
           <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={17} /><span>Brokers</span></button>
@@ -303,14 +304,11 @@ export default function App() {
           <PortfolioSetupPage workspace={{createPortfolio: workspace.createPortfolio}} />
         ) : activeView === 'overview' ? (
           <OverviewPage workspace={{addInstrumentToWatchlist: workspace.addInstrumentToWatchlist, cancelEditingTransaction: workspace.cancelEditingTransaction, coverage: workspace.coverage, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist, riskMetrics: workspace.riskMetrics, setActiveView: workspace.setActiveView, setOpenMarketInstrumentId: workspace.setOpenMarketInstrumentId, setCoverageVersion: workspace.setCoverageVersion, setThesisSymbol: workspace.setThesisSymbol, setTransactionType: workspace.setTransactionType, submitTransaction: workspace.submitTransaction, summary: workspace.summary, thesisSymbol: workspace.thesisSymbol, transactionType: workspace.transactionType, valuation: workspace.valuation, valuationBySymbol: workspace.valuationBySymbol, watchlist: workspace.watchlist, watchlistLoadState: workspace.watchlistLoadState, watchlistLoadError: workspace.watchlistLoadError, refreshWatchlist: workspace.refreshWatchlist, setBrokerPriceRows: workspace.setBrokerPriceRows, brokerRefreshKey: workspace.brokerRefreshKey}} />
-        ) : (
-          <ActivityPage workspace={{cancelEditingTransaction: workspace.cancelEditingTransaction, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, riskMetrics: workspace.riskMetrics, removeTransaction: workspace.removeTransaction, setTransactionType: workspace.setTransactionType, startEditingTransaction: workspace.startEditingTransaction, submitTransaction: workspace.submitTransaction, summary: workspace.summary, transactionType: workspace.transactionType, transactions: workspace.transactions, valuation: workspace.valuation}} />
-        )}
+        ) : null}
         <footer className="workspace-footer"><span><ArrowDownLeft size={14} /> No live orders</span><span>Data entered by you · {portfolios.length} portfolio{portfolios.length === 1 ? '' : 's'}</span></footer>
       </main>
       <nav className="mobile-nav" aria-label="Workspace">
         <button className={activeView === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('overview')}><Wallet size={18} /><span>Overview</span></button>
-        <button className={activeView === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('activity')}><ReceiptText size={18} /><span>Transactions</span></button>
         <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={18} /><span>Journal</span></button>
         <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={18} /><span>Markets</span></button>
         <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={18} /><span>Brokers</span></button>

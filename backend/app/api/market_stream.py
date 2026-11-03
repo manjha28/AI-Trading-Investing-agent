@@ -23,7 +23,7 @@ from app.services.strategy_engine import DISCLAIMER
 
 router = APIRouter(prefix="/market-stream", tags=["market-stream"])
 MAX_SNAPSHOT_INSTRUMENTS = 50
-Interval = Literal["1d", "1h", "15m", "5m", "1m"]
+Interval = Literal["1m"]
 
 
 def require_enabled() -> None:
@@ -61,7 +61,7 @@ def get_event_publisher() -> EventPublisher:
 
 class PollRequest(BaseModel):
     instrument_id: UUID
-    interval: Interval = "5m"
+    interval: Interval = "1m"
 
 
 def _freshness(interval: str, bar_timestamp: str, now: datetime) -> tuple[int, str]:

@@ -1,6 +1,6 @@
 # Trading Copilot
 
-A mobile-first foundation for an integrated AI trading and investing copilot, evolving to support automated execution through Dhan and Delta Exchange India. The current broker API surface remains read-only: order execution is authorized product scope but has not yet been implemented.
+A mobile-first foundation for an integrated AI trading and investing copilot, evolving as a read-only research tool. Broker APIs are read-only by design: order placement, modification, cancellation, live execution, paper trading, and simulated fills are excluded from scope, not pending.
 
 ## Prerequisites
 - Python 3.11 or newer
@@ -138,7 +138,7 @@ Migration `0015_research_sources` adds `research_sources` and `research_notes`. 
 
 ## Position theses (M6.1)
 
-A thesis records why you hold a position. Routes live under `/api/v1/portfolios/{portfolio_id}/theses`, require a verified email, and use CSRF on mutations. Thesis output is decision support, not investment advice; execution is a separately authorized product capability and is not implemented in the current source.
+A thesis records why you hold a position. Routes live under `/api/v1/portfolios/{portfolio_id}/theses`, require a verified email, and use CSRF on mutations. Thesis output is decision support, not investment advice; it never places or implies orders.
 
 - `GET/POST /theses`, `GET/PATCH/DELETE /theses/{id}`, `GET /theses/{id}/revisions`, and `GET /theses/coverage`.
 - A thesis is tied to a portfolio holding that is linked to a market instrument. Only one `active` thesis may exist per (user, portfolio, instrument); `invalidated` and `closed` theses are kept.
@@ -204,11 +204,11 @@ Delta Research is disabled by default and uses only public product, ticker, and 
 
 ## Broker connections and authorized execution direction
 
-The current broker endpoints read profile, holdings, positions, order history, and funds. Broker order placement, modification, cancellation, and live execution are not implemented in the current source. Broker holdings and positions are stored in a separate user-scoped mirror and do not modify the manual portfolio ledger. Reconciliation imports create ordinary manual buy/sell ledger entries only after the user confirms each difference. The `mock_broker` is always available but returns fixed, clearly synthetic demo values.
+The current broker endpoints read profile, holdings, positions, order history, and funds. Broker order placement, modification, cancellation, and live execution are excluded by design. Broker holdings and positions are stored in a separate user-scoped mirror and do not modify the manual portfolio ledger. Reconciliation imports create ordinary manual buy/sell ledger entries only after the user confirms each difference. The `mock_broker` is always available but returns fixed, clearly synthetic demo values.
 
-The approved product direction authorizes Dhan and Delta Exchange India execution adapters, strategy-driven entries and exits, order/fill lifecycle management, position reconciliation, stop-losses, targets, trailing stops, risk management, and isolated paper-trading research. This documentation change does not implement those capabilities or authorize any broker account. When implemented, live execution must be disabled by default and require explicit owner activation. Development, automated tests, and CI must never submit real broker orders. Paper-trading records must remain clearly labelled and isolated from live orders, fills, and accounting.
+Order execution is out of scope. The broker integrations are read-only; no order, paper-trading, or simulated-fill capability exists or is planned in this codebase.
 
-Execution functionality must retain verified authentication, per-session two-factor verification where required, CSRF protection on mutations, owner-scoped access, backend-only credentials, and audit records for order intents, risk decisions, and lifecycle changes. Risk checks must fail closed when required evidence is missing, stale, synthetic, unverifiable, or currency-incompatible. Signals alone never authorize an order.
+Read-only broker access keeps verified authentication, CSRF protection on mutations, owner-scoped access, and backend-only credentials. Signals and theses are decision support and never authorize an order.
 
 Broker API routes are under `/api/v1/brokers`:
 

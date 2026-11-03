@@ -64,6 +64,8 @@ from app.provider_adapters import (
 from app.services.price_freshness import (
     USABLE_FRESHNESS_STATUSES,
     classify_quote,
+    is_official_session_close,
+    resolve_market_price,
     select_usable_quote,
     valuation_basis_for_quote,
     venue_last_completed_session,
@@ -1718,6 +1720,75 @@ def sync_broker(
             raise
         db.rollback()
         raise HTTPException(status_code=500, detail="Broker account sync could not be saved") from error
+    if slug == "dhan" and not snapshot_only:
+        try:
+            portfolio_rows = [
+                row for row in _mirror_rows(db, _user_id(active_session), "dhan")
+                if row.quantity != 0
+                and _broker_row_portfolio(row) in {"holding", "position"}
+                and not _is_cnc_sale(row)
+                and row.security_id is not None
+            ]
+            security_ids = {row.security_id for row in portfolio_rows}
+            mappings = db.scalars(select(InstrumentProviderIdentifier).where(
+                InstrumentProviderIdentifier.provider == "dhan",
+                InstrumentProviderIdentifier.is_verified.is_(True),
+                or_(*[
+                    InstrumentProviderIdentifier.provider_instrument_id.like(f"{security_id}|%")
+                    for security_id in security_ids
+                ]) if security_ids else InstrumentProviderIdentifier.id.is_(None),
+            )).all()
+            valid_pairs: dict[tuple[str, str], tuple[InstrumentProviderIdentifier, Instrument]] = {}
+            instruments = {
+                item.id: item for item in db.scalars(select(Instrument).where(
+                    Instrument.id.in_({mapping.instrument_id for mapping in mappings})
+                )).all()
+            } if mappings else {}
+            segments: dict[str, list[str]] = {}
+            for mapping in mappings:
+                security_id, separator, segment = mapping.provider_instrument_id.partition("|")
+                instrument = instruments.get(mapping.instrument_id)
+                if not separator or not security_id.isdigit() or instrument is None:
+                    continue
+                if not any(row.security_id == security_id for row in portfolio_rows):
+                    continue
+                expected_segment = "NSE_EQ" if instrument.venue.upper() in {"NSE", "XNSE", "NSI", "NSE_EQ"} else "BSE_EQ" if instrument.venue.upper() in {"BSE", "XBOM", "BOM", "BSE_EQ"} else None
+                if segment != expected_segment:
+                    continue
+                segments.setdefault(segment, []).append(security_id)
+                valid_pairs[(segment, security_id)] = (mapping, instrument)
+            refreshed = adapter.get_market_quotes_batch(
+                tokens["access_token"], tokens, segments, force_refresh=True
+            ) if segments else {}
+            refreshed_at = _now()
+            updated_count = 0
+            for segment, quotes in refreshed.items():
+                for security_id, quote in quotes.items():
+                    pair = valid_pairs.get((segment, security_id))
+                    if pair is None or quote.session_close is None:
+                        continue
+                    _mapping, instrument = pair
+                    local_date = quote.timestamp.astimezone(ZoneInfo(instrument.timezone)).date()
+                    official_bar = db.scalar(select(MarketBar).where(
+                        MarketBar.instrument_id == instrument.id,
+                        MarketBar.interval == "1d",
+                        MarketBar.source == "dhan",
+                        MarketBar.is_synthetic.is_(False),
+                        MarketBar.timestamp >= datetime.combine(local_date, wall_time.min, tzinfo=ZoneInfo(instrument.timezone)).astimezone(timezone.utc),
+                        MarketBar.timestamp < datetime.combine(local_date + timedelta(days=1), wall_time.min, tzinfo=ZoneInfo(instrument.timezone)).astimezone(timezone.utc),
+                        MarketBar.close == quote.session_close,
+                    ))
+                    if official_bar is not None:
+                        official_bar.retrieved_at = refreshed_at
+                        updated_count += 1
+            if updated_count:
+                db.commit()
+                endpoint_results["official_close_refresh"] = {"status": "succeeded", "record_count": str(updated_count)}
+            else:
+                endpoint_results["official_close_refresh"] = {"status": "failed", "reason": "close_not_refreshed_previous_close_retained"}
+        except (BrokerAdapterError, KeyError, ValueError) as error:
+            db.rollback()
+            endpoint_results["official_close_refresh"] = {"status": "failed", "reason": "provider_unavailable_previous_close_retained"}
     return {
         "broker": slug,
         "synthetic": adapter.is_synthetic,
@@ -3280,6 +3351,10 @@ def _calculate_broker_values(
                 "day_change": None,
                 "prior_close": None,
                 "quote_at": None,
+                "price_source": "unavailable",
+                "as_of": None,
+                "session_state": "unknown",
+                "close_pending": False,
                 "stale_reason": missing_quote_by_row_id.get(
                     row.id, "No verified Dhan price is available."
                 ),
@@ -3289,6 +3364,19 @@ def _calculate_broker_values(
         quote, instrument = priced
         row_basis = _observation_price_basis(quote, instrument, db)
         adjusted = adjusted_previous_closes.get(row.id)
+        resolution = resolve_market_price(
+            instrument,
+            price=quote.close,
+            provider=provider_family(quote.source),
+            observed_at=quote.timestamp,
+            now=_now(),
+            is_official_close=(
+                isinstance(quote, MarketBar)
+                and is_official_session_close(quote, instrument)
+            ),
+            is_synthetic=quote.is_synthetic,
+            close_pending=isinstance(quote, MarketQuote),
+        )
         row_valuations[row.id] = {
             "status": row_basis,
             "basis": row_basis,
@@ -3313,6 +3401,10 @@ def _calculate_broker_values(
             ),
             "prior_close": adjusted[0] if adjusted is not None else None,
             "quote_at": quote.timestamp,
+            "price_source": resolution["source"],
+            "as_of": resolution["as_of"],
+            "session_state": resolution["session_state"],
+            "close_pending": resolution["close_pending"],
             "stale_reason": None,
             "day_change_reason": (
                 None
@@ -3834,7 +3926,7 @@ def _dhan_quote_evidence(
             ).date() == expected_date
             and _utc_datetime(bar.timestamp) <= _utc_datetime(now)
             and _utc_datetime(bar.retrieved_at) <= _utc_datetime(now)
-            and _utc_datetime(bar.retrieved_at).astimezone(ZoneInfo(instrument.timezone)).time() >= wall_time(15, 30)
+            and is_official_session_close(bar, instrument, expected_date)
         ]
         if close_candidates:
             eod_close_by_instrument[instrument_id] = min(

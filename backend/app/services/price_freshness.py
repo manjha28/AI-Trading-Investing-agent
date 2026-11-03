@@ -1,7 +1,7 @@
 """Shared usability classification for stored and API quote objects."""
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import logging
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -81,6 +81,83 @@ def venue_session(instrument: Any, now: datetime) -> VenueSession | None:
     if NSE_FRESHNESS_SESSION_START <= local.time() < NSE_FRESHNESS_SESSION_END:
         return VenueSession("open", "regular_session")
     return VenueSession("closed", "outside_session_window")
+
+
+def official_session_close_at(instrument: Any, session_date: date) -> datetime:
+    """Exchange-local regular close as a UTC instant for comparing retrieval times."""
+    close_time = time(15, 30) if (getattr(instrument, "country", "") or "").upper() == "IN" else time(16, 0)
+    return datetime.combine(
+        session_date, close_time, tzinfo=ZoneInfo(instrument.timezone)
+    ).astimezone(timezone.utc)
+
+
+def is_official_session_close(
+    bar: MarketBar, instrument: Any, session_date: date | None = None
+) -> bool:
+    """A daily row is a close only after its own session's regular close instant."""
+    local_date = _utc(bar.timestamp).astimezone(ZoneInfo(instrument.timezone)).date()
+    if session_date is not None and local_date != session_date:
+        return False
+    retrieved_at = _utc(bar.retrieved_at)
+    return retrieved_at >= official_session_close_at(instrument, local_date)
+
+
+def resolve_market_price(
+    instrument: Any,
+    *,
+    price: Any,
+    provider: str | None,
+    observed_at: datetime | None,
+    now: datetime,
+    is_official_close: bool,
+    is_synthetic: bool = False,
+    close_pending: bool = False,
+) -> dict[str, Any]:
+    """Normalize one selected price observation for all user-facing consumers."""
+    state = venue_session(instrument, now)
+    session_state = state.state if state is not None else "unknown"
+    local_now = _utc(now).astimezone(ZoneInfo(instrument.timezone))
+    if (
+        (getattr(instrument, "country", "") or "").upper() == "IN"
+        and settings.nse_no_continuous_trading_start <= local_now.time() < min(settings.nse_no_continuous_trading_end, time(15, 30))
+    ):
+        session_state = "no_continuous_trading"
+    if is_synthetic or price is None or observed_at is None:
+        return {
+            "price": None,
+            "source": "unavailable",
+            "provider": provider,
+            "as_of": None,
+            "session_state": session_state,
+            "close_pending": False,
+        }
+    observed_at = _utc(observed_at)
+    if is_official_close:
+        session_date = observed_at.astimezone(ZoneInfo(instrument.timezone)).date()
+        return {
+            "price": price,
+            "source": "close",
+            "provider": provider,
+            "as_of": official_session_close_at(instrument, session_date),
+            "session_state": "closed",
+            "close_pending": False,
+        }
+    local_observed = observed_at.astimezone(ZoneInfo(instrument.timezone))
+    pending = (
+        close_pending
+        and session_state == "closed"
+        and local_now.time() >= time(15, 30)
+        and local_observed.date() == local_now.date()
+        and local_observed.time() < time(15, 30)
+    )
+    return {
+        "price": price,
+        "source": "ltp",
+        "provider": provider,
+        "as_of": observed_at,
+        "session_state": session_state,
+        "close_pending": pending,
+    }
 
 
 def venue_last_completed_session(

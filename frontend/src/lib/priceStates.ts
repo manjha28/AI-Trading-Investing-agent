@@ -36,6 +36,52 @@ export type PriceStateRow = {
   is_synthetic?: boolean;
 };
 
+export type ResolvedMarketPrice = {
+  price: string | null;
+  source: 'ltp' | 'close' | 'unavailable';
+  provider: string | null;
+  as_of: string | null;
+  session_state: 'open' | 'closed' | 'no_continuous_trading' | 'unknown';
+  freshness: 'live' | 'delayed' | 'session_close' | 'unavailable';
+  close_pending: boolean;
+};
+
+export function resolveMarketPrice(input: {
+  price: string | null;
+  price_source: 'ltp' | 'close' | 'unavailable' | null | undefined;
+  provider: string | null;
+  as_of: string | null;
+  session_state: 'open' | 'closed' | 'no_continuous_trading' | 'unknown' | null | undefined;
+  freshness: string | null | undefined;
+  close_pending?: boolean;
+  is_synthetic?: boolean;
+}): ResolvedMarketPrice {
+  const sessionState = input.session_state ?? 'unknown';
+  if (input.is_synthetic || input.price === null || input.price_source === 'unavailable') {
+    return {
+      price: null,
+      source: 'unavailable',
+      provider: input.provider,
+      as_of: null,
+      session_state: sessionState,
+      freshness: 'unavailable',
+      close_pending: false,
+    };
+  }
+  const source = input.price_source ?? 'ltp';
+  return {
+    price: input.price,
+    source,
+    provider: input.provider,
+    as_of: input.as_of,
+    session_state: sessionState,
+    freshness: source === 'close'
+      ? 'session_close'
+      : input.freshness === 'live' || input.freshness === 'fresh' ? 'live' : 'delayed',
+    close_pending: source === 'ltp' && Boolean(input.close_pending),
+  };
+}
+
 // One derivation for the header and the sidebar. A row without a usable basis makes the
 // status unavailable, so a session-close or delayed price can never read as "live". A
 // `delayed` basis is the labelled form of "older than the freshness window", so a row that

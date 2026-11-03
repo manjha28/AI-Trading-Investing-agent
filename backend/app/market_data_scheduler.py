@@ -7,7 +7,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -558,8 +558,10 @@ def _capture_dhan_session_closes(captured_at: datetime) -> bool:
         holdings = db.scalars(select(BrokerMirror).where(
             BrokerMirror.user_id == user.id,
             BrokerMirror.broker == "dhan",
-            BrokerMirror.kind == "holding",
-            BrokerMirror.quantity > 0,
+            BrokerMirror.kind.in_(("holding", "position")),
+            BrokerMirror.quantity != 0,
+            or_(BrokerMirror.kind == "holding", BrokerMirror.position_type.is_(None), BrokerMirror.position_type != "CLOSED"),
+            or_(BrokerMirror.product.is_(None), BrokerMirror.product.not_in(("CNC", "DELIVERY")), BrokerMirror.quantity > 0),
         )).all()
         for holding in holdings:
             symbol = holding.symbol.strip().upper().removesuffix("-EQ")

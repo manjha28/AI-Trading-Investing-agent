@@ -101,3 +101,12 @@
 - P1-D: serve newest chart pages, track Dhan tick packets and feed gaps, refresh close ages and alerts, and deduplicate Dhan trade imports.
 - Broker sync: log safe constraint names, upsert mirrors per record, retain one-time ledger data-quality exceptions, and return 500 for persistence failures.
 - P1-E: compact intraday chart labels and clarify the Dhan account sync control.
+- Market data: refresh Dhan official-close retrieval times on manual sync, show latest stored dates for empty chart ranges, stop older-candle loading before indicator refresh, and exclude the configured NSE non-continuous window from intraday gaps and backfills.
+- P2-A: store Dhan intraday history as 1m only, derive intraday intervals ahead of labelled provider fallbacks, and add a selectable 1–5 year watchlist backfill control with job progress.
+- Market data: retry Dhan 1m history M3/504 responses over smaller rate-limited date ranges and retain upstream failure details in backfill progress.
+- Market data: return indicator source as a string for daily and intraday histories.
+- Overview close catch-up: resolve holdings against the session's official close, refresh after market close, and share canonical close timestamps across Overview and Market data.
+- NSE intraday history: retain cash-session 1m candles through 15:29 and include holdings in full-range 1m repair backfills.
+- Frontend: remove the Transactions view and preserve the read-only Dhan trade/cash mirror component pending its destination.
+- Trade journal: mount the retained read-only Dhan trade and cash mirror in a Broker history tab.
+- Sanitised committed environment examples and recorded the unbaselined backend suite count (443 passed, 50 failed, 2 skipped).

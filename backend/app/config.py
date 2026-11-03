@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     # `stale` even when the stored last session is unchanged (e.g. sync broke).
     # Counted with NSE_NON_TRADING_DATES, so weekends and holidays do not count.
     nse_session_close_max_trading_sessions: int = Field(default=2, gt=0)
+    # Verify these bounds against the current NSE circular before changing them.
+    nse_no_continuous_trading_start: time = Field(default=time(15, 15), validation_alias="NSE_NO_CONTINUOUS_TRADING_START")
+    nse_no_continuous_trading_end: time = Field(default=time(15, 35), validation_alias="NSE_NO_CONTINUOUS_TRADING_END")
     daily_close_price_max_age_seconds: int = Field(default=172800, gt=0)
     portfolio_value_alert_threshold: Decimal = Field(
         default=Decimal("1.00"), ge=Decimal("0"), validation_alias="PORTFOLIO_VALUE_ALERT_THRESHOLD"
@@ -196,12 +199,10 @@ NSE_NON_TRADING_DATES: frozenset[date] = NSE_EQUITY_HOLIDAYS | NSE_UNVERIFIED_HO
 # Muhurat special session (Sunday 2026-11-08). Its hours are not configured, so
 # the session state for this date is unknown.
 NSE_SPECIAL_SESSION_DATES: frozenset[date] = frozenset({date(2026, 11, 8)})
-# Freshness window for IN venues. NSE post-close trading runs 15:40-16:00, so the
-# window ends at 16:00 IST and post-close prints count as part of the trading day.
-# Deliberately different from the 15:30 regular close used for chart tooltips;
-# do not reuse this value for tooltips.
+# Continuous NSE trading ends at 15:30 IST. The post-close session does not move
+# the official regular-session close used for valuation and freshness.
 NSE_FRESHNESS_SESSION_START: time = time(9, 15)
-NSE_FRESHNESS_SESSION_END: time = time(16, 0)
+NSE_FRESHNESS_SESSION_END: time = time(15, 30)
 
 
 settings = Settings()

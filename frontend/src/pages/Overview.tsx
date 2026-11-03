@@ -13,7 +13,9 @@ import {
   BASIS_UNAVAILABLE,
   basisCaption,
   formatPriceAge,
+  resolveMarketPrice,
   type PriceStateRow,
+  type ResolvedMarketPrice,
   type ValuationBasis,
 } from '../lib/priceStates';
 
@@ -71,6 +73,10 @@ type RowValuation = {
   day_change: string | null;
   prior_close: string | null;
   quote_at: string | null;
+  price_source: 'ltp' | 'close' | 'unavailable';
+  as_of: string | null;
+  session_state: 'open' | 'closed' | 'no_continuous_trading' | 'unknown';
+  close_pending: boolean;
   stale_reason: string | null;
   day_change_reason: string | null;
 };
@@ -130,7 +136,7 @@ type DhanPortfolio = {
   currency: 'INR';
   synced_at: string | null;
   snapshot_min_interval_seconds: number;
-  market_session: { venue: string; state: 'open' | 'closed' | 'unknown'; reason: string } | null;
+  market_session: { venue: string; state: 'open' | 'closed' | 'no_continuous_trading' | 'unknown'; reason: string } | null;
   instrument_master: { last_refreshed_at: string | null; mapping_candidates: MappingCandidate[] };
   holdings: DhanHolding[];
   positions: DhanPosition[];
@@ -341,6 +347,34 @@ function delayedAgeText(
   return basis === BASIS_DELAYED ? formatPriceAge(ageNow(base)) : null;
 }
 
+function resolveRowPrice(value: RowValuation): ResolvedMarketPrice {
+  return resolveMarketPrice({
+    price: value.price,
+    price_source: value.price_source,
+    provider: value.source,
+    as_of: value.as_of,
+    session_state: value.session_state,
+    freshness: value.basis,
+    close_pending: value.close_pending,
+  });
+}
+
+function resolvedPriceText(
+  price: ResolvedMarketPrice,
+  age: string | null,
+  venue: string | null | undefined,
+): string {
+  const provider = price.provider ?? 'market data';
+  const session = `${venue ?? ''} ${price.session_state}`.trim();
+  if (price.source === 'close') {
+    return `Close · ${sessionCloseLabel(price.as_of, venue)} · ${provider} · ${session}`;
+  }
+  if (price.source === 'ltp') {
+    return `LTP · ${price.as_of ? istStamp(price.as_of) : 'time unavailable'} · ${basisCaption(price.freshness)}${age ? ` · ${age}` : ''} · ${provider} · ${session}${price.close_pending ? ' · close pending' : ''}`;
+  }
+  return 'No usable market price';
+}
+
 function epochOf(timestamp: string | null): number {
   return timestamp ? new Date(timestamp).getTime() : Number.POSITIVE_INFINITY;
 }
@@ -351,9 +385,11 @@ function cardBasis(
   field: PortfolioFigure,
   ageNow: AgeNow,
   venue: string | null | undefined,
+  sharedPriceLabel?: string,
 ): string {
   const provenance = broker?.provenance[field];
   if (!provenance) return '';
+  if (sharedPriceLabel && provenance.type !== 'broker_supplied') return sharedPriceLabel;
   const observations = observationsOf(provenance);
   const priced = observations.filter((observation) => observation.price_basis);
   if (priced.length > 0) {
@@ -646,16 +682,15 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
   }, [refreshDhanData, brokerRefreshKey]);
 
   useEffect(() => {
-    if (!['stale', 'reconnecting', 'unavailable'].includes(dhanFeedStatus)) return undefined;
+    if (!['stale', 'reconnecting', 'unavailable', 'market_closed'].includes(dhanFeedStatus)) return undefined;
     const refreshFallback = () => {
       void refreshDhanData().catch((error: unknown) => {
         setDhanError(error instanceof Error ? error.message : 'Live portfolio valuation is unavailable.');
       });
     };
     refreshFallback();
-    const timer = window.setInterval(() => {
-      refreshFallback();
-    }, 15_000);
+    const refreshInterval = dhanFeedStatus === 'market_closed' ? 60_000 : 15_000;
+    const timer = window.setInterval(refreshFallback, refreshInterval);
     return () => window.clearInterval(timer);
   }, [dhanFeedStatus, refreshDhanData]);
 
@@ -716,8 +751,10 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
   useEffect(() => {
     if (!dhanPortfolio) return;
     const rows: PriceStateRow[] = [...dhanPortfolio.holdings, ...dhanPortfolio.positions].map((row) => ({
-      freshness: row.live_valuation.basis === BASIS_UNAVAILABLE ? 'unavailable' : 'fresh',
-      basis: row.live_valuation.basis,
+      freshness: resolveRowPrice(row.live_valuation).freshness,
+      basis: resolveRowPrice(row.live_valuation).source === 'close'
+        ? BASIS_SESSION_CLOSE
+        : resolveRowPrice(row.live_valuation).freshness,
       is_synthetic: false,
     }));
     setBrokerPriceRows(rows);
@@ -765,37 +802,27 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     dhanBroker?.unavailable_reasons[field] ?? `No broker snapshot is available for ${FIGURE_LABELS[field].toLowerCase()}.`;
 
   // Provenance strip: every input comes from the per-row valuation the backend returned.
-  const valuedRows = [...(dhanPortfolio?.holdings ?? []), ...(dhanPortfolio?.positions ?? [])]
-    .map((row) => row.live_valuation)
-    .filter((row) => row.basis !== BASIS_UNAVAILABLE && row.provider_timestamp !== null);
-  const latestProviderTimestamp = valuedRows.length
-    ? valuedRows.reduce((latest, row) => (new Date(row.provider_timestamp as string) > new Date(latest) ? row.provider_timestamp as string : latest), valuedRows[0].provider_timestamp as string)
+  const resolvedPortfolioRows = [...(dhanPortfolio?.holdings ?? []), ...(dhanPortfolio?.positions ?? [])]
+    .map((row) => ({ row, resolved: resolveRowPrice(row.live_valuation) }))
+    .filter((item) => item.resolved.source !== 'unavailable');
+  const portfolioPriceItem = resolvedPortfolioRows
+    .slice()
+    .sort((left, right) => {
+      const weakness = (item: typeof left) => BASIS_WEAKNESS[
+        item.resolved.source === 'close' ? BASIS_SESSION_CLOSE : item.resolved.freshness
+      ] ?? 0;
+      return weakness(right) - weakness(left)
+        || epochOf(left.resolved.as_of) - epochOf(right.resolved.as_of);
+    })[0];
+  const portfolioPriceLabel = portfolioPriceItem
+    ? resolvedPriceText(
+      portfolioPriceItem.resolved,
+      delayedAgeText(portfolioPriceItem.resolved.freshness, portfolioPriceItem.row.live_valuation.price_age_seconds, ageNow),
+      dhanPortfolio?.market_session?.venue,
+    )
     : null;
-  const stripBases = [...new Set(valuedRows.map((row) => row.basis))];
-  const delayedAges = valuedRows
-    .filter((row) => row.basis === BASIS_DELAYED)
-    .map((row) => ageNow(row.price_age_seconds))
-    .filter((age): age is number => age !== null);
-  const oldestDelayedAge = delayedAges.length ? formatPriceAge(Math.max(...delayedAges)) : null;
-  // A delayed price states its age on the strip itself, never only in a tooltip.
-  const stripCloseRow = valuedRows.find((row) => row.basis === BASIS_SESSION_CLOSE);
-  const stripBasisText = stripCloseRow?.provider_timestamp
-    ? `Closing price · ${sessionCloseLabel(stripCloseRow.quote_at, dhanPortfolio?.market_session?.venue)} · fetched ${istStamp(stripCloseRow.provider_timestamp)}`
-    : stripBases.length
-    ? stripBases
-      .map((basis) => (basis === BASIS_DELAYED && oldestDelayedAge ? `delayed · up to ${oldestDelayedAge}` : basisCaption(basis).toLowerCase()))
-      .join(' + ')
-    : null;
-  const stripSources = [...new Set(valuedRows.map((row) => row.source).filter((source): source is string => Boolean(source)))];
-  const sessionText = dhanPortfolio?.market_session
-    ? `${dhanPortfolio.market_session.venue} ${dhanPortfolio.market_session.state === 'unknown' ? 'session unknown' : dhanPortfolio.market_session.state}`
-    : null;
-  const stampText = latestProviderTimestamp ? istStamp(latestProviderTimestamp) : null;
-  const stripLabel = stripBasisText
-    ? stripCloseRow?.provider_timestamp
-      ? stripBasisText
-      : stampText ? `as of ${stampText} · ${stripBasisText}` : stripBasisText
-    : null;
+  const portfolioPriceIsDelayed = portfolioPriceItem?.resolved.source === 'ltp'
+    && portfolioPriceItem.resolved.freshness === 'delayed';
   const insights = dhanPortfolio ? buildInsights(dhanPortfolio) : [];
   const historyUsesPortfolio = Boolean(history?.portfolio_scoped.length);
   const historyRows = historyUsesPortfolio
@@ -851,18 +878,9 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
   if (chartSegment.length) chartSegments.push(chartSegment);
 
   const basisCell = (valued: RowValuation) => {
-    const age = delayedAgeText(valued.basis, valued.price_age_seconds, ageNow);
-    const isDhanTick = valued.source === 'dhan_ws' || valued.source === 'dhan';
-    return (
-      <>
-        {valued.basis === BASIS_DELAYED && isDhanTick && valued.provider_timestamp
-          ? `last tick ${IST_TIME.format(new Date(valued.provider_timestamp))} · official close unavailable`
-          : valued.basis === BASIS_SESSION_CLOSE
-            ? `Official close · ${sessionCloseLabel(valued.quote_at, dhanPortfolio?.market_session?.venue)} · fetched ${valued.provider_timestamp ? istStamp(valued.provider_timestamp) : 'time unavailable'}`
-            : `${basisCaption(valued.basis)}${age ? ` · ${age}` : ''}`}
-        {valued.basis !== BASIS_SESSION_CLOSE && valued.basis !== BASIS_DELAYED && valued.provider_timestamp && <small className="trade-subtext">{istStamp(valued.provider_timestamp)}</small>}
-      </>
-    );
+    const resolved = resolveRowPrice(valued);
+    const age = delayedAgeText(resolved.freshness, valued.price_age_seconds, ageNow);
+    return resolvedPriceText(resolved, age, dhanPortfolio?.market_session?.venue);
   };
 
   const holdingsTable = (rows: DhanHolding[]) => (
@@ -879,7 +897,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
             <td className="instrument-cell">{holding.symbol}<small className="trade-subtext">{holding.exchange}{holding.exchange_resolution_reason ? ` · ${holding.exchange_resolution_reason}` : ''}</small></td>
             <td>{formatQuantity(holding.quantity)}</td>
             <td>{holding.average_price !== null ? money(holding.average_price) : <UnavailableValue reason="The broker did not supply an average cost." />}</td>
-            <td>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} />}{hasPrice && valued.provider_timestamp && <small className="trade-subtext">{valued.basis === BASIS_SESSION_CLOSE ? 'Fetched ' : ''}{istStamp(valued.provider_timestamp)}{valued.source ? ` · ${valued.source}` : ''}</small>}</td>
+            <td>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} />}{hasPrice && valued.as_of && <small className="trade-subtext">{istStamp(valued.as_of)}{valued.source ? ` · ${valued.source}` : ''}</small>}</td>
             <td>{valued.market_value !== null ? money(valued.market_value) : '—'}</td>
             <td className={tone(valued.unrealized_profit)}>{valued.unrealized_profit !== null ? signedMoney(valued.unrealized_profit) : '—'}</td>
             <td className={tone(valued.day_change)}>{valued.day_change !== null ? signedMoney(valued.day_change) : '—'}{valued.day_change === null && <small className="trade-subtext">{valued.day_change_reason ?? 'No prior close.'}</small>}</td>
@@ -969,14 +987,14 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           loading={dhanLoading}
           reason={reasonFor('market_value')}
           subline={totals?.invested_cost != null ? `Invested ${money(totals.invested_cost)}` : undefined}
-          basis={cardBasis(dhanBroker, 'market_value', ageNow, dhanPortfolio?.market_session?.venue)}
+          basis={cardBasis(dhanBroker, 'market_value', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
         />
         <MetricCard
           label="Unrealized P&L"
           value={totals?.unrealized_pnl ?? null}
           loading={dhanLoading}
           reason={reasonFor('unrealized_pnl')}
-          basis={cardBasis(dhanBroker, 'unrealized_pnl', ageNow, dhanPortfolio?.market_session?.venue)}
+          basis={cardBasis(dhanBroker, 'unrealized_pnl', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
           signed
         />
         <MetricCard
@@ -985,7 +1003,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           loading={dhanLoading}
           reason={reasonFor('day_change')}
           subline={dhanBroker?.unavailable_reasons.day_change ?? 'Complete across all holdings and positions'}
-          basis={cardBasis(dhanBroker, 'day_change', ageNow, dhanPortfolio?.market_session?.venue)}
+          basis={cardBasis(dhanBroker, 'day_change', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
           signed
         />
         <MetricCard
@@ -997,14 +1015,12 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
         />
       </section>
 
-      <div className={`provenance-strip${stripBases.includes(BASIS_DELAYED) ? ' provenance-strip-delayed' : ''}`} role="status" aria-label="Price provenance">
+      <div className={`provenance-strip${portfolioPriceIsDelayed ? ' provenance-strip-delayed' : ''}`} role="status" aria-label="Price provenance">
         {dhanLoading
           ? <Skeleton width="24rem" />
-          : stampText && stripLabel
+          : portfolioPriceLabel
             ? <>
-                <strong>{stripLabel}</strong>
-                <span>{stripSources.join(' + ') || 'dhan'}</span>
-                {sessionText && <span>{sessionText}</span>}
+                <strong>{portfolioPriceLabel}</strong>
               </>
             : <span>No valued price is available, so no valuation timestamp can be shown.</span>}
       </div>

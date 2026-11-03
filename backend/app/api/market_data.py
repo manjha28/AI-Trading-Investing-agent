@@ -11,6 +11,7 @@ import asyncio
 import re
 import threading
 import time
+from collections import OrderedDict
 from functools import lru_cache
 from datetime import time as datetime_time
 from enum import Enum
@@ -89,6 +90,9 @@ from app.services.price_freshness import (
     USABLE_FRESHNESS_STATUSES,
     classify_closed_session_price,
     classify_quote,
+    is_official_session_close,
+    official_session_close_at,
+    resolve_market_price,
     select_usable_quote,
     venue_last_completed_session,
     venue_session,
@@ -115,6 +119,8 @@ router = APIRouter(prefix="/market-data", tags=["market data"])
 indicators_router = APIRouter(tags=["market data indicators"])
 BarInterval = str
 MAX_BARS = 500
+MAX_DHAN_1M_CHUNK_BARS = 30_000
+MAX_DHAN_1M_BACKFILL_BARS = 250_000
 MAX_BACKFILL_CHUNKS = 20
 MAX_BACKFILL_REQUESTS = 24
 BACKFILL_CHUNK_DAYS = 450
@@ -147,6 +153,11 @@ _history_sync_jobs_lock = threading.Lock()
 _history_sync_jobs: dict[str, dict[str, Any]] = {}
 _history_sync_jobs_in_flight: dict[tuple[UUID, str], str] = {}
 _history_sync_job_context = threading.local()
+_intraday_aggregation_cache_lock = threading.Lock()
+_intraday_aggregation_cache: OrderedDict[
+    tuple[Any, ...], tuple[tuple[tuple[Any, ...], ...], dict[str, Any]]
+] = OrderedDict()
+_INTRADAY_AGGREGATION_CACHE_SIZE = 8
 
 
 def _update_history_sync_job(job_id: str, **updates: Any) -> None:
@@ -167,7 +178,7 @@ def _run_history_sync_job(
 ) -> None:
     from app.db import Session
 
-    _history_sync_job_context.job_id = job_id
+    _history_sync_job_context.job_id = None
     try:
         with Session(engine) as db:
             user = db.get(User, user_id)
@@ -175,25 +186,83 @@ def _run_history_sync_job(
             if user is None or instrument is None:
                 raise RuntimeError("sync_owner_or_instrument_unavailable")
             provider = market_data_provider_for_user(db, user_id)
-            result = sync_history(
-                instrument_id=instrument_id,
-                start=start,
-                end=end,
-                interval=interval,
-                limit=limit,
-                provider=provider,
-                _user=user,
-                db=db,
-                background_tasks=None,
-            )
-        if result.sync_status == "unavailable":
+            chunks: list[tuple[datetime, datetime]] = []
+            if interval != "1d":
+                chunk_end = end
+                while chunk_end > start:
+                    chunk_start = max(start, chunk_end - timedelta(days=89))
+                    chunks.append((chunk_start, chunk_end))
+                    chunk_end = chunk_start
+            else:
+                chunks.append((start, end))
+            total_bars_fetched = 0
             _update_history_sync_job(
-                job_id,
-                status="failed",
-                error="provider_history_unavailable",
-                current_window=None,
+                job_id, status="running", chunks_total=len(chunks)
             )
-        else:
+            for index, (chunk_start, chunk_end) in enumerate(chunks, 1):
+                _update_history_sync_job(job_id, current_window={
+                    "start": chunk_start.isoformat(),
+                    "end": chunk_end.isoformat(),
+                })
+                result = sync_history(
+                    instrument_id=instrument_id,
+                    start=chunk_start,
+                    end=chunk_end,
+                    interval=interval,
+                    limit=(
+                        min(limit, MAX_DHAN_1M_CHUNK_BARS)
+                        if interval != "1d"
+                        else limit
+                    ),
+                    provider=provider,
+                    _user=user,
+                    db=db,
+                    background_tasks=None,
+                )
+                total_bars_fetched += sum(
+                    attempt.bars
+                    for attempt in result.provider_attempts
+                    if attempt.provider == "dhan"
+                )
+                _update_history_sync_job(
+                    job_id,
+                    chunks_completed=index,
+                    bars_fetched=total_bars_fetched,
+                )
+                if result.sync_status == "unavailable":
+                    failed_attempt = next(
+                        (
+                            attempt for attempt in reversed(result.provider_attempts)
+                            if attempt.provider == "dhan" and attempt.outcome == "unavailable"
+                        ),
+                        None,
+                    )
+                    failure_parts = ["provider_history_unavailable"]
+                    if failed_attempt is not None:
+                        if failed_attempt.provider_error_code:
+                            failure_parts.append(f"Dhan {failed_attempt.provider_error_code}")
+                        if failed_attempt.http_status:
+                            failure_parts.append(f"HTTP {failed_attempt.http_status}")
+                        if failed_attempt.provider_message:
+                            failure_parts.append(failed_attempt.provider_message[:180])
+                    _update_history_sync_job(
+                        job_id,
+                        status="failed",
+                        error=": ".join(failure_parts),
+                        provider_error_code=(
+                            failed_attempt.provider_error_code
+                            if failed_attempt is not None else None
+                        ),
+                        http_status=(
+                            failed_attempt.http_status
+                            if failed_attempt is not None else None
+                        ),
+                        current_window=None,
+                    )
+                    break
+        with _history_sync_jobs_lock:
+            failed = _history_sync_jobs.get(job_id, {}).get("status") == "failed"
+        if not failed:
             _update_history_sync_job(job_id, status="completed", current_window=None)
     except Exception as error:
         _update_history_sync_job(
@@ -723,7 +792,7 @@ class DhanLiveFeedHub:
                     try:
                         completed = _sync_dhan_history(
                             db, instrument, user, "1m", gap.started_at, now,
-                            MAX_BARS, [],
+                            MAX_DHAN_1M_CHUNK_BARS, [],
                         )
                         if completed:
                             gap.backfilled_at = datetime.now(timezone.utc)
@@ -1009,7 +1078,7 @@ class DhanMarketDataProvider:
         end: datetime,
         limit: int,
     ) -> list[HistoricalBar]:
-        if interval not in {"1d", "1h", "25m", "15m", "5m", "1m"}:
+        if interval not in {"1d", "1m"}:
             raise MarketDataProviderError("unsupported_interval")
         if start.utcoffset() is None or end.utcoffset() is None or start >= end:
             raise MarketDataProviderError("invalid_time_range")
@@ -1734,7 +1803,7 @@ def _market_session_state(
     *,
     raw_ltt: int | None = None,
     parsed_ltt_utc: datetime | None = None,
-) -> Literal["open", "closed", "unknown"]:
+) -> Literal["open", "closed", "no_continuous_trading", "unknown"]:
     if instrument is None:
         return "unknown"
     country = instrument.country.upper()
@@ -1750,6 +1819,13 @@ def _market_session_state(
     if current_utc.tzinfo is None:
         current_utc = current_utc.replace(tzinfo=timezone.utc)
     local = current_utc.astimezone(zone)
+    if (
+        country == "IN"
+        and local.weekday() < 5
+        and local.date() not in NSE_NON_TRADING_DATES
+        and settings.nse_no_continuous_trading_start <= local.time() < settings.nse_no_continuous_trading_end
+    ):
+        return "no_continuous_trading"
     session_open = local.replace(
         hour=opening.hour,
         minute=opening.minute,
@@ -2072,6 +2148,7 @@ class MarketBarResponse(BaseModel):
     source: str
     retrieved_at: datetime
     is_synthetic: bool
+    provenance: Literal["provider", "derived_1m", "provider_fallback"] = "provider"
     session_date: date | None = None
     is_complete: bool = True
 
@@ -2124,9 +2201,10 @@ class HistoryResponse(BaseModel):
     fetched_at: datetime | None = None
     as_of: datetime | None = None
     currency: str | None = None
-    session_state: Literal["open", "closed", "unknown"] = "unknown"
+    session_state: Literal["open", "closed", "no_continuous_trading", "unknown"] = "unknown"
     is_cached: bool = True
     sync_status: Literal["success", "unavailable", "no_new_bars"] = "success"
+    provider_intervals_requested: list[str] = Field(default_factory=list)
     coverage: dict[str, Any] | None = None
     interval_disagreements: list[dict[str, Any]] = Field(default_factory=list)
     sync_job: dict[str, Any] | None = None
@@ -2342,7 +2420,9 @@ class QuoteResponse(BaseModel):
     fetched_at: datetime | None = None
     as_of: datetime | None = None
     interval: str = "quote"
-    session_state: Literal["open", "closed", "unknown"] = "unknown"
+    session_state: Literal["open", "closed", "no_continuous_trading", "unknown"] = "unknown"
+    price_source: Literal["ltp", "close", "unavailable"] = "unavailable"
+    close_pending: bool = False
     bar: HistoricalBar
 
 
@@ -2368,6 +2448,10 @@ class WatchlistQuoteResponse(BaseModel):
     percent_change: Decimal | None = None
     change_basis: str | None = None
     change_reason: str | None = None
+    price_source: Literal["ltp", "close", "unavailable"] = "unavailable"
+    as_of: datetime | None = None
+    session_state: Literal["open", "closed", "no_continuous_trading", "unknown"] = "unknown"
+    close_pending: bool = False
 
 
 class WatchlistEntryResponse(BaseModel):
@@ -2811,8 +2895,7 @@ def _session_alignment(instrument: Instrument) -> tuple[datetime_time, int, str,
     return None
 
 
-@lru_cache(maxsize=32)
-def _aggregate_intraday_cached(
+def _aggregate_intraday(
     interval: str,
     alignment_time: str,
     session_minutes: int,
@@ -2863,9 +2946,7 @@ def _aggregate_intraday_cached(
         session_open = datetime.combine(local_start.date(), open_time, tzinfo=zone)
         bucket_offset = int((local_start - session_open).total_seconds() // 60)
         expected = min(minutes, session_minutes - bucket_offset)
-        expected_timestamps = [
-            (bucket_start + timedelta(minutes=index)) for index in range(expected)
-        ]
+        expected_timestamps = [(bucket_start + timedelta(minutes=index)) for index in range(expected)]
         observed_timestamps = [row[0] for row in rows]
         missing = [stamp.isoformat() for stamp in expected_timestamps if stamp not in set(observed_timestamps)]
         bucket_end = bucket_start + timedelta(minutes=expected)
@@ -2928,6 +3009,43 @@ def _aggregate_intraday_cached(
         "gaps": gaps,
     }
     return tuple(output), coverage
+
+
+def _cached_intraday_aggregation(
+    cache_key: tuple[Any, ...],
+    interval: str,
+    alignment_time: str,
+    session_minutes: int,
+    zone_name: str,
+    country: str,
+    as_of_minute: str,
+    base_rows: list[MarketBar],
+) -> tuple[tuple[tuple[Any, ...], ...], dict[str, Any]]:
+    with _intraday_aggregation_cache_lock:
+        cached = _intraday_aggregation_cache.get(cache_key)
+        if cached is not None:
+            _intraday_aggregation_cache.move_to_end(cache_key)
+            return cached
+    immutable_base = tuple((
+        _utc(row.timestamp).isoformat(), str(row.open), str(row.high),
+        str(row.low), str(row.close), str(row.volume),
+        _utc(row.retrieved_at).isoformat(),
+    ) for row in base_rows)
+    result = _aggregate_intraday(
+        interval,
+        alignment_time,
+        session_minutes,
+        zone_name,
+        country,
+        as_of_minute,
+        immutable_base,
+    )
+    with _intraday_aggregation_cache_lock:
+        _intraday_aggregation_cache[cache_key] = result
+        _intraday_aggregation_cache.move_to_end(cache_key)
+        while len(_intraday_aggregation_cache) > _INTRADAY_AGGREGATION_CACHE_SIZE:
+            _intraday_aggregation_cache.popitem(last=False)
+    return result
 
 
 def _intraday_bucket_start(
@@ -3109,17 +3227,23 @@ def _persist_real_bars(
         return 0
     dialect_name = db.get_bind().dialect.name
     if dialect_name == "postgresql":
-        statement = pg_insert(MarketBar).values(values).on_conflict_do_nothing(
-            index_elements=["instrument_id", "interval", "timestamp", "source"]
-        )
-        result = db.execute(statement)
-        return max(0, result.rowcount or 0)
+        written = 0
+        for offset in range(0, len(values), 4_000):
+            statement = pg_insert(MarketBar).values(values[offset:offset + 4_000]).on_conflict_do_nothing(
+                index_elements=["instrument_id", "interval", "timestamp", "source"]
+            )
+            result = db.execute(statement)
+            written += max(0, result.rowcount or 0)
+        return written
     if dialect_name == "sqlite":
-        statement = sqlite_insert(MarketBar).values(values).on_conflict_do_nothing(
-            index_elements=["instrument_id", "interval", "timestamp", "source"]
-        )
-        result = db.execute(statement)
-        return max(0, result.rowcount or 0)
+        written = 0
+        for offset in range(0, len(values), 50):
+            statement = sqlite_insert(MarketBar).values(values[offset:offset + 50]).on_conflict_do_nothing(
+                index_elements=["instrument_id", "interval", "timestamp", "source"]
+            )
+            result = db.execute(statement)
+            written += max(0, result.rowcount or 0)
+        return written
     written = 0
     for value in values:
         existing = db.scalar(
@@ -3175,10 +3299,11 @@ def _fetch_provider_history(
     limit: int,
     request_budget: list[int] | None = None,
     rows_returned: list[int] | None = None,
+    retry_depth: int = 0,
 ) -> list[HistoricalBar]:
     if active_provider.is_mock or candidate.is_synthetic:
         raise MarketDataProviderError("synthetic_market_data_disabled")
-    for attempt in range(2):
+    for attempt in range(3):
         if request_budget is not None:
             if request_budget[0] <= 0:
                 raise MarketDataProviderError("provider_request_cap_reached")
@@ -3213,9 +3338,31 @@ def _fetch_provider_history(
                 raise MarketDataProviderError("provider_returned_out_of_range_bar")
             return bars
         except MarketDataProviderError as error:
-            if error.status_code == 429 and attempt == 0:
+            if error.status_code == 429 and attempt < 2:
                 time.sleep(_retry_after_seconds(error.retry_after, attempt))
                 continue
+            is_transient_gateway_failure = (
+                error.status_code == 504
+                or (error.provider_error_code or "").strip().upper() == "M3"
+            )
+            if is_transient_gateway_failure:
+                span = end - start
+                if retry_depth < 3 and span > timedelta(days=1):
+                    midpoint = start + span / 2
+                    left = _fetch_provider_history(
+                        active_provider, candidate, interval, start, midpoint,
+                        limit, request_budget, rows_returned, retry_depth + 1,
+                    )
+                    if len(left) >= limit:
+                        return left[-limit:]
+                    right = _fetch_provider_history(
+                        active_provider, candidate, interval, midpoint, end,
+                        limit - len(left), request_budget, rows_returned, retry_depth + 1,
+                    )
+                    return sorted(left + right, key=lambda bar: bar.timestamp)
+                if attempt < 2:
+                    time.sleep(1.0 + attempt)
+                    continue
             raise
         except ValidationError:
             raise MarketDataProviderError(
@@ -4226,7 +4373,7 @@ def get_instrument_option_signal(
     active_session: UserSession = Depends(require_verified_market_session),
     db: Session = Depends(get_db),
 ) -> OptionsSignalAPIResponse:
-    """Evaluate an options setup from Dhan chain data and stored real Dhan 5m bars.
+    """Evaluate an options setup from Dhan chain data and Dhan 1m-derived 5m bars.
 
     This endpoint is advisory-only. It never submits or simulates orders. Both
     the option chain and intraday bars are sourced from Dhan to avoid mixing
@@ -4254,25 +4401,26 @@ def get_instrument_option_signal(
         tzinfo=market_zone,
     )
 
-    def load_current_session_rows() -> list[MarketBar]:
-        rows = list(db.scalars(
-            select(MarketBar)
-            .where(
-                MarketBar.instrument_id == instrument.id,
-                MarketBar.interval == "5m",
-                MarketBar.source == "dhan",
-                MarketBar.is_synthetic.is_(False),
-            )
-            .order_by(MarketBar.timestamp.desc())
-            .limit(100)
-        ))
-        rows.reverse()
-        return [
-            bar for bar in rows
-            if _utc(bar.timestamp).astimezone(market_zone).date() == session_date
-        ]
-
-    current_session_rows = load_current_session_rows()
+    session_open = datetime.combine(
+        session_date, datetime_time(9, 15), tzinfo=market_zone
+    ).astimezone(timezone.utc)
+    history = _get_history_response(
+        instrument_id=instrument_id,
+        interval="5m",
+        start=session_open,
+        end=now,
+        offset=0,
+        limit=MAX_BARS,
+        _user=db.get(User, active_session.user_id),
+        provider=market_data_provider_for_user(db, active_session.user_id),
+        db=db,
+        source_override="dhan",
+    )
+    current_session_rows = [
+        bar for bar in history.bars
+        if bar.is_complete
+        and _utc(bar.timestamp).astimezone(market_zone).date() == session_date
+    ]
 
     bars = [
         SignalOHLCVBar(
@@ -4549,31 +4697,19 @@ def get_instrument_indicators(
         selected_source = source or (
             active_providers[0].name if active_providers else None
         )
-    latest_query = select(MarketBar).where(
-        MarketBar.instrument_id == instrument.id,
-        MarketBar.interval == interval,
+    now = datetime.now(timezone.utc)
+    history = get_history(
+        instrument_id=instrument_id,
+        interval=interval,
+        start=now - timedelta(days=365 * 5),
+        end=now,
+        offset=0,
+        limit=250_000,
+        _user=db.get(User, _session.user_id),
+        provider=provider,
+        db=db,
     )
-    if selected_source is not None:
-        latest_query = latest_query.where(MarketBar.source == selected_source)
-    else:
-        latest_query = latest_query.where(MarketBar.source.is_(None))
-    latest_bar = db.scalar(
-        latest_query.order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc()).limit(1)
-    )
-    bars: list[MarketBar] = []
-    if latest_bar is not None:
-        bars = list(
-            db.scalars(
-                select(MarketBar)
-                .where(
-                    MarketBar.instrument_id == instrument.id,
-                    MarketBar.interval == interval,
-                    MarketBar.source == latest_bar.source,
-                )
-                .order_by(MarketBar.timestamp.desc())
-            )
-        )
-        bars.reverse()
+    bars = history.bars
     calculated = compute_indicators(bars)
     indicators = {
         name: _indicator_result(value)
@@ -4585,9 +4721,17 @@ def get_instrument_indicators(
         symbol=instrument.symbol,
         currency=instrument.currency,
         interval=interval,
-        freshness=_freshness(db, instrument.id, interval, source=selected_source),
-        source=latest_bar.source if latest_bar else None,
-        latest_bar=_utc(latest_bar.timestamp) if latest_bar else None,
+        freshness=history.freshness,
+        source=(
+            f"derived:{selected_source}:1m with provider fallback"
+            if interval != "1d" and any(
+                bar.provenance == "provider_fallback" for bar in bars
+            )
+            else f"derived:{selected_source}:1m"
+            if interval != "1d" and bars
+            else history.provider
+        ),
+        latest_bar=history.as_of,
         bars_available=len(bars),
         indicators=indicators,
         indicator_series=indicator_series,
@@ -4678,11 +4822,16 @@ def get_watchlist(
                 (
                     bar for bar in distinct_bars
                     if _utc(bar.timestamp).astimezone(zone).date() == session_date
+                    and is_official_session_close(bar, instrument, session_date)
                 ),
                 None,
             )
 
         market_state = _market_session_state(instrument, now)
+        expected_closed_date = (
+            _expected_market_session_date(instrument, now)
+            if market_state == "closed" else None
+        )
         quote_timestamp = _utc(quote.timestamp) if quote is not None else None
         is_current_session = (
             quote_timestamp is not None
@@ -4706,6 +4855,19 @@ def get_watchlist(
                 last_completed_session=quote_last_completed,
             )
         quote_status = quote_evidence.get("quote_freshness_status")
+        quote_local = quote_timestamp.astimezone(zone) if quote_timestamp is not None else None
+        local_now = now.astimezone(zone)
+        close_pending = bool(
+            market_state == "closed"
+            and expected_closed_date == local_now.date()
+            and quote_local is not None
+            and quote_local.date() == expected_closed_date
+            and quote_local.time() < datetime_time(15, 30)
+            and quote is not None
+            and not quote.is_synthetic
+        )
+        if close_pending:
+            quote_status = "delayed"
         usable_live_quote = bool(
             is_current_session
             and quote_usable
@@ -4743,7 +4905,7 @@ def get_watchlist(
             price_date = quote_timestamp.astimezone(zone).date()
             change_basis_source = quote_bar_source
         elif market_state == "closed":
-            expected_date = _expected_market_session_date(instrument, now)
+            expected_date = expected_closed_date or _expected_market_session_date(instrument, now)
             close_basis_bar = bar_for_date(expected_date)
             if close_basis_bar is not None:
                 current_price = close_basis_bar.close
@@ -4753,10 +4915,9 @@ def get_watchlist(
             current_price is None
             and quote is not None
             and quote_timestamp is not None
-            and quote_status in USABLE_FRESHNESS_STATUSES
+            and (quote_status in USABLE_FRESHNESS_STATUSES or close_pending)
         ):
-            # A closed-session quote is the closing price even when no daily bar
-            # exists yet for that session (e.g. the stored bars lag by design).
+            # Keep the last intraday observation visible while the official close is pending.
             current_price = quote.close
             price_date = quote_timestamp.astimezone(zone).date()
             change_basis_source = quote_bar_source
@@ -4778,7 +4939,11 @@ def get_watchlist(
                 current_price,
                 price_date,
                 previous_close,
-                basis="live" if usable_live_quote else "at close",
+                basis=(
+                    "live" if usable_live_quote
+                    else "intraday (close pending)" if close_pending
+                    else "at close"
+                ),
             )
         else:
             change_reason = (
@@ -4816,6 +4981,9 @@ def get_watchlist(
                 percent_change=percent_change,
                 change_basis=change_basis,
                 change_reason=change_reason,
+                price_source="ltp",
+                as_of=quote_timestamp,
+                session_state=market_state,
             )
         elif close_basis_bar is not None:
             latest_bar = close_basis_bar
@@ -4868,6 +5036,9 @@ def get_watchlist(
                 percent_change=percent_change,
                 change_basis=change_basis,
                 change_reason=change_reason,
+                price_source="close",
+                as_of=quote_timestamp,
+                session_state="closed",
             )
         elif quote is not None:
             retrieved_at = _utc(quote.retrieved_at)
@@ -4899,6 +5070,10 @@ def get_watchlist(
                 percent_change=percent_change,
                 change_basis=change_basis,
                 change_reason=change_reason,
+                price_source="ltp",
+                as_of=quote_timestamp,
+                session_state=market_state,
+                close_pending=close_pending,
             )
         result.append(
             WatchlistEntryResponse(
@@ -7769,8 +7944,7 @@ def latest_quote(
             ).order_by(MarketBar.retrieved_at.desc())
         ).all()
         official_close = next((bar for bar in stored_closes
-            if _daily_session_date(bar.timestamp) == last_completed_session
-            and _utc(bar.retrieved_at).astimezone(ZoneInfo(instrument.timezone)).time() >= datetime_time(15, 30)
+            if is_official_session_close(bar, instrument, last_completed_session)
         ), None)
         if official_close is not None:
             official = _quote_response(
@@ -7784,18 +7958,23 @@ def latest_quote(
                 last_completed_session=last_completed_session,
             )
             observed_at = _utc(official_close.retrieved_at)
+            close_as_of = official_session_close_at(instrument, last_completed_session)
             provider_attempts.append(ProviderAttemptResponse(provider="dhan", outcome="used", reason="stored_official_session_close"))
             return official.model_copy(update={
                 "freshness": "fresh",
                 "freshness_status": "session_close",
-                "freshness_message": "Official close · Dhan REST quote; provider timestamp " + observed_at.astimezone(ZoneInfo(instrument.timezone)).strftime("%H:%M:%S") + " IST.",
-                "is_current_session": True,
-                "market_timestamp": observed_at,
-                "market_age_seconds": max(0.0, (now - observed_at).total_seconds()),
+                "freshness_message": "Official Dhan close at 15:30 IST; the close retrieval time is recorded separately.",
+                "is_current_session": False,
+                "market_timestamp": close_as_of,
+                "market_age_seconds": max(0.0, (now - close_as_of).total_seconds()),
+                "as_of": close_as_of,
                 "data_type": "daily_close",
+                "price_source": "close",
+                "close_pending": False,
+                "session_state": "closed",
                 "provider_attempts": provider_attempts,
                 "bar": HistoricalBar(
-                    timestamp=observed_at, open=official_close.open, high=official_close.high,
+                    timestamp=close_as_of, open=official_close.open, high=official_close.high,
                     low=official_close.low, close=official_close.close, volume=official_close.volume,
                 ),
             })
@@ -8144,6 +8323,7 @@ def latest_quote(
         record_lower_priority_skips(active_provider.name)
         return response.model_copy(update={
             "provider_attempts": provider_attempts,
+            "provider_intervals_requested": [],
             "fallback_reason": fallback_reason,
         })
 
@@ -8191,6 +8371,22 @@ def _quote_response(
     now = datetime.now(timezone.utc)
     usable, reason, evidence = classify_quote(
         quote, instrument, None, now, last_completed_session=last_completed_session
+    )
+    resolution = resolve_market_price(
+        instrument,
+        price=quote.close,
+        provider=quote.source,
+        observed_at=quote.timestamp,
+        now=now,
+        is_official_close=(
+            isinstance(quote, MarketBar)
+            and is_official_session_close(quote, instrument)
+        ),
+        is_synthetic=quote.is_synthetic,
+        close_pending=(
+            isinstance(quote, MarketQuote)
+            and quote.source in {"dhan", "dhan_ws"}
+        ),
     )
     freshness_status = evidence["quote_freshness_status"]
     if (
@@ -8278,8 +8474,12 @@ def _quote_response(
         is_verified=is_verified,
         provider_configured=True,
         provider_request_status=provider_request_status,
-        market_timestamp=_utc(quote.timestamp),
-        market_age_seconds=max(0.0, evidence["quote_timestamp_age_seconds"]),
+        market_timestamp=resolution["as_of"] or _utc(quote.timestamp),
+        market_age_seconds=(
+            max(0.0, (now - resolution["as_of"]).total_seconds())
+            if resolution["as_of"] is not None
+            else max(0.0, evidence["quote_timestamp_age_seconds"])
+        ),
         data_type=evidence["quote_data_type"],
         delivery_mode=(
             "websocket_tick"
@@ -8291,11 +8491,13 @@ def _quote_response(
         stream_status="not_configured",
         provider=quote.source.removesuffix("_ws"),
         fetched_at=_utc(quote.retrieved_at),
-        as_of=_utc(quote.timestamp),
+        as_of=resolution["as_of"] or _utc(quote.timestamp),
         interval="quote",
-        session_state=_market_session_state(instrument),
+        session_state=resolution["session_state"],
+        price_source=resolution["source"],
+        close_pending=resolution["close_pending"],
         bar=HistoricalBar(
-            timestamp=_utc(quote.timestamp),
+            timestamp=resolution["as_of"] or _utc(quote.timestamp),
             open=quote.open,
             high=quote.high,
             low=quote.low,
@@ -8338,11 +8540,7 @@ def sync_history(
                 detail="The selected market data source is not available for history sync.",
             )
     selected_source = active_providers[0].name if active_providers else None
-    cached_interval = (
-        "1m"
-        if selected_source == "dhan" and interval not in {"1d", "1m"}
-        else interval
-    )
+    cached_interval = "1d" if interval == "1d" else "1m"
     provider_attempts = [
         ProviderAttemptResponse(
             provider=attempt["provider"],
@@ -8363,7 +8561,7 @@ def sync_history(
             start=start_utc,
             end=end_utc,
             offset=0,
-            limit=limit,
+            limit=min(limit, MAX_BARS),
             _user=_user,
             provider=MarketDataProviderChain(
                 [source_provider] if source_provider is not None else []
@@ -8392,11 +8590,11 @@ def sync_history(
         cached_query = cached_query.where(MarketBar.source == selected_source)
     else:
         cached_query = cached_query.where(MarketBar.source.is_(None))
-    cached_bars = list(
-        db.scalars(
-            cached_query.order_by(MarketBar.timestamp)
-        )
-    )
+    cached_bars = list(db.scalars(
+        cached_query.order_by(MarketBar.timestamp)
+        if interval == "1d"
+        else cached_query.order_by(MarketBar.timestamp).limit(1)
+    ))
     missing_ranges: list[tuple[datetime, datetime]] = []
     if interval == "1d" and cached_bars:
         cached_timestamps = sorted({
@@ -8428,7 +8626,7 @@ def sync_history(
         and interval != "1d"
         and end_utc - start_utc > timedelta(days=89)
     ):
-        job_key = (instrument.id, interval)
+        job_key = (instrument.id, cached_interval)
         with _history_sync_jobs_lock:
             existing_job_id = _history_sync_jobs_in_flight.get(job_key)
             if existing_job_id is None:
@@ -8437,7 +8635,8 @@ def sync_history(
                 _history_sync_jobs[job_id] = {
                     "id": job_id,
                     "instrument_id": str(instrument.id),
-                    "interval": interval,
+                    "interval": cached_interval,
+                    "provider_interval": cached_interval,
                     "status": "queued",
                     "chunks_completed": 0,
                     "chunks_total": chunk_count,
@@ -8454,15 +8653,18 @@ def sync_history(
                     _user.id,
                     start_utc,
                     end_utc,
-                    interval,
-                    limit,
+                    cached_interval,
+                    MAX_DHAN_1M_BACKFILL_BARS if cached_interval == "1m" else limit,
                 )
             else:
                 job_id = existing_job_id
         with _history_sync_jobs_lock:
             job_snapshot = dict(_history_sync_jobs[job_id])
         job_snapshot.pop("owner_id", None)
-        return read_history(selected_source).model_copy(update={"sync_job": job_snapshot})
+        return read_history(selected_source).model_copy(update={
+            "sync_job": job_snapshot,
+            "provider_intervals_requested": [cached_interval],
+        })
 
     selected_provider: MarketDataProvider | None = None
     selected_candidate: InstrumentCandidate | None = None
@@ -8470,16 +8672,8 @@ def sync_history(
     provider_failures: list[dict[str, str]] = []
     supported_provider_attempted = False
     for active_provider in active_providers:
-        fetch_interval = (
-            "1m"
-            if active_provider.name == "dhan" and interval not in {"1d", "1m"}
-            else interval
-        )
-        fetch_limit = (
-            limit * _interval_minutes(interval)
-            if active_provider.name == "dhan" and interval not in {"1d", "1m"}
-            else limit
-        )
+        fetch_interval = "1d" if interval == "1d" else "1m"
+        fetch_limit = limit if interval == "1d" else max(limit, MAX_DHAN_1M_CHUNK_BARS if active_provider.name == "dhan" else limit)
         limitation = _provider_history_limitation(
             active_provider.name, fetch_interval, start_utc
         )
@@ -8553,6 +8747,11 @@ def sync_history(
                     status="running",
                     chunks_total=len(provider_ranges),
                 )
+            if not provider_ranges:
+                no_new_bars = True
+                selected_provider = active_provider
+                selected_candidate = candidate
+                break
             for chunk_index, (range_start, range_end) in enumerate(provider_ranges, 1):
                 remaining = fetch_limit - len(provider_bars)
                 if remaining <= 0:
@@ -8864,6 +9063,7 @@ def sync_history(
         "is_cached": no_new_bars or rows_written == 0,
         "fetched_at": retrieved_at if not no_new_bars else None,
         "sync_status": "no_new_bars" if no_new_bars else "success",
+        "provider_intervals_requested": [] if no_new_bars else [fetch_interval],
     })
 
 
@@ -8877,6 +9077,125 @@ def get_history_sync_job(
         if job is None or job.get("owner_id") != str(_user.id):
             raise HTTPException(status_code=404, detail="History sync job not found.")
         return {key: value for key, value in job.items() if key != "owner_id"}
+
+
+@router.post("/backfill/intraday/watchlist")
+def backfill_watchlist_intraday(
+    background_tasks: BackgroundTasks,
+    years: int = Query(default=2, ge=1, le=5),
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    provider: MarketDataProvider = Depends(get_market_data_provider),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user_id = active_session.user_id
+    selected_source = _selected_market_data_source(
+        db, user_id, _available_market_data_sources(db, user_id)
+    )
+    if selected_source != "dhan" or not any(
+        item.name == "dhan" for item in _providers(provider)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Select Dhan as the market-data source before starting this backfill.",
+        )
+    watched = [
+        instrument for instrument_id in _user_market_data_instrument_ids(db, user_id)
+        if (instrument := db.get(Instrument, instrument_id)) is not None
+        and not instrument.is_synthetic
+    ]
+    watched.sort(key=lambda instrument: (instrument.symbol, str(instrument.id)))
+    by_symbol: dict[tuple[str, str], list[Instrument]] = {}
+    for instrument in watched:
+        symbol = instrument.symbol.strip().upper().removesuffix("-EQ")
+        venue = instrument.venue.strip().upper()
+        normalized_venue = "NSE" if venue in {"NSE", "XNSE", "NSI", "NSE_EQ"} else venue
+        by_symbol.setdefault((symbol, normalized_venue), []).append(instrument)
+
+    selected_instruments: list[Instrument] = []
+    for instruments in by_symbol.values():
+        def score(item: Instrument) -> tuple[bool, int]:
+            has_mapping = db.scalar(select(InstrumentProviderIdentifier.id).where(
+                InstrumentProviderIdentifier.instrument_id == item.id,
+                InstrumentProviderIdentifier.provider == "dhan",
+                InstrumentProviderIdentifier.is_verified.is_(True),
+            )) is not None
+            base_count = int(db.scalar(select(func.count(MarketBar.id)).where(
+                MarketBar.instrument_id == item.id,
+                MarketBar.interval == "1m",
+                MarketBar.source == "dhan",
+                MarketBar.is_synthetic.is_(False),
+            )) or 0)
+            return has_mapping, base_count
+
+        selected_instruments.append(max(instruments, key=score))
+
+    now = datetime.now(timezone.utc)
+    jobs: list[dict[str, Any]] = []
+    for instrument in selected_instruments:
+        zone = ZoneInfo(instrument.timezone)
+        local_today = now.astimezone(zone).date()
+        start = datetime.combine(local_today - timedelta(days=365 * years), datetime_time.min, tzinfo=zone).astimezone(timezone.utc)
+        end = now
+        job_key = (instrument.id, "1m")
+        with _history_sync_jobs_lock:
+            existing_id = _history_sync_jobs_in_flight.get(job_key)
+            existing = _history_sync_jobs.get(existing_id) if existing_id else None
+            if existing is not None and existing.get("owner_id") == str(user_id):
+                jobs.append({
+                    "id": existing_id,
+                    "instrument_id": str(instrument.id),
+                    "symbol": instrument.symbol,
+                    "status": existing["status"],
+                    "chunks_completed": existing["chunks_completed"],
+                    "chunks_total": existing["chunks_total"],
+                })
+                continue
+            if existing_id is not None:
+                raise HTTPException(status_code=409, detail="A market-history backfill is already running for one of these instruments.")
+            job_id = str(uuid4())
+            chunk_count = (int((end - start).total_seconds()) + 89 * 86400 - 1) // (89 * 86400)
+            _history_sync_jobs[job_id] = {
+                "id": job_id,
+                "instrument_id": str(instrument.id),
+                "interval": "1m",
+                "provider_interval": "1m",
+                "status": "queued",
+                "chunks_completed": 0,
+                "chunks_total": chunk_count,
+                "bars_fetched": 0,
+                "current_window": None,
+                "error": None,
+                "owner_id": str(user_id),
+            }
+            _history_sync_jobs_in_flight[job_key] = job_id
+        background_tasks.add_task(
+            _run_history_sync_job,
+            job_id,
+            instrument.id,
+            user_id,
+            start,
+            end,
+            "1m",
+            MAX_DHAN_1M_BACKFILL_BARS,
+        )
+        jobs.append({
+            "id": job_id,
+            "instrument_id": str(instrument.id),
+            "symbol": instrument.symbol,
+            "status": "queued",
+            "chunks_completed": 0,
+            "chunks_total": chunk_count,
+        })
+    return {
+        "status": "queued",
+        "base_interval": "1m",
+        "years": years,
+        "instrument_count": len(selected_instruments),
+        "jobs": jobs,
+        "progress_endpoint": "/market-data/history/sync-jobs/{job_id}",
+        "disclaimer": "Decision support, not investment advice.",
+    }
 
 
 def _count_real_daily_bars(
@@ -9412,14 +9731,14 @@ def backfill_open_holdings(
     }
 
 
-@router.get("/instruments/{instrument_id}/history", response_model=HistoryResponse)
-def get_history(
+def _get_history_response(
     instrument_id: UUID,
     interval: BarInterval = Query(default="1d"),
     start: datetime | None = None,
     end: datetime | None = None,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=MAX_BARS),
+    source_override: str | None = None,
     _user: User = Depends(get_current_user),
     provider: MarketDataProvider = Depends(get_market_data_provider),
     db: Session = Depends(get_db),
@@ -9452,7 +9771,9 @@ def get_history(
     )
     selected_providers = _providers(provider)
     exclusive_source = _exclusive_selected_source(db, _user.id)
-    if exclusive_source is not None:
+    if source_override is not None:
+        selected_source = source_override
+    elif exclusive_source is not None:
         selected_source = exclusive_source
     else:
         selected_source = selected_providers[0].name if selected_providers else None
@@ -9506,19 +9827,28 @@ def get_history(
         }
         if alignment is not None and base_rows_orm:
             open_time, session_minutes, alignment_description, zone_name = alignment
-            immutable_base = tuple((
-                _utc(row.timestamp).isoformat(), str(row.open), str(row.high),
-                str(row.low), str(row.close), str(row.volume),
-                _utc(row.retrieved_at).isoformat(),
-            ) for row in base_rows_orm)
-            derived_values, coverage = _aggregate_intraday_cached(
+            as_of_minute = now.replace(second=0, microsecond=0)
+            cache_key = (
+                instrument.id,
+                interval,
+                selected_source,
+                len(base_rows_orm),
+                _utc(base_rows_orm[0].timestamp),
+                _utc(base_rows_orm[-1].timestamp),
+                max(_utc(row.retrieved_at) for row in base_rows_orm),
+                settings.nse_no_continuous_trading_start,
+                settings.nse_no_continuous_trading_end,
+                as_of_minute,
+            )
+            derived_values, coverage = _cached_intraday_aggregation(
+                cache_key,
                 interval,
                 open_time.isoformat(),
                 session_minutes,
                 zone_name,
                 instrument.country,
-                now.replace(second=0, microsecond=0).isoformat(),
-                immutable_base,
+                as_of_minute.isoformat(),
+                base_rows_orm,
             )
             coverage = {
                 **coverage,
@@ -9543,9 +9873,15 @@ def get_history(
                 source=f"derived:{selected_source or 'unknown'}:1m",
                 retrieved_at=retrieved_at,
                 is_synthetic=False,
+                provenance="derived_1m",
                 is_complete=is_complete,
             )
         provider_by_bucket: dict[datetime, MarketBarResponse] = {}
+        base_bucket_starts = {
+            bucket
+            for base_bar in base_rows_orm
+            if (bucket := _intraday_bucket_start(base_bar.timestamp, instrument, interval)) is not None
+        }
         disagreements: list[dict[str, Any]] = []
         for row in provider_rows:
             bucket = _intraday_bucket_start(row.timestamp, instrument, interval)
@@ -9556,6 +9892,7 @@ def get_history(
                 low=row.low, close=row.close, volume=row.volume,
                 source=row.source, retrieved_at=_utc(row.retrieved_at),
                 is_synthetic=row.is_synthetic,
+                provenance="provider_fallback",
                 is_complete=_intraday_bucket_end(bucket, instrument, interval) <= now,
             )
             provider_by_bucket[bucket] = provider_bar
@@ -9570,11 +9907,10 @@ def get_history(
                         "derived_source": derived.source,
                         "fields": differing,
                     })
-        merged = [provider_by_bucket.get(bucket, derived)
-                  for bucket, derived in derived_by_bucket.items()]
+        merged = list(derived_by_bucket.values())
         merged.extend(
             bar for bucket, bar in provider_by_bucket.items()
-            if bucket not in derived_by_bucket
+            if bucket not in derived_by_bucket and bucket not in base_bucket_starts
         )
         merged.sort(key=lambda bar: bar.timestamp)
         page_end = len(merged) - offset if offset else len(merged)
@@ -9583,7 +9919,10 @@ def get_history(
             **coverage,
             "feed_gaps": feed_gap_evidence,
             "data_complete": not feed_gap_evidence,
-            "provider_bars_preferred": len(provider_rows),
+            "provider_fallback_bars": sum(
+                bucket not in derived_by_bucket and bucket not in base_bucket_starts
+                for bucket in provider_by_bucket
+            ),
             "derived_bars": len(derived_values),
             "interval_disagreement_count": len(disagreements),
         }
@@ -9654,4 +9993,29 @@ def get_history(
         session_state=_market_session_state(instrument),
         is_cached=True,
         coverage={"feed_gaps": feed_gap_evidence, "data_complete": not feed_gap_evidence},
+    )
+
+
+@router.get("/instruments/{instrument_id}/history", response_model=HistoryResponse)
+def get_history(
+    instrument_id: UUID,
+    interval: BarInterval = Query(default="1d"),
+    start: datetime | None = None,
+    end: datetime | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=MAX_BARS),
+    _user: User = Depends(get_current_user),
+    provider: MarketDataProvider = Depends(get_market_data_provider),
+    db: Session = Depends(get_db),
+):
+    return _get_history_response(
+        instrument_id=instrument_id,
+        interval=interval,
+        start=start,
+        end=end,
+        offset=offset,
+        limit=limit,
+        _user=_user,
+        provider=provider,
+        db=db,
     )
