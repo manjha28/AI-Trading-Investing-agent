@@ -1,9 +1,10 @@
 import csv
 import io
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -22,11 +23,26 @@ from app.accounting import (
 from app.api.auth import get_active_session, get_current_user, require_csrf
 from app.corporate_action_service import get_portfolio_corporate_actions
 from app.db import get_db
-from app.models import Portfolio, PortfolioTransaction, User, UserSession
+from app.models import (
+    MarketBar,
+    Portfolio,
+    PortfolioTransaction,
+    PortfolioValuationSnapshot,
+    User,
+    UserSession,
+)
 from app.models import Instrument
+from app.api import market_data as market_data_api
 from app.api.market_data import get_market_data_provider, latest_quote
 from app.market_data import MarketDataProvider
-from app.services.price_freshness import classify_quote
+from app.services.price_freshness import (
+    classify_quote,
+    delayed_price_acceptable_for_valuation,
+    prior_close_acceptable_for_valuation,
+    valuation_basis_for_quote,
+    venue_last_completed_session,
+)
+from app.services.price_states import BASIS_UNAVAILABLE
 
 router = APIRouter(prefix="/portfolios/{portfolio_id}", tags=["portfolio accounting"])
 CSV_COLUMNS = (
@@ -173,6 +189,50 @@ class ValuationPositionResponse(BaseModel):
     source: str | None
     retrieved_at: datetime | None
     message: str
+    basis: Literal[
+        "live", "delayed", "session_close", "prior_close", "broker_snapshot", "unavailable"
+    ] = BASIS_UNAVAILABLE
+    provider_timestamp: datetime | None = None
+    prior_close: Decimal | None = None
+    day_change_reason: str | None = None
+
+
+def _prior_session_close(
+    db: Session,
+    user_id: UUID,
+    instrument: Instrument,
+    quote,
+) -> tuple[Decimal | None, str | None]:
+    """Same-source close of the last completed session before the quote's session."""
+    venue_zone = ZoneInfo(instrument.timezone)
+    quote_day = _as_utc(quote.timestamp).astimezone(venue_zone).date()
+    prior_reference = datetime.combine(
+        quote_day, time.min, tzinfo=venue_zone
+    ).astimezone(timezone.utc)
+    expected_date = market_data_api._expected_market_session_date(
+        instrument, prior_reference
+    )
+    daily_bars = db.scalars(
+        select(MarketBar).where(
+            MarketBar.instrument_id == instrument.id,
+            MarketBar.interval == "1d",
+            MarketBar.is_synthetic.is_(False),
+            MarketBar.source == quote.source,
+        )
+    ).all()
+    matching = [
+        bar for bar in daily_bars
+        if market_data_api._daily_session_date(bar.timestamp) == expected_date
+    ]
+    if not matching:
+        return None, f"No {quote.source} daily close is stored for session {expected_date}."
+    bar = max(matching, key=lambda item: _as_utc(item.retrieved_at))
+    adjusted, _adjustment = market_data_api._adjust_previous_daily_close(
+        db, user_id, instrument, bar.close, quote_day
+    )
+    if adjusted is None:
+        return None, "Prior close could not be corporate-action adjusted."
+    return adjusted, None
 
 
 class PortfolioValuationResponse(BaseModel):
@@ -715,6 +775,7 @@ def attach_instrument_to_position(
         instrument,
         portfolio.base_currency,
         datetime.now(timezone.utc),
+        last_completed_session=venue_last_completed_session(db, instrument, None),
     )
     if currency_reason == "foreign_currency_no_fx":
         raise HTTPException(
@@ -737,6 +798,56 @@ def attach_instrument_to_position(
         instrument_id=instrument.id,
         linked_transactions=len(transactions),
     )
+
+
+@router.get("/history")
+def portfolio_valuation_history(
+    portfolio_id: UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    portfolio = get_owned_portfolio(db, user.id, portfolio_id)
+    owner_rows = list(db.scalars(
+        select(PortfolioValuationSnapshot)
+        .where(
+            PortfolioValuationSnapshot.owner_id == user.id,
+            PortfolioValuationSnapshot.scope == "owner",
+            PortfolioValuationSnapshot.portfolio_id.is_(None),
+        )
+        .order_by(PortfolioValuationSnapshot.timestamp)
+        .limit(10_000)
+    ).all())
+    portfolio_rows = list(db.scalars(
+        select(PortfolioValuationSnapshot)
+        .where(
+            PortfolioValuationSnapshot.owner_id == user.id,
+            PortfolioValuationSnapshot.scope == "portfolio",
+            PortfolioValuationSnapshot.portfolio_id == portfolio.id,
+        )
+        .order_by(PortfolioValuationSnapshot.timestamp)
+        .limit(10_000)
+    ).all())
+
+    def serialize(row: PortfolioValuationSnapshot) -> dict:
+        return {
+            "timestamp": row.timestamp,
+            "currency": row.currency,
+            "market_value": row.market_value,
+            "unrealized_pnl": row.unrealized_pnl,
+            "day_change": row.day_change,
+            "invested": row.invested,
+            "valuation_basis": row.valuation_basis,
+            "source": row.source,
+            "provider_timestamp": row.provider_timestamp,
+            "complete": row.complete,
+            "reason": row.reason,
+            "price_observations": row.price_observations,
+        }
+
+    return {
+        "owner_wide": [serialize(row) for row in owner_rows],
+        "portfolio_scoped": [serialize(row) for row in portfolio_rows],
+    }
 
 
 @router.get("/valuation", response_model=PortfolioValuationResponse)
@@ -844,6 +955,7 @@ def portfolio_valuation(
                 instrument,
                 portfolio.base_currency,
                 datetime.now(timezone.utc),
+                last_completed_session=venue_last_completed_session(db, instrument, None),
             )
             message = "No provider returned a quote for this instrument."
             reasons.append(f"{symbol}: {message}")
@@ -868,12 +980,25 @@ def portfolio_valuation(
             )
             continue
 
-        quote_usable, _quote_reason, _freshness_evidence = classify_quote(
+        valuation_time = datetime.now(timezone.utc)
+        quote_usable, quote_reason, freshness_evidence = classify_quote(
             quote,
             instrument,
             portfolio.base_currency,
-            datetime.now(timezone.utc),
+            valuation_time,
+            last_completed_session=venue_last_completed_session(
+                db, instrument, quote.source
+            ),
         )
+        # A delayed NSE price is valued and labelled "delayed", never live. It is also
+        # reported as a reason below so the valuation is not called reliable.
+        quote_delayed = delayed_price_acceptable_for_valuation(
+            quote_usable, quote_reason, freshness_evidence, valuation_time
+        )
+        quote_prior_close = prior_close_acceptable_for_valuation(
+            quote_usable, quote_reason, freshness_evidence, valuation_time
+        )
+        quote_usable = quote_usable or quote_delayed or quote_prior_close
         quote_time = _as_utc(quote.retrieved_at)
         if not quote_usable:
             message = quote.freshness_message
@@ -902,15 +1027,39 @@ def portfolio_valuation(
         last_price = quote.bar.close
         position_value = money(last_price * position.quantity)
         position_pnl = money(position_value - position.cost_basis)
-        day_change = money((quote.bar.close - quote.bar.open) * position.quantity)
-        day_change_percent = (
-            (quote.bar.close - quote.bar.open) * Decimal("100") / quote.bar.open
-            if quote.bar.open > 0
-            else None
+        basis = valuation_basis_for_quote(
+            str(freshness_evidence.get("quote_freshness_status", "")),
+            quote.timestamp,
+            instrument,
+            datetime.now(timezone.utc),
+        ) or BASIS_UNAVAILABLE
+        if quote_delayed:
+            reasons.append(
+                f"{symbol}: price is delayed (provider timestamp "
+                f"{_as_utc(quote.timestamp).isoformat()}); it is not a live price."
+            )
+        if quote_prior_close:
+            reasons.append(
+                f"{symbol}: price is from the prior completed session "
+                f"({_as_utc(quote.timestamp).isoformat()}); it is not a live price."
+            )
+        prior_close, prior_reason = _prior_session_close(
+            db, user.id, instrument, quote
         )
+        if prior_close is None:
+            day_change = None
+            day_change_percent = None
+            reasons.append(f"{symbol}: {prior_reason}")
+        else:
+            day_change = money((last_price - prior_close) * position.quantity)
+            day_change_percent = (
+                (last_price - prior_close) * Decimal("100") / prior_close
+                if prior_close > 0
+                else None
+            )
+            day_change_total += day_change
         market_value_total += position_value
         unrealized_total += position_pnl
-        day_change_total += day_change
         last_updated = max(last_updated, quote_time) if last_updated else quote_time
         positions.append(
             ValuationPositionResponse(
@@ -924,11 +1073,19 @@ def portfolio_valuation(
                 weight_percent=None,
                 day_change=day_change,
                 day_change_percent=day_change_percent,
-                freshness="fresh",
+                # A delayed price is valued but is not "fresh": the UI must not call it recent.
+                freshness="stale" if quote_delayed or quote_prior_close else "fresh",
                 is_synthetic=quote.is_synthetic,
                 source=quote.source,
                 retrieved_at=quote_time,
                 message=quote.freshness_message,
+                basis=basis,
+                provider_timestamp=_as_utc(quote.timestamp),
+                prior_close=prior_close,
+                day_change_reason=(
+                    None if prior_close is not None
+                    else f"{symbol}: {prior_reason}"
+                ),
             )
         )
 

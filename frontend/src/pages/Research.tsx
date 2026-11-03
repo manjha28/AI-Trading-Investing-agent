@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
 
 type Instrument = { id: string; symbol: string; display_name: string; venue: string; is_synthetic: boolean };
+type MarketDataSettings = { selected_provider: string | null };
 type WatchlistEntry = { instrument_id: string; symbol: string };
 type SourceLink = { id: string; instrument_id: string; url: string; label: string; enabled: boolean; created_at: string };
 type Source = {
@@ -241,6 +242,12 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
     setBatchResults([]);
     let successCount = 0;
     const syncWarnings: string[] = [];
+    let selectedProvider: string | null = null;
+    try {
+      selectedProvider = (await apiRequest<MarketDataSettings>('/market-data/settings')).selected_provider;
+    } catch {
+      syncWarnings.push('Selected market-data source could not be confirmed; provider fundamentals sync was skipped.');
+    }
     for (const instrument of instrumentsToRun.slice(0, MAX_BATCH_INSTRUMENTS)) {
       try {
         if (!instrument.is_synthetic) {
@@ -253,25 +260,27 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
             interval: '1d',
             limit: '500',
           });
-          const [historyResult, fundamentalsResult] = await Promise.allSettled([
-            apiRequest<{ bars: unknown[] }>(
-              `/market-data/instruments/${instrument.id}/history/sync?${syncQuery}`,
-              { method: 'POST' },
-            ),
-            apiRequest<{ status: 'available' | 'unavailable'; message: string }>(
-              `/market-data/instruments/${instrument.id}/fundamentals/sync`,
-              { method: 'POST' },
-            ),
-          ]);
+          const historyResult = await Promise.resolve().then(() => apiRequest<{ bars: unknown[] }>(
+            `/market-data/instruments/${instrument.id}/history/sync?${syncQuery}`,
+            { method: 'POST' },
+          )).then((value) => ({ status: 'fulfilled' as const, value }), (reason: unknown) => ({ status: 'rejected' as const, reason }));
           if (historyResult.status === 'rejected') {
             syncWarnings.push(`${instrument.symbol}: historical data sync failed.`);
           } else if (historyResult.value.bars.length === 0) {
             syncWarnings.push(`${instrument.symbol}: no real daily bars were returned.`);
           }
-          if (fundamentalsResult.status === 'rejected') {
-            syncWarnings.push(`${instrument.symbol}: fundamentals sync failed.`);
-          } else if (fundamentalsResult.value.status === 'unavailable') {
-            syncWarnings.push(`${instrument.symbol}: ${fundamentalsResult.value.message}`);
+          if (selectedProvider === 'yfinance') {
+            try {
+              const fundamentalsResult = await apiRequest<{ status: 'available' | 'unavailable'; message: string }>(
+                `/market-data/instruments/${instrument.id}/fundamentals/sync`,
+                { method: 'POST' },
+              );
+              if (fundamentalsResult.status === 'unavailable') {
+                syncWarnings.push(`${instrument.symbol}: ${fundamentalsResult.message}`);
+              }
+            } catch {
+              syncWarnings.push(`${instrument.symbol}: fundamentals sync failed.`);
+            }
           }
         }
         const result = await apiRequest<Brief>(`/research/instruments/${instrument.id}/run`, {
@@ -589,7 +598,7 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
     : Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
   return <section className="data-section research-brief">
     <div className="section-heading"><div><p className="eyebrow">RESEARCH BRIEF · {brief.renderer.toUpperCase()}</p><h2>Evidence and data</h2></div><span className={`research-run-status research-status-${brief.status}`}>{brief.status}</span></div>
-    <p className="research-subtitle">Sources succeeded: {brief.sources_succeeded}/{brief.sources_attempted} · generated {new Date(brief.created_at).toLocaleString()}</p>
+    <p className="research-subtitle">Generated {new Date(brief.created_at).toLocaleString()}</p>
     <div className="research-section-status-grid">
       {[
         ['Fundamentals', fundamentals.status, fundamentals.status === 'available' ? `${fundamentals.periods.length} stored periods` : 'No non-null provider values'],
@@ -612,14 +621,14 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
       <p className="research-status-line">{fundamentals.status === 'unavailable' ? 'Unavailable from stored providers.' : 'Stored M5.3 fundamentals; values are not estimated.'}</p>
       {fundamentals.snapshot.status === 'available' && fundamentals.snapshot.values && <>
         <div className="research-snapshot-grid">{Object.entries(fundamentals.snapshot.values).map(([name, item]) => <article key={name}>
-          <small>{name.replaceAll('_', ' ')}</small><strong>{item.value === null ? 'Unavailable' : item.value}</strong>
+          <small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(name === 'shares_outstanding' && item.value !== null && Number(item.value) === 0 ? null : item.value)}</strong>
         </article>)}</div>
         <p className="research-subtitle">Source: {fundamentals.snapshot.source} · fetched {new Date(fundamentals.snapshot.fetched_at ?? '').toLocaleString()} {fundamentals.snapshot.stale && <span className="stale-marker">STALE</span>}</p>
       </>}
       {fundamentals.periods.length > 0 && <div className="research-period-list">
         {fundamentals.periods.map((period) => <article className="research-period-card" key={`${period.period_type}-${period.period_end}`}>
           <header><strong>{period.period_type} · {period.period_end}</strong><span>{period.currency} · {period.source}{period.stale && <span className="stale-marker">STALE</span>}</span></header>
-          <div className="research-value-grid">{Object.entries(period.values).map(([name, item]) => <span key={name}><small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(item.value)}</strong></span>)}</div>
+          <div className="research-value-grid">{Object.entries(period.values).map(([name, item]) => <span key={name}><small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(name === 'shares_outstanding' && item.value !== null && Number(item.value) === 0 ? null : item.value)}</strong></span>)}</div>
           <small>Fetched {new Date(period.fetched_at).toLocaleString()}</small>
         </article>)}
       </div>}

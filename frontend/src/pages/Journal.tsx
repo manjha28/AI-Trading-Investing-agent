@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import {
   CalendarDays, ChevronLeft, ChevronRight, CircleDollarSign, Pencil, Plus, Search, Trash2, Upload, X,
 } from 'lucide-react';
@@ -12,6 +12,78 @@ type SortKey = 'instrument' | 'strategy' | 'setup' | 'side' | 'asset_class' | 'q
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const numberValue = (value: string | null | undefined) => value === null || value === undefined ? null : Number(value);
+
+type AnnotationField = 'notes' | 'tags' | 'strategy' | 'setup';
+type AnnotationOptions = { strategies: string[]; setups: string[]; tags: string[] };
+
+function InlineAnnotation({
+  value,
+  placeholder,
+  options = [],
+  field,
+  onSave,
+}: {
+  value: string;
+  placeholder: string;
+  options?: string[];
+  field: AnnotationField;
+  onSave: (value: string | string[]) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [error, setError] = useState(false);
+  const listId = useId();
+  useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [editing, value]);
+
+  async function save() {
+    setEditing(false);
+    setError(false);
+    const next = draft.trim();
+    const unchanged = next === value;
+    if (unchanged) return;
+    try {
+      await onSave(field === 'tags' ? next.split(',').map((tag) => tag.trim()).filter(Boolean) : next);
+    } catch {
+      setError(true);
+    }
+  }
+
+  function cancel() {
+    setDraft(value);
+    setEditing(false);
+  }
+
+  if (editing) return <span className="journal-inline-edit-wrap">
+    <input
+      className="journal-inline-edit"
+      aria-label={`Edit ${field}`}
+      list={field === 'strategy' || field === 'setup' || field === 'tags' ? listId : undefined}
+      maxLength={field === 'notes' ? 4000 : field === 'tags' ? 1300 : 100}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => void save()}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') { event.preventDefault(); cancel(); }
+        if (event.key === 'Enter') { event.preventDefault(); void save(); }
+      }}
+      autoFocus
+    />
+    {options.length > 0 && <datalist id={listId}>{options.map((option) => <option value={option} key={option} />)}</datalist>}
+    {error && <small className="journal-annotation-error">Save failed</small>}
+  </span>;
+
+  return <span
+    className={`journal-inline-value${value ? '' : ' journal-annotation-placeholder'}`}
+    title={value || placeholder}
+    tabIndex={0}
+    onClick={() => setEditing(true)}
+    onKeyDown={(event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setEditing(true); }
+    }}
+  >{value || placeholder}{error && <small className="journal-annotation-error"> · Save failed</small>}</span>;
+}
 
 function localDate(value: string): string {
   const date = new Date(value);
@@ -32,7 +104,7 @@ function optionDescription(trade: JournalTrade): string {
   return [trade.option_type, trade.strike, trade.expiry?.slice(0, 10)].filter(Boolean).join(' · ');
 }
 
-export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'cancelEditingTrade' | 'currency' | 'editingTrade' | 'journalAnalytics' | 'journalAssetClass' | 'journalBreakdown' | 'journalCurrency' | 'journalHasExit' | 'journalTrades' | 'removeJournalTrade' | 'refreshJournalTrades' | 'setJournalAssetClass' | 'setJournalCurrency' | 'setJournalHasExit' | 'startEditingTrade' | 'submitJournalTrade' | 'valuation'> }) {
+export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'cancelEditingTrade' | 'currency' | 'editingTrade' | 'journalAnalytics' | 'journalAssetClass' | 'journalBreakdown' | 'journalCurrency' | 'journalHasExit' | 'journalTrades' | 'journalLoadState' | 'journalLoadError' | 'removeJournalTrade' | 'refreshJournalTrades' | 'saveJournalNotes' | 'setJournalAssetClass' | 'setJournalCurrency' | 'setJournalHasExit' | 'startEditingTrade' | 'submitJournalTrade' | 'valuation'> }) {
   const {
     cancelEditingTrade,
     editingTrade,
@@ -42,6 +114,8 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
     journalCurrency,
     journalHasExit,
     journalTrades,
+    journalLoadState,
+    journalLoadError,
     removeJournalTrade,
     refreshJournalTrades,
     setJournalAssetClass,
@@ -66,19 +140,24 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [csvBusy, setCsvBusy] = useState(false);
   const [brokerImportMessage, setBrokerImportMessage] = useState('');
+  const [journalView, setJournalView] = useState<'trades' | 'fills'>('trades');
+  const [annotationOptions, setAnnotationOptions] = useState<AnnotationOptions>({ strategies: [], setups: [], tags: [] });
   const [sort, setSort] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({
     key: 'entry_time',
     direction: 'desc',
   });
 
-  const strategies = useMemo(
-    () => [...new Set(journalTrades.map((trade) => trade.strategy?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b)),
-    [journalTrades],
-  );
-  const setups = useMemo(
-    () => [...new Set(journalTrades.map((trade) => trade.setup?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b)),
-    [journalTrades],
-  );
+  const strategies = useMemo(() => uniqueOptions([
+    ...annotationOptions.strategies,
+    ...journalTrades.map((trade) => trade.strategy ?? ''),
+  ]), [annotationOptions.strategies, journalTrades]);
+  const setups = useMemo(() => uniqueOptions([
+    ...annotationOptions.setups,
+    ...journalTrades.map((trade) => trade.setup ?? ''),
+  ]), [annotationOptions.setups, journalTrades]);
+  useEffect(() => {
+    void apiRequest<AnnotationOptions>('/trades/annotation-options').then(setAnnotationOptions).catch(() => undefined);
+  }, []);
   const daySummaries = useMemo(
     () => new Map((journalAnalytics?.daily ?? []).map((item) => [item.date, item])),
     [journalAnalytics],
@@ -88,8 +167,8 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
     const rows = journalTrades.filter((trade) => {
       const day = activityDate(trade);
       return trade.currency === journalCurrency
-        && (!strategyFilter || trade.strategy === strategyFilter)
-        && (!setupFilter || trade.setup === setupFilter)
+        && (!strategyFilter || trade.strategy?.toLocaleLowerCase() === strategyFilter.toLocaleLowerCase())
+        && (!setupFilter || trade.setup?.toLocaleLowerCase() === setupFilter.toLocaleLowerCase())
         && (!sideFilter || trade.side === sideFilter)
         && (!assetFilter || trade.asset_class === assetFilter)
         && (!dateFrom || day >= dateFrom)
@@ -110,6 +189,30 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
       return String(first ?? '').localeCompare(String(second ?? ''), undefined, { numeric: true }) * direction;
     });
   }, [journalTrades, journalCurrency, strategyFilter, setupFilter, sideFilter, assetFilter, dateFrom, dateTo, selectedDate, search, sort]);
+
+  function uniqueOptions(values: string[]) {
+    const options = new Map<string, string>();
+    values.forEach((value) => {
+      const clean = value.trim();
+      if (clean) options.set(clean.toLocaleLowerCase(), options.get(clean.toLocaleLowerCase()) ?? clean);
+    });
+    return [...options.values()].sort((left, right) => left.localeCompare(right));
+  }
+
+  async function saveAnnotation(trade: JournalTrade, field: AnnotationField, value: string | string[]) {
+    await apiRequest(`/trades/${trade.annotation_id ?? trade.id}/annotations`, {
+      method: 'PATCH',
+      body: JSON.stringify({ [field]: value }),
+    });
+    await refreshJournalTrades(journalView);
+    const refreshed = await apiRequest<AnnotationOptions>('/trades/annotation-options');
+    setAnnotationOptions(refreshed);
+  }
+
+  async function setJournalViewAndRefresh(view: 'trades' | 'fills') {
+    setJournalView(view);
+    await refreshJournalTrades(view);
+  }
 
   const year = calendarMonth.getFullYear();
   const month = calendarMonth.getMonth();
@@ -245,12 +348,12 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
 
       {journalAnalytics && (
         <section className="journal-kpis" aria-label="Journal performance">
-          <article className="journal-kpi journal-kpi-primary"><span>Net realized P&amp;L</span><strong className={journalAnalytics.net_pnl === null ? '' : Number(journalAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{journalAnalytics.net_pnl === null ? '—' : formatMoney(journalAnalytics.net_pnl, journalCurrency)}</strong><small>{journalAnalytics.unpriced_closed_trades ? `${journalAnalytics.unpriced_closed_trades} closed fills lack charge data` : `${journalCurrency} · all closed trades`}</small></article>
+          <article className="journal-kpi journal-kpi-primary"><span>Net realized P&amp;L</span><strong className={journalAnalytics.net_pnl === null ? '' : Number(journalAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{journalAnalytics.net_pnl === null ? '—' : formatMoney(journalAnalytics.net_pnl, journalCurrency)}</strong><small>{journalAnalytics.unpriced_closed_trades ? `${journalAnalytics.unpriced_closed_trades} matched trades lack charge data` : `${journalCurrency} · matched closed trades`}</small><small>Expired outcomes unknown are excluded from realized metrics.</small></article>
           <article className="journal-kpi"><span>Win rate</span><strong>{journalAnalytics.win_rate === null ? '—' : `${journalAnalytics.win_rate}%`}</strong><small>{journalAnalytics.wins} wins · {journalAnalytics.losses} losses</small></article>
           <article className="journal-kpi"><span>Profit factor</span><strong>{journalAnalytics.profit_factor ?? '—'}</strong><small>Closed-trade analytics</small></article>
           <article className="journal-kpi"><span>Expectancy</span><strong>{journalAnalytics.expectancy === null ? '—' : formatMoney(journalAnalytics.expectancy, journalCurrency)}</strong><small>Per closed trade</small></article>
           <article className="journal-kpi"><span>Max drawdown</span><strong className={journalAnalytics.max_drawdown !== null && Number(journalAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{journalAnalytics.max_drawdown === null ? '—' : formatMoney(journalAnalytics.max_drawdown, journalCurrency)}</strong><small>Closed-trade sequence</small></article>
-          <article className="journal-kpi"><span>Trades logged</span><strong>{journalAnalytics.trades_logged}</strong><small>{journalAnalytics.closed_trades} closed · {journalAnalytics.open_trades} open</small></article>
+          <article className="journal-kpi"><span>Journal records</span><strong>{journalAnalytics.trades_logged}</strong><small>{journalAnalytics.fill_count} fills + {journalAnalytics.manual_trade_count} manual = {journalAnalytics.trades_logged} records</small><small>{journalAnalytics.fifo_match_slices} FIFO match slices + {journalAnalytics.manual_trade_count} manual records · {journalAnalytics.matched_closed_trades} closed trades</small><small>{journalAnalytics.real_open_positions} real open · {journalAnalytics.unattributed_fill_rows} unattributable · {journalAnalytics.expired_trades} expired · {journalAnalytics.unmatched_fill_rows} unmatched</small><small>{journalAnalytics.fill_reconciliation}</small></article>
         </section>
       )}
 
@@ -292,8 +395,8 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
         </section>
 
         <section className="data-section journal-breakdown-panel">
-          <div className="section-heading"><div><p className="eyebrow">PERFORMANCE REVIEW</p><h2>Manual trades by strategy</h2></div></div>
-          {journalBreakdown.length === 0 ? <div className="table-empty">No strategy results for {journalCurrency}.</div> : (
+          <div className="section-heading"><div><p className="eyebrow">PERFORMANCE REVIEW</p><h2>Trades by strategy</h2></div></div>
+          {journalLoadState === 'idle' || journalLoadState === 'loading' ? <div className="table-empty">Loading trade analytics…</div> : journalLoadState === 'failed' ? <div className="error-message" role="alert">Trade analytics unavailable: {journalLoadError} <button type="button" onClick={() => void refreshJournalTrades().catch(() => undefined)}>Retry</button></div> : journalBreakdown.length === 0 ? <div className="table-empty">No strategy results for {journalCurrency}.</div> : (
             <div className="table-scroll">
               <table>
                 <thead><tr><th>Strategy</th><th>Closed</th><th>W / L</th><th>Net P&amp;L</th><th>Profit factor</th></tr></thead>
@@ -305,22 +408,39 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
               </table>
             </div>
           )}
-          <div className="journal-limitation">Broker executions do not include strategy metadata; this breakdown covers manual journal trades only.</div>
+          <div className="journal-limitation">Unassigned closed trades are included in the “untagged” bucket. Annotations do not affect realized metrics.</div>
         </section>
       </div>
 
       <section className="data-section journal-history-panel">
         <div className="section-heading journal-history-heading">
           <div><p className="eyebrow">TRADE HISTORY</p><h2>Recorded trades <span className="section-count">{filteredTrades.length} shown</span></h2></div>
-          <label className="journal-search"><Search size={15} /><input aria-label="Search trades" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search instrument, setup, notes…" /></label>
+          <div className="journal-view-toggle" role="tablist" aria-label="Journal view">
+            <button type="button" role="tab" aria-selected={journalView === 'trades'} className={journalView === 'trades' ? 'active' : ''} onClick={() => void setJournalViewAndRefresh('trades')}>Trades</button>
+            <button type="button" role="tab" aria-selected={journalView === 'fills'} className={journalView === 'fills' ? 'active' : ''} onClick={() => void setJournalViewAndRefresh('fills')}>Fills</button>
+          </div>
+          <label className="journal-search"><Search size={15} /><input aria-label="Search trades" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search instrument, strategy, setup, notes, tags…" /></label>
         </div>
-        {filteredTrades.length === 0 ? <div className="table-empty">{journalTrades.length ? 'No trades match these filters.' : 'No journal trades recorded yet.'}</div> : (
+        {journalAnalytics && <p className="journal-row-reconciliation">
+          {journalView === 'trades'
+            ? `${journalTrades.length} trade rows: ${journalAnalytics.fifo_match_slices} FIFO match slices + ${journalAnalytics.manual_trade_count} manual trade. ${journalTrades.length === journalAnalytics.matched_closed_trades ? 'Counts reconcile.' : `Count mismatch: expected ${journalAnalytics.matched_closed_trades} closed trades.`}`
+            : `${journalTrades.length} fill rows · ${journalAnalytics.fill_count} Dhan fills. ${journalTrades.length === journalAnalytics.fill_count ? 'Counts reconcile.' : `Count mismatch: expected ${journalAnalytics.fill_count} fills.`}`}
+        </p>}
+        {journalAnalytics && journalAnalytics.unattributed_fill_rows > 0 && <p className="journal-data-quality" role="status">Data quality: {journalAnalytics.unattributed_fill_rows} fill is unattributable (including security ID 0 with no symbol); excluded from real open positions.</p>}
+        {journalLoadState === 'idle' || journalLoadState === 'loading' ? <div className="table-empty">Loading trades…</div> : journalLoadState === 'failed' ? <div className="error-message" role="alert">Trades unavailable: {journalLoadError} <button type="button" onClick={() => void refreshJournalTrades(journalView).catch(() => undefined)}>Retry</button></div> : filteredTrades.length === 0 ? <div className="table-empty">{journalTrades.length ? 'No trades match these filters.' : 'No journal trades recorded yet.'}</div> : (
           <div className="table-scroll journal-table-scroll">
             <table className="journal-table">
               <thead><tr>
                 <th>{sortButton('Instrument', 'instrument')}</th><th>{sortButton('Market', 'asset_class')}</th><th>{sortButton('Side', 'side')}</th>
-                <th>{sortButton('Size', 'quantity')}</th><th>{sortButton('Entry', 'entry_time')}</th><th>{sortButton('Exit', 'exit_time')}</th>
-                <th>{sortButton('Net P&L', 'net_pnl')}</th><th>Fees</th><th>{sortButton('Strategy / setup', 'strategy')}</th><th>Notes &amp; tags</th><th>Source</th><th>Actions</th>
+                <th>{sortButton('Size', 'quantity')}</th>
+                {journalView === 'trades'
+                  ? <><th>{sortButton('Entry', 'entry_time')}</th><th>{sortButton('Exit', 'exit_time')}</th></>
+                  : <th>{sortButton('Fill time', 'entry_time')}</th>}
+                <th>{sortButton('Net P&L', 'net_pnl')}</th><th>Fees</th>
+                <th>{sortButton('Strategy', 'strategy')}</th><th>{sortButton('Setup', 'setup')}</th>
+                <th>Notes</th><th>Tags</th><th>Source</th>
+                {journalView === 'trades' ? <th>Status</th> : <th>Match state</th>}
+                <th>Actions</th>
               </tr></thead>
               <tbody>{filteredTrades.map((trade) => (
                 <tr key={trade.id}>
@@ -328,22 +448,27 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
                   <td>{optionDescription(trade)}</td>
                   <td>{trade.source_side ? trade.source_side : <span className={`journal-side-badge ${trade.side === 'long' ? 'long' : 'short'}`}>{trade.side}</span>}</td>
                   <td>{formatQuantity(trade.quantity)} × {formatQuantity(trade.multiplier)}</td>
-                  <td>{new Date(trade.entry_time).toLocaleString()}</td>
-                  <td>{trade.exit_time ? new Date(trade.exit_time).toLocaleString() : <span className="journal-open-badge">Open</span>}</td>
+                  {journalView === 'trades' ? <>
+                    <td>{new Date(trade.entry_time).toLocaleString()}<small className="trade-subtext">{formatMoney(trade.entry_price, trade.currency)} · {trade.entry_fill_id ? `fill ${trade.entry_fill_id.slice(0, 8)}` : 'manual'}</small></td>
+                    <td>{trade.exit_time ? <>{new Date(trade.exit_time).toLocaleString()}<small className="trade-subtext">{trade.exit_price ? formatMoney(trade.exit_price, trade.currency) : ''}{trade.exit_fill_id ? ` · fill ${trade.exit_fill_id.slice(0, 8)}` : ''}</small></> : '—'}</td>
+                  </> : <td>{new Date(trade.entry_time).toLocaleString()}<small className="trade-subtext">{formatMoney(trade.entry_price, trade.currency)}</small></td>}
                   <td className={trade.net_pnl === null ? '' : Number(trade.net_pnl) >= 0 ? 'positive' : 'negative'}>{trade.net_pnl === null ? '—' : formatMoney(trade.net_pnl, trade.currency)}</td>
                   <td>{trade.fees === null ? '—' : formatMoney(trade.fees, trade.currency)}</td>
-                  <td>{trade.strategy || '—'}<small className="trade-subtext">{trade.setup || 'No setup'}</small></td>
-                  <td className="journal-notes-cell">
-                    <div className="journal-tags">{trade.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-                    {trade.notes && <details><summary>View notes</summary><p>{trade.notes}</p></details>}
-                  </td>
+                  <td className="journal-annotation-cell"><InlineAnnotation field="strategy" value={trade.strategy ?? ''} placeholder="Add strategy" options={strategies} onSave={(value) => saveAnnotation(trade, 'strategy', value)} /></td>
+                  <td className="journal-annotation-cell"><InlineAnnotation field="setup" value={trade.setup ?? ''} placeholder="Add setup" options={setups} onSave={(value) => saveAnnotation(trade, 'setup', value)} /></td>
+                  <td className="journal-annotation-cell journal-note-cell"><InlineAnnotation field="notes" value={trade.notes ?? ''} placeholder="Add note" onSave={(value) => saveAnnotation(trade, 'notes', value)} /></td>
+                  <td className="journal-annotation-cell journal-tags-cell"><InlineAnnotation field="tags" value={trade.tags.join(', ')} placeholder="Add tags" options={annotationOptions.tags} onSave={(value) => saveAnnotation(trade, 'tags', value)} /></td>
                   <td>{trade.source === 'dhan' ? 'Dhan' : trade.source === 'dhan_csv' ? 'Dhan CSV' : 'Manual'}</td>
+                  {journalView === 'trades'
+                    ? <td>{trade.position_status === 'expired_outcome_unknown' ? 'Expired · outcome unknown' : trade.position_status === 'open' ? 'Open' : 'Closed'}</td>
+                    : <td>{trade.match_state === 'open lot' ? 'Open lot' : trade.match_state ?? 'unmatched'}</td>}
                   <td className="journal-row-actions">
                     {trade.source === 'manual' && <button className="icon-button" type="button" onClick={() => {
                       startEditingTrade(trade);
                       setEntryOpen(true);
                     }} aria-label={`Edit ${trade.instrument} trade`}><Pencil size={14} /></button>}
                     {trade.source === 'manual' && <button className="icon-button" type="button" onClick={() => void removeJournalTrade(trade.id)} aria-label={`Delete ${trade.instrument} trade`}><Trash2 size={14} /></button>}
+                    {trade.source !== 'manual' && <small>Broker · annotations only</small>}
                   </td>
                 </tr>
               ))}</tbody>

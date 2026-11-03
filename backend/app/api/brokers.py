@@ -7,7 +7,7 @@ import os
 import re
 import threading
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as wall_time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
@@ -17,14 +17,14 @@ from zoneinfo import ZoneInfo
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.accounting import LedgerError, money
 from app.api.auth import get_active_session, require_csrf
-from app.api.portfolio_transactions import calculate_portfolio_ledger
+from app.api.portfolio_transactions import calculate_portfolio_ledger, portfolio_valuation
 from app.broker_adapters import (
     ADAPTERS,
     BrokerAdapter,
@@ -42,6 +42,7 @@ from app.models import (
     BrokerMirror,
     BrokerOAuthState,
     DhanLedgerMirror,
+    DhanLedgerDataQualityException,
     DhanTradeMirror,
     Instrument,
     InstrumentProviderIdentifier,
@@ -51,13 +52,31 @@ from app.models import (
     Portfolio,
     PortfolioTransaction,
     UserSession,
+    User,
 )
 from app.security import hash_token, new_token
 from app.provider_adapters import (
     DhanAccountRequestError,
     DhanReadOnlyAccountAdapter,
+    dhan_provider_id_variants,
+    dhan_provider_instrument_id,
 )
-from app.services.price_freshness import classify_quote
+from app.services.price_freshness import (
+    USABLE_FRESHNESS_STATUSES,
+    classify_quote,
+    select_usable_quote,
+    valuation_basis_for_quote,
+    venue_last_completed_session,
+    venue_session,
+)
+from app.services.price_states import (
+    BASIS_LIVE,
+    BASIS_SESSION_CLOSE,
+    BASIS_UNAVAILABLE,
+    FRESHNESS_SESSION_CLOSE,
+    basis_for_freshness,
+    provider_family,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -220,10 +239,16 @@ def _broker_error(status_code: int, code: str, message: str) -> HTTPException:
 
 
 def _log_dhan_sync_failure(stage: str, error: Exception, description: str) -> None:
+    original = getattr(error, "orig", error)
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    table_name = getattr(diagnostic, "table_name", None)
     logger.warning(
-        "Dhan sync diagnostic stage=%s error_class=%s description=%s",
+        "Dhan sync diagnostic stage=%s error_class=%s table=%s constraint=%s description=%s",
         stage,
         type(error).__name__,
+        table_name or "unknown",
+        constraint_name or "unknown",
         description,
     )
 
@@ -776,51 +801,159 @@ def _normalize_dhan_ledger(
     return normalized
 
 
+def _record_dhan_ledger_exceptions(
+    db: Session, user_id: UUID, rows: list[dict[str, Any]], seen_at: datetime
+) -> list[dict[str, Any]]:
+    recorded = []
+    for row in rows:
+        evidence = {
+            "voucherdate": row.get("voucherdate"),
+            "narration": row.get("narration"),
+            "voucherdesc": row.get("voucherdesc"),
+            "exchange": row.get("exchange"),
+            "debit": row.get("debit"),
+            "credit": row.get("credit"),
+        }
+        fingerprint = hashlib.sha256(json.dumps(
+            evidence, sort_keys=True, separators=(",", ":"), default=str
+        ).encode()).hexdigest()
+        existing = db.scalar(select(DhanLedgerDataQualityException).where(
+            DhanLedgerDataQualityException.user_id == user_id,
+            DhanLedgerDataQualityException.fingerprint == fingerprint,
+        ))
+        description = str(row.get("narration") or row.get("voucherdesc") or "")[:1000] or None
+        try:
+            debit = _dhan_decimal(row.get("debit"), "debit", optional=True)
+            credit = _dhan_decimal(row.get("credit"), "credit", optional=True)
+        except BrokerAdapterError:
+            debit = credit = None
+        if existing is None:
+            db.add(DhanLedgerDataQualityException(
+                user_id=user_id,
+                fingerprint=fingerprint,
+                entry_date=str(row.get("voucherdate"))[:40] if row.get("voucherdate") is not None else None,
+                description=description,
+                debit=debit,
+                credit=credit,
+                first_seen_at=seen_at,
+                last_seen_at=seen_at,
+                occurrence_count=1,
+            ))
+            recorded.append({"date": str(row.get("voucherdate") or "unknown"), "description": description, "debit": str(debit) if debit is not None else None, "credit": str(credit) if credit is not None else None})
+        # Existing exceptions stay unchanged: one first-seen record is enough.
+    return recorded
+
+
 def _upsert_dhan_trades(
     db: Session, rows: list[DhanTradeMirror]
-) -> tuple[int, int]:
+) -> tuple[int, int, list[dict[str, str]]]:
     inserted = 0
     updated = 0
-    for row in rows:
+    skipped: list[dict[str, str]] = []
+    for index, row in enumerate(rows):
+        try:
+            with db.begin_nested():
+                was_inserted = _upsert_dhan_trade(db, row)
+                db.flush()
+        except IntegrityError as error:
+            skipped.append({"record": str(index), "error_class": type(error).__name__})
+            _log_dhan_sync_failure(
+                "broker_mirror_record",
+                error,
+                "Dhan trade mirror record skipped; database details omitted.",
+            )
+            continue
+        if was_inserted:
+            inserted += 1
+        else:
+            updated += 1
+    return inserted, updated, skipped
+
+
+def _upsert_dhan_trade(db: Session, row: DhanTradeMirror) -> bool:
+    existing = db.scalar(
+        select(DhanTradeMirror).where(
+            DhanTradeMirror.user_id == row.user_id,
+            DhanTradeMirror.source == row.source,
+            DhanTradeMirror.trade_id == row.trade_id,
+        )
+    )
+    if existing is None and row.provider_trade_id is not None:
         existing = db.scalar(
             select(DhanTradeMirror).where(
                 DhanTradeMirror.user_id == row.user_id,
                 DhanTradeMirror.source == row.source,
-                DhanTradeMirror.trade_id == row.trade_id,
+                DhanTradeMirror.provider_trade_id == row.provider_trade_id,
             )
         )
-        if existing is None:
-            existing = db.scalar(
-                select(DhanTradeMirror).where(
-                    DhanTradeMirror.user_id == row.user_id,
-                    DhanTradeMirror.source == row.source,
-                    DhanTradeMirror.trade_id == row.provider_trade_id,
-                    DhanTradeMirror.provider_trade_id.is_(None),
-                )
+    if existing is None and row.provider_trade_id is not None:
+        existing = db.scalar(
+            select(DhanTradeMirror).where(
+                DhanTradeMirror.user_id == row.user_id,
+                DhanTradeMirror.source == row.source,
+                DhanTradeMirror.trade_id == row.provider_trade_id,
+                DhanTradeMirror.provider_trade_id.is_(None),
             )
-        if existing is None:
-            db.add(row)
-            inserted += 1
-            continue
-        for field in (
-            "trade_id",
-            "provider_trade_id",
-            "order_id",
-            "exchange_order_id",
-            "symbol",
-            "security_id",
-            "exchange_segment",
-            "side",
-            "quantity",
-            "price",
-            "charges",
-            "currency",
-            "trade_at",
-            "synced_at",
-        ):
-            setattr(existing, field, getattr(row, field))
-        updated += 1
-    return inserted, updated
+        )
+    if existing is None:
+        db.add(row)
+        return True
+    for field in (
+        "trade_id", "provider_trade_id", "order_id", "exchange_order_id",
+        "symbol", "security_id", "exchange_segment", "side", "quantity",
+        "price", "charges", "currency", "trade_at", "synced_at",
+    ):
+        setattr(existing, field, getattr(row, field))
+    return False
+
+
+def _upsert_dhan_ledger_entry(db: Session, row: DhanLedgerMirror) -> bool:
+    existing = db.scalar(
+        select(DhanLedgerMirror).where(
+            DhanLedgerMirror.user_id == row.user_id,
+            DhanLedgerMirror.source == row.source,
+            DhanLedgerMirror.entry_id == row.entry_id,
+        )
+    )
+    if existing is None:
+        existing = db.scalar(
+            select(DhanLedgerMirror).where(
+                DhanLedgerMirror.user_id == row.user_id,
+                DhanLedgerMirror.source == row.source,
+                DhanLedgerMirror.entry_id == row.provider_entry_id,
+                DhanLedgerMirror.provider_entry_id.is_(None),
+            )
+        )
+    if existing is None:
+        db.add(row)
+        return True
+    for field in (
+        "entry_id", "provider_entry_id", "entry_date", "description", "debit",
+        "credit", "running_balance", "currency", "synced_at",
+    ):
+        setattr(existing, field, getattr(row, field))
+    return False
+
+
+def _upsert_broker_mirror(db: Session, row: BrokerMirror) -> None:
+    existing = db.scalar(
+        select(BrokerMirror).where(
+            BrokerMirror.user_id == row.user_id,
+            BrokerMirror.broker == row.broker,
+            BrokerMirror.kind == row.kind,
+            BrokerMirror.symbol == row.symbol,
+            BrokerMirror.exchange == row.exchange,
+            BrokerMirror.product == row.product,
+        )
+    )
+    if existing is None:
+        db.add(row)
+        return
+    for field in (
+        "security_id", "isin", "quantity", "average_price", "position_type",
+        "realized_profit", "unrealized_profit", "synced_at",
+    ):
+        setattr(existing, field, getattr(row, field))
 
 
 def _mirror_rows(db: Session, user_id: UUID, slug: str, kind: str | None = None) -> list[BrokerMirror]:
@@ -1229,14 +1362,27 @@ def sync_broker(
                 }
             _dhan_snapshot_attempts[user_id] = monotonic_now
     dhan_to_date = to_date or now.date()
-    dhan_from_date = from_date or (dhan_to_date - timedelta(days=365))
+    latest_synced_trade = db.scalar(
+        select(func.max(DhanTradeMirror.trade_at)).where(
+            DhanTradeMirror.user_id == _user_id(active_session),
+            DhanTradeMirror.source == "dhan",
+        )
+    ) if slug == "dhan" else None
+    dhan_from_date = from_date or (
+        latest_synced_trade.date() - timedelta(days=7)
+        if latest_synced_trade is not None
+        else dhan_to_date - timedelta(days=365)
+    )
     if dhan_from_date > dhan_to_date:
         raise HTTPException(status_code=422, detail="from-date must not be after to-date")
     endpoint_results: dict[str, dict[str, str]] = {}
     normalized: dict[str, list[BrokerMirror]] = {}
     account_snapshot: BrokerAccountMirror | None = None
     normalized_trades: list[DhanTradeMirror] | None = None
+    new_trades_count = 0
     normalized_ledger: list[DhanLedgerMirror] | None = None
+    new_ledger_count = 0
+    persistence_skips: list[dict[str, str]] = []
     authentication_expired = False
     endpoint_calls: tuple[tuple[str, str, str], ...] = (
         ("holdings", "get_holdings", "holding"),
@@ -1323,6 +1469,8 @@ def sync_broker(
         trade_records: list[dict[str, Any]] = []
         try:
             for page in range(100):
+                if page:
+                    time.sleep(1)
                 page_records = dhan_reader.get_past_trades(
                     dhan_from_date.isoformat(),
                     dhan_to_date.isoformat(),
@@ -1372,28 +1520,40 @@ def sync_broker(
             unkeyed_ledger_count = sum(
                 not row.get("vouchernumber") for row in ledger_records
             )
+            known_ledger_exceptions = _record_dhan_ledger_exceptions(
+                db,
+                _user_id(active_session),
+                [row for row in ledger_records if not row.get("vouchernumber")],
+                now,
+            )
             if unkeyed_ledger_count:
                 logger.warning(
                     "Dhan ledger entries skipped because provider entry IDs are missing count=%d",
                     unkeyed_ledger_count,
                 )
-            normalized_ledger = _normalize_dhan_ledger(
-                [
-                    row for row in ledger_records
-                    if row.get("vouchernumber") is not None
-                    and str(row["vouchernumber"]).strip()
-                ],
-                _user_id(active_session),
-                now,
-            )
+            normalized_ledger = []
+            malformed_ledger_count = 0
+            for index, row in enumerate(ledger_records):
+                if not row.get("vouchernumber") or not str(row["vouchernumber"]).strip():
+                    continue
+                try:
+                    normalized_ledger.extend(_normalize_dhan_ledger(
+                        [row], _user_id(active_session), now
+                    ))
+                except BrokerAdapterError:
+                    malformed_ledger_count += 1
+                    logger.warning(
+                        "Dhan ledger record skipped stage=ledger_normalization record=%d error_class=BrokerAdapterError",
+                        index,
+                    )
             result = {
-                "status": "partial" if unkeyed_ledger_count else "succeeded",
+                "status": "partial" if malformed_ledger_count else "succeeded",
                 "record_count": str(len(normalized_ledger)),
                 "received_count": str(len(ledger_records)),
-                "skipped_count": str(unkeyed_ledger_count),
+                "malformed_count": str(malformed_ledger_count),
+                "known_exception_count": str(len(known_ledger_exceptions)),
+                "known_exceptions": known_ledger_exceptions,
             }
-            if unkeyed_ledger_count:
-                result["reason"] = "missing_provider_entry_id"
             if dhan_reader.last_http_diagnostics:
                 result["http_status"] = str(
                     dhan_reader.last_http_diagnostics[-1]["http_status"]
@@ -1450,6 +1610,17 @@ def sync_broker(
         }
         raise HTTPException(status_code=502, detail=detail)
 
+    completed_at = _now()
+    for rows in normalized.values():
+        for row in rows:
+            row.synced_at = completed_at
+    if account_snapshot is not None:
+        account_snapshot.synced_at = completed_at
+    for row in normalized_trades or []:
+        row.synced_at = completed_at
+    for row in normalized_ledger or []:
+        row.synced_at = completed_at
+
     credential = db.scalar(
         select(BrokerCredential)
         .where(
@@ -1461,102 +1632,80 @@ def sync_broker(
     if credential is None:
         raise HTTPException(status_code=409, detail="Broker was disconnected during sync")
     try:
-        successful_kinds = set(normalized)
-        mirror_delete = delete(BrokerMirror).where(
-            BrokerMirror.user_id == _user_id(active_session),
-            BrokerMirror.broker == slug,
-        )
-        if failed_endpoints:
-            mirror_delete = mirror_delete.where(
-                BrokerMirror.kind.in_(successful_kinds)
-            )
-        db.execute(mirror_delete)
-        db.add_all([
-            row for rows in normalized.values() for row in rows
-        ])
-        if account_snapshot is not None:
-            existing_account = db.scalar(
-                select(BrokerAccountMirror).where(
-                    BrokerAccountMirror.user_id == _user_id(active_session),
-                    BrokerAccountMirror.broker == slug,
-                )
-            )
-            if existing_account is None:
-                db.add(account_snapshot)
-            else:
-                for field in (
-                    "currency",
-                    "available_balance",
-                    "sod_limit",
-                    "collateral_amount",
-                    "receivable_amount",
-                    "utilized_amount",
-                    "blocked_payout_amount",
-                    "withdrawable_balance",
-                    "synced_at",
-                ):
-                    setattr(existing_account, field, getattr(account_snapshot, field))
-        for row in normalized_trades or []:
-            existing_trade = db.scalar(
-                select(DhanTradeMirror).where(
-                    DhanTradeMirror.user_id == _user_id(active_session),
-                    DhanTradeMirror.source == "dhan",
-                    DhanTradeMirror.trade_id == row.trade_id,
-                )
-            )
-            if existing_trade is None:
-                db.add(row)
-            else:
-                for field in (
-                    "provider_trade_id",
-                    "order_id",
-                    "exchange_order_id",
-                    "symbol",
-                    "security_id",
-                    "exchange_segment",
-                    "side",
-                    "quantity",
-                    "price",
-                    "charges",
-                    "currency",
-                    "trade_at",
-                    "synced_at",
-                ):
-                    setattr(existing_trade, field, getattr(row, field))
-        for row in normalized_ledger or []:
-            existing_entry = db.scalar(
-                select(DhanLedgerMirror).where(
-                    DhanLedgerMirror.user_id == _user_id(active_session),
-                    DhanLedgerMirror.source == "dhan",
-                    DhanLedgerMirror.entry_id == row.entry_id,
-                )
-            )
-            if existing_entry is None:
-                existing_entry = db.scalar(
-                    select(DhanLedgerMirror).where(
-                        DhanLedgerMirror.user_id == _user_id(active_session),
-                        DhanLedgerMirror.source == "dhan",
-                        DhanLedgerMirror.entry_id == row.provider_entry_id,
-                        DhanLedgerMirror.provider_entry_id.is_(None),
+        account_persisted = False
+        # Flush the once-only quality records before opening row savepoints.
+        db.flush()
+        for kind, rows in normalized.items():
+            for index, row in enumerate(rows):
+                try:
+                    with db.begin_nested():
+                        _upsert_broker_mirror(db, row)
+                        db.flush()
+                except IntegrityError as error:
+                    persistence_skips.append({"record_type": kind, "record": str(index)})
+                    _log_dhan_sync_failure(
+                        "broker_mirror_record", error,
+                        "Broker position mirror record skipped; database details omitted.",
                     )
+            # Remove only stale rows for endpoint data that was fetched successfully.
+            existing_rows = db.scalars(select(BrokerMirror).where(
+                BrokerMirror.user_id == _user_id(active_session),
+                BrokerMirror.broker == slug,
+                BrokerMirror.kind == kind,
+            )).all()
+            seen_keys = {(row.symbol, row.exchange, row.product) for row in rows}
+            for existing_row in existing_rows:
+                if (existing_row.symbol, existing_row.exchange, existing_row.product) not in seen_keys:
+                    db.delete(existing_row)
+        if account_snapshot is not None:
+            try:
+                with db.begin_nested():
+                    existing_account = db.scalar(select(BrokerAccountMirror).where(
+                        BrokerAccountMirror.user_id == _user_id(active_session),
+                        BrokerAccountMirror.broker == slug,
+                    ))
+                    if existing_account is None:
+                        db.add(account_snapshot)
+                    else:
+                        for field in (
+                            "currency", "available_balance", "sod_limit",
+                            "collateral_amount", "receivable_amount", "utilized_amount",
+                            "blocked_payout_amount", "withdrawable_balance", "synced_at",
+                        ):
+                            setattr(existing_account, field, getattr(account_snapshot, field))
+                    db.flush()
+                account_persisted = True
+            except IntegrityError as error:
+                persistence_skips.append({"record_type": "account", "record": "0"})
+                _log_dhan_sync_failure(
+                    "broker_mirror_record", error,
+                    "Broker account mirror record skipped; database details omitted.",
                 )
-            if existing_entry is None:
-                db.add(row)
-            else:
-                for field in (
-                    "entry_id",
-                    "provider_entry_id",
-                    "entry_date",
-                    "description",
-                    "debit",
-                    "credit",
-                    "running_balance",
-                    "currency",
-                    "synced_at",
-                ):
-                    setattr(existing_entry, field, getattr(row, field))
+        new_trades_count, _updated_trades_count, skipped_trades = _upsert_dhan_trades(
+            db, normalized_trades or []
+        )
+        persistence_skips.extend({"record_type": "trade", **row} for row in skipped_trades)
+        if "trades" in endpoint_results:
+            endpoint_results["trades"]["new_count"] = str(new_trades_count)
+        for index, row in enumerate(normalized_ledger or []):
+            try:
+                with db.begin_nested():
+                    inserted = _upsert_dhan_ledger_entry(db, row)
+                    db.flush()
+                new_ledger_count += int(inserted)
+            except IntegrityError as error:
+                persistence_skips.append({"record_type": "ledger", "record": str(index)})
+                _log_dhan_sync_failure(
+                    "broker_mirror_record", error,
+                    "Dhan ledger mirror record skipped; database details omitted.",
+                )
+        if "ledger" in endpoint_results:
+            endpoint_results["ledger"]["new_count"] = str(new_ledger_count)
+            endpoint_results["ledger"]["persistence_skipped_count"] = str(
+                sum(item["record_type"] == "ledger" for item in persistence_skips)
+            )
         if not failed_endpoints:
-            credential.last_synced_at = now
+            credential.last_synced_at = completed_at
         db.commit()
     except Exception as error:
         if slug == "dhan":
@@ -1568,14 +1717,15 @@ def sync_broker(
         if not isinstance(error, IntegrityError):
             raise
         db.rollback()
-        raise HTTPException(status_code=502, detail="Broker account sync could not be saved") from error
+        raise HTTPException(status_code=500, detail="Broker account sync could not be saved") from error
     return {
         "broker": slug,
         "synthetic": adapter.is_synthetic,
-        "synced_at": now,
+        "synced_at": completed_at,
         "sync_status": (
             "partial"
             if failed_endpoints
+            or persistence_skips
             or any(result["status"] == "partial" for result in endpoint_results.values())
             else "successful"
         ),
@@ -1583,9 +1733,10 @@ def sync_broker(
         "endpoint_results": endpoint_results,
         "holdings_count": len(normalized.get("holding", [])),
         "positions_count": len(normalized.get("position", [])),
-        "cash_synced": account_snapshot is not None,
-        "trades_count": len(normalized_trades) if normalized_trades is not None else None,
-        "ledger_count": len(normalized_ledger) if normalized_ledger is not None else None,
+        "cash_synced": account_persisted,
+        "trades_count": new_trades_count if normalized_trades is not None else None,
+        "ledger_count": new_ledger_count if normalized_ledger is not None else None,
+        "persistence_skips": persistence_skips,
         "from_date": dhan_from_date.isoformat() if dhan_reader is not None else None,
         "to_date": dhan_to_date.isoformat() if dhan_reader is not None else None,
         "snapshot_only": snapshot_only,
@@ -1598,7 +1749,7 @@ def sync_broker(
 @router.post("/dhan/trades/backfill")
 def backfill_dhan_trades(
     response: Response,
-    from_date: date = Query(default=date(2023, 1, 1), alias="from-date"),
+    from_date: date | None = Query(default=None, alias="from-date"),
     to_date: date | None = Query(default=None, alias="to-date"),
     active_session: UserSession = Depends(require_broker_access),
     _: UserSession = Depends(require_csrf),
@@ -1616,7 +1767,19 @@ def backfill_dhan_trades(
             "Dhan session has expired. Reconnect before backfilling trade history.",
         )
     end = to_date or _now().date()
-    if from_date > end:
+    latest_trade_at = db.scalar(
+        select(func.max(DhanTradeMirror.trade_at)).where(
+            DhanTradeMirror.user_id == _user_id(active_session),
+            DhanTradeMirror.source == "dhan",
+        )
+    )
+    cursor_start = (
+        latest_trade_at.date() - timedelta(days=7)
+        if latest_trade_at is not None
+        else date(2023, 1, 1)
+    )
+    effective_start = from_date or cursor_start
+    if effective_start > end:
         raise HTTPException(status_code=422, detail="from-date must not be after to-date")
     tokens = decrypt_tokens(credential.encrypted_tokens)
     reader = DhanReadOnlyAccountAdapter(tokens["access_token"], tokens["client_id"])
@@ -1633,7 +1796,7 @@ def backfill_dhan_trades(
             time.sleep(1)
         try:
             page_rows = reader.get_past_trades(
-                from_date.isoformat(), end.isoformat(), page
+                effective_start.isoformat(), end.isoformat(), page
             )
             diagnostic = reader.last_http_diagnostics[-1]
             status = diagnostic["http_status"]
@@ -1643,7 +1806,7 @@ def backfill_dhan_trades(
                 extra={
                     "dhan_trade_chunk": {
                         "url": diagnostic["url"],
-                        "date_range": f"{from_date.isoformat()}..{end.isoformat()}",
+                        "date_range": f"{effective_start.isoformat()}..{end.isoformat()}",
                         "http_status": status,
                         "page": page,
                         "record_count": len(page_rows),
@@ -1659,7 +1822,7 @@ def backfill_dhan_trades(
                 extra={
                     "dhan_trade_chunk": {
                         "url": diagnostic.get("url"),
-                        "date_range": f"{from_date.isoformat()}..{end.isoformat()}",
+                        "date_range": f"{effective_start.isoformat()}..{end.isoformat()}",
                         "http_status": status,
                         "page": page,
                         "reason": failure,
@@ -1694,8 +1857,8 @@ def backfill_dhan_trades(
             continue
         year_counts[trade_year] = year_counts.get(trade_year, 0) + 1
 
-    for cursor_year in range(from_date.year, end.year + 1):
-        chunk_start = max(from_date, date(cursor_year, 1, 1))
+    for cursor_year in range(effective_start.year, end.year + 1):
+        chunk_start = max(effective_start, date(cursor_year, 1, 1))
         chunk_end = min(end, date(cursor_year, 12, 31))
         year_rows = [row for row in all_rows if row.trade_at.year == cursor_year]
         yearly_results.append(
@@ -1708,7 +1871,7 @@ def backfill_dhan_trades(
                 "records_received": year_counts.get(cursor_year, 0),
                 "status": "failed" if failure else "succeeded",
                 **({"reason": failure} if failure else {}),
-                "trades_imported": len(year_rows),
+                "trades_imported": 0,
             }
         )
 
@@ -1718,11 +1881,33 @@ def backfill_dhan_trades(
                 status_code=502,
                 detail={"code": "dhan_trade_backfill_failed", "years": yearly_results},
             )
+    existing_provider_ids = set(db.scalars(
+        select(DhanTradeMirror.provider_trade_id).where(
+            DhanTradeMirror.user_id == _user_id(active_session),
+            DhanTradeMirror.source == "dhan",
+            DhanTradeMirror.provider_trade_id.is_not(None),
+        )
+    ).all())
+    existing_provider_ids.update(db.scalars(
+        select(DhanTradeMirror.trade_id).where(
+            DhanTradeMirror.user_id == _user_id(active_session),
+            DhanTradeMirror.source == "dhan",
+            DhanTradeMirror.provider_trade_id.is_(None),
+        )
+    ).all())
     inserted, updated = _upsert_dhan_trades(db, all_rows)
+    inserted_by_year: dict[int, int] = {}
+    # Inserted rows are identifiable by the provider trade IDs just returned by Dhan.
+    inserted_provider_ids = {row.provider_trade_id for row in all_rows} - existing_provider_ids
+    for row in all_rows:
+        if row.provider_trade_id in inserted_provider_ids:
+            inserted_by_year[row.trade_at.year] = inserted_by_year.get(row.trade_at.year, 0) + 1
+    for result in yearly_results:
+        result["trades_imported"] = inserted_by_year.get(result["year"], 0)
     db.commit()
     return {
         "source": "dhan",
-        "from_date": from_date,
+        "from_date": effective_start,
         "to_date": end,
         "inserted": inserted,
         "updated": updated,
@@ -2069,7 +2254,7 @@ def get_dhan_portfolio_mirror(
                         "verification_required": None,
                     })
                     continue
-                provider_instrument_id = f"{master_security_id}|{segment}"
+                provider_instrument_id = dhan_provider_instrument_id(master_security_id, segment)
                 target_instrument_ids = {
                     mapping.instrument_id
                     for mapping in all_dhan_mappings
@@ -2079,7 +2264,8 @@ def get_dhan_portfolio_mirror(
                 candidate_mapping = next(
                     (
                         mapping for mapping in all_dhan_mappings
-                        if mapping.provider_instrument_id == provider_instrument_id
+                        if mapping.provider_instrument_id
+                        in dhan_provider_id_variants(master_security_id, segment)
                     ),
                     None,
                 )
@@ -2141,24 +2327,37 @@ def get_dhan_portfolio_mirror(
             )
         )
 
-    instrument_ids = {
-        next(iter(instrument_ids))
-        for instrument_ids in verified_instruments.values()
-        if len(instrument_ids) == 1
-    }
-    live_quotes = (
-        list(db.scalars(
-            select(MarketQuote).where(
-                MarketQuote.instrument_id.in_(instrument_ids),
-                MarketQuote.source == "dhan_ws",
-            )
-        ))
-        if instrument_ids
-        else []
-    )
-    live_quote_by_instrument = {
-        quote.instrument_id: quote for quote in live_quotes
-    }
+    # Per-row valuation comes from the same evidence and calculation as
+    # /portfolio-summary, so rows and totals cannot disagree.
+    (
+        valuation_quotes,
+        valuation_previous_closes,
+        valuation_missing,
+        valuation_attempts,
+    ) = _dhan_quote_evidence(db, rows, user_id, now)
+    row_valuations = _calculate_broker_values(
+        db,
+        user_id,
+        rows,
+        None,
+        None,
+        valuation_quotes,
+        valuation_previous_closes,
+        valuation_missing,
+        valuation_attempts,
+    )["row_valuations"]
+    market_session: dict[str, str] | None = None
+    for _, session_instrument in valuation_quotes.values():
+        session = venue_session(session_instrument, now)
+        if session is not None:
+            market_session = {
+                "venue": "NSE"
+                if session_instrument.venue.upper() in {"NSE", "XNSE"}
+                else session_instrument.venue,
+                "state": session.state,
+                "reason": session.reason,
+            }
+            break
 
     def resolved_instrument_id(row: BrokerMirror) -> str | None:
         key = (
@@ -2169,44 +2368,23 @@ def get_dhan_portfolio_mirror(
         return str(next(iter(instrument_ids))) if len(instrument_ids) == 1 else None
 
     def live_valuation(row: BrokerMirror) -> dict[str, Any]:
-        normalized_symbol = row.symbol.strip().upper().removesuffix("-EQ")
-        mapped_ids = verified_instruments.get(
-            (row.security_id or "", normalized_symbol), set()
-        )
-        instrument_id = next(iter(mapped_ids)) if len(mapped_ids) == 1 else None
-        quote = live_quote_by_instrument.get(instrument_id) if instrument_id else None
-        instrument = mapped_instruments.get(instrument_id) if instrument_id else None
-        quote_is_fresh = False
-        if quote is not None and instrument is not None:
-            usable, _, evidence = classify_quote(
-                quote, instrument, "INR", now
-            )
-            quote_is_fresh = (
-                usable
-                and evidence.get("quote_freshness_status") == "fresh"
-                and not quote.is_synthetic
-            )
+        valuation = row_valuations.get(row.id)
+        if valuation is not None:
+            return valuation
         return {
-            "status": "live" if quote_is_fresh else "stale",
-            "basis": "live_feed_ltp",
-            "market_value": (
-                quote.close * row.quantity
-                if quote_is_fresh and quote is not None
-                else None
-            ),
-            "unrealized_profit": (
-                (quote.close - row.average_price) * row.quantity
-                if quote_is_fresh
-                and quote is not None
-                and row.average_price is not None
-                else None
-            ),
-            "quote_at": quote.timestamp if quote is not None else None,
-            "stale_reason": (
-                None
-                if quote_is_fresh
-                else "No fresh verified live Dhan quote is available."
-            ),
+            "status": BASIS_UNAVAILABLE,
+            "basis": BASIS_UNAVAILABLE,
+            "price": None,
+            "provider_timestamp": None,
+            "price_age_seconds": None,
+            "source": None,
+            "market_value": None,
+            "unrealized_profit": None,
+            "day_change": None,
+            "prior_close": None,
+            "quote_at": None,
+            "stale_reason": "This row is not an open holding or position.",
+            "day_change_reason": "No valued price.",
         }
 
     def exchange_fields(row: BrokerMirror) -> dict[str, str | None]:
@@ -2268,6 +2446,7 @@ def get_dhan_portfolio_mirror(
             default=account.synced_at if account is not None else None,
         ),
         "snapshot_min_interval_seconds": DHAN_SNAPSHOT_MIN_INTERVAL_SECONDS,
+        "market_session": market_session,
         "instrument_master": {
             "last_refreshed_at": (
                 master_refreshed_at.isoformat()
@@ -2363,6 +2542,36 @@ def _is_cnc_sale(row: BrokerMirror) -> bool:
     )
 
 
+def _observation_price_basis(quote: Any, instrument: Any, db: Session) -> str:
+    """Basis for a quote observation, derived from the venue session, not the row type."""
+    if isinstance(quote, MarketBar):
+        return BASIS_SESSION_CLOSE
+    now = _now()
+    session = venue_session(instrument, now)
+    if session is not None and session.state == "open":
+        # An open-session price is "live" only when it classifies as live. An older tick is
+        # "delayed" and is never labelled live. The closed-session label is unchanged.
+        _, _, evidence = classify_quote(
+            quote,
+            instrument,
+            "INR",
+            now,
+            last_completed_session=venue_last_completed_session(
+                db, instrument, quote.source
+            ),
+        )
+        status = str(evidence.get("quote_freshness_status", ""))
+    else:
+        observed_at = _utc_datetime(quote.timestamp).astimezone(ZoneInfo(instrument.timezone))
+        session_close = datetime.combine(observed_at.date(), wall_time(15, 30), tzinfo=ZoneInfo(instrument.timezone))
+        status = (
+            "delayed"
+            if quote.source in {"dhan_ws", "dhan"} and observed_at < session_close
+            else FRESHNESS_SESSION_CLOSE
+        )
+    return valuation_basis_for_quote(status, quote.timestamp, instrument, now) or BASIS_UNAVAILABLE
+
+
 def _observation(
     symbol: str,
     source: str,
@@ -2377,6 +2586,16 @@ def _observation(
 
 def _utc_datetime(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _price_age_seconds(quote: Any) -> float | None:
+    """Seconds since the provider's own timestamp, measured on the server clock.
+
+    None for a stored daily bar: its timestamp is a UTC-midnight session key, not a tick time.
+    """
+    if isinstance(quote, MarketBar):
+        return None
+    return max(0.0, (_now() - _utc_datetime(quote.timestamp)).total_seconds())
 
 
 def _portfolio_input_reason(reasons: list[str]) -> str:
@@ -2430,12 +2649,16 @@ def _calculate_broker_values(
             ),
             "quantity": str(row.quantity),
             "ltp": str(quote.close),
-            "price_basis": (
-                "eod_close" if isinstance(quote, MarketBar) else "live_quote"
-            ),
+            "price_basis": _observation_price_basis(quote, instrument, db),
+            "price_age_seconds": _price_age_seconds(quote),
             "basis_date": _utc_datetime(quote.timestamp).astimezone(
                 ZoneInfo(instrument.timezone)
             ).date().isoformat(),
+            "provider_timestamp": (
+                _utc_datetime(quote.retrieved_at).isoformat()
+                if isinstance(quote, MarketBar)
+                else _utc_datetime(quote.timestamp).isoformat()
+            ),
             "provider_attempts": (
                 provider_attempts_by_row_id.get(row.id, [])
                 if provider_attempts_by_row_id is not None
@@ -2798,12 +3021,19 @@ def _calculate_broker_values(
 
     adjusted_previous_closes: dict[UUID, tuple[Decimal, str]] = {}
     invalid_adjustment_rows: set[UUID] = set()
+    same_source_mismatch: dict[UUID, str] = {}
     for row in active_rows:
         quote_and_instrument = quote_by_row_id.get(row.id)
         previous_bar = previous_close_by_row_id.get(row.id)
         if quote_and_instrument is None or previous_bar is None:
             continue
         quote, instrument = quote_and_instrument
+        if provider_family(quote.source) != provider_family(previous_bar.source):
+            same_source_mismatch[row.id] = (
+                f"{row.symbol}: previous close source {previous_bar.source} "
+                f"differs from price source {quote.source}."
+            )
+            continue
         price_date = _utc_datetime(quote.timestamp).astimezone(
             ZoneInfo(instrument.timezone)
         ).date()
@@ -2928,7 +3158,7 @@ def _calculate_broker_values(
             ),
             Decimal("0"),
         )
-        if day_change_rows and not missing_day_ltp and not missing_day_previous_close
+        if day_change_rows and not missing_day_ltp
         else None
     )
     missing_previous_close = [
@@ -2939,15 +3169,31 @@ def _calculate_broker_values(
     day_change_reason = (
         _portfolio_input_reason(missing_day_ltp)
         if missing_day_ltp
-        else _portfolio_input_reason([
-            f"{row.symbol}: previous-session close adjustment is unavailable."
-            if row.id in invalid_adjustment_rows
-            else previous_close_exclusion_reasons.get(
-                row.id,
-                f"{row.symbol}: stored real previous-session close unavailable.",
+        else (
+            "Partial day change: excluded "
+            + "; ".join(
+                f"{row.symbol}: previous-session close adjustment is unavailable."
+                if row.id in invalid_adjustment_rows
+                else same_source_mismatch.get(row.id)
+                or previous_close_exclusion_reasons.get(
+                    row.id,
+                    f"{row.symbol}: stored real previous-session close unavailable.",
+                )
+                for row in missing_day_previous_close
             )
-            for row in missing_day_previous_close
-        ])
+            + "."
+            if day_change is not None
+            else _portfolio_input_reason([
+                f"{row.symbol}: previous-session close adjustment is unavailable."
+                if row.id in invalid_adjustment_rows
+                else same_source_mismatch.get(row.id)
+                or previous_close_exclusion_reasons.get(
+                    row.id,
+                    f"{row.symbol}: stored real previous-session close unavailable.",
+                )
+                for row in missing_day_previous_close
+            ])
+        )
         if missing_day_previous_close
         else "Missing input: no stored real daily previous close for any open instrument."
         if not day_change_rows
@@ -2980,6 +3226,9 @@ def _calculate_broker_values(
                 ).astimezone(
                     ZoneInfo(quote_by_row_id[row.id][1].timezone)
                 ).date().isoformat(),
+                "provider_timestamp": _utc_datetime(
+                    previous_close_by_row_id[row.id].retrieved_at
+                ).isoformat(),
             }
             for row in day_change_rows
         ],
@@ -3013,7 +3262,72 @@ def _calculate_broker_values(
         if all_market_value is None
         else None
     )
+    # Per-row figures from the same quote, prior close and adjustment used for the
+    # totals above, so a row can never disagree with the total it contributes to.
+    row_valuations: dict[UUID, dict[str, Any]] = {}
+    for row in active_rows:
+        priced = quote_by_row_id.get(row.id)
+        if priced is None:
+            row_valuations[row.id] = {
+                "status": BASIS_UNAVAILABLE,
+                "basis": BASIS_UNAVAILABLE,
+                "price": None,
+                "provider_timestamp": None,
+                "price_age_seconds": None,
+                "source": None,
+                "market_value": None,
+                "unrealized_profit": None,
+                "day_change": None,
+                "prior_close": None,
+                "quote_at": None,
+                "stale_reason": missing_quote_by_row_id.get(
+                    row.id, "No verified Dhan price is available."
+                ),
+                "day_change_reason": "No valued price.",
+            }
+            continue
+        quote, instrument = priced
+        row_basis = _observation_price_basis(quote, instrument, db)
+        adjusted = adjusted_previous_closes.get(row.id)
+        row_valuations[row.id] = {
+            "status": row_basis,
+            "basis": row_basis,
+            "price": quote.close,
+            "provider_timestamp": (
+                quote.retrieved_at if isinstance(quote, MarketBar) else quote.timestamp
+            ),
+            # A stored daily bar's timestamp is a UTC-midnight session key, not a provider
+            # tick time, so it has no meaningful age.
+            "price_age_seconds": _price_age_seconds(quote),
+            "source": provider_family(quote.source),
+            "market_value": quote.close * row.quantity,
+            "unrealized_profit": (
+                (quote.close - row.average_price) * row.quantity
+                if row.average_price is not None
+                else None
+            ),
+            "day_change": (
+                row.quantity * (quote.close - adjusted[0])
+                if adjusted is not None
+                else None
+            ),
+            "prior_close": adjusted[0] if adjusted is not None else None,
+            "quote_at": quote.timestamp,
+            "stale_reason": None,
+            "day_change_reason": (
+                None
+                if adjusted is not None
+                else "Previous-session close adjustment is unavailable."
+                if row.id in invalid_adjustment_rows
+                else same_source_mismatch.get(row.id)
+                or previous_close_exclusion_reasons.get(
+                    row.id,
+                    "Same-source previous-session close is unavailable.",
+                )
+            ),
+        }
     return {
+        "row_valuations": row_valuations,
         "invested_cost": invested_cost,
         "positions_exposure": positions_exposure,
         "market_value": all_market_value,
@@ -3288,51 +3602,32 @@ def _dhan_quote_evidence(
     cached_quotes = list(db.scalars(
         select(MarketQuote).where(MarketQuote.instrument_id.in_(instrument_ids))
     )) if instrument_ids else []
-    quote_priority = {
-        "dhan_ws": 0,
-        "dhan": 0,
-    }
     fresh_quote_by_instrument: dict[UUID, MarketQuote] = {}
     cached_quote_failures: dict[UUID, str] = {}
     provider_attempts_by_instrument: dict[UUID, list[str]] = {}
     for instrument in row_instrument.values():
-        if instrument.id in closed_session_by_instrument:
+        # Cached quotes are read even when the session is closed: the last completed
+        # session's quote is the valuation price. Only the live batch fetch is skipped.
+        candidates = [
+            quote for quote in cached_quotes
+            if quote.instrument_id == instrument.id
+            and quote.source in {"dhan_ws", "dhan"}
+        ]
+        quote, _, rejections = select_usable_quote(db, instrument, candidates, now)
+        if quote is not None:
+            fresh_quote_by_instrument[instrument.id] = quote
             provider_attempts_by_instrument[instrument.id] = [
-                "live quote skipped: NSE session closed"
+                f"dhan: cached {quote.source} quote used"
             ]
             continue
-        candidates = sorted(
-            (
-                quote for quote in cached_quotes
-                if quote.instrument_id == instrument.id
-                and quote.source in {"dhan_ws", "dhan"}
-            ),
-            key=lambda quote: (
-                quote_priority[quote.source],
-                -_utc_datetime(quote.retrieved_at).timestamp(),
-            ),
-        )
-        for quote in candidates:
-            usable, reason, evidence = classify_quote(
-                quote, instrument, "INR", now
-            )
-            if usable and evidence["quote_freshness_status"] == "fresh":
-                fresh_quote_by_instrument[instrument.id] = quote
-                provider_attempts_by_instrument[instrument.id] = [
-                    f"dhan: cached {quote.source} quote used"
-                ]
-                break
-            cached_quote_failures[instrument.id] = (
-                f"cached {quote.source} quote is "
-                f"{evidence['quote_freshness_status']} "
-                f"({reason or 'freshness check failed'})"
-            )
-            provider_attempts_by_instrument.setdefault(
-                instrument.id, []
-            ).append(
-                f"dhan: cached {quote.source} quote "
-                f"{evidence['quote_freshness_status']} "
-                f"({reason or 'freshness check failed'})"
+        if rejections:
+            cached_quote_failures[instrument.id] = "; ".join(rejections)
+        provider_attempts_by_instrument[instrument.id] = [
+            f"dhan: {rejection}" for rejection in rejections
+        ]
+        if instrument.id in closed_session_by_instrument:
+            provider_attempts_by_instrument.setdefault(instrument.id, []).append(
+                "live quote skipped: NSE session closed"
             )
 
     batch_instruments: dict[UUID, tuple[str, str]] = {}
@@ -3431,118 +3726,9 @@ def _dhan_quote_evidence(
                     for quote in fetched_quotes.values():
                         db.refresh(quote)
 
+    # Dhan is the only valuation quote source. A row without a usable Dhan quote is
+    # reported as missing; no other provider is substituted (no silent fallback).
     eod_close_instrument_ids: set[UUID] = set()
-    fallback_instrument_ids: set[UUID] = set()
-    for instrument_id, instrument in instrument_by_id.items():
-        quote = (
-            fresh_quote_by_instrument.get(instrument_id)
-            or fetched_quotes.get(instrument_id)
-        )
-        if quote is not None:
-            usable, reason, evidence = classify_quote(
-                quote, instrument, "INR", now
-            )
-            if usable and evidence["quote_freshness_status"] == "fresh":
-                provider_attempts_by_instrument.setdefault(
-                    instrument_id, []
-                ).append("dhan: cached quote fresh")
-                continue
-            provider_attempts_by_instrument.setdefault(
-                instrument_id, []
-            ).append(
-                f"dhan: quote {evidence['quote_freshness_status']} "
-                f"({reason or 'freshness check failed'})"
-            )
-        else:
-            provider_attempts_by_instrument.setdefault(
-                instrument_id, []
-            ).append(
-                "dhan: " + batch_failures.get(
-                    str(instrument_id),
-                    batch_failures.get("all", "batched quote unavailable"),
-                )
-            )
-        fallback_instrument_ids.add(instrument_id)
-
-    fallback_failures: dict[UUID, str] = {}
-    fallback_instrument_ids.difference_update(closed_session_by_instrument)
-    if fallback_instrument_ids:
-        configured_chain = market_data_api.market_data_provider_for_user(
-            db, user_id
-        )
-        fallback_chain = market_data_api.MarketDataProviderChain(
-            [
-                provider
-                for provider in market_data_api._providers(configured_chain)
-                if provider.name in {"angel_one", "yfinance"}
-            ]
-        )
-        fallback_chain.unavailable_providers = [
-            attempt
-            for attempt in configured_chain.unavailable_providers
-            if attempt["provider"] in {"angel_one", "yfinance"}
-        ]
-        for instrument_id in sorted(fallback_instrument_ids, key=str):
-            try:
-                quote_response = market_data_api.latest_quote(
-                    instrument_id,
-                    refresh=False,
-                    provider=fallback_chain,
-                    _user=None,
-                    db=db,
-                )
-            except HTTPException as error:
-                detail = error.detail
-                attempt_rows = (
-                    detail.get("provider_attempts", [])
-                    if isinstance(detail, dict)
-                    else []
-                )
-                attempts = [
-                    f"{attempt.get('provider', 'provider')}: "
-                    f"{attempt.get('outcome', 'unavailable')} "
-                    f"({attempt.get('reason', 'unavailable')})"
-                    for attempt in attempt_rows
-                ]
-                provider_attempts_by_instrument.setdefault(
-                    instrument_id, []
-                ).extend(attempts)
-                fallback_failures[instrument_id] = (
-                    "; ".join(attempts)
-                    or (
-                        str(detail.get("message", "provider fallback unavailable"))
-                        if isinstance(detail, dict)
-                        else str(detail)
-                    )
-                )
-            else:
-                attempt_rows = getattr(quote_response, "provider_attempts", [])
-                provider_attempts_by_instrument.setdefault(
-                    instrument_id, []
-                ).extend(
-                    f"{attempt.provider}: {attempt.outcome}"
-                    + f" ({quote_response.freshness_status}"
-                    + (f"; {attempt.reason}" if attempt.reason else "")
-                    + ")"
-                    for attempt in attempt_rows
-                )
-                if quote_response.freshness_status in {"fresh", "eod_close"}:
-                    quote = db.scalar(
-                        select(MarketQuote).where(
-                            MarketQuote.instrument_id == instrument_id,
-                            MarketQuote.source == quote_response.source,
-                        )
-                    )
-                    if quote is not None:
-                        fetched_quotes[instrument_id] = quote
-                        if quote_response.freshness_status == "eod_close":
-                            eod_close_instrument_ids.add(instrument_id)
-                        continue
-                fallback_failures[instrument_id] = (
-                    f"provider quote is {quote_response.freshness_status} "
-                    f"({quote_response.freshness_message})"
-                )
-
     quote_by_row_id: dict[UUID, tuple[MarketQuote | MarketBar, Instrument]] = {}
     for row in active_rows:
         instrument = row_instrument.get(row.id)
@@ -3554,11 +3740,17 @@ def _dhan_quote_evidence(
         )
         if quote is not None:
             usable, reason, evidence = classify_quote(
-                quote, instrument, "INR", now
+                quote,
+                instrument,
+                "INR",
+                now,
+                last_completed_session=venue_last_completed_session(
+                    db, instrument, quote.source
+                ),
             )
             is_eod_close = instrument.id in eod_close_instrument_ids
             if (
-                usable and evidence["quote_freshness_status"] == "fresh"
+                usable and evidence["quote_freshness_status"] in USABLE_FRESHNESS_STATUSES
             ) or is_eod_close:
                 if usable and quote.source in {"dhan", "dhan_ws"}:
                     provider_attempts_by_instrument.setdefault(
@@ -3576,18 +3768,49 @@ def _dhan_quote_evidence(
                 batch_failures.get("all"),
             )
             cached_failure = cached_quote_failures.get(instrument.id)
-            fallback_failure = fallback_failures.get(instrument.id)
             details = [
                 detail for detail in (
                     cached_failure,
                     failure,
-                    fallback_failure,
                 ) if detail
             ]
             missing[row.id] = (
                 f"Missing input: fresh LTP for {row.symbol}; "
                 f"{'; '.join(details) or 'Dhan quote response omitted this instrument'}"
             )
+
+    # Non-live Dhan prices are factual valuation evidence only; action-implying paths stay
+    # strict. Prior-session prices retain their prior_close label, while same-session stale
+    # prices remain delayed.
+    for row in active_rows:
+        instrument = row_instrument.get(row.id)
+        if (
+            instrument is None
+            or row.id in quote_by_row_id
+            or instrument.id in closed_session_by_instrument
+        ):
+            continue
+        delayed_candidates = [
+            candidate for candidate in cached_quotes
+            if candidate.instrument_id == instrument.id
+            and candidate.source in {"dhan_ws", "dhan"}
+        ]
+        fetched = fetched_quotes.get(instrument.id)
+        if fetched is not None and all(
+            candidate is not fetched for candidate in delayed_candidates
+        ):
+            delayed_candidates.append(fetched)
+        delayed_quote, delayed_evidence, _ = select_usable_quote(
+            db, instrument, delayed_candidates, now, allow_delayed=True
+        )
+        if delayed_quote is None:
+            continue
+        quote_by_row_id[row.id] = (delayed_quote, instrument)
+        missing.pop(row.id, None)
+        status = str(delayed_evidence.get("quote_freshness_status", "delayed"))
+        provider_attempts_by_instrument.setdefault(instrument.id, []).append(
+            f"dhan: {delayed_quote.source} quote is {status}; used and labelled {status}"
+        )
 
     daily_bars = list(db.scalars(
         select(MarketBar).where(
@@ -3600,25 +3823,23 @@ def _dhan_quote_evidence(
     for bar in daily_bars:
         bars_by_instrument.setdefault(bar.instrument_id, []).append(bar)
     eod_close_by_instrument: dict[UUID, MarketBar] = {}
-    source_priority = {"dhan": 0, "angel_one": 1, "yfinance": 2}
     for instrument_id, expected_date in expected_close_date_by_instrument.items():
         instrument = instrument_by_id[instrument_id]
         close_candidates = [
             bar
             for bar in bars_by_instrument.get(instrument_id, [])
-            if _utc_datetime(bar.timestamp).astimezone(
+            if bar.source == "dhan"
+            and _utc_datetime(bar.timestamp).astimezone(
                 ZoneInfo(instrument.timezone)
             ).date() == expected_date
             and _utc_datetime(bar.timestamp) <= _utc_datetime(now)
             and _utc_datetime(bar.retrieved_at) <= _utc_datetime(now)
+            and _utc_datetime(bar.retrieved_at).astimezone(ZoneInfo(instrument.timezone)).time() >= wall_time(15, 30)
         ]
         if close_candidates:
             eod_close_by_instrument[instrument_id] = min(
                 close_candidates,
-                key=lambda bar: (
-                    source_priority.get(bar.source, 3),
-                    -_utc_datetime(bar.retrieved_at).timestamp(),
-                ),
+                key=lambda bar: -_utc_datetime(bar.retrieved_at).timestamp(),
             )
             provider_attempts_by_instrument.setdefault(
                 instrument_id, []
@@ -3670,24 +3891,22 @@ def _dhan_quote_evidence(
         )
         previous_bars = [
             bar for bar in bars_by_instrument.get(instrument_id, [])
-            if _utc_datetime(bar.timestamp).astimezone(timezone_info).date()
+            if bar.source == "dhan"
+            and market_data_api._daily_session_date(bar.timestamp)
             == expected_previous_date
         ]
         if previous_bars:
             latest_day = max(
-                _utc_datetime(bar.timestamp).astimezone(timezone_info).date()
+                market_data_api._daily_session_date(bar.timestamp)
                 for bar in previous_bars
             )
             latest_day_bars = [
                 bar for bar in previous_bars
-                if _utc_datetime(bar.timestamp).astimezone(timezone_info).date() == latest_day
+                if market_data_api._daily_session_date(bar.timestamp) == latest_day
             ]
             previous_close_by_instrument[instrument_id] = min(
                 latest_day_bars,
-                key=lambda bar: (
-                    source_priority.get(bar.source, 3),
-                    -_utc_datetime(bar.retrieved_at).timestamp(),
-                ),
+                key=lambda bar: -_utc_datetime(bar.retrieved_at).timestamp(),
             )
 
     previous_close_by_row_id = {
@@ -3714,6 +3933,7 @@ def get_broker_portfolio_summary(
     response: Response,
     active_session: UserSession = Depends(require_broker_access),
     db: Session = Depends(get_db),
+    portfolio_id: UUID | None = None,
 ) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     user_id = _user_id(active_session)
@@ -4064,6 +4284,21 @@ def get_broker_portfolio_summary(
             ),
             "unavailable_reasons": unavailable_reasons,
             "provenance": broker_provenance,
+            "stream_rows": (
+                [
+                    {
+                        "instrument_id": str(dhan_quote_by_row_id[row.id][1].id),
+                        "provider_timestamp": (
+                            _utc_datetime(dhan_quote_by_row_id[row.id][0].timestamp)
+                            .isoformat()
+                        ),
+                        "valuation": dhan_values["row_valuations"].get(row.id),
+                    }
+                    for row in active_rows
+                    if is_dhan and row.id in dhan_quote_by_row_id
+                ]
+                if is_dhan else []
+            ),
             "holdings_count": len(holding_rows),
             "positions_count": len(position_rows),
         })
@@ -4082,7 +4317,7 @@ def get_broker_portfolio_summary(
         (broker["synced_at"] for broker in brokers if broker["synced_at"]),
         default=None,
     )
-    return {
+    result = {
         "currency": "INR",
         "source": "combined" if len(source_names) > 1 else (
             source_names[0] if source_names else None
@@ -4135,6 +4370,60 @@ def get_broker_portfolio_summary(
         },
         "brokers": brokers,
     }
+    dhan_broker = next((item for item in brokers if item["source"] == "dhan"), None)
+    card_value = combined("market_value")
+    dhan_value = (
+        Decimal(str(dhan_broker["market_value"]))
+        if dhan_broker is not None and dhan_broker["market_value"] is not None
+        else None
+    )
+    value_difference = card_value - dhan_value if card_value is not None and dhan_value is not None else None
+    result["value_comparison"] = {
+        "alert": value_difference is not None and abs(value_difference) > settings.portfolio_value_alert_threshold,
+        "threshold": str(settings.portfolio_value_alert_threshold),
+        "app_value": str(card_value) if card_value is not None else None,
+        "app_timestamp": combined_synced_at.isoformat() if combined_synced_at else None,
+        "broker_value": str(dhan_value) if dhan_value is not None else None,
+        "broker_timestamp": dhan_broker["synced_at"] if dhan_broker else None,
+        "difference": str(value_difference) if value_difference is not None else None,
+    }
+    if portfolio_id is not None:
+        owner = db.get(User, user_id)
+        if owner is None:
+            raise HTTPException(status_code=404, detail="Portfolio owner not found")
+        from app.api.market_data import market_data_provider_for_user
+
+        app_valuation = portfolio_valuation(
+            portfolio_id=portfolio_id,
+            refresh=False,
+            user=owner,
+            provider=market_data_provider_for_user(db, user_id),
+            db=db,
+        )
+        def difference(app_value: Decimal | None, broker_value: Any) -> str | None:
+            if app_value is None or broker_value is None:
+                return None
+            return str(app_value - Decimal(str(broker_value)))
+        result["reconciliation"] = {
+            "portfolio_id": str(portfolio_id),
+            "basis": "app ledger valuation compared with Dhan broker snapshot; differences are app minus Dhan",
+            "app": {
+                "total_value": str(app_valuation.total_value),
+                "unrealized_pnl": str(app_valuation.unrealized_pnl),
+                "day_change": str(app_valuation.day_change),
+            },
+            "broker": {
+                "total_value": dhan_broker["total_value"] if dhan_broker else None,
+                "unrealized_pnl": dhan_broker["unrealized_pnl"] if dhan_broker else None,
+                "day_change": dhan_broker["day_change"] if dhan_broker else None,
+            },
+            "difference": {
+                "total_value": difference(app_valuation.total_value, dhan_broker["total_value"] if dhan_broker else None),
+                "unrealized_pnl": difference(app_valuation.unrealized_pnl, dhan_broker["unrealized_pnl"] if dhan_broker else None),
+                "day_change": difference(app_valuation.day_change, dhan_broker["day_change"] if dhan_broker else None),
+            },
+        }
+    return result
 
 
 @router.get("/{slug}/account")

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ApiRequestError, apiRequest, downloadCsv } from '../api';
+import { ApiRequestError, apiRequest, downloadCsv, isAbortError } from '../api';
+import { FRESHNESS_PRIOR_CLOSE, basisForFreshnessStatus, deriveMarketDataStatus, type PriceStateRow, type ValuationBasis } from '../lib/priceStates';
 
 type User = {
   id: string;
@@ -42,6 +43,10 @@ type ValuationPosition = {
   day_change: string | null;
   day_change_percent: string | null;
   freshness: 'fresh' | 'stale' | 'unavailable';
+  basis: ValuationBasis;
+  provider_timestamp: string | null;
+  prior_close: string | null;
+  day_change_reason: string | null;
   is_synthetic: boolean;
   source: string | null;
   retrieved_at: string | null;
@@ -73,7 +78,7 @@ type WatchlistEntry = {
     source: string;
     retrieved_at: string;
     freshness: 'fresh' | 'stale';
-    freshness_status: 'fresh' | 'stale' | 'historical' | 'eod_close' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
+    freshness_status: 'fresh' | 'stale' | 'historical' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated' | 'live' | 'delayed' | 'session_close' | typeof FRESHNESS_PRIOR_CLOSE | 'unknown';
     is_synthetic: boolean;
     is_verified: boolean;
     market_timestamp: string;
@@ -137,7 +142,7 @@ type JournalTrade = {
   exit_price: string | null;
   entry_time: string;
   exit_time: string | null;
-  fees: string;
+  fees: string | null;
   strategy: string | null;
   setup?: string | null;
   notes?: string | null;
@@ -149,6 +154,11 @@ type JournalTrade = {
   net_pnl: string | null;
   source: 'manual' | 'dhan' | 'dhan_csv';
   source_side: string | null;
+  annotation_id?: string;
+  entry_fill_id?: string;
+  exit_fill_id?: string;
+  match_state?: 'matched' | 'open lot' | 'unattributed' | 'unmatched' | 'expired' | 'manual';
+  position_status?: 'closed' | 'matched' | 'open' | 'unmatched' | 'unattributed' | 'expired_outcome_unknown';
   calendar_date: string;
 };
 type JournalBreakdown = {
@@ -165,6 +175,17 @@ type JournalAnalytics = {
   closed_trades: number;
   open_trades: number;
   trades_logged: number;
+  fill_count: number;
+  manual_trade_count: number;
+  matched_closed_trades: number;
+  expired_trades: number;
+  matched_fill_rows: number;
+  open_fill_rows: number;
+  unmatched_fill_rows: number;
+  fifo_match_slices: number;
+  unattributed_fill_rows: number;
+  real_open_positions: number;
+  fill_reconciliation: string;
   wins: number;
   losses: number;
   unpriced_closed_trades: number;
@@ -208,6 +229,7 @@ type MarketBar = {
   source: string;
   retrieved_at: string;
   is_synthetic: boolean;
+  session_date?: string | null;
 };
 type MarketInterval = '1d' | '1h' | '15m' | '5m' | '1m';
 type MarketHistory = {
@@ -219,6 +241,8 @@ type MarketHistory = {
     reason: string | null;
     reason_category: string | null;
     http_status: number | null;
+    provider_error_code: string | null;
+    provider_message: string | null;
     latency_ms: number | null;
     bars: number;
   }[];
@@ -230,6 +254,15 @@ type MarketHistory = {
   session_state: 'open' | 'closed' | 'unknown';
   is_cached: boolean;
   sync_status: 'success' | 'unavailable' | 'no_new_bars';
+  sync_job?: {
+    id: string;
+    status: 'queued' | 'running' | 'completed' | 'failed';
+    chunks_completed: number;
+    chunks_total: number;
+    bars_fetched: number;
+    current_window: { start: string; end: string } | null;
+    error: string | null;
+  } | null;
   freshness: {
     status: 'fresh' | 'stale' | 'unavailable' | 'never_fetched';
     source: string | null;
@@ -315,7 +348,7 @@ type MarketQuote = {
   source: string;
   retrieved_at: string;
   freshness: 'fresh' | 'stale';
-  freshness_status: 'fresh' | 'stale' | 'historical' | 'eod_close' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated';
+  freshness_status: 'fresh' | 'stale' | 'historical' | 'unavailable' | 'synthetic' | 'unverified' | 'future_dated' | 'live' | 'delayed' | 'session_close' | typeof FRESHNESS_PRIOR_CLOSE | 'unknown';
   freshness_message: string;
   is_current_session: boolean;
   is_cached: boolean;
@@ -329,6 +362,8 @@ type MarketQuote = {
     reason: string | null;
     reason_category: string | null;
     http_status: number | null;
+    provider_error_code: string | null;
+    provider_message: string | null;
     latency_ms: number | null;
     bars: number;
   }[];
@@ -431,8 +466,13 @@ export function useWorkspace() {
   const [portfolioId, setPortfolioId] = useState('');
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const [valuation, setValuation] = useState<PortfolioValuation | null>(null);
+  // Price states of the broker holdings, reported by the Overview from its single Dhan fetch.
+  const [brokerPriceRows, setBrokerPriceRows] = useState<PriceStateRow[] | null>(null);
+  const [brokerRefreshKey, setBrokerRefreshKey] = useState(0);
   const [riskMetrics, setRiskMetrics] = useState<RiskMetrics | null>(null);
   const [watchlist, setWatchlist] = useState<WatchlistEntry[]>([]);
+  const [watchlistLoadState, setWatchlistLoadState] = useState<'loading' | 'loaded' | 'failed'>('loading');
+  const [watchlistLoadError, setWatchlistLoadError] = useState('');
   const [coverage, setCoverage] = useState<ThesisCoverage | null>(null);
   const [thesisSymbol, setThesisSymbol] = useState<string | null>(null);
   const [coverageVersion, setCoverageVersion] = useState(0);
@@ -442,7 +482,7 @@ export function useWorkspace() {
   const [csvContent, setCsvContent] = useState('');
   const [csvPreview, setCsvPreview] = useState<CsvImportPreview | null>(null);
   const [importingCsv, setImportingCsv] = useState(false);
-  const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'delta-research' | 'strategies'>(
+  const [activeView, setActiveView] = useState<'overview' | 'activity' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'signals'>(
     () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
   );
   const [openMarketInstrumentId, setOpenMarketInstrumentId] = useState<string | null>(null);
@@ -458,6 +498,8 @@ export function useWorkspace() {
   }, []);
   const [transactionType, setTransactionType] = useState<TransactionType>('deposit');
   const [journalTrades, setJournalTrades] = useState<JournalTrade[]>([]);
+  const [journalLoadState, setJournalLoadState] = useState<'idle' | 'loading' | 'loaded' | 'failed'>('idle');
+  const [journalLoadError, setJournalLoadError] = useState('');
   const [journalAnalytics, setJournalAnalytics] = useState<JournalAnalytics | null>(null);
   const [journalBreakdown, setJournalBreakdown] = useState<JournalBreakdown[]>([]);
   const [editingTrade, setEditingTrade] = useState<JournalTrade | null>(null);
@@ -565,19 +607,11 @@ export function useWorkspace() {
   useEffect(() => {
     if (!user) {
       setWatchlist([]);
+      setWatchlistLoadState('loaded');
+      setWatchlistLoadError('');
       return;
     }
-    let active = true;
-    apiRequest<WatchlistEntry[]>('/market-data/watchlist')
-      .then((items) => {
-        if (active) setWatchlist(items);
-      })
-      .catch((requestError: Error) => {
-        if (active) setError(requestError.message);
-      });
-    return () => {
-      active = false;
-    };
+    void refreshWatchlist(true).catch(() => undefined);
   }, [user]);
 
   useEffect(() => {
@@ -688,15 +722,24 @@ export function useWorkspace() {
     };
   }, [activeView, journalCurrency, user]);
 
-  async function refreshJournalTrades() {
-    const [trades, analytics, breakdown] = await Promise.all([
-      apiRequest<JournalTrade[]>(`/trades/journal?currency=${journalCurrency}`),
-      apiRequest<JournalAnalytics>(`/trades/analytics/journal?currency=${journalCurrency}`),
-      apiRequest<JournalBreakdown[]>(`/trades/analytics/breakdown?currency=${journalCurrency}&group_by=strategy`),
-    ]);
-    setJournalTrades(trades);
-    setJournalAnalytics(analytics);
-    setJournalBreakdown(breakdown);
+  async function refreshJournalTrades(view: 'trades' | 'fills' = 'trades') {
+    setJournalLoadState('loading');
+    setJournalLoadError('');
+    try {
+      const [trades, analytics, breakdown] = await Promise.all([
+        apiRequest<JournalTrade[]>(`/trades/journal?currency=${journalCurrency}&view=${view}`),
+        apiRequest<JournalAnalytics>(`/trades/analytics/journal?currency=${journalCurrency}`),
+        apiRequest<JournalBreakdown[]>(`/trades/analytics/breakdown?currency=${journalCurrency}&group_by=strategy`),
+      ]);
+      setJournalTrades(trades);
+      setJournalAnalytics(analytics);
+      setJournalBreakdown(breakdown);
+      setJournalLoadState('loaded');
+    } catch (requestError) {
+      setJournalLoadState('failed');
+      setJournalLoadError(requestError instanceof Error ? requestError.message : 'Trades could not be loaded.');
+      throw requestError;
+    }
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
@@ -924,6 +967,20 @@ export function useWorkspace() {
     }
   }
 
+  async function saveJournalNotes(tradeId: string, notes: string, tags: string[]) {
+    setError('');
+    try {
+      await apiRequest<{ notes: string | null; tags: string[] }>(`/trades/${tradeId}/notes`, {
+        method: 'PATCH',
+        body: JSON.stringify({ notes: notes.trim() || null, tags }),
+      });
+      await refreshJournalTrades();
+    } catch (requestError) {
+      setError((requestError as Error).message);
+      throw requestError;
+    }
+  }
+
   async function removeTransaction(transactionId: string) {
     if (!portfolioId) return;
     if (!window.confirm('Delete this transaction? The portfolio ledger will be recalculated.')) return;
@@ -994,20 +1051,27 @@ export function useWorkspace() {
     setHasOlderMarketHistory(true);
     setMarketIndicators(null);
     setMarketQuote(null);
-    try {
-      const params = marketRangeParams(marketInterval, marketStart, marketEnd);
-      const [details, history] = await Promise.all([
-        apiRequest<MarketInstrument>(`/market-data/instruments/${instrument.id}`),
-        apiRequest<MarketHistory>(
-          `/market-data/instruments/${instrument.id}/history?${params}`,
-        ),
-      ]);
+    const params = marketRangeParams(marketInterval, marketStart, marketEnd);
+    const [detailsResult, historyResult] = await Promise.allSettled([
+      apiRequest<MarketInstrument>(`/market-data/instruments/${instrument.id}`),
+      apiRequest<MarketHistory>(
+        `/market-data/instruments/${instrument.id}/history?${params}`,
+      ),
+    ]);
+    if (historyResult.status === 'fulfilled') {
+      setMarketHistory(historyResult.value);
+    } else {
+      setError(`History request failed: ${(historyResult.reason as Error).message}`);
+    }
+    if (detailsResult.status === 'fulfilled') {
+      const details = detailsResult.value;
       setSelectedInstrument(details);
-      setMarketHistory(history);
       void loadMarketQuote(details);
-      void loadInstrumentIndicators(details, marketInterval, history.provider);
-    } catch (requestError) {
-      setError((requestError as Error).message);
+      if (historyResult.status === 'fulfilled') {
+        void loadInstrumentIndicators(details, marketInterval, historyResult.value.provider);
+      }
+    } else {
+      setError(`Instrument details request failed: ${(detailsResult.reason as Error).message}`);
     }
   }
 
@@ -1140,7 +1204,16 @@ export function useWorkspace() {
 
   async function refreshWatchlist(force = false) {
     if (skipRecentMarketRead('watchlist:default', force)) return;
-    setWatchlist(await apiRequest<WatchlistEntry[]>('/market-data/watchlist'));
+    setWatchlistLoadState('loading');
+    setWatchlistLoadError('');
+    try {
+      setWatchlist(await apiRequest<WatchlistEntry[]>('/market-data/watchlist'));
+      setWatchlistLoadState('loaded');
+    } catch (requestError) {
+      setWatchlistLoadState('failed');
+      setWatchlistLoadError(requestError instanceof Error ? requestError.message : 'Watchlist could not be loaded.');
+      throw requestError;
+    }
   }
 
   async function loadMarketHistory(
@@ -1162,8 +1235,29 @@ export function useWorkspace() {
         { method: 'POST' },
       );
       setMarketHistory(history);
-      await loadInstrumentIndicators(selectedInstrument, interval, history.provider);
+      if (history.sync_job) {
+        let job = history.sync_job;
+        while (job.status === 'queued' || job.status === 'running') {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          job = await apiRequest<NonNullable<MarketHistory['sync_job']>>(
+            `/market-data/history/sync-jobs/${job.id}`,
+          );
+          setMarketHistory((current) => current ? { ...current, sync_job: job } : current);
+        }
+        if (job.status === 'failed') {
+          setError(`History sync failed: ${job.error ?? 'provider unavailable'}`);
+        } else {
+          const refreshed = await apiRequest<MarketHistory>(
+            `/market-data/instruments/${selectedInstrument.id}/history?${params}`,
+          );
+          setMarketHistory(refreshed);
+          await loadInstrumentIndicators(selectedInstrument, interval, refreshed.provider);
+        }
+      } else {
+        await loadInstrumentIndicators(selectedInstrument, interval, history.provider);
+      }
     } catch (requestError) {
+      if (isAbortError(requestError)) return;
       setError((requestError as Error).message);
       if (selectedInstrument) {
         try {
@@ -1171,9 +1265,10 @@ export function useWorkspace() {
           const history = await apiRequest<MarketHistory>(
             `/market-data/instruments/${selectedInstrument.id}/history?${params}`,
           );
-          setMarketHistory(history);
+          setMarketHistory({ ...history, is_cached: true, sync_status: 'unavailable' });
           await loadInstrumentIndicators(selectedInstrument, interval, history.provider);
         } catch (historyError) {
+          if (isAbortError(historyError)) return;
           setError(`${(requestError as Error).message}; saved history unavailable: ${(historyError as Error).message}`);
         }
       }
@@ -1196,7 +1291,7 @@ export function useWorkspace() {
         ...marketHistory.bars.map((bar) => new Date(bar.timestamp).getTime()),
       );
       const end = new Date(oldestTimestamp);
-      const start = new Date(oldestTimestamp - 90 * 24 * 60 * 60 * 1000);
+      const start = new Date(oldestTimestamp - 89 * 24 * 60 * 60 * 1000);
       const params = new URLSearchParams({
         interval: marketInterval,
         start: start.toISOString(),
@@ -1224,6 +1319,7 @@ export function useWorkspace() {
       if (newOldestTimestamp >= oldestTimestamp) setHasOlderMarketHistory(false);
     } catch (requestError) {
       setError((requestError as Error).message);
+      setHasOlderMarketHistory(false);
     } finally {
       olderHistoryRequest.current = false;
       setLoadingOlderMarketHistory(false);
@@ -1302,20 +1398,21 @@ export function useWorkspace() {
   const valuationBySymbol = new Map(
     (valuation?.positions ?? []).map((position) => [position.symbol, position]),
   );
-  const pricedPositions = valuation?.positions.filter((position) => position.last_price !== null) ?? [];
-  const visiblePriceStates = pricedPositions.length > 0
-    ? pricedPositions
-    : marketQuote
-      ? [marketQuote]
-      : [];
-  const marketDataStatus = visiblePriceStates.length === 0
-    || valuation?.positions.some((position) => position.freshness === 'unavailable')
-    ? 'unavailable'
-    : visiblePriceStates.some((position) => position.freshness === 'stale')
-      ? 'unavailable'
-      : visiblePriceStates.some((position) => position.is_synthetic)
-      ? 'synthetic'
-      : 'live';
+  // One value for the header and the sidebar. It covers every priced row the app shows:
+  // ledger positions and broker holdings. An empty ledger no longer reads as "unavailable"
+  // while broker holdings are valued.
+  const ledgerPriceRows = valuation ? valuation.positions : null;
+  const pricedRows: PriceStateRow[] | null =
+    brokerPriceRows !== null || (ledgerPriceRows !== null && ledgerPriceRows.length > 0)
+      ? [...(ledgerPriceRows ?? []), ...(brokerPriceRows ?? [])]
+      : marketQuote
+        ? [{
+          freshness: marketQuote.freshness,
+          basis: basisForFreshnessStatus(marketQuote.freshness_status),
+          is_synthetic: marketQuote.is_synthetic,
+        }]
+        : null;
+  const marketDataStatus = deriveMarketDataStatus(pricedRows);
   return {
     user,
     setUser,
@@ -1352,6 +1449,8 @@ export function useWorkspace() {
     setRiskMetrics,
     watchlist,
     setWatchlist,
+    watchlistLoadState,
+    watchlistLoadError,
     coverage,
     setCoverage,
     thesisSymbol,
@@ -1378,6 +1477,8 @@ export function useWorkspace() {
     setTransactionType,
     journalTrades,
     setJournalTrades,
+    journalLoadState,
+    journalLoadError,
     journalAnalytics,
     setJournalAnalytics,
     journalBreakdown,
@@ -1434,6 +1535,7 @@ export function useWorkspace() {
     exportTransactionCsv,
     submitJournalTrade,
     removeJournalTrade,
+    saveJournalNotes,
     refreshJournalTrades,
     removeTransaction,
     startEditingTransaction,
@@ -1459,7 +1561,10 @@ export function useWorkspace() {
     selectedPortfolio,
     currency,
     valuationBySymbol,
-    marketDataStatus
+    marketDataStatus,
+    setBrokerPriceRows,
+    brokerRefreshKey,
+    requestBrokerRefresh: () => setBrokerRefreshKey((value) => value + 1),
   };
 }
 

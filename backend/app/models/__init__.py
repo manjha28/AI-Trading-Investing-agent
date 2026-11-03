@@ -181,6 +181,13 @@ class Instrument(Base):
             name="ck_instruments_future_expiry",
         ),
         Index("ix_instruments_symbol_venue", "symbol", "venue"),
+        # NULLS NOT DISTINCT so equity rows (NULL expiry/strike/option_type) still collide.
+        Index(
+            "uq_instruments_identity",
+            "venue", "symbol", "asset_class", "expiry", "option_type", "strike",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
         Index("ix_instruments_name", "display_name"),
     )
 
@@ -464,6 +471,41 @@ class MarketQuote(Base):
     is_synthetic: Mapped[bool] = mapped_column(default=False, nullable=False)
 
 
+class DhanMarketTick(Base):
+    __tablename__ = "dhan_market_ticks"
+    __table_args__ = (
+        Index("ix_dhan_market_ticks_instrument_timestamp", "instrument_id", "timestamp"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    open: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    volume: Mapped[Decimal] = mapped_column(Numeric(30, 8), nullable=False)
+
+
+class MarketDataGap(Base):
+    __tablename__ = "market_data_gaps"
+    __table_args__ = (
+        Index("ix_market_data_gaps_instrument_window", "instrument_id", "started_at", "ended_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    backfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class MarketDataSync(Base):
     __tablename__ = "market_data_syncs"
     __table_args__ = (
@@ -654,6 +696,10 @@ class DhanTradeMirror(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     charges: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    notes: Mapped[str | None] = mapped_column(String(4000))
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    strategy: Mapped[str | None] = mapped_column(String(100))
+    setup: Mapped[str | None] = mapped_column(String(100))
     currency: Mapped[str] = mapped_column(
         String(3), nullable=False, default="INR", server_default="INR"
     )
@@ -689,6 +735,26 @@ class DhanLedgerMirror(Base):
         String(3), nullable=False, default="INR", server_default="INR"
     )
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DhanLedgerDataQualityException(Base):
+    __tablename__ = "dhan_ledger_data_quality_exceptions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "fingerprint", name="uq_dhan_ledger_quality_user_fingerprint"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_date: Mapped[str | None] = mapped_column(String(40))
+    description: Mapped[str | None] = mapped_column(String(1000))
+    debit: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    credit: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
@@ -897,6 +963,47 @@ class PositionThesisRevision(Base):
     snapshot: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PortfolioValuationSnapshot(Base):
+    __tablename__ = "portfolio_valuation_snapshots"
+    __table_args__ = (
+        CheckConstraint("scope IN ('owner', 'portfolio')", name="ck_portfolio_valuation_snapshots_scope"),
+        UniqueConstraint(
+            "owner_id",
+            "portfolio_id",
+            "timestamp",
+            name="uq_portfolio_valuation_snapshots_owner_portfolio_time",
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index(
+            "ix_portfolio_valuation_snapshots_owner_scope_time",
+            "owner_id",
+            "scope",
+            "timestamp",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    portfolio_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("portfolios.id", ondelete="CASCADE")
+    )
+    scope: Mapped[str] = mapped_column(String(12), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    market_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    day_change: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    invested: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    valuation_basis: Mapped[str] = mapped_column(String(24), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    complete: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    price_observations: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False, default=list)
 
 
 from app.models.alerts import AlertEvent, AlertRule  # noqa: F401

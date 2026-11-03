@@ -29,6 +29,8 @@ from app.broker_adapters import (
     DhanAdapter,
     HistoricalBar,
     UpstoxAdapter,
+    _float32_wire_to_price,
+    _quantize_price_text,
 )
 from app.config import settings
 from app.db import Base, get_db
@@ -37,6 +39,8 @@ from app.models import (
     BrokerAccountMirror,
     BrokerCredential,
     BrokerMirror,
+    DhanLedgerMirror,
+    DhanTradeMirror,
     Instrument,
     InstrumentProviderIdentifier,
     MarketBar,
@@ -201,6 +205,22 @@ def connect_mock(client: TestClient) -> None:
     assert "token" not in callback.headers["location"]
 
 
+def patch_dhan_account_http(monkeypatch, handler) -> None:
+    """Intercept the httpx.Client.get boundary used by DhanReadOnlyAccountAdapter.
+
+    Non-Dhan requests (for example the TestClient itself) fall through to the original.
+    """
+    original_get = httpx.Client.get
+
+    def fake_get(self, url, *, params=None, headers=None, **kwargs):
+        full_url = str(httpx.URL(url, params=params)) if params else str(url)
+        if "dhan.co" not in full_url:
+            return original_get(self, url, params=params, headers=headers, **kwargs)
+        return handler("GET", full_url, headers=headers)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+
+
 def prepare_dhan_sync(client: TestClient, test_engine, encryption_key, monkeypatch) -> None:
     register(client, "dhan-diagnostics@example.com")
     complete_broker_gate(client, test_engine)
@@ -239,9 +259,10 @@ def seed_dhan_portfolio_summary(
     test_engine,
     encryption_key,
     monkeypatch,
+    now: datetime | None = None,
 ) -> datetime:
     prepare_dhan_sync(client, test_engine, encryption_key, monkeypatch)
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     monkeypatch.setattr(brokers, "_now", lambda: now)
     monkeypatch.setattr(
         market_data, "_market_session_state", lambda *_args: "open"
@@ -904,7 +925,8 @@ def test_broker_summary_does_not_use_missing_or_stale_quote(
             }}
         return {"NSE_EQ": {
             security_id: HistoricalBar(
-                timestamp=now - timedelta(hours=2),
+                # Older than the 2-trading-session cap, so the contract classifies it stale.
+                timestamp=now - timedelta(days=10),
                 open=Decimal("109"),
                 high=Decimal("111"),
                 low=Decimal("108"),
@@ -955,7 +977,8 @@ def test_broker_summary_falls_back_in_configured_provider_priority(
         return {
             "NSE_EQ": {
                 security_id: HistoricalBar(
-                    timestamp=now - timedelta(hours=2),
+                    # Older than the 2-trading-session cap, so Dhan is stale and the chain falls back.
+                    timestamp=now - timedelta(days=10),
                     open=Decimal("109") if security_id == "3045" else Decimal("49"),
                     high=Decimal("111") if security_id == "3045" else Decimal("51"),
                     low=Decimal("108") if security_id == "3045" else Decimal("48"),
@@ -1021,15 +1044,11 @@ def test_broker_summary_falls_back_in_configured_provider_priority(
     response = first.get("/api/v1/brokers/portfolio-summary")
 
     assert response.status_code == 200, response.text
-    assert attempts == [["angel_one", "yfinance"], ["angel_one", "yfinance"]]
+    assert attempts == []
     dhan = response.json()["brokers"][0]
-    assert Decimal(dhan["market_value"]) == Decimal("380")
-    observation = dhan["provenance"]["market_value"]["quote_observations"][0]
-    assert observation["source"] == "angel_one"
-    assert any(
-        "dhan: quote stale" in attempt
-        for attempt in observation["provider_attempts"]
-    )
+    # Dhan is the selected source: no other provider is consulted and a stale Dhan price is not replaced.
+    assert dhan["market_value"] is None
+    assert dhan["unavailable_reasons"]["market_value"]
 
 
 def test_broker_summary_uses_live_quote_during_nse_session(
@@ -1062,7 +1081,7 @@ def test_broker_summary_uses_live_quote_during_nse_session(
     assert response.status_code == 200, response.text
     evidence = response.json()["brokers"][0]["provenance"]["market_value"]
     assert {item["price_basis"] for item in evidence["quote_observations"]} == {
-        "live_quote"
+        "live"
     }
     assert {item["basis_date"] for item in evidence["quote_observations"]} == {
         "2026-10-27"
@@ -1131,7 +1150,7 @@ def test_broker_summary_uses_last_completed_session_close(
     assert Decimal(dhan["day_change"]) == Decimal("17")
     market_evidence = dhan["provenance"]["market_value"]
     assert {item["price_basis"] for item in market_evidence["quote_observations"]} == {
-        "eod_close"
+        "session_close"
     }
     assert {item["basis_date"] for item in market_evidence["quote_observations"]} == {
         current_session.isoformat()
@@ -1271,6 +1290,7 @@ def test_daily_backfill_records_provider_data_already_stored(
             session,
             instrument,
             SimpleNamespace(),
+            user_id=UUID("00000000-0000-0000-0000-000000000001"),
             years=1,
             request_budget=[10],
         )
@@ -1476,8 +1496,11 @@ def test_dhan_cached_live_quote_revalues_portfolio_without_broker_request(
     clients, test_engine, encryption_key, monkeypatch
 ) -> None:
     client, _ = clients
+    # "live" needs an open NSE session. Pin to a normal trading Monday
+    # (2026-11-02 10:30 IST) so the result does not depend on wall-clock time.
+    trading_instant = datetime(2026, 11, 2, 5, 0, tzinfo=timezone.utc)
     now = seed_dhan_portfolio_summary(
-        client, test_engine, encryption_key, monkeypatch
+        client, test_engine, encryption_key, monkeypatch, now=trading_instant
     )
     with Session(test_engine) as db:
         rows = db.scalars(
@@ -1584,7 +1607,7 @@ def test_dhan_cached_live_quote_revalues_portfolio_without_broker_request(
     )
     assert Decimal(second_payload["live_valuation"]["market_value"]) != first_value
     assert second_payload.get("unrealized_profit") == broker_pnl
-    assert second_payload["live_valuation"]["basis"] == "live_feed_ltp"
+    assert second_payload["live_valuation"]["basis"] == "live"
 
 
 def test_dhan_automatic_snapshot_is_session_and_cadence_gated(
@@ -1721,7 +1744,7 @@ def test_dhan_sync_http_failure_logs_endpoint_and_sanitized_provider_error(
             )
         return httpx.Response(200, json=[], request=httpx.Request(method, url))
 
-    monkeypatch.setattr(httpx, "request", mocked_request)
+    patch_dhan_account_http(monkeypatch, mocked_request)
     caplog.set_level("WARNING", logger="app.broker_adapters")
 
     response = first.post(
@@ -1766,14 +1789,17 @@ def test_dhan_sync_normalization_failures_have_distinct_safe_diagnostics(
 ) -> None:
     first, _ = clients
     prepare_dhan_sync(first, test_engine, encryption_key, monkeypatch)
-    monkeypatch.setattr(DhanAdapter, "get_holdings", lambda *_args: (
-        [{"tradingsymbol": "HOLDING_VALUE_SENTINEL", "quantity": "not-a-number"}]
-        if kind == "holding" else []
-    ))
-    monkeypatch.setattr(DhanAdapter, "get_positions", lambda *_args: (
-        [{"tradingsymbol": "POSITION_VALUE_SENTINEL", "netQty": "not-a-number"}]
-        if kind == "position" else []
-    ))
+    def bad_account_payload(method, url, **_kwargs):
+        path = httpx.URL(url).path
+        if kind == "holding" and path == "/v2/holdings":
+            body = [{"tradingSymbol": "HOLDING_VALUE_SENTINEL", "totalQty": "not-a-number"}]
+        elif kind == "position" and path == "/v2/positions":
+            body = [{"tradingSymbol": "POSITION_VALUE_SENTINEL", "netQty": "not-a-number"}]
+        else:
+            body = []
+        return httpx.Response(200, json=body, request=httpx.Request(method, url))
+
+    patch_dhan_account_http(monkeypatch, bad_account_payload)
     caplog.set_level("WARNING", logger="app.api.brokers")
 
     response = first.post(
@@ -1830,9 +1856,13 @@ def test_dhan_sync_accepts_empty_holdings_without_disconnecting(
                 },
                 request=httpx.Request(method, url),
             )
+        if httpx.URL(url).path == "/v2/fundlimit":
+            return httpx.Response(
+                200, json={"availabelBalance": "1000.00"}, request=httpx.Request(method, url)
+            )
         return httpx.Response(200, json=[], request=httpx.Request(method, url))
 
-    monkeypatch.setattr(httpx, "request", mocked_request)
+    patch_dhan_account_http(monkeypatch, mocked_request)
 
     response = first.post(
         "/api/v1/brokers/dhan/sync",
@@ -2094,7 +2124,7 @@ def _dhan_disconnect_packet() -> bytes:
 
 def test_dhan_websocket_quote_packet_uses_documented_little_endian_fields() -> None:
     quote = DhanAdapter.decode_market_feed_packet(
-        _dhan_quote_packet(), "NSE_EQ", "11536"
+        _dhan_quote_packet(), "NSE_EQ", "11536", price_tick=Decimal("0.05")
     )
 
     assert quote is not None
@@ -2208,7 +2238,7 @@ def test_dhan_live_feed_hub_forwards_previous_close_and_market_status(
 
 def test_dhan_websocket_ticker_packet_decodes_ist_epoch_as_utc() -> None:
     tick = DhanAdapter.decode_market_feed_packet(
-        _dhan_ticker_packet(), "NSE_EQ", "11536"
+        _dhan_ticker_packet(), "NSE_EQ", "11536", price_tick=Decimal("0.05")
     )
 
     assert tick is not None
@@ -2594,6 +2624,7 @@ def test_dhan_instrument_master_mapping_requires_one_verified_equity(monkeypatch
     monkeypatch.setattr(
         DhanAdapter, "_scrip_master", classmethod(lambda _cls: [row, dict(row, SECURITY_ID="11537")])
     )
+    monkeypatch.setattr(DhanAdapter, "_equity_index_cache", None)
     assert adapter.find_verified_equity_mapping("TCS", "NSE") is None
 
 
@@ -2703,6 +2734,12 @@ def test_dhan_sync_persistence_failure_logs_class_without_database_values(
     def fail_commit(_session):
         raise IntegrityError("statement with DIAGNOSTIC_HOLDING_VALUE_SENTINEL", {}, RuntimeError("private row value"))
 
+    patch_dhan_account_http(
+        monkeypatch,
+        lambda method, url, **_kwargs: httpx.Response(
+            200, json=[], request=httpx.Request(method, url)
+        ),
+    )
     monkeypatch.setattr(Session, "commit", fail_commit)
     caplog.set_level("WARNING", logger="app.api.brokers")
 
@@ -2712,14 +2749,91 @@ def test_dhan_sync_persistence_failure_logs_class_without_database_values(
         json={},
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 500
     assert response.json()["detail"] == "Broker account sync could not be saved"
     assert "stage=broker_mirror_persistence" in caplog.text
     assert "error_class=IntegrityError" in caplog.text
+    assert "table=unknown" in caplog.text
+    assert "constraint=unknown" in caplog.text
     assert "database details omitted" in caplog.text
     assert "DIAGNOSTIC_HOLDING_VALUE_SENTINEL" not in caplog.text
     assert "private row value" not in caplog.text
     assert "DIAGNOSTIC_ACCESS_TOKEN_SENTINEL" not in caplog.text
+
+
+def test_dhan_constraint_diagnostic_logs_only_table_and_constraint(caplog) -> None:
+    error = IntegrityError(
+        "statement with private row sentinel",
+        {},
+        SimpleNamespace(diag=SimpleNamespace(
+            table_name="dhan_ledger_mirror",
+            constraint_name="uq_dhan_ledger_mirror_user_source_entry",
+        )),
+    )
+
+    brokers._log_dhan_sync_failure(
+        "broker_mirror_persistence", error, "database details omitted"
+    )
+
+    assert "table=dhan_ledger_mirror" in caplog.text
+    assert "constraint=uq_dhan_ledger_mirror_user_source_entry" in caplog.text
+    assert "private row sentinel" not in caplog.text
+
+
+def test_dhan_trade_and_ledger_upserts_are_noops_on_repeat(test_engine) -> None:
+    user_id = UUID("00000000-0000-0000-0000-000000000001")
+    synced_at = datetime.now(timezone.utc)
+    trade = DhanTradeMirror(
+        user_id=user_id,
+        source="dhan",
+        trade_id="stable-trade-key",
+        provider_trade_id="provider-trade-id",
+        side="BUY",
+        quantity=Decimal("1"),
+        price=Decimal("10"),
+        currency="INR",
+        trade_at=synced_at,
+        synced_at=synced_at,
+    )
+    ledger = DhanLedgerMirror(
+        user_id=user_id,
+        source="dhan",
+        entry_id="stable-ledger-key",
+        provider_entry_id="provider-entry-id",
+        entry_date=synced_at,
+        currency="INR",
+        synced_at=synced_at,
+    )
+    with Session(test_engine) as db:
+        assert brokers._upsert_dhan_trades(db, [trade])[:2] == (1, 0)
+        assert brokers._upsert_dhan_ledger_entry(db, ledger) is True
+        db.commit()
+
+    repeat_trade = DhanTradeMirror(
+        user_id=user_id,
+        source="dhan",
+        trade_id="stable-trade-key",
+        provider_trade_id="provider-trade-id",
+        side="BUY",
+        quantity=Decimal("1"),
+        price=Decimal("10"),
+        currency="INR",
+        trade_at=synced_at,
+        synced_at=synced_at,
+    )
+    repeat_ledger = DhanLedgerMirror(
+        user_id=user_id,
+        source="dhan",
+        entry_id="stable-ledger-key",
+        provider_entry_id="provider-entry-id",
+        entry_date=synced_at,
+        currency="INR",
+        synced_at=synced_at,
+    )
+    with Session(test_engine) as db:
+        assert brokers._upsert_dhan_trades(db, [repeat_trade])[:2] == (0, 1)
+        assert brokers._upsert_dhan_ledger_entry(db, repeat_ledger) is False
+        db.commit()
 
 
 def test_fernet_token_round_trip_and_ciphertext_at_rest(encryption_key) -> None:
@@ -3107,3 +3221,80 @@ def test_callback_access_logs_redact_request_tokens() -> None:
     assert BrokerCallbackAccessLogFilter().filter(record)
     assert "secret" not in record.getMessage()
     assert "/api/v1/brokers/zerodha/callback?<redacted>" in record.getMessage()
+
+
+def test_float32_price_near_rs_1_40_000_keeps_paise() -> None:
+    # 140000.25 is exact in float32; a fixed 7-significant-digit string would yield 140000.0.
+    raw = struct.unpack("<f", struct.pack("<f", 140000.25))[0]
+
+    assert _float32_wire_to_price(raw, Decimal("0.05")) == Decimal("140000.25")
+
+
+def test_float32_wire_price_is_quantised_to_tick_without_float_artefact() -> None:
+    raw = struct.unpack("<f", struct.pack("<f", 1420.7))[0]
+
+    price = _float32_wire_to_price(raw, Decimal("0.05"))
+
+    assert price == Decimal("1420.70")
+    assert "9951" not in str(price)
+
+
+def test_yahoo_style_price_text_is_quantised_without_float_artefact() -> None:
+    assert _quantize_price_text(1420.6999511718750, Decimal("0.05")) == Decimal("1420.70")
+    assert _quantize_price_text("14.92", Decimal("0.01")) == Decimal("14.92")
+    with pytest.raises(ValueError):
+        _quantize_price_text(True, Decimal("0.01"))
+
+
+def test_instrument_without_resolvable_tick_fails_closed() -> None:
+    # Unresolvable segments return None, so the price packet is rejected, not kept unquantised.
+    assert DhanAdapter.price_tick_for("MCX_COMM", "1") is None
+    assert DhanAdapter.price_tick_for("NSE_FNO", "1") is None
+    assert DhanAdapter.price_tick_for("NSE_EQ", "not-a-number") is None
+
+
+def test_valuation_and_watchlist_select_the_same_dhan_quote(monkeypatch) -> None:
+    # Regression for P0-F1d: valuation skipped the Nov 2 Dhan quote and used the Oct 30 bar.
+    from app.services import price_freshness
+
+    now = datetime(2026, 11, 2, 21, 0, tzinfo=timezone.utc)
+    instrument = SimpleNamespace(
+        symbol="JPL",
+        currency="INR",
+        country="IN",
+        timezone="Asia/Kolkata",
+        asset_class="equity",
+        is_synthetic=False,
+        provider_identifiers=[SimpleNamespace(provider="dhan", is_verified=True)],
+    )
+    dhan_quote = SimpleNamespace(
+        close=Decimal("1420.70"),
+        timestamp=datetime(2026, 11, 2, 10, 29, 57, tzinfo=timezone.utc),
+        retrieved_at=datetime(2026, 11, 2, 11, 41, 20, tzinfo=timezone.utc),
+        source="dhan",
+        is_synthetic=False,
+    )
+    stale_ws_quote = SimpleNamespace(
+        close=Decimal("1399.00"),
+        timestamp=datetime(2026, 10, 28, 10, 0, tzinfo=timezone.utc),
+        retrieved_at=datetime(2026, 10, 28, 10, 0, tzinfo=timezone.utc),
+        source="dhan_ws",
+        is_synthetic=False,
+    )
+    monkeypatch.setattr(
+        price_freshness,
+        "venue_last_completed_session",
+        lambda db, instrument, source: date(2026, 11, 2),
+    )
+
+    quote, evidence, rejections = price_freshness.select_usable_quote(
+        None, instrument, [stale_ws_quote, dhan_quote], now
+    )
+
+    assert quote is dhan_quote
+    assert quote.close == Decimal("1420.70")
+    assert rejections == []
+    basis = price_freshness.valuation_basis_for_quote(
+        str(evidence["quote_freshness_status"]), quote.timestamp, instrument, now
+    )
+    assert basis == "session_close"

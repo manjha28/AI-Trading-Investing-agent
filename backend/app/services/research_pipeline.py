@@ -2,13 +2,17 @@
 
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from fastapi import HTTPException
+
+from app.api.market_data import _exclusive_selected_source, _market_data_credentials
+from app.broker_adapters import BrokerAdapterError
 from app.config import settings
 from app.models import (
     Instrument,
@@ -36,28 +40,136 @@ def _date_path(row: InstrumentFundamental) -> str:
     return f"instrument_fundamentals[{row.period_type}:{row.period_end.isoformat()}]"
 
 
-def _fundamentals_section(
-    db: Session, instrument_id: UUID, quality: list[dict[str, str]]
-) -> tuple[dict[str, Any], list[InstrumentFundamental]]:
-    rows = list(
-        db.scalars(
-            select(InstrumentFundamental)
-            .where(InstrumentFundamental.instrument_id == instrument_id)
-            .order_by(InstrumentFundamental.period_type, InstrumentFundamental.period_end)
+def _company_info_snapshot(
+    data: dict[str, Any], security_id: str
+) -> dict[str, Any] | None:
+    entry = data.get(security_id)
+    if isinstance(entry, list):
+        entry = entry[0] if entry else None
+    if not isinstance(entry, dict):
+        return None
+    overview = entry.get("CO") if isinstance(entry.get("CO"), dict) else {}
+    ratios = entry.get("RATIOS") if isinstance(entry.get("RATIOS"), dict) else {}
+
+    def decimal_field(value: Any, *, crore: bool = False, percentage: bool = False) -> str | None:
+        if value is None:
+            return None
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not parsed.is_finite():
+            return None
+        if crore:
+            parsed *= Decimal("10000000")
+        if percentage:
+            parsed /= Decimal("100")
+        return str(parsed)
+
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    fields = {
+        "market_cap": decimal_field(overview.get("MARKET_CAP"), crore=True),
+        "pe": decimal_field(ratios.get("PE_RATIO")),
+        "pb": decimal_field(ratios.get("PB_RATIO")),
+        "dividend_yield": decimal_field(overview.get("DIVIDEND_YIELD"), percentage=True),
+        "eps": decimal_field(overview.get("EPS")),
+        "ebitda": decimal_field(overview.get("EBITDA"), crore=True),
+        "book_value": decimal_field(overview.get("BOOK_VALUE")),
+        "fifty_two_week_high": decimal_field(overview.get("FIFTY_TWO_WEEK_HIGH")),
+        "fifty_two_week_low": decimal_field(overview.get("FIFTY_TWO_WEEK_LOW")),
+        "debt_to_equity": decimal_field(ratios.get("DEBT_TO_EQUITY")),
+        "roe": decimal_field(ratios.get("ROE"), percentage=True),
+        "roce": decimal_field(ratios.get("ROCE"), percentage=True),
+        "sector": overview.get("SECTOR") or None,
+        "industry": overview.get("INDUSTRY") or None,
+    }
+    return {
+        "status": "available" if any(value is not None for value in fields.values()) else "unavailable",
+        "values": {
+            name: {
+                "value": value,
+                "field_path": f"dhan.company_info.{name}",
+                "source": "dhan",
+                "fetched_at": fetched_at,
+            }
+            for name, value in fields.items()
+        },
+        "source": "dhan",
+        "fetched_at": fetched_at,
+        "stale": False,
+    }
+
+
+def _fetch_dhan_company_info(
+    db: Session, user_id: UUID, instrument: Instrument
+) -> tuple[dict[str, Any] | None, str | None]:
+    mapping = next((
+        item for item in instrument.provider_identifiers
+        if item.provider == "dhan" and item.is_verified
+    ), None)
+    if mapping is None:
+        return None, "No verified Dhan instrument mapping is available."
+    parts = mapping.provider_instrument_id.split("|", maxsplit=1)
+    security_id = parts[0]
+    segment = parts[1] if len(parts) == 2 else ""
+    if not security_id.isdigit() or segment not in {"NSE_EQ", "BSE_EQ"}:
+        return None, "Dhan Company Info supports only verified NSE/BSE equity mappings."
+    try:
+        _, provider, _ = _market_data_credentials(db, user_id, "dhan")
+        if provider is None:
+            return None, "No authenticated Dhan connection is available."
+        data = provider.adapter.get_company_info(
+            provider.tokens["access_token"], provider.tokens, security_id, segment
         )
+        snapshot = _company_info_snapshot(data, security_id)
+        if snapshot is None or snapshot["status"] == "unavailable":
+            return None, "Dhan Company Info returned no usable company-overview or ratio fields."
+        return snapshot, None
+    except HTTPException:
+        return None, "Dhan Company Info is unavailable; verify the Dhan connection and its data access."
+    except BrokerAdapterError:
+        return None, "Dhan Company Info could not provide this instrument's fundamentals."
+
+
+def _fundamentals_section(
+    db: Session,
+    instrument_id: UUID,
+    quality: list[dict[str, str]],
+    *,
+    selected_source: str | None = None,
+    external_snapshot: dict[str, Any] | None = None,
+    external_reason: str | None = None,
+) -> tuple[dict[str, Any], list[InstrumentFundamental]]:
+    rows_query = select(InstrumentFundamental).where(
+        InstrumentFundamental.instrument_id == instrument_id
     )
-    snapshot = db.scalar(
-        select(InstrumentSnapshot).where(InstrumentSnapshot.instrument_id == instrument_id)
+    if selected_source is not None:
+        rows_query = rows_query.where(InstrumentFundamental.source == selected_source)
+    rows = list(db.scalars(rows_query.order_by(
+        InstrumentFundamental.period_type, InstrumentFundamental.period_end
+    )))
+    snapshot_query = select(InstrumentSnapshot).where(
+        InstrumentSnapshot.instrument_id == instrument_id
     )
+    if selected_source is not None:
+        snapshot_query = snapshot_query.where(InstrumentSnapshot.source == selected_source)
+    snapshot = db.scalar(snapshot_query)
     snapshot_has_values = snapshot is not None and any(
         getattr(snapshot, field) is not None
         for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
     )
-    if snapshot is None:
+    if external_snapshot is not None:
+        snapshot_section = external_snapshot
+        snapshot_has_values = external_snapshot["status"] == "available"
+    elif snapshot is None:
         quality.append({
             "kind": "unavailable",
             "field_path": "instrument_snapshots",
-            "reason": "No stored M5.3 snapshot is available.",
+            "reason": (
+                f"No {selected_source} company snapshot is stored."
+                if selected_source is not None
+                else "No stored M5.3 snapshot is available."
+            ),
         })
         snapshot_section: dict[str, Any] = {
             "status": "unavailable",
@@ -108,7 +220,20 @@ def _fundamentals_section(
         quality.append({
             "kind": "unavailable",
             "field_path": "instrument_fundamentals",
-            "reason": "No stored M5.3 financial periods are available.",
+            "reason": (
+                "Dhan Company Info does not provide annual or quarterly statements; "
+                "no Dhan financial periods are stored."
+                if selected_source == "dhan"
+                else f"No {selected_source} financial periods are stored."
+                if selected_source is not None
+                else "No stored M5.3 financial periods are available."
+            ),
+        })
+    if external_reason:
+        quality.append({
+            "kind": "unavailable",
+            "field_path": "dhan.company_info",
+            "reason": external_reason,
         })
     period_values: list[dict[str, Any]] = []
     period_fields = (
@@ -137,12 +262,21 @@ def _fundamentals_section(
         ):
             value = getattr(row, field)
             path = f"{row_path}.{field}"
+            # Yahoo's statement API stores a zero sentinel when its shares-outstanding
+            # field is absent. A listed company's outstanding share count is not a
+            # meaningful zero, so expose this sentinel as unavailable.
+            if field == "shares_outstanding" and value == Decimal("0"):
+                value = None
             values[field] = {"value": _number(value), "field_path": path}
             if value is None:
                 quality.append({
                     "kind": "unavailable",
                     "field_path": path,
-                    "reason": "The stored provider row has no value for this field.",
+                    "reason": (
+                        "The provider returned a zero placeholder for an absent shares-outstanding value."
+                        if field == "shares_outstanding"
+                        else "The stored provider row has no value for this field."
+                    ),
                 })
         stale = fundamentals_service.is_stale(row.fetched_at)
         period_values.append({
@@ -251,7 +385,11 @@ def _financial_trend_section(
 
 
 def _technicals_section(
-    db: Session, instrument_id: UUID, quality: list[dict[str, str]]
+    db: Session,
+    instrument_id: UUID,
+    quality: list[dict[str, str]],
+    *,
+    selected_source: str | None = None,
 ) -> dict[str, Any]:
     instrument = db.get(Instrument, instrument_id)
     if instrument is not None and instrument.is_synthetic:
@@ -264,6 +402,8 @@ def _technicals_section(
             MarketDataSync.instrument_id == instrument_id,
             MarketDataSync.interval == "1d",
         )
+    if selected_source is not None:
+        sync_query = sync_query.where(MarketDataSync.source == selected_source)
     if instrument is not None:
         sync_query = sync_query.where(
             MarketDataSync.source == "mock"
@@ -290,6 +430,8 @@ def _technicals_section(
         MarketBar.instrument_id == instrument_id,
         MarketBar.interval == "1d",
     )
+    if selected_source is not None:
+        bar_query = bar_query.where(MarketBar.source == selected_source)
     if instrument is not None:
         bar_query = bar_query.where(
             MarketBar.is_synthetic.is_(instrument.is_synthetic)
@@ -323,19 +465,18 @@ def _technicals_section(
                 ),
             })
     if latest is not None:
-        bars = list(
-            db.scalars(
-                select(MarketBar)
-                .where(
-                    MarketBar.instrument_id == instrument_id,
-                    MarketBar.interval == "1d",
-                    MarketBar.source == latest.source,
-                    MarketBar.is_synthetic.is_(latest.is_synthetic),
-                )
-                .order_by(MarketBar.timestamp.desc())
-                .limit(settings.indicator_lookback_bars)
-            )
+        bars_query = select(MarketBar).where(
+            MarketBar.instrument_id == instrument_id,
+            MarketBar.interval == "1d",
+            MarketBar.source == latest.source,
+            MarketBar.is_synthetic.is_(latest.is_synthetic),
         )
+        if selected_source is not None:
+            bars_query = bars_query.where(MarketBar.source == selected_source)
+        bars = list(db.scalars(
+            bars_query.order_by(MarketBar.timestamp.desc())
+            .limit(settings.indicator_lookback_bars)
+        ))
         bars.reverse()
     calculated = compute_indicators(bars)
     indicator_values: dict[str, Any] = {}
@@ -353,8 +494,9 @@ def _technicals_section(
                 "kind": "unavailable",
                 "field_path": field_path,
                 "reason": (
-                    f"Insufficient stored daily bars: requires {result.bars_required}, "
-                    f"has {result.bars_used}."
+                    f"Insufficient stored daily bars from "
+                    f"{latest.source if latest else selected_source or 'unavailable'} "
+                    f"(interval=1d): requires {result.bars_required}, has {result.bars_used}."
                 ),
             })
         if result.is_synthetic:
@@ -371,7 +513,11 @@ def _technicals_section(
             "reason": (
                 "Only synthetic daily bars are stored; they were excluded."
                 if synthetic_bars_excluded
-                else "No stored daily OHLCV bars are available."
+                else (
+                    f"No stored daily OHLCV bars from {selected_source} for interval=1d."
+                    if selected_source is not None
+                    else "No stored daily OHLCV bars are available."
+                )
             ),
         })
     else:
@@ -490,10 +636,23 @@ def render_brief(
     instrument: Instrument,
     fetched: list[FetchedSource],
     failures: list[dict[str, str]],
+    *,
+    selected_source: str | None = None,
+    external_snapshot: dict[str, Any] | None = None,
+    external_reason: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     quality: list[dict[str, str]] = []
-    fundamentals, periods = _fundamentals_section(db, instrument.id, quality)
-    technicals = _technicals_section(db, instrument.id, quality)
+    fundamentals, periods = _fundamentals_section(
+        db,
+        instrument.id,
+        quality,
+        selected_source=selected_source,
+        external_snapshot=external_snapshot,
+        external_reason=external_reason,
+    )
+    technicals = _technicals_section(
+        db, instrument.id, quality, selected_source=selected_source
+    )
     financial_trend = _financial_trend_section(periods, quality)
     news = _source_sections(fetched, quality)
     for failure in failures:
@@ -536,9 +695,22 @@ def run_instrument_research(
     db.add(run)
     db.commit()
     try:
+        selected_source = _exclusive_selected_source(db, user_id)
+        external_snapshot = None
+        external_reason = None
+        if selected_source == "dhan" and not instrument.is_synthetic:
+            external_snapshot, external_reason = _fetch_dhan_company_info(
+                db, user_id, instrument
+            )
         fetched_result = fetch_instrument_sources(db, user_id, instrument)
         sections, quality = render_brief(
-            db, instrument, fetched_result.sources, fetched_result.failures
+            db,
+            instrument,
+            fetched_result.sources,
+            fetched_result.failures,
+            selected_source=selected_source,
+            external_snapshot=external_snapshot,
+            external_reason=external_reason,
         )
         succeeded = len(fetched_result.sources)
         usable_sections = (

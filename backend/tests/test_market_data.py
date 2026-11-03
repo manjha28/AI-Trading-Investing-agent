@@ -57,6 +57,7 @@ from app.models import (
     WatchlistInstrument,
 )
 from app.security import hash_token
+from app.services.price_freshness import VenueSession
 from app.provider_adapters import AngelOneProvider, BinanceProvider, DeltaExchangeProvider, UpstoxProvider
 from market_data_fixtures import RecordedMarketDataProvider
 
@@ -421,6 +422,7 @@ def test_watchlist_suppresses_change_outside_expected_market_session(
             db_instrument,
             quote_timestamp,
             Decimal("97"),
+            quote_bar_source="yfinance",
         )
         assert live_change == Decimal("12")
         feed_live_change, _, feed_change_basis = market_data._live_quote_change(
@@ -430,6 +432,7 @@ def test_watchlist_suppresses_change_outside_expected_market_session(
             quote_timestamp,
             Decimal("97"),
             feed_previous_close=Decimal("90"),
+            quote_bar_source="yfinance",
         )
         assert feed_live_change == Decimal("7")
         assert feed_change_basis is not None
@@ -1589,14 +1592,110 @@ def test_dhan_history_failure_falls_back_to_angel_one_and_reports_provenance(
         ).reason_category is None
         assert {bar.source for bar in bars} == {"angel_one"}
 
-    coverage = client.get("/api/v1/market-data/coverage")
+    coverage = client.get("/api/v1/market-data/coverage?source=angel_one")
     assert coverage.status_code == 200, coverage.text
     row = next(
         item for item in coverage.json()["instruments"]
         if item["instrument_id"] == instrument_id
     )
-    assert row["last_sync_provider"] == "angel_one"
     assert row["last_sync_reason"] == "fallback_after_dhan_provider_request_failed"
+
+
+def _seed_coverage_daily_bar(
+    session: Session, instrument_id: UUID, day: datetime, source: str
+) -> None:
+    session.add(MarketBar(
+        instrument_id=instrument_id,
+        interval="1d",
+        timestamp=day,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("1000"),
+        source=source,
+        retrieved_at=datetime.now(timezone.utc),
+        is_synthetic=False,
+    ))
+
+
+def _watchlisted_coverage_instrument(client: TestClient) -> UUID:
+    instrument = next(
+        item
+        for item in client.get("/api/v1/market-data/instruments?query=ALPHA").json()
+        if item["venue"] == "DEMO_IN"
+    )
+    added = client.post(
+        f"/api/v1/market-data/watchlist/{instrument['id']}",
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token", "")},
+    )
+    assert added.status_code == 204, added.text
+    return UUID(instrument["id"])
+
+
+def _coverage_row(client: TestClient, instrument_id: UUID, source: str) -> dict:
+    response = client.get(f"/api/v1/market-data/coverage?source={source}")
+    assert response.status_code == 200, response.text
+    return next(
+        item
+        for item in response.json()["instruments"]
+        if item["instrument_id"] == str(instrument_id)
+    )
+
+
+def test_coverage_never_counts_yfinance_bars_as_dhan(client: TestClient, test_engine) -> None:
+    register(client, "coverage-scope-a@example.com")
+    instrument_id = _watchlisted_coverage_instrument(client)
+    with Session(test_engine) as session:
+        _seed_coverage_daily_bar(session, instrument_id, datetime(2026, 10, 28, tzinfo=timezone.utc), "dhan")
+        _seed_coverage_daily_bar(session, instrument_id, datetime(2026, 10, 30, tzinfo=timezone.utc), "yfinance")
+        session.commit()
+
+    dhan_row = _coverage_row(client, instrument_id, "dhan")
+    assert dhan_row["newest_bar"].startswith("2026-10-28")
+    assert dhan_row["oldest_bar"].startswith("2026-10-28")
+    assert dhan_row["bars_stored"] == 1
+    assert dhan_row["freshness_status"] != "fresh"
+
+    yfinance_only = _coverage_row(client, instrument_id, "yfinance")
+    assert yfinance_only["newest_bar"].startswith("2026-10-30")
+
+
+def test_coverage_source_field_matches_counted_bars(client: TestClient, test_engine) -> None:
+    register(client, "coverage-source-b@example.com")
+    instrument_id = _watchlisted_coverage_instrument(client)
+    with Session(test_engine) as session:
+        for day in (datetime(2026, 10, 27, tzinfo=timezone.utc), datetime(2026, 10, 28, tzinfo=timezone.utc)):
+            _seed_coverage_daily_bar(session, instrument_id, day, "dhan")
+        _seed_coverage_daily_bar(session, instrument_id, datetime(2026, 10, 30, tzinfo=timezone.utc), "yfinance")
+        session.commit()
+
+    dhan_row = _coverage_row(client, instrument_id, "dhan")
+    assert dhan_row["source"] == "dhan"
+    assert dhan_row["bars_stored"] == 2
+
+    yfinance_row = _coverage_row(client, instrument_id, "yfinance")
+    assert yfinance_row["source"] == "yfinance"
+    assert yfinance_row["bars_stored"] == 1
+
+    unsupported = client.get("/api/v1/market-data/coverage?source=unknown_provider")
+    assert unsupported.status_code == 422
+
+
+def test_coverage_unavailable_when_selected_source_has_no_bars(client: TestClient, test_engine) -> None:
+    register(client, "coverage-unavailable-c@example.com")
+    instrument_id = _watchlisted_coverage_instrument(client)
+    with Session(test_engine) as session:
+        _seed_coverage_daily_bar(session, instrument_id, datetime(2026, 10, 30, tzinfo=timezone.utc), "yfinance")
+        session.commit()
+
+    row = _coverage_row(client, instrument_id, "dhan")
+    assert row["bars_stored"] == 0
+    assert row["source"] is None
+    assert row["oldest_bar"] is None
+    assert row["newest_bar"] is None
+    assert row["freshness_status"] == "unavailable"
+    assert row["last_sync_status"] is None
 
 
 def test_history_sync_records_all_provider_failures_without_exposing_details(
@@ -1949,7 +2048,7 @@ def test_dhan_snapshot_quote_is_verified_persisted_and_attributed(
         assert stored_quote.timestamp == now.replace(tzinfo=None)
         assert stored_quote.retrieved_at is not None
         assert mapping is not None
-        assert mapping.provider_instrument_id == "11536"
+        assert mapping.provider_instrument_id == "11536|NSE_EQ"
         assert mapping.is_verified is True
 
 
@@ -2432,6 +2531,10 @@ def test_angel_one_stream_persists_verified_ticks_and_quote_api_reuses_them(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(AngelOneProvider, "stream_quote", stream_quote)
+    monkeypatch.setattr(
+        "app.services.price_freshness.venue_session",
+        lambda *_args, **_kwargs: VenueSession("open", "test_open_session"),
+    )
     with client.websocket_connect(
         f"/api/v1/market-data/instruments/{instrument['id']}/stream",
         headers={"Origin": settings.frontend_origin},
@@ -2463,7 +2566,7 @@ def test_angel_one_stream_persists_verified_ticks_and_quote_api_reuses_them(
     assert cached.status_code == 200, cached.text
     assert cached.json()["source"] == "angel_one_ws"
     assert cached.json()["delivery_mode"] == "websocket_tick"
-    assert cached.json()["freshness_status"] == "fresh"
+    assert cached.json()["freshness_status"] == "live"
     with Session(test_engine) as session:
         quote = session.scalar(
             select(MarketQuote).where(MarketQuote.source == "angel_one_ws")
@@ -2682,6 +2785,7 @@ def test_eod_close_requires_a_verified_provider_mapping(monkeypatch) -> None:
         is_cached=True,
         is_verified=False,
         provider_request_status="succeeded",
+        last_completed_session=None,
     )
     assert unverified.freshness_status == "historical"
 
@@ -2694,8 +2798,9 @@ def test_eod_close_requires_a_verified_provider_mapping(monkeypatch) -> None:
         is_cached=True,
         is_verified=True,
         provider_request_status="succeeded",
+        last_completed_session=None,
     )
-    assert verified.freshness_status == "eod_close"
+    assert verified.freshness_status == "session_close"
 
 
 def test_rest_providers_reject_quotes_without_market_timestamps() -> None:
@@ -2741,3 +2846,199 @@ def test_rest_providers_reject_quotes_without_market_timestamps() -> None:
         with pytest.raises(MarketDataProviderError) as error:
             provider.get_latest_quote(instrument)
         assert error.value.code == "provider_quote_timestamp_unavailable"
+
+
+def _p0h_dhan_candidate(provider_instrument_id: str, venue: str = "NSE"):
+    from app.market_data import InstrumentCandidate
+
+    return InstrumentCandidate(
+        provider="dhan",
+        provider_instrument_id=provider_instrument_id,
+        provider_symbol="SBIN",
+        symbol="SBIN",
+        display_name="State Bank of India",
+        asset_class="equity",
+        venue=venue,
+        currency="INR",
+        country="IN",
+        timezone="Asia/Kolkata",
+        is_synthetic=False,
+        is_verified=True,
+    )
+
+
+def test_p0h_canonical_and_bare_dhan_ids_resolve_to_one_instrument_row(test_engine):
+    observed_at = datetime(2026, 11, 2, 10, 0, tzinfo=timezone.utc)
+    with Session(test_engine) as db:
+        first = market_data._upsert_provider_instrument(
+            db, _p0h_dhan_candidate("3045|NSE_EQ"), observed_at
+        )
+        db.flush()
+        second = market_data._upsert_provider_instrument(
+            db, _p0h_dhan_candidate("3045"), observed_at
+        )
+        db.commit()
+        assert second.id == first.id
+        assert db.scalar(select(func.count()).select_from(Instrument)) == 1
+        assert db.scalar(select(func.count()).select_from(InstrumentProviderIdentifier)) == 1
+
+
+def test_p0h_bare_dhan_id_fails_closed_when_segments_are_ambiguous(test_engine):
+    from app.market_data import MarketDataProviderError
+
+    observed_at = datetime(2026, 11, 2, 10, 0, tzinfo=timezone.utc)
+    with Session(test_engine) as db:
+        market_data._upsert_provider_instrument(
+            db, _p0h_dhan_candidate("3045|NSE_EQ"), observed_at
+        )
+        market_data._upsert_provider_instrument(
+            db, _p0h_dhan_candidate("3045|BSE_EQ", venue="BSE"), observed_at
+        )
+        db.flush()
+        with pytest.raises(MarketDataProviderError) as error:
+            market_data._upsert_provider_instrument(db, _p0h_dhan_candidate("3045"), observed_at)
+        assert error.value.code == "instrument_identity_ambiguous"
+
+
+def test_p0h_live_change_is_never_computed_against_another_source_bar(test_engine):
+    from app.market_data import InstrumentCandidate
+
+    observed_at = datetime(2026, 11, 2, 10, 0, tzinfo=timezone.utc)
+    ist = ZoneInfo("Asia/Kolkata")
+    prior_session = datetime(2026, 10, 30, 0, 0, tzinfo=ist).astimezone(timezone.utc)
+    quote_at = datetime(2026, 11, 2, 10, 30, tzinfo=ist).astimezone(timezone.utc)
+    with Session(test_engine) as db:
+        instrument = market_data._upsert_provider_instrument(
+            db, _p0h_dhan_candidate("3045|NSE_EQ"), observed_at
+        )
+        db.flush()
+
+        def bar(close: str, source: str) -> MarketBar:
+            value = Decimal(close)
+            return MarketBar(
+                instrument_id=instrument.id,
+                interval="1d",
+                timestamp=prior_session,
+                open=value,
+                high=value,
+                low=value,
+                close=value,
+                volume=Decimal("1"),
+                source=source,
+                retrieved_at=observed_at,
+                is_synthetic=False,
+            )
+
+        db.add(bar("1431.30", "yfinance"))
+        db.commit()
+        change, percent, _basis = market_data._live_quote_change(
+            db,
+            uuid4(),
+            instrument,
+            quote_at,
+            Decimal("1500.00"),
+            quote_bar_source="dhan",
+        )
+        assert change is None and percent is None
+
+        db.add(bar("1400.00", "dhan"))
+        db.commit()
+        change, percent, _basis = market_data._live_quote_change(
+            db,
+            uuid4(),
+            instrument,
+            quote_at,
+            Decimal("1500.00"),
+            quote_bar_source="dhan",
+        )
+        assert change == Decimal("100.00")
+        assert percent == Decimal("7.1429")
+
+
+def test_p0h_market_bar_ohlc_round_trip_has_no_float_artefacts(test_engine):
+    observed_at = datetime(2026, 11, 2, 10, 0, tzinfo=timezone.utc)
+    with Session(test_engine) as db:
+        instrument = market_data._upsert_provider_instrument(
+            db, _p0h_dhan_candidate("3045|NSE_EQ"), observed_at
+        )
+        db.flush()
+        instrument_id = instrument.id
+        value = Decimal("1431.3")
+        db.add(
+            MarketBar(
+                instrument_id=instrument_id,
+                interval="1d",
+                timestamp=observed_at,
+                open=value,
+                high=value,
+                low=value,
+                close=value,
+                volume=Decimal("1"),
+                source="dhan",
+                retrieved_at=observed_at,
+                is_synthetic=False,
+            )
+        )
+        db.commit()
+    with Session(test_engine) as db:
+        stored = db.scalar(select(MarketBar).where(MarketBar.instrument_id == instrument_id))
+        assert isinstance(stored.close, Decimal)
+        assert stored.close == Decimal("1431.3")
+        assert str(stored.close) == "1431.30000000"
+
+
+def test_p0h2_yahoo_float32_prices_parse_without_float_artefacts():
+    import numpy as np
+    import pandas as pd
+
+    from app.provider_adapters import YahooFinanceProvider, _provider_text_frame
+
+    index = pd.DatetimeIndex([datetime(2026, 11, 2, tzinfo=timezone.utc)])
+    frame = pd.DataFrame(
+        {
+            "Open": pd.Series([1431.3], index=index, dtype="float32"),
+            "High": pd.Series([1431.3], index=index, dtype="float32"),
+            "Low": pd.Series([1400.1], index=index, dtype="float32"),
+            "Close": pd.Series([np.float32(1431.3)], index=index, dtype="float32"),
+            "Volume": pd.Series([5], index=index),
+        },
+        index=index,
+    )
+    text_frame = _provider_text_frame(frame)
+    assert text_frame.iat[0, 3] == "1431.3"
+
+    provider = object.__new__(YahooFinanceProvider)
+    provider._lookback = {}
+    instrument = SimpleNamespace(provider_symbol="RELIANCE.NS")
+    with patch.object(provider, "_history_frame", return_value=frame):
+        bars = provider.get_historical_bars(
+            instrument,
+            "1d",
+            datetime(2026, 11, 1, tzinfo=timezone.utc),
+            datetime(2026, 11, 3, tzinfo=timezone.utc),
+            10,
+        )
+    assert len(bars) == 1
+    assert bars[0].close == Decimal("1431.30000000")
+    assert str(bars[0].close) == "1431.30000000"
+    assert isinstance(bars[0].close, Decimal)
+
+
+def test_p0h2_identity_index_blocks_duplicate_equity_but_allows_segment_split():
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    index = next(
+        item for item in Instrument.__table__.indexes if item.name == "uq_instruments_identity"
+    )
+    assert index.unique
+    assert [column.name for column in index.columns] == [
+        "venue",
+        "symbol",
+        "asset_class",
+        "expiry",
+        "option_type",
+        "strike",
+    ]
+    ddl = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+    assert "NULLS NOT DISTINCT" in ddl

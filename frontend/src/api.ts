@@ -22,7 +22,24 @@ function csrfToken(): string | undefined {
   return cookie ? decodeURIComponent(cookie.slice('csrf_token='.length)) : undefined;
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+const inFlightRequests = new Map<string, Promise<unknown>>();
+
+function safeRequestUrlForLog(rawUrl: string): string {
+  const url = new URL(rawUrl, window.location.origin);
+  for (const key of [...url.searchParams.keys()]) {
+    if (/token|password|pin|otp|secret|authorization|client_id|code/i.test(key)) {
+      url.searchParams.set(key, '[redacted]');
+    }
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+export function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'name' in error
+    && error.name === 'AbortError';
+}
+
+async function performApiRequest<T>(path: string, options: RequestInit): Promise<T> {
   const method = (options.method ?? 'GET').toUpperCase();
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('Content-Type')) {
@@ -33,12 +50,19 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     if (token) headers.set('X-CSRF-Token', token);
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...options,
-    method,
-    headers,
-    credentials: 'include',
-  });
+  const requestUrl = `${apiBaseUrl}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, {
+      ...options,
+      method,
+      headers,
+      credentials: 'include',
+    });
+  } catch (error) {
+    console.error('[api] network request failed', { method, url: safeRequestUrlForLog(requestUrl), error });
+    throw error;
+  }
   if (response.status === 204) return undefined as T;
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiError;
@@ -58,10 +82,34 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   return (await response.json()) as T;
 }
 
+export function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const url = `${apiBaseUrl}${path}`;
+  const method = (options.method ?? 'GET').toUpperCase();
+  const body = typeof options.body === 'string' ? options.body : '';
+  const key = `${method}:${url}:${body}`;
+  if (options.signal || (options.body !== undefined && typeof options.body !== 'string')) {
+    return performApiRequest<T>(path, options);
+  }
+  const existing = inFlightRequests.get(key);
+  if (existing) return existing as Promise<T>;
+
+  const request = performApiRequest<T>(path, options);
+  inFlightRequests.set(key, request);
+  void request.finally(() => {
+    if (inFlightRequests.get(key) === request) inFlightRequests.delete(key);
+  }).catch(() => undefined);
+  return request;
+}
+
 export async function downloadCsv(path: string, filename: string): Promise<void> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    credentials: 'include',
-  });
+  const requestUrl = `${apiBaseUrl}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, { credentials: 'include' });
+  } catch (error) {
+    console.error('[api] network request failed', { method: 'GET', url: safeRequestUrlForLog(requestUrl), error });
+    throw error;
+  }
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiError;
     const message = typeof body.detail === 'string'

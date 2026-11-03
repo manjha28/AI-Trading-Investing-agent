@@ -18,7 +18,15 @@ from app.services.strategy_engine import (
     STATE_SIGNAL,
     StrategyParams,
     expire_signals,
+    load_backtest_bars,
     record_evaluation,
+)
+from app.services.strategy_contract import registry_payload
+from app.services.backtest_engine import (
+    BacktestAssumptions,
+    InsufficientBacktestHistory,
+    minimum_history,
+    run_backtest,
 )
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
@@ -99,7 +107,18 @@ class SignalResponse(BaseModel):
 class EvaluationResponse(BaseModel):
     result: Literal["signal", "duplicate", "no_crossover", "insufficient_history"]
     signal: SignalResponse | None
+    data_sufficiency: dict[str, Any] | None = None
     disclaimer: str = DISCLAIMER
+
+
+class BacktestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    brokerage_bps: Decimal = Field(default=Decimal("3"), ge=0, le=1000)
+    exchange_charges_bps: Decimal = Field(default=Decimal("3"), ge=0, le=1000)
+    slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
+    stop_atr_multiple: Decimal = Field(default=Decimal("1.5"), gt=0, le=100)
+    target_r_multiple: Decimal = Field(default=Decimal("3"), gt=0, le=100)
 
 
 def _owned_strategy(db: Session, user_id: UUID, strategy_id: UUID) -> Strategy:
@@ -158,6 +177,44 @@ def list_strategies(
         .order_by(Strategy.created_at.desc())
     )
     return [_strategy_response(db, strategy) for strategy in strategies]
+
+
+@router.get("/catalog")
+def list_registered_strategies(
+    active_session: UserSession = Depends(require_verified_session),
+) -> list[dict[str, Any]]:
+    del active_session
+    return registry_payload()
+
+
+@router.get("/data-availability/{instrument_id}")
+def strategy_data_availability(
+    instrument_id: UUID,
+    strategy_id: Literal["sma_rsi", "fast_slow_ma"] = Query(default="fast_slow_ma"),
+    ma_type: Literal["SMA", "EMA", "RMA", "WMA", "VWMA", "TEMA", "DEMA", "TMA", "ALMA", "HMA", "LSMA", "ZLEMA"] = Query(default="EMA"),
+    fast_period: int = Query(default=20, ge=2, le=100),
+    slow_period: int = Query(default=50, ge=3, le=250),
+    active_session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    del active_session
+    instrument = db.get(Instrument, instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    params = StrategyParams(
+        strategy_id=strategy_id, ma_type=ma_type,
+        fast_period=fast_period, slow_period=slow_period,
+    )
+    source, bars = load_backtest_bars(db, instrument.id, _now())
+    required = minimum_history(params)
+    return {
+        "instrument": instrument.symbol,
+        "interval": "1d",
+        "source": source or "unavailable",
+        "bars_required": required,
+        "bars_available": len(bars),
+        "available": len(bars) >= required,
+    }
 
 
 @router.post("", response_model=StrategyResponse, status_code=201)
@@ -336,7 +393,77 @@ def evaluate_strategy(
         result = evaluation.state
     return EvaluationResponse(
         result=result, signal=_signal_response(signal) if signal is not None else None,
+        data_sufficiency=evaluation.data_sufficiency,
     )
+
+
+@router.post("/{strategy_id}/backtest")
+def backtest_strategy(
+    strategy_id: UUID,
+    payload: BacktestRequest,
+    active_session: UserSession = Depends(require_verified_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    strategy = _owned_strategy(db, active_session.user_id, strategy_id)
+    version = _version_row(db, strategy, strategy.current_version)
+    params = StrategyParams.model_validate(version.params)
+    instrument = db.get(Instrument, strategy.instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    source, bars = load_backtest_bars(db, instrument.id, _now())
+    required = minimum_history(params)
+    if len(bars) < required:
+        raise HTTPException(status_code=422, detail={
+            "code": "insufficient_history",
+            "message": (f"Insufficient history for {instrument.symbol} 1d bars from "
+                        f"{source or 'unavailable'}: {required} required, {len(bars)} available."),
+            "instrument": instrument.symbol,
+            "interval": "1d",
+            "source": source or "unavailable",
+            "bars_required": required,
+            "bars_available": len(bars),
+        })
+    assumptions = BacktestAssumptions(
+        brokerage_bps=payload.brokerage_bps,
+        exchange_charges_bps=payload.exchange_charges_bps,
+        slippage_bps=payload.slippage_bps,
+        stop_atr_multiple=payload.stop_atr_multiple,
+        target_r_multiple=payload.target_r_multiple,
+    )
+    try:
+        result = run_backtest(
+            instrument=instrument,
+            bars=bars,
+            source=source or "unavailable",
+            params=params,
+            strategy_version=version.version,
+            assumptions=assumptions,
+        )
+    except InsufficientBacktestHistory as error:
+        raise HTTPException(status_code=422, detail={
+            "code": "insufficient_history",
+            "message": (f"Insufficient history for {instrument.symbol} 1d bars from "
+                        f"{source or 'unavailable'}: {error.required} required, "
+                        f"{error.available} available."),
+            "instrument": instrument.symbol,
+            "interval": "1d",
+            "source": source or "unavailable",
+            "bars_required": error.required,
+            "bars_available": error.available,
+        }) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail={
+            "code": "backtest_unavailable",
+            "message": str(error),
+            "instrument": instrument.symbol,
+            "interval": "1d",
+            "source": source or "unavailable",
+            "bars_required": required,
+            "bars_available": len(bars),
+        }) from error
+    result["disclaimer"] = DISCLAIMER
+    return result
 
 
 @router.get("/{strategy_id}/signals", response_model=list[SignalResponse])

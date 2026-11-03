@@ -128,26 +128,30 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
   const [editing, setEditing] = useState<Rule | null>(null);
   const [busy, setBusy] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [expandedEvidence, setExpandedEvidence] = useState<string | null>(null);
   async function refresh() {
-    const [nextRules, nextEvents] = await Promise.all([
-      apiRequest<Rule[]>('/alerts/rules'),
-      apiRequest<Event[]>('/alerts/events'),
-    ]);
-    setRules(nextRules);
-    setEvents(nextEvents);
+    setLoading(true);
+    setError('');
+    try {
+      const [nextRules, nextEvents] = await Promise.all([
+        apiRequest<Rule[]>('/alerts/rules'),
+        apiRequest<Event[]>('/alerts/events'),
+      ]);
+      setRules(nextRules);
+      setEvents(nextEvents);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Alerts could not be loaded.');
+      throw requestError;
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    let active = true;
-    Promise.all([apiRequest<Rule[]>('/alerts/rules'), apiRequest<Event[]>('/alerts/events')])
-      .then(([nextRules, nextEvents]) => {
-        if (active) { setRules(nextRules); setEvents(nextEvents); }
-      })
-      .catch((requestError: Error) => { if (active) setError(requestError.message); });
-    return () => { active = false; };
+    void refresh().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -276,8 +280,8 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
       {notice && <p className="alerts-notice" role="status">{notice}</p>}
 
       <section className="data-section alerts-rules">
-        <div className="section-heading"><div><p className="eyebrow">RULES</p><h3>Alert rules</h3></div><span className="section-count">{rules.length}</span></div>
-        {rules.length === 0 ? <p className="table-empty">No alert rules yet.</p> : (
+        <div className="section-heading"><div><p className="eyebrow">RULES</p><h3>Alert rules</h3></div><span className="section-count">{loading || error ? '—' : rules.length}</span></div>
+        {loading ? <p className="table-empty">Loading alert rules…</p> : error ? <div className="error-message" role="alert">Alert rules could not be confirmed. {error} <button type="button" onClick={() => void refresh().catch(() => undefined)}>Retry</button></div> : rules.length === 0 ? <p className="table-empty">No alert rules yet.</p> : (
           <div className="alerts-rule-list">
             {rules.map((rule) => (
               <article className="alerts-rule" key={rule.id}>
@@ -335,8 +339,8 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
       </section>
 
       <section className="data-section alerts-inbox">
-        <div className="section-heading"><div><p className="eyebrow">INBOX</p><h3>Alert events</h3></div><span className="section-count">{events.filter((event) => event.status === 'new').length} new</span></div>
-        {events.length === 0 ? <p className="table-empty">No alert events. Use Evaluate now to check enabled rules against stored data.</p> : severityOrder.map((level) => {
+        <div className="section-heading"><div><p className="eyebrow">INBOX</p><h3>Alert events</h3></div><span className="section-count">{loading || error ? '—' : `${events.filter((event) => event.status === 'new').length} new`}</span></div>
+        {loading ? <p className="table-empty">Loading alert events…</p> : error ? <div className="error-message" role="alert">Alert events could not be confirmed. {error} <button type="button" onClick={() => void refresh().catch(() => undefined)}>Retry</button></div> : events.length === 0 ? <p className="table-empty">No alert events. Use Evaluate now to check enabled rules against stored data.</p> : severityOrder.map((level) => {
           const grouped = events.filter((event) => event.severity === level);
           if (!grouped.length) return null;
           return <section className="alerts-event-group" key={level}>

@@ -17,6 +17,8 @@ class MarketDataProviderError(Exception):
         response_body: str | None = None,
         request_url: str | None = None,
         request_body: str | None = None,
+        provider_error_code: str | None = None,
+        provider_message: str | None = None,
     ):
         super().__init__(code)
         self.code = code
@@ -25,6 +27,8 @@ class MarketDataProviderError(Exception):
         self.response_body = response_body
         self.request_url = request_url
         self.request_body = request_body
+        self.provider_error_code = provider_error_code
+        self.provider_message = provider_message
 
 
 class InstrumentCandidate(BaseModel):
@@ -88,6 +92,8 @@ class HistoricalBar(BaseModel):
     low: Decimal = Field(gt=0, max_digits=24, decimal_places=8)
     close: Decimal = Field(gt=0, max_digits=24, decimal_places=8)
     volume: Decimal = Field(ge=0, max_digits=30, decimal_places=8)
+    session_close: Decimal | None = Field(default=None, exclude=True)
+    provider_observed_at: datetime | None = Field(default=None, exclude=True)
 
     @field_validator("timestamp")
     @classmethod

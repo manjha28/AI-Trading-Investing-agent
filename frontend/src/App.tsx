@@ -1,13 +1,13 @@
-import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, FlaskConical, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ReceiptText, ShieldCheck, Target, Wallet } from 'lucide-react';
+import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, CircleDollarSign, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ReceiptText, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { apiRequest } from './api';
+import { marketStatusLabel } from './lib/priceStates';
 import { useWorkspace } from './components/useWorkspace';
 import { ActivityPage } from './pages/Activity';
 import { Alerts } from './pages/Alerts';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
 import { CorporateActions } from './pages/CorporateActions';
-import { DeltaResearchPage } from './pages/DeltaResearch';
 import { JournalPage } from './pages/Journal';
 import { Strategies } from './pages/Strategies';
 import { MarketDataPage } from './pages/MarketData';
@@ -20,11 +20,16 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [hasConnectedBroker, setHasConnectedBroker] = useState(false);
   const [brokerStatusChecked, setBrokerStatusChecked] = useState(false);
+  const [headerSyncing, setHeaderSyncing] = useState(false);
   const {
     user,
     checkingSession,
     activeView,
     setActiveView,
+    marketQuery,
+    setMarketQuery,
+    searchMarketInstruments,
+    requestBrokerRefresh,
     portfolios,
     portfolioId,
     setPortfolioId,
@@ -74,6 +79,34 @@ export default function App() {
       active = false;
     };
   }, [user?.id, activeView]);
+
+  async function syncBroker() {
+    setHeaderSyncing(true);
+    setError('');
+    try {
+      const result = await apiRequest<{
+        sync_status: string;
+        endpoint_results: Record<string, { status: string; record_count?: string; skipped_count?: string; reason?: string }>;
+        holdings_count: number;
+        trades_count: number | null;
+        ledger_count: number | null;
+      }>('/brokers/dhan/sync', { method: 'POST' });
+      const skippedLedger = Number(result.endpoint_results.ledger?.skipped_count ?? 0);
+      const failedEndpoints = Object.entries(result.endpoint_results)
+        .filter(([, endpoint]) => endpoint.status === 'failed')
+        .map(([name]) => name);
+      const skippedText = skippedLedger > 0
+        ? `; skipped ${skippedLedger} ledger entr${skippedLedger === 1 ? 'y' : 'ies'} (missing provider IDs)`
+        : '; skipped 0 ledger entries';
+      const failureText = failedEndpoints.length ? `; failed endpoints: ${failedEndpoints.join(', ')}` : '';
+      setNotice(`Dhan sync ${result.sync_status}: holdings updated ${result.holdings_count}; trades imported ${result.trades_count ?? 0}; ledger entries processed ${result.ledger_count ?? 0}${skippedText}${failureText}.`);
+      requestBrokerRefresh();
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : 'Dhan account sync failed.');
+    } finally {
+      setHeaderSyncing(false);
+    }
+  }
 
   if (workspace.verificationToken) {
     return <AuthPage workspace={{error: workspace.error, registering: workspace.registering, setError: workspace.setError, setRegistering: workspace.setRegistering, submitAuth: workspace.submitAuth, verificationStatus: workspace.verificationStatus, verificationToken: workspace.verificationToken}} />;
@@ -147,10 +180,8 @@ export default function App() {
                 ? 'Corporate actions'
                 : activeView === 'research'
                   ? 'Research'
-                  : activeView === 'delta-research'
-                    ? 'Delta Research'
-                    : activeView === 'strategies'
-                      ? 'Strategies'
+                  : activeView === 'signals'
+                    ? 'Signals'
               : 'Transactions';
 
   return (
@@ -178,22 +209,26 @@ export default function App() {
           <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={17} /><span>Alerts</span></button>
           <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={17} /><span>Corporate actions</span></button>
           <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={17} /><span>Research</span></button>
-          <button className={activeView === 'delta-research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('delta-research')}><FlaskConical size={17} /><span>Delta Research</span></button>
-          <button className={activeView === 'strategies' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('strategies')}><Target size={17} /><span>Strategies</span></button>
+          <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={17} /><span>Signals</span></button>
         </nav>
-        <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span>Paper ledger only</span><span>Market data: {marketDataStatus}</span></div>
+        <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span>Read-only · decision support</span><span>Market data: {marketStatusLabel(marketDataStatus)}</span></div>
+        <p className="sidebar-user">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</p>
         <button className="signout-button" onClick={signOut}><LogOut size={16} /><span>Sign out</span></button>
       </aside>
 
       <main className="workspace">
         <header className="workspace-header">
-          <div><p className="eyebrow">PORTFOLIO WORKSPACE</p><h1>{pageTitle}</h1></div>
+          <form className="header-search" role="search" onSubmit={(event) => { void searchMarketInstruments(event); setActiveView('market-data'); }}>
+            <Search size={15} aria-hidden="true" />
+            <input type="search" aria-label="Search instruments" placeholder="Search instruments" value={marketQuery} onChange={(event) => setMarketQuery(event.target.value)} />
+          </form>
           <div className="header-actions">
             {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
-            <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketDataStatus}</span>
-            <span className="user-chip">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</span>
+            <button className="secondary-button" type="button" disabled={!hasConnectedBroker || headerSyncing} onClick={() => void syncBroker()}>{headerSyncing ? 'Syncing Dhan…' : 'Sync Dhan account'}</button>
+            <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketStatusLabel(marketDataStatus)}</span>
           </div>
         </header>
+        {activeView !== 'overview' && <h1 className="page-title">{pageTitle}</h1>}
 
         {error && <p className="error-banner" role="alert"><CircleAlert size={17} />{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error">×</button></p>}
         {notice && <p className="success-banner" role="status"><ShieldCheck size={17} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss notice">×</button></p>}
@@ -217,13 +252,11 @@ export default function App() {
 
         {activeView === 'corporate-actions' ? (
           <CorporateActions portfolioId={portfolioId} watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
-        ) : activeView === 'delta-research' ? (
-          <DeltaResearchPage />
         ) : activeView === 'research' ? (
           <Research watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
         ) : activeView === 'alerts' ? (
           <Alerts portfolios={portfolios} portfolioId={portfolioId} />
-        ) : activeView === 'strategies' ? (
+        ) : activeView === 'signals' ? (
           <Strategies />
         ) : activeView === 'brokers' ? (
           <>
@@ -265,11 +298,11 @@ export default function App() {
             valuation: workspace.valuation,
           }} />
         ) : activeView === 'journal' ? (
-          <JournalPage workspace={{cancelEditingTrade: workspace.cancelEditingTrade, currency: workspace.currency, editingTrade: workspace.editingTrade, journalAnalytics: workspace.journalAnalytics, journalAssetClass: workspace.journalAssetClass, journalBreakdown: workspace.journalBreakdown, journalCurrency: workspace.journalCurrency, journalHasExit: workspace.journalHasExit, journalTrades: workspace.journalTrades, removeJournalTrade: workspace.removeJournalTrade, refreshJournalTrades: workspace.refreshJournalTrades, setJournalAssetClass: workspace.setJournalAssetClass, setJournalCurrency: workspace.setJournalCurrency, setJournalHasExit: workspace.setJournalHasExit, startEditingTrade: workspace.startEditingTrade, submitJournalTrade: workspace.submitJournalTrade, valuation: workspace.valuation}} />
+          <JournalPage workspace={{cancelEditingTrade: workspace.cancelEditingTrade, currency: workspace.currency, editingTrade: workspace.editingTrade, journalAnalytics: workspace.journalAnalytics, journalAssetClass: workspace.journalAssetClass, journalBreakdown: workspace.journalBreakdown, journalCurrency: workspace.journalCurrency, journalHasExit: workspace.journalHasExit, journalTrades: workspace.journalTrades, journalLoadState: workspace.journalLoadState, journalLoadError: workspace.journalLoadError, removeJournalTrade: workspace.removeJournalTrade, refreshJournalTrades: workspace.refreshJournalTrades, saveJournalNotes: workspace.saveJournalNotes, setJournalAssetClass: workspace.setJournalAssetClass, setJournalCurrency: workspace.setJournalCurrency, setJournalHasExit: workspace.setJournalHasExit, startEditingTrade: workspace.startEditingTrade, submitJournalTrade: workspace.submitJournalTrade, valuation: workspace.valuation}} />
         ) : portfolios.length === 0 ? (
           <PortfolioSetupPage workspace={{createPortfolio: workspace.createPortfolio}} />
         ) : activeView === 'overview' ? (
-          <OverviewPage workspace={{addInstrumentToWatchlist: workspace.addInstrumentToWatchlist, cancelEditingTransaction: workspace.cancelEditingTransaction, coverage: workspace.coverage, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist, riskMetrics: workspace.riskMetrics, setActiveView: workspace.setActiveView, setOpenMarketInstrumentId: workspace.setOpenMarketInstrumentId, setCoverageVersion: workspace.setCoverageVersion, setThesisSymbol: workspace.setThesisSymbol, setTransactionType: workspace.setTransactionType, submitTransaction: workspace.submitTransaction, summary: workspace.summary, thesisSymbol: workspace.thesisSymbol, transactionType: workspace.transactionType, valuation: workspace.valuation, valuationBySymbol: workspace.valuationBySymbol, watchlist: workspace.watchlist}} />
+          <OverviewPage workspace={{addInstrumentToWatchlist: workspace.addInstrumentToWatchlist, cancelEditingTransaction: workspace.cancelEditingTransaction, coverage: workspace.coverage, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist, riskMetrics: workspace.riskMetrics, setActiveView: workspace.setActiveView, setOpenMarketInstrumentId: workspace.setOpenMarketInstrumentId, setCoverageVersion: workspace.setCoverageVersion, setThesisSymbol: workspace.setThesisSymbol, setTransactionType: workspace.setTransactionType, submitTransaction: workspace.submitTransaction, summary: workspace.summary, thesisSymbol: workspace.thesisSymbol, transactionType: workspace.transactionType, valuation: workspace.valuation, valuationBySymbol: workspace.valuationBySymbol, watchlist: workspace.watchlist, watchlistLoadState: workspace.watchlistLoadState, watchlistLoadError: workspace.watchlistLoadError, refreshWatchlist: workspace.refreshWatchlist, setBrokerPriceRows: workspace.setBrokerPriceRows, brokerRefreshKey: workspace.brokerRefreshKey}} />
         ) : (
           <ActivityPage workspace={{cancelEditingTransaction: workspace.cancelEditingTransaction, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, riskMetrics: workspace.riskMetrics, removeTransaction: workspace.removeTransaction, setTransactionType: workspace.setTransactionType, startEditingTransaction: workspace.startEditingTransaction, submitTransaction: workspace.submitTransaction, summary: workspace.summary, transactionType: workspace.transactionType, transactions: workspace.transactions, valuation: workspace.valuation}} />
         )}
@@ -282,10 +315,9 @@ export default function App() {
         <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={18} /><span>Markets</span></button>
         <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={18} /><span>Brokers</span></button>
         <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={18} /><span>Alerts</span></button>
-        <button className={activeView === 'strategies' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('strategies')}><Target size={18} /><span>Strategies</span></button>
+        <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={18} /><span>Signals</span></button>
         <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={18} /><span>Actions</span></button>
         <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={18} /><span>Research</span></button>
-        <button className={activeView === 'delta-research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('delta-research')}><FlaskConical size={18} /><span>Delta</span></button>
       </nav>
     </div>
   );

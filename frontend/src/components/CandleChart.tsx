@@ -37,6 +37,7 @@ type Props = {
   onLoadOlder?: () => void;
   loadingOlder?: boolean;
   hasOlder?: boolean;
+  sessionClose?: SessionClose | null;
 };
 
 const INDICATORS = [
@@ -134,7 +135,12 @@ function chartDate(time: Time): Date {
   return new Date(Date.UTC(time.year, time.month - 1, time.day));
 }
 
-function formatChartTime(time: Time, timezone: string, includeTime = true): string {
+// Daily bars are stored at UTC midnight of their exchange session date, so they must be labelled in UTC.
+export function chartTimeZone(interval: string, timezone: string): string {
+  return interval === '1d' ? 'UTC' : timezone;
+}
+
+export function formatChartTime(time: Time, timezone: string, includeTime = true): string {
   return new Intl.DateTimeFormat(undefined, {
     timeZone: timezone,
     year: 'numeric',
@@ -142,6 +148,64 @@ function formatChartTime(time: Time, timezone: string, includeTime = true): stri
     day: '2-digit',
     ...(includeTime ? { hour: '2-digit', minute: '2-digit' } : {}),
   }).format(chartDate(time));
+}
+
+export type SessionClose = {
+  hour: number;
+  minute: number;
+  zoneLabel: string;
+};
+
+const NSE_SESSION_CLOSE: SessionClose = { hour: 15, minute: 30, zoneLabel: 'IST' };
+
+// Exchange close metadata by venue. Venues not listed have no known close, so daily labels show the date only.
+const SESSION_CLOSE_BY_VENUE: Record<string, SessionClose> = {
+  NSE: NSE_SESSION_CLOSE,
+  BSE: NSE_SESSION_CLOSE,
+};
+
+export function sessionCloseForVenue(venue: string | null | undefined): SessionClose | null {
+  return venue ? SESSION_CLOSE_BY_VENUE[venue.toUpperCase()] ?? null : null;
+}
+
+// Daily keys are UTC midnight of the session date, so the date is read in UTC and the close is added from exchange metadata.
+export function formatDailyChartLabel(time: Time, sessionClose?: SessionClose | null): string {
+  const date = formatChartTime(time, 'UTC', false);
+  if (!sessionClose) return date;
+  const key = chartDate(time);
+  // Exchange wall-clock close on the session date; the zone label names the exchange time zone.
+  const closeWallClock = new Date(Date.UTC(key.getUTCFullYear(), key.getUTCMonth(), key.getUTCDate(), sessionClose.hour, sessionClose.minute));
+  const closeTime = new Intl.DateTimeFormat(undefined, {
+    timeZone: 'UTC',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(closeWallClock);
+  return `${date}, ${closeTime} ${sessionClose.zoneLabel}`;
+}
+
+export function formatBarLabel(
+  time: Time,
+  interval: string,
+  timezone: string,
+  sessionClose?: SessionClose | null,
+  includeTime = true,
+): string {
+  if (interval === '1d') {
+    return includeTime ? formatDailyChartLabel(time, sessionClose) : formatChartTime(time, 'UTC', false);
+  }
+  return formatChartTime(time, chartTimeZone(interval, timezone), includeTime);
+}
+
+export function formatAxisTickLabel(time: Time, interval: string, timezone: string): string {
+  if (interval === '1d') return formatChartTime(time, 'UTC', false);
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: chartTimeZone(interval, timezone),
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(chartDate(time)).replace(',', '');
 }
 
 function CandleChartView({
@@ -157,6 +221,7 @@ function CandleChartView({
   onLoadOlder,
   loadingOlder = false,
   hasOlder = false,
+  sessionClose = null,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -172,7 +237,7 @@ function CandleChartView({
   const liveBarsRef = useRef<Candle[]>([]);
   const liveTimerRef = useRef<number | null>(null);
   const liveConfigRef = useRef({ bars, interval, tickSize, currency, timezone });
-  const chartConfigRef = useRef({ currency, timezone, interval });
+  const chartConfigRef = useRef({ currency, timezone, interval, sessionClose });
   const liveCandleRef = useRef<{
     time: number;
     open: string;
@@ -180,6 +245,7 @@ function CandleChartView({
     low: string;
   } | null>(null);
   const userNavigatedRef = useRef(false);
+  const latestRenderedTimeRef = useRef<number | null>(null);
   const [chartMode, setChartMode] = useState<'candles' | 'line'>('candles');
   const [enabledIndicators, setEnabledIndicators] = useState<string[]>(INITIAL_INDICATORS);
   const [indicatorsOpen, setIndicatorsOpen] = useState(false);
@@ -188,7 +254,7 @@ function CandleChartView({
   loadingOlderRef.current = loadingOlder;
   hasOlderRef.current = hasOlder;
   liveConfigRef.current = { bars, interval, tickSize, currency, timezone };
-  chartConfigRef.current = { currency, timezone, interval };
+  chartConfigRef.current = { currency, timezone, interval, sessionClose };
   const indicatorData = useMemo(
     () => Object.fromEntries(
       Object.entries(indicatorSeries).map(([key, points]) => [
@@ -214,17 +280,23 @@ function CandleChartView({
       timeScale: {
         timeVisible: chartConfigRef.current.interval !== '1d',
         secondsVisible: false,
+        tickMarkMaxCharacterLength: 12,
         borderColor: '#222b36',
-        tickMarkFormatter: (time: Time) => formatChartTime(
+        tickMarkFormatter: (time: Time) => formatAxisTickLabel(
           time,
+          chartConfigRef.current.interval,
           chartConfigRef.current.timezone,
-          chartConfigRef.current.interval !== '1d',
         ),
       },
       crosshair: { mode: 0 },
       localization: {
         priceFormatter: (value: number) => price(value, chartConfigRef.current.currency),
-        timeFormatter: (time: Time) => formatChartTime(time, chartConfigRef.current.timezone),
+        timeFormatter: (time: Time) => formatBarLabel(
+          time,
+          chartConfigRef.current.interval,
+          chartConfigRef.current.timezone,
+          chartConfigRef.current.sessionClose,
+        ),
       },
     });
     const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -280,7 +352,7 @@ function CandleChartView({
         return;
       }
       const config = chartConfigRef.current;
-      readout.textContent = `${formatChartTime(event.time, config.timezone)} · O ${price(candle.open, config.currency)} H ${price(candle.high, config.currency)} L ${price(candle.low, config.currency)} C ${price(candle.close, config.currency)}`;
+      readout.textContent = `${formatBarLabel(event.time, config.interval, config.timezone, config.sessionClose)} · O ${price(candle.open, config.currency)} H ${price(candle.high, config.currency)} L ${price(candle.low, config.currency)} C ${price(candle.close, config.currency)}`;
     };
     const onVisibleRangeChange = () => {
       const visibleRange = chart.timeScale().getVisibleLogicalRange();
@@ -320,14 +392,15 @@ function CandleChartView({
     chart.applyOptions({
       timeScale: {
         timeVisible: interval !== '1d',
-        tickMarkFormatter: (time: Time) => formatChartTime(time, timezone, interval !== '1d'),
+        tickMarkMaxCharacterLength: 12,
+        tickMarkFormatter: (time: Time) => formatAxisTickLabel(time, interval, timezone),
       },
       localization: {
         priceFormatter: (value: number) => price(value, currency),
-        timeFormatter: (time: Time) => formatChartTime(time, timezone),
+        timeFormatter: (time: Time) => formatBarLabel(time, interval, timezone, sessionClose),
       },
     });
-  }, [currency, interval, timezone]);
+  }, [currency, interval, timezone, sessionClose]);
 
   useEffect(() => {
     liveCandleRef.current = null;
@@ -452,7 +525,12 @@ function CandleChartView({
       ...point,
       color: Number(point.value) >= 0 ? '#3fd99a99' : '#ef777799',
     })));
-    if (visibleRange) {
+    const newestTime = Number(data[data.length - 1].time);
+    const advanced = latestRenderedTimeRef.current !== null
+      && newestTime > latestRenderedTimeRef.current;
+    if (advanced) {
+      chart.timeScale().scrollToRealTime();
+    } else if (visibleRange) {
       chart.timeScale().setVisibleLogicalRange(visibleRange);
     } else {
       chart.timeScale().setVisibleRange({
@@ -460,6 +538,7 @@ function CandleChartView({
         to: data[data.length - 1].time,
       });
     }
+    latestRenderedTimeRef.current = newestTime;
   }, [bars, indicatorSeries, indicatorData, preferredSource]);
 
   useEffect(() => {

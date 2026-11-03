@@ -108,7 +108,7 @@ class DeltaPublicCollector:
         self._started = False
         self._connected = False
         self._state = "stopped"
-        self._save_health(force=True)
+        await asyncio.to_thread(self._save_health, force=True)
 
     def status(self) -> dict[str, Any]:
         store_summary: dict[str, Any] | None = None
@@ -144,7 +144,7 @@ class DeltaPublicCollector:
 
         async def messages() -> AsyncIterator[dict[str, Any]]:
             try:
-                yield {"event": "snapshot", "data": self.status()}
+                yield {"event": "snapshot", "data": await asyncio.to_thread(self.status)}
                 while not self._stop.is_set():
                     try:
                         message = await asyncio.wait_for(queue.get(), timeout=15)
@@ -163,30 +163,27 @@ class DeltaPublicCollector:
             try:
                 if time.monotonic() - last_products >= PRODUCT_REFRESH_SECONDS:
                     products = await self._fetch_products(client)
-                    with self._write_lock, DeltaResearchStore(self.path) as store:
-                        store.save_products(products)
+                    await asyncio.to_thread(self._persist_products, products)
                     last_products = time.monotonic()
                 tickers = await self._fetch_tickers(client)
                 observed_at = datetime.now(timezone.utc)
-                with self._write_lock, DeltaResearchStore(self.path) as store:
-                    store.save_quotes(tickers, observed_at, "delta_rest_ticker")
-                    store.save_event(
-                        "rest_snapshot",
-                        {"ticker_count": len(tickers), "source": "delta_rest_ticker"},
-                    )
+                await asyncio.to_thread(self._persist_rest_snapshot, tickers, observed_at)
                 if self._state != "stopped_after_failures":
                     self._state = "connected" if self._connected else "collecting"
                     self._source_errors.pop("rest", None)
                     self._last_rest_success_at = datetime.now(timezone.utc)
                     self._refresh_state()
-                    await self._publish({"event": "snapshot", "data": self.status()})
+                    await self._publish({
+                        "event": "snapshot",
+                        "data": await asyncio.to_thread(self.status),
+                    })
             except asyncio.CancelledError:
                 raise
             except (
                 httpx.HTTPError, ValueError, KeyError, TypeError, OSError,
                 RuntimeError, sqlite3.Error,
             ) as exc:
-                self._record_failure(exc, "rest")
+                await self._record_failure(exc, "rest")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.refresh_seconds)
             except TimeoutError:
@@ -206,17 +203,20 @@ class DeltaPublicCollector:
                 params["after"] = cursor
             response = await client.get("/v2/products", params=params)
             response.raise_for_status()
-            payload = response.json(parse_float=Decimal)
+            payload = await asyncio.to_thread(response.json, parse_float=Decimal)
             batch = payload.get("result")
             if not isinstance(batch, list):
                 raise ValueError("Delta product catalog response is not a list")
-            products.extend(
-                item for item in batch
-                if isinstance(item, dict)
-                and item.get("contract_type") == "perpetual_futures"
-                and item.get("id") is not None
-                and item.get("symbol")
-            )
+            products.extend(await asyncio.to_thread(
+                lambda page: [
+                    item for item in page
+                    if isinstance(item, dict)
+                    and item.get("contract_type") == "perpetual_futures"
+                    and item.get("id") is not None
+                    and item.get("symbol")
+                ],
+                batch,
+            ))
             next_cursor = (payload.get("meta") or {}).get("after")
             if not next_cursor:
                 if len(batch) >= params["page_size"]:
@@ -229,15 +229,35 @@ class DeltaPublicCollector:
             cursor = next_cursor
         raise ValueError("Delta product catalog exceeded the page safety limit")
 
+    def _persist_products(self, products: list[dict[str, Any]]) -> None:
+        with self._write_lock, DeltaResearchStore(self.path) as store:
+            store.save_products(products)
+
+    def _persist_rest_snapshot(
+        self, tickers: list[dict[str, Any]], observed_at: datetime
+    ) -> None:
+        with self._write_lock, DeltaResearchStore(self.path) as store:
+            store.save_quotes(tickers, observed_at, "delta_rest_ticker")
+            store.save_event(
+                "rest_snapshot",
+                {"ticker_count": len(tickers), "source": "delta_rest_ticker"},
+            )
+
     async def _fetch_tickers(self, client: httpx.AsyncClient) -> list[dict[str, Any]]:
         response = await client.get(
             "/v2/tickers", params={"contract_types": "perpetual_futures"}
         )
         response.raise_for_status()
-        rows = response.json(parse_float=Decimal).get("result")
+        rows = (await asyncio.to_thread(response.json, parse_float=Decimal)).get("result")
         if not isinstance(rows, list):
             raise ValueError("Delta ticker response is not a list")
-        return [row for row in rows if isinstance(row, dict) and row.get("symbol")]
+        return await asyncio.to_thread(
+            lambda values: [
+                row for row in values
+                if isinstance(row, dict) and row.get("symbol")
+            ],
+            rows,
+        )
 
     async def _websocket_loop(self) -> None:
         while not self._stop.is_set() and self._consecutive_failures < MAX_CONSECUTIVE_FAILURES:
@@ -265,8 +285,11 @@ class DeltaPublicCollector:
                     }))
                     self._connected = True
                     self._refresh_state()
-                    self._save_health(force=True)
-                    await self._publish({"event": "health", "data": self.status()})
+                    await asyncio.to_thread(self._save_health, force=True)
+                    await self._publish({
+                        "event": "health",
+                        "data": await asyncio.to_thread(self.status),
+                    })
                     async for frame in websocket:
                         await self._handle_frame(frame)
                     if not self._stop.is_set():
@@ -274,7 +297,7 @@ class DeltaPublicCollector:
             except asyncio.CancelledError:
                 raise
             except (OSError, WebSocketException, ValueError, TypeError, json.JSONDecodeError) as exc:
-                self._record_failure(exc, "websocket")
+                await self._record_failure(exc, "websocket")
                 self._reconnects += 1
             finally:
                 self._connected = False
@@ -282,13 +305,19 @@ class DeltaPublicCollector:
                 break
             if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 self._state = "stopped_after_failures"
-                self._save_health(force=True)
-                await self._publish({"event": "health", "data": self.status()})
+                await asyncio.to_thread(self._save_health, force=True)
+                await self._publish({
+                    "event": "health",
+                    "data": await asyncio.to_thread(self.status),
+                })
                 break
             delay = min(2 ** max(0, self._consecutive_failures - 1), MAX_RECONNECT_SECONDS)
             self._state = "reconnecting"
-            self._save_health(force=True)
-            await self._publish({"event": "health", "data": self.status()})
+            await asyncio.to_thread(self._save_health, force=True)
+            await self._publish({
+                "event": "health",
+                "data": await asyncio.to_thread(self.status),
+            })
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
             except TimeoutError:
@@ -297,12 +326,12 @@ class DeltaPublicCollector:
     async def _handle_frame(self, frame: str | bytes) -> None:
         if isinstance(frame, bytes):
             frame = frame.decode("utf-8")
-        message = json.loads(frame, parse_float=Decimal)
+        message = await asyncio.to_thread(json.loads, frame, parse_float=Decimal)
         if not isinstance(message, dict):
             raise ValueError("Delta public message must be an object")
         message_type = message.get("type")
         if message_type == "heartbeat":
-            self._mark_event()
+            await self._mark_event()
             return
         if message_type in {"subscriptions", "pong"}:
             return
@@ -315,10 +344,13 @@ class DeltaPublicCollector:
             self._write_queue.put_nowait(message)
         except asyncio.QueueFull:
             self._dropped_events += 1
-            self._save_health(force=True)
-            await self._publish({"event": "health", "data": self.status()})
+            await asyncio.to_thread(self._save_health, force=True)
+            await self._publish({
+                "event": "health",
+                "data": await asyncio.to_thread(self.status),
+            })
             return
-        self._mark_event()
+        await self._mark_event()
 
     async def _writer_loop(self) -> None:
         while not self._stop.is_set() or not self._write_queue.empty():
@@ -330,7 +362,7 @@ class DeltaPublicCollector:
                 await asyncio.to_thread(self._persist_message, message)
                 self._source_errors.pop("storage", None)
                 self._refresh_state()
-                self._save_health()
+                await asyncio.to_thread(self._save_health)
                 await self._publish({
                     "event": "market_data",
                     "data": {
@@ -343,7 +375,7 @@ class DeltaPublicCollector:
             except (
                 OSError, RuntimeError, sqlite3.Error, ValueError, TypeError, KeyError,
             ) as exc:
-                self._record_failure(exc, "storage")
+                await self._record_failure(exc, "storage")
             finally:
                 self._write_queue.task_done()
 
@@ -402,13 +434,13 @@ class DeltaPublicCollector:
                     exchange_time=observed_at,
                 )
 
-    def _mark_event(self) -> None:
+    async def _mark_event(self) -> None:
         self._last_event_at = datetime.now(timezone.utc)
         self._consecutive_failures = 0
         self._source_errors.pop("websocket", None)
         self._refresh_state()
 
-    def _record_failure(self, error: Exception, source: str) -> None:
+    async def _record_failure(self, error: Exception, source: str) -> None:
         if source == "websocket":
             self._consecutive_failures += 1
         self._source_errors[source] = type(error).__name__
@@ -420,7 +452,7 @@ class DeltaPublicCollector:
                 type(error).__name__,
             )
             self._last_logged_error = self._last_error
-        self._save_health(force=True)
+        await asyncio.to_thread(self._save_health, force=True)
 
     def _refresh_state(self) -> None:
         if self._state == "stopped_after_failures":
@@ -469,7 +501,7 @@ class DeltaPublicCollector:
                 except asyncio.QueueEmpty:
                     pass
                 self._dropped_events += 1
-                self._save_health()
+                await asyncio.to_thread(self._save_health)
             queue.put_nowait(message)
 
 

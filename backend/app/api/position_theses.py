@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -20,7 +20,7 @@ from app.models import (
     PositionThesisRevision,
     UserSession,
 )
-from app.services.price_freshness import classify_quote
+from app.services.price_freshness import classify_quote, venue_last_completed_session
 
 router = APIRouter(prefix="/portfolios/{portfolio_id}/theses", tags=["position theses"])
 
@@ -321,7 +321,10 @@ def _cached_quotes(db: Session, instrument_ids: list[UUID]) -> dict[UUID, Market
 
 
 def _market(
-    quote: MarketQuote | None, instrument: Instrument | None, portfolio_currency: str
+    quote: MarketQuote | None,
+    instrument: Instrument | None,
+    portfolio_currency: str,
+    last_completed_session: date | None,
 ) -> ThesisMarket:
     if instrument is not None and instrument.currency != portfolio_currency:
         return ThesisMarket(
@@ -348,7 +351,11 @@ def _market(
         )
     now = datetime.now(timezone.utc)
     usable, reason, _evidence = classify_quote(
-        quote, instrument, portfolio_currency, now
+        quote,
+        instrument,
+        portfolio_currency,
+        now,
+        last_completed_session=last_completed_session,
     )
     if reason == "synthetic_price":
         note = "Synthetic demo price; distances are not shown."
@@ -382,9 +389,13 @@ def _distance(level: Decimal, price: Decimal | None) -> Decimal | None:
 
 
 def _response(
-    thesis: PositionThesis, currency: str, instrument: Instrument | None, quote: MarketQuote | None
+    thesis: PositionThesis,
+    currency: str,
+    instrument: Instrument | None,
+    quote: MarketQuote | None,
+    last_completed_session: date | None,
 ) -> ThesisResponse:
-    market = _market(quote, instrument, currency)
+    market = _market(quote, instrument, currency, last_completed_session)
     price = market.last_price
     now = datetime.now(timezone.utc)
     return ThesisResponse(
@@ -430,15 +441,22 @@ def _render(db: Session, portfolio, theses: list[PositionThesis]) -> list[Thesis
         for item in db.scalars(select(Instrument).where(Instrument.id.in_(instrument_ids)))
     } if instrument_ids else {}
     quotes = _cached_quotes(db, instrument_ids)
-    return [
-        _response(
-            thesis,
-            portfolio.base_currency,
-            instruments.get(thesis.instrument_id),
-            quotes.get(thesis.instrument_id),
+    responses: list[ThesisResponse] = []
+    for thesis in theses:
+        instrument = instruments.get(thesis.instrument_id)
+        quote = quotes.get(thesis.instrument_id)
+        responses.append(
+            _response(
+                thesis,
+                portfolio.base_currency,
+                instrument,
+                quote,
+                venue_last_completed_session(
+                    db, instrument, quote.source if quote is not None else None
+                ),
+            )
         )
-        for thesis in theses
-    ]
+    return responses
 
 
 def _owned_thesis(db: Session, user_id: UUID, portfolio_id: UUID, thesis_id: UUID) -> PositionThesis:

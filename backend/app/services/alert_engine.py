@@ -27,7 +27,7 @@ from app.services.indicators import (
     rsi as calculate_rsi,
     sma as calculate_sma,
 )
-from app.services.price_freshness import classify_quote
+from app.services.price_freshness import classify_quote, venue_last_completed_session
 
 PRICE_RULES = {
     "price_above",
@@ -102,10 +102,15 @@ def _rule_match(
     thesis: PositionThesis | None,
     now: datetime,
     params: dict[str, Any],
+    last_completed_session: date | None,
 ) -> tuple[bool, dict[str, Any], str | None]:
     portfolio_currency = params.get("_portfolio_currency")
     quote_usable, quote_reason, quote_evidence = classify_quote(
-        quote, instrument, portfolio_currency, now
+        quote,
+        instrument,
+        portfolio_currency,
+        now,
+        last_completed_session=last_completed_session,
     )
     quote_age = quote_evidence["quote_retrieved_age_seconds"]
     price = None
@@ -480,6 +485,11 @@ def evaluate_rules(
                         linked_instrument,
                         portfolio.base_currency,
                         evaluated_at,
+                        last_completed_session=venue_last_completed_session(
+                            db,
+                            linked_instrument,
+                            linked_quote.source if linked_quote is not None else None,
+                        ),
                     )
                     reliable = usable and linked_instrument is not None
                     if reliable and linked_quote is not None:
@@ -505,7 +515,10 @@ def evaluate_rules(
             bar_limit = settings.indicator_lookback_bars if rule.rule_type in DAILY_BAR_RULES else 2
             bars = _bars(db, instrument.id, bar_limit)
             matched, evidence, suppressed = _rule_match(
-                rule, instrument, quote, bars, ledger, symbol, thesis, evaluated_at, params
+                rule, instrument, quote, bars, ledger, symbol, thesis, evaluated_at, params,
+                venue_last_completed_session(
+                    db, instrument, quote.source if quote is not None else None
+                ),
             )
             if suppressed:
                 evidence["suppression_reason"] = suppressed

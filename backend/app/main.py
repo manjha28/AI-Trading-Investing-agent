@@ -14,6 +14,7 @@ from app.api.delta_research import router as delta_research_router
 from app.delta_research.collector import delta_research_manager
 from app.api.position_theses import router as position_theses_router
 from app.api.strategies import router as strategies_router
+from app.api.market_stream import router as market_stream_router
 from app.api.research import router as research_router
 from app.api.health import router as health_router
 from app.api.market_data import (
@@ -25,7 +26,12 @@ from app.api.portfolios import router as portfolios_router
 from app.api.portfolio_transactions import router as portfolio_transactions_router
 from app.api.trades import router as trades_router
 from app.config import settings
-from app.market_data_scheduler import market_data_refresh_loop
+from app.market_data_scheduler import (
+    alert_evaluation_loop,
+    dhan_backend_capture_loop,
+    market_data_refresh_loop,
+    portfolio_snapshot_loop,
+)
 
 
 class BrokerCallbackAccessLogFilter(logging.Filter):
@@ -45,7 +51,14 @@ logging.getLogger("uvicorn.access").addFilter(BrokerCallbackAccessLogFilter())
 async def lifespan(_app: FastAPI):
     await dhan_live_feed_hub.start()
     scheduler_task = None
+    snapshot_task = None
+    alert_task = None
     delta_task = None
+    dhan_capture_task = None
+    if "pytest" not in sys.modules:
+        snapshot_task = asyncio.create_task(portfolio_snapshot_loop())
+        dhan_capture_task = asyncio.create_task(dhan_backend_capture_loop())
+        alert_task = asyncio.create_task(alert_evaluation_loop())
     if settings.market_data_scheduler_enabled and "pytest" not in sys.modules:
         scheduler_task = asyncio.create_task(market_data_refresh_loop())
     if settings.delta_research_enabled and "pytest" not in sys.modules:
@@ -53,6 +66,12 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        if dhan_capture_task is not None:
+            dhan_capture_task.cancel()
+            try:
+                await dhan_capture_task
+            except asyncio.CancelledError:
+                pass
         await dhan_live_feed_hub.stop()
         if delta_task is not None:
             await delta_research_manager.stop()
@@ -60,6 +79,18 @@ async def lifespan(_app: FastAPI):
             scheduler_task.cancel()
             try:
                 await scheduler_task
+            except asyncio.CancelledError:
+                pass
+        if snapshot_task is not None:
+            snapshot_task.cancel()
+            try:
+                await snapshot_task
+            except asyncio.CancelledError:
+                pass
+        if alert_task is not None:
+            alert_task.cancel()
+            try:
+                await alert_task
             except asyncio.CancelledError:
                 pass
 
@@ -73,7 +104,6 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.allowed_origins),
-    allow_origin_regex=settings.allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
@@ -93,6 +123,7 @@ app.include_router(research_router, prefix="/api/v1")
 app.include_router(position_theses_router, prefix="/api/v1")
 app.include_router(delta_research_router, prefix="/api/v1")
 app.include_router(strategies_router, prefix="/api/v1")
+app.include_router(market_stream_router, prefix="/api/v1")
 
 
 @app.get("/")

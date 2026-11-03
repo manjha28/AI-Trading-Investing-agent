@@ -165,7 +165,7 @@ export function StatusDot({
   status,
   label,
 }: {
-  status: 'fresh' | 'stale' | 'failed' | 'never-synced';
+  status: 'fresh' | 'stale' | 'failed' | 'never-synced' | 'unavailable';
   label: string;
 }) {
   const tone = status === 'fresh'

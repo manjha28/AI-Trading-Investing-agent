@@ -1,0 +1,20 @@
+# Production overrides: no host ports are published. Services are reachable only
+# on the internal Compose network. Stricter restart and log rotation settings.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  kafka:
+    restart: always
+    logging: *logging
+
+  valkey:
+    restart: always
+    logging: *logging
+
+  postgres:
+    restart: always
+    logging: *logging

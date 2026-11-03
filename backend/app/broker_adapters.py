@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from email.utils import parsedate_to_datetime
 import hashlib
 import csv
 import json
 import logging
+import math
 import re
+import random
 import struct
 import threading
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
@@ -25,8 +29,57 @@ from app.market_data import HistoricalBar
 
 logger = logging.getLogger(__name__)
 _DHAN_MAX_CONSECUTIVE_FAILURES = 5
-_DHAN_MAX_RETRY_DELAY_SECONDS = 30
+_DHAN_MAX_RETRY_DELAY_SECONDS = 60
 _DHAN_FRAME_DIAGNOSTIC_CAPTURED = False
+_DHAN_LIVE_SOCKET_LOCK = threading.Lock()
+_DHAN_LIVE_CONNECTIONS = threading.BoundedSemaphore(5)
+
+
+@asynccontextmanager
+async def _single_dhan_live_connection(*args: Any, **kwargs: Any):
+    """Limit Dhan sockets to five and serialize only their handshakes."""
+    while not _DHAN_LIVE_CONNECTIONS.acquire(blocking=False):
+        await asyncio.sleep(0.05)
+    context = websocket_connect(*args, **kwargs)
+    connection = None
+    try:
+        while not _DHAN_LIVE_SOCKET_LOCK.acquire(blocking=False):
+            await asyncio.sleep(0.05)
+        try:
+            connection = await context.__aenter__()
+        finally:
+            _DHAN_LIVE_SOCKET_LOCK.release()
+        yield connection
+    finally:
+        try:
+            if connection is not None:
+                await context.__aexit__(None, None, None)
+        finally:
+            _DHAN_LIVE_CONNECTIONS.release()
+
+
+def _dhan_retry_after_seconds(error: InvalidStatus) -> float | None:
+    raw = error.response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(raw)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _dhan_backoff_seconds(base: float, retry_after: float | None = None) -> float:
+    if retry_after is not None:
+        cooldown = max(300.0, retry_after)
+        return cooldown + random.uniform(0.0, min(30.0, max(1.0, cooldown * 0.1)))
+    bounded = min(max(1.0, base), _DHAN_MAX_RETRY_DELAY_SECONDS)
+    return random.uniform(max(0.1, bounded * 0.8), bounded)
 
 
 def _log_dhan_bad_frame_once(frame: bytes | str) -> None:
@@ -54,6 +107,35 @@ _SENSITIVE_PROVIDER_FIELD = re.compile(
 _OPAQUE_PROVIDER_VALUE = re.compile(r"\b[A-Za-z0-9_~+/=-]{24,}\b")
 _LONG_NUMBER = re.compile(r"\b\d{5,}\b")
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_DHAN_TICK_EXCHANGES = {"NSE_EQ": "NSE", "BSE_EQ": "BSE"}
+_DHAN_TICK_CACHE: dict[tuple[str, str], Decimal | None] = {}
+
+
+def _float32_wire_to_price(raw: float, tick: Decimal) -> Decimal:
+    """Quantise a float32 wire value to ``tick`` without a binary-float Decimal conversion.
+
+    The shortest decimal string (at most 9 significant digits) that rounds back to the
+    same float32 is chosen, then quantised to the tick. A float32 has ~7 significant
+    digits; above roughly Rs 1,31,072 its ULP exceeds Rs 0.01, so paise cannot be
+    recovered there. That is a Dhan wire-format limit, not something this rounding hides.
+    """
+    wire = struct.unpack("<f", struct.pack("<f", raw))[0]
+    if not math.isfinite(wire):
+        raise ValueError("non-finite float32 price")
+    candidate = Decimal(format(wire, ".9g"))
+    for digits in range(1, 10):
+        text = Decimal(format(wire, f".{digits}g"))
+        if struct.unpack("<f", struct.pack("<f", float(text)))[0] == wire:
+            candidate = text
+            break
+    return candidate.quantize(tick, rounding=ROUND_HALF_EVEN)
+
+
+def _quantize_price_text(value: object, tick: Decimal) -> Decimal:
+    """Quantise a JSON price to ``tick`` via its string form, never ``Decimal(float)``."""
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a price")
+    return Decimal(str(value)).quantize(tick, rounding=ROUND_HALF_EVEN)
 
 
 def _dhan_ist_epoch_to_utc(timestamp: int) -> datetime:
@@ -61,6 +143,20 @@ def _dhan_ist_epoch_to_utc(timestamp: int) -> datetime:
     return encoded_wall_clock.replace(
         tzinfo=ZoneInfo("Asia/Kolkata")
     ).astimezone(timezone.utc)
+
+
+_DHAN_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "60m": 60}
+
+
+def _dhan_candle_is_complete(timestamp: datetime, interval: str, now: datetime) -> bool:
+    if interval == "1d":
+        local_date = timestamp.astimezone(ZoneInfo("Asia/Kolkata")).date()
+        session_close = datetime(
+            local_date.year, local_date.month, local_date.day, 15, 30,
+            tzinfo=ZoneInfo("Asia/Kolkata"),
+        )
+        return now >= session_close.astimezone(timezone.utc)
+    return timestamp + timedelta(minutes=_DHAN_INTERVAL_MINUTES[interval]) <= now
 
 
 def _safe_provider_error(payload: Any) -> tuple[str | None, str | None]:
@@ -1039,6 +1135,42 @@ class DhanAdapter(BrokerAdapter):
                 category="provider_response_error",
             )
 
+    def get_company_info(
+        self,
+        access_token: str,
+        tokens: Mapping[str, str],
+        security_id: str,
+        exchange_segment: str,
+    ) -> dict[str, Any]:
+        if (
+            not security_id.isdigit()
+            or exchange_segment not in {"NSE_EQ", "BSE_EQ"}
+        ):
+            raise BrokerAdapterError("Dhan company info requires a verified equity security")
+        _wait_for_dhan_market_data()
+        payload = _request(
+            "POST",
+            f"{self.api_root}/v2/data/companyinfo",
+            diagnostic_stage="company_info_api_request",
+            headers=self.account_headers(access_token, tokens),
+            json={
+                "securityId": security_id,
+                "exchangeSegment": exchange_segment,
+                "instrument": "EQUITY",
+                "metrics": ["CO", "RATIOS"],
+            },
+        )
+        self._check_market_data_payload(payload)
+        if (
+            payload.get("status") not in {None, "success"}
+            or not isinstance(payload.get("data"), dict)
+        ):
+            raise BrokerAdapterError(
+                "Dhan company info response has an unexpected format",
+                category="invalid_provider_response",
+            )
+        return payload["data"]
+
     def get_market_quote(
         self,
         access_token: str,
@@ -1076,6 +1208,8 @@ class DhanAdapter(BrokerAdapter):
         access_token: str,
         tokens: Mapping[str, str],
         instruments_by_segment: Mapping[str, list[str]],
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, dict[str, HistoricalBar]]:
         supported_segments = {
             "NSE_EQ",
@@ -1105,6 +1239,8 @@ class DhanAdapter(BrokerAdapter):
         with self._market_quote_cache_lock:
             cached = self._market_quote_cache.get(cache_key)
             if (
+                not force_refresh
+                and
                 cached is not None
                 and time.monotonic() - cached[0] <= self._market_quote_cache_seconds
             ):
@@ -1156,6 +1292,13 @@ class DhanAdapter(BrokerAdapter):
                     ohlc = record.get("ohlc") if isinstance(record, dict) else None
                     if not isinstance(record, dict) or not isinstance(ohlc, dict):
                         continue
+                    tick = DhanAdapter.price_tick_for(exchange_segment, security_id)
+                    if tick is None:
+                        logger.warning(
+                            "dhan_quote_rejected reason=no_resolvable_tick segment=%s",
+                            exchange_segment,
+                        )
+                        continue
                     try:
                         raw_timestamp = record["last_trade_time"]
                         timestamp = datetime.strptime(
@@ -1163,11 +1306,13 @@ class DhanAdapter(BrokerAdapter):
                         ).replace(tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc)
                         quotes[(exchange_segment, security_id)] = HistoricalBar(
                             timestamp=timestamp,
-                            open=Decimal(str(ohlc["open"])),
-                            high=Decimal(str(ohlc["high"])),
-                            low=Decimal(str(ohlc["low"])),
-                            close=Decimal(str(record["last_price"])),
+                            open=_quantize_price_text(ohlc["open"], tick),
+                            high=_quantize_price_text(ohlc["high"], tick),
+                            low=_quantize_price_text(ohlc["low"], tick),
+                            close=_quantize_price_text(record["last_price"], tick),
                             volume=Decimal(str(record["volume"])),
+                            session_close=_quantize_price_text(ohlc["close"], tick),
+                            provider_observed_at=datetime.now(timezone.utc),
                         )
                     except (KeyError, ValueError, TypeError, InvalidOperation) as error:
                         raise BrokerAdapterError(
@@ -1204,7 +1349,7 @@ class DhanAdapter(BrokerAdapter):
         if start.utcoffset() is None or end.utcoffset() is None or start >= end:
             raise BrokerAdapterError("Dhan historical request range is invalid")
         intraday = interval != "1d"
-        if intraday and end - start > timedelta(days=90):
+        if intraday and end - start >= timedelta(days=90):
             raise BrokerAdapterError(
                 "Dhan intraday history is limited to 90 days per request",
                 category="provider_window_exceeded",
@@ -1221,9 +1366,11 @@ class DhanAdapter(BrokerAdapter):
                 start_local.strftime("%Y-%m-%d %H:%M:%S")
                 if intraday else start_local.strftime("%Y-%m-%d")
             ),
+            # Dhan daily toDate is non-inclusive, so the end date is shifted one day
+            # forward to include the final requested session.
             "toDate": (
                 end_local.strftime("%Y-%m-%d %H:%M:%S")
-                if intraday else end_local.strftime("%Y-%m-%d")
+                if intraday else (end_local.date() + timedelta(days=1)).strftime("%Y-%m-%d")
             ),
         }
         if intraday:
@@ -1257,11 +1404,14 @@ class DhanAdapter(BrokerAdapter):
         if len(lengths) != 1:
             raise BrokerAdapterError("Dhan historical response arrays do not align")
         bars: list[HistoricalBar] = []
+        now_utc = datetime.now(timezone.utc)
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
         try:
             for index in range(next(iter(lengths), 0)):
-                timestamp = datetime.fromtimestamp(
-                    float(arrays["timestamp"][index]), timezone.utc
-                )
+                # Dhan candle epochs are true UTC instants (e.g. 00:00 IST session
+                # start is 18:30 UTC of the prior day).
+                timestamp = datetime.fromtimestamp(float(arrays["timestamp"][index]), timezone.utc)
                 bar = HistoricalBar(
                     timestamp=timestamp,
                     open=Decimal(str(arrays["open"][index])),
@@ -1270,17 +1420,73 @@ class DhanAdapter(BrokerAdapter):
                     close=Decimal(str(arrays["close"][index])),
                     volume=Decimal(str(arrays["volume"][index])),
                 )
-                if start.astimezone(timezone.utc) <= bar.timestamp < end.astimezone(timezone.utc):
-                    bars.append(bar)
+                if not (
+                    bar.low <= min(bar.open, bar.close)
+                    and bar.high >= max(bar.open, bar.close)
+                    and bar.low <= bar.high
+                ):
+                    raise BrokerAdapterError("Dhan historical response contains invalid OHLC values")
+                if not (start_utc <= bar.timestamp < end_utc):
+                    continue
+                # Candles still forming (current session or interval) are excluded.
+                if not _dhan_candle_is_complete(bar.timestamp, interval, now_utc):
+                    continue
+                bars.append(bar)
         except (ValueError, TypeError, KeyError, IndexError, OverflowError, InvalidOperation) as error:
             raise BrokerAdapterError("Dhan historical response contains invalid candles") from error
         return sorted({bar.timestamp: bar for bar in bars}.values(), key=lambda bar: bar.timestamp)
+
+    @staticmethod
+    def price_tick_for(exchange_segment: str, security_id: str) -> Decimal | None:
+        """Tick size from the Dhan scrip master for an NSE/BSE equity, or None (fail closed).
+
+        Only NSE_EQ and BSE_EQ are resolved. Other segments return None, so their price
+        packets are rejected rather than kept unquantised.
+        """
+        key = (exchange_segment, security_id)
+        if key in _DHAN_TICK_CACHE:
+            return _DHAN_TICK_CACHE[key]
+        exchange = _DHAN_TICK_EXCHANGES.get(exchange_segment)
+        tick: Decimal | None = None
+        reason = "segment_not_resolvable"
+        if exchange is not None and security_id.isdigit():
+            ticks = {
+                (row.get("TICK_SIZE") or "").strip()
+                for row in DhanAdapter._scrip_master()
+                if (row.get("EXCH_ID") or "").strip().upper() == exchange
+                and (row.get("SECURITY_ID") or "").strip() == security_id
+                and (row.get("INSTRUMENT") or "").strip().upper() == "EQUITY"
+            }
+            ticks.discard("")
+            if len(ticks) == 1:
+                try:
+                    parsed = Decimal(next(iter(ticks)))
+                except InvalidOperation:
+                    parsed = Decimal(0)
+                if parsed.is_finite() and parsed > 0:
+                    tick = parsed
+                    reason = ""
+                else:
+                    reason = "tick_size_invalid"
+            else:
+                reason = "tick_size_missing_or_ambiguous"
+        if tick is None:
+            logger.warning(
+                "dhan_price_tick_unresolved reason=%s segment=%s security_id=%s",
+                reason,
+                exchange_segment,
+                security_id,
+            )
+        _DHAN_TICK_CACHE[key] = tick
+        return tick
 
     @staticmethod
     def decode_market_feed_packet(
         packet: bytes,
         exchange_segment: str,
         security_id: str,
+        *,
+        price_tick: Decimal | None = None,
     ) -> HistoricalBar | None:
         segment_codes = {"NSE_EQ": 1, "NSE_FNO": 2, "NSE_CURRENCY": 3, "BSE_EQ": 4,
                          "MCX_COMM": 5, "BSE_CURRENCY": 7, "BSE_FNO": 8}
@@ -1304,11 +1510,13 @@ class DhanAdapter(BrokerAdapter):
         if packet[0] == 2:
             if packet_length != 16:
                 raise BrokerAdapterError("Dhan live feed ticker packet has an invalid length")
+            if price_tick is None:
+                raise BrokerAdapterError("Dhan live feed price has no resolvable tick size")
             try:
-                last_price = Decimal(str(struct.unpack_from("<f", packet, 8)[0]))
+                price = _float32_wire_to_price(
+                    struct.unpack_from("<f", packet, 8)[0], price_tick
+                )
                 trade_timestamp = struct.unpack_from("<i", packet, 12)[0]
-                price_precision = Decimal("0.00000001")
-                price = last_price.quantize(price_precision)
                 return HistoricalBar(
                     timestamp=_dhan_ist_epoch_to_utc(trade_timestamp),
                     open=price,
@@ -1323,6 +1531,8 @@ class DhanAdapter(BrokerAdapter):
             return None
         if packet_length != 50:
             raise BrokerAdapterError("Dhan live feed quote packet has an invalid length")
+        if price_tick is None:
+            raise BrokerAdapterError("Dhan live feed price has no resolvable tick size")
         try:
             last_price = struct.unpack_from("<f", packet, 8)[0]
             trade_timestamp = struct.unpack_from("<i", packet, 14)[0]
@@ -1330,13 +1540,12 @@ class DhanAdapter(BrokerAdapter):
             opening = struct.unpack_from("<f", packet, 34)[0]
             high = struct.unpack_from("<f", packet, 42)[0]
             low = struct.unpack_from("<f", packet, 46)[0]
-            price_precision = Decimal("0.00000001")
             return HistoricalBar(
                 timestamp=_dhan_ist_epoch_to_utc(trade_timestamp),
-                open=Decimal(str(opening)).quantize(price_precision),
-                high=Decimal(str(high)).quantize(price_precision),
-                low=Decimal(str(low)).quantize(price_precision),
-                close=Decimal(str(last_price)).quantize(price_precision),
+                open=_float32_wire_to_price(opening, price_tick),
+                high=_float32_wire_to_price(high, price_tick),
+                low=_float32_wire_to_price(low, price_tick),
+                close=_float32_wire_to_price(last_price, price_tick),
                 volume=Decimal(volume),
             )
         except (OverflowError, OSError, ValueError, TypeError, InvalidOperation) as error:
@@ -1396,9 +1605,14 @@ class DhanAdapter(BrokerAdapter):
                             raise BrokerAdapterError(
                                 "Dhan previous-close packet has an invalid length"
                             )
+                        tick = DhanAdapter.price_tick_for(segment, security_id)
+                        if tick is None:
+                            raise BrokerAdapterError(
+                                "Dhan live feed price has no resolvable tick size"
+                            )
                         try:
-                            previous_close = Decimal(
-                                str(struct.unpack_from("<f", packet, 8)[0])
+                            previous_close = _float32_wire_to_price(
+                                struct.unpack_from("<f", packet, 8)[0], tick
                             )
                         except (OverflowError, OSError, ValueError, TypeError) as error:
                             raise BrokerAdapterError(
@@ -1416,8 +1630,13 @@ class DhanAdapter(BrokerAdapter):
                             (instrument_id, response_code, packet)
                         )
                     else:
+                        tick = DhanAdapter.price_tick_for(segment, security_id)
+                        if tick is None:
+                            raise BrokerAdapterError(
+                                "Dhan live feed price has no resolvable tick size"
+                            )
                         quote = DhanAdapter.decode_market_feed_packet(
-                            packet, segment, security_id
+                            packet, segment, security_id, price_tick=tick
                         )
                         if quote is not None:
                             decoded.append((instrument_id, quote))
@@ -1508,7 +1727,7 @@ class DhanAdapter(BrokerAdapter):
         connection = None
         logger.info("Dhan depth feed connect attempt url=%s", safe_url)
         try:
-            async with websocket_connect(
+            async with _single_dhan_live_connection(
                 url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
             ) as connection:
                 response = connection.response
@@ -1587,8 +1806,11 @@ class DhanAdapter(BrokerAdapter):
                                 if instrument_id is None:
                                     continue
                                 try:
-                                    update = self.decode_market_depth_packet(
-                                        packet, segment or "", security_id
+                                    update = await asyncio.to_thread(
+                                        self.decode_market_depth_packet,
+                                        packet,
+                                        segment or "",
+                                        security_id,
                                     )
                                 except BrokerAdapterError as error:
                                     logger.warning(
@@ -1666,7 +1888,7 @@ class DhanAdapter(BrokerAdapter):
         logger.info("Dhan depth feed connect attempt url=%s", safe_url)
         connection = None
         try:
-            async with websocket_connect(
+            async with _single_dhan_live_connection(
                 url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
             ) as connection:
                 response = connection.response
@@ -1704,7 +1926,8 @@ class DhanAdapter(BrokerAdapter):
                                     raise BrokerAdapterError(
                                         "Dhan live feed depth packet has an invalid length"
                                     )
-                                update = self.decode_market_depth_packet(
+                                update = await asyncio.to_thread(
+                                    self.decode_market_depth_packet,
                                     message[offset:packet_end],
                                     exchange_segment,
                                     security_id,
@@ -1827,7 +2050,7 @@ class DhanAdapter(BrokerAdapter):
             connection = None
             try:
                 logger.info("dhan_upstream_connecting feed=ticker")
-                async with websocket_connect(
+                async with _single_dhan_live_connection(
                     url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
                 ) as connection:
                     response = connection.response
@@ -1847,7 +2070,8 @@ class DhanAdapter(BrokerAdapter):
                             continue
                         try:
                             quotes, retained_packets, unknown_response_count = (
-                                self.decode_market_feed_frame(
+                                await asyncio.to_thread(
+                                    self.decode_market_feed_frame,
                                     message,
                                     {(exchange_segment, security_id): ""},
                                 )
@@ -1922,7 +2146,7 @@ class DhanAdapter(BrokerAdapter):
         tokens: Mapping[str, str],
         initial_subscriptions: Mapping[str, tuple[str, str]],
         subscription_updates: asyncio.Queue[Mapping[str, tuple[str, str]]],
-        status_callback: Callable[[str], Awaitable[None]],
+        status_callback: Callable[[str, str | None, float | None, str | None], Awaitable[None]],
     ) -> AsyncIterator[
         tuple[str, HistoricalBar]
         | tuple[str, str, Decimal | bytes]
@@ -1996,7 +2220,6 @@ class DhanAdapter(BrokerAdapter):
         current = subscription_items(initial_subscriptions)
         retry_delay = 1
         reconnects = 0
-        consecutive_failures = 0
         last_error: str | None = None
         repeated_error_count = 0
 
@@ -2040,8 +2263,11 @@ class DhanAdapter(BrokerAdapter):
             )
             connection = None
             failure_reason: str | None = None
+            retry_after_seconds: float | None = None
+            subscription_acknowledged: set[str] = set()
+            acknowledgement_complete = False
             try:
-                async with websocket_connect(
+                async with _single_dhan_live_connection(
                     url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
                 ) as connection:
                     response = connection.response
@@ -2068,7 +2294,7 @@ class DhanAdapter(BrokerAdapter):
                         "request_code=17",
                         len(current),
                     )
-                    await status_callback("active")
+                    await status_callback("connecting")
                     receive_task = asyncio.create_task(connection.recv())
                     update_task = asyncio.create_task(subscription_updates.get())
                     try:
@@ -2081,6 +2307,9 @@ class DhanAdapter(BrokerAdapter):
                                 desired = subscription_items(update_task.result())
                                 removed = list(current.keys() - desired.keys())
                                 added = list(desired.keys() - current.keys())
+                                if added:
+                                    acknowledgement_complete = False
+                                    await status_callback("connecting")
                                 for start in range(0, len(removed), 100):
                                     payload = request_message(
                                         18, removed[start : start + 100]
@@ -2108,6 +2337,7 @@ class DhanAdapter(BrokerAdapter):
                                     )
                                     await connection.send(payload)
                                 current = desired
+                                subscription_acknowledged.intersection_update(current.values())
                                 logger.info(
                                     "Dhan live feed subscriptions updated subscribed=%d unsubscribed=%d total=%d",
                                     len(added),
@@ -2116,7 +2346,7 @@ class DhanAdapter(BrokerAdapter):
                                 )
                                 if not current:
                                     await status_callback("idle")
-                                else:
+                                elif not added:
                                     await status_callback("active")
                                 update_task = asyncio.create_task(subscription_updates.get())
                             if receive_task in done:
@@ -2126,21 +2356,39 @@ class DhanAdapter(BrokerAdapter):
                                     continue
                                 try:
                                     quotes, retained_packets, unknown_response_count = (
-                                        self.decode_market_feed_frame(message, current)
+                                        await asyncio.to_thread(
+                                            self.decode_market_feed_frame,
+                                            message,
+                                            current,
+                                        )
                                     )
                                 except BrokerAdapterError as error:
                                     _log_dhan_bad_frame_once(message)
                                     raise error
                                 flush_repeated_error()
-                                consecutive_failures = 0
-                                retry_delay = 1
-                                await status_callback("packet_received")
+                                acknowledged_this_packet = {
+                                    instrument_id
+                                    for instrument_id, response_code, _value in retained_packets
+                                    if response_code == 6
+                                }
+                                subscription_acknowledged.update(acknowledged_this_packet)
+                                expected_acknowledgements = set(current.values())
+                                if (
+                                    not acknowledgement_complete
+                                    and expected_acknowledgements.issubset(subscription_acknowledged)
+                                ):
+                                    acknowledgement_complete = True
+                                    retry_delay = 1
+                                    await status_callback("packet_received")
+                                elif acknowledgement_complete:
+                                    retry_delay = 1
+                                    await status_callback("packet_received")
                                 for _ in range(unknown_response_count):
                                     await status_callback("unknown_response")
                                 for instrument_id, response_code, value in retained_packets:
                                     if response_code == 6:
                                         yield instrument_id, "previous_close", value
-                                    elif response_code == 7:
+                                    elif response_code == 7 and acknowledgement_complete:
                                         yield instrument_id, "market_status", value
                                 for instrument_id, quote in quotes:
                                     logger.info(
@@ -2155,35 +2403,43 @@ class DhanAdapter(BrokerAdapter):
                             receive_task, update_task, return_exceptions=True
                         )
             except BrokerReconnectRequired:
+                await status_callback(
+                    "connection_failure", "Dhan authentication requires reconnecting."
+                )
                 raise
             except InvalidStatus as error:
+                failure_reason = (
+                    "Dhan live feed handshake rejected "
+                    f"HTTP {error.response.status_code}: {error.response.reason_phrase}"
+                )
                 logger.error(
                     "Dhan live feed handshake result=rejected status=%s reason=%s",
                     error.response.status_code,
                     error.response.reason_phrase,
                 )
                 if error.response.status_code == 401:
+                    await status_callback("connection_failure", failure_reason)
                     await status_callback("failed")
                     raise BrokerReconnectRequired(
                         "Reconnect to this broker to renew the session"
                     ) from None
                 if error.response.status_code in {403, 4403}:
+                    await status_callback("connection_failure", failure_reason)
                     await status_callback("failed")
                     raise BrokerAdapterError(
                         "Dhan live feed handshake rejected "
                         f"HTTP {error.response.status_code}: {error.response.reason_phrase}",
                         status_code=error.response.status_code,
                     ) from error
-                failure_reason = (
-                    "Dhan live feed handshake rejected "
-                    f"HTTP {error.response.status_code}: {error.response.reason_phrase}"
-                )
+                if error.response.status_code == 429:
+                    retry_after_seconds = _dhan_retry_after_seconds(error)
                 record_error(failure_reason)
             except BrokerFeedDisconnected as error:
                 failure_reason = str(error)
                 record_error(failure_reason)
             except BrokerAdapterError as error:
                 if error.status_code is not None:
+                    await status_callback("connection_failure", str(error))
                     await status_callback("failed")
                     raise
                 failure_reason = str(error)
@@ -2216,29 +2472,32 @@ class DhanAdapter(BrokerAdapter):
                     access_token,
                     tokens.get("client_id", ""),
                 )
-                raise BrokerAdapterError(
+                failure_reason = (
                     f"Dhan live feed closed code={connection.close_code} "
-                    f"reason={close_reason or 'unavailable'}",
-                    status_code=connection.close_code,
+                    f"reason={close_reason or 'unavailable'}"
                 )
+                await status_callback("connection_failure", failure_reason)
+                await status_callback("failed")
+                raise BrokerAdapterError(failure_reason, status_code=connection.close_code)
             if not current:
                 continue
             if failure_reason is None:
                 failure_reason = "Dhan live feed disconnected without an error"
                 record_error(failure_reason)
-            consecutive_failures += 1
-            await status_callback("connection_failure")
-            if consecutive_failures >= _DHAN_MAX_CONSECUTIVE_FAILURES:
-                flush_repeated_error()
-                await status_callback("failed")
-                raise BrokerAdapterError(
-                    "Dhan live feed stopped after "
-                    f"{_DHAN_MAX_CONSECUTIVE_FAILURES} consecutive failures"
-                )
+            await status_callback("connection_failure", failure_reason)
             reconnects += 1
-            logger.info("Dhan live feed reconnect attempt=%d", reconnects)
-            await status_callback("reconnecting")
-            await asyncio.sleep(retry_delay)
+            delay = _dhan_backoff_seconds(retry_delay, retry_after_seconds)
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            logger.info(
+                "Dhan live feed reconnect scheduled attempt=%d backoff_seconds=%.2f next_attempt_at=%s",
+                reconnects,
+                delay,
+                retry_at.isoformat(),
+            )
+            await status_callback(
+                "reconnecting", failure_reason, delay, retry_at.isoformat()
+            )
+            await asyncio.sleep(delay)
             retry_delay = min(retry_delay * 2, _DHAN_MAX_RETRY_DELAY_SECONDS)
 
     def get_positions(self, access_token: str, tokens: Mapping[str, str]) -> list[dict[str, Any]]:

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import random
@@ -47,6 +48,35 @@ _SENSITIVE_DIAGNOSTIC_FIELDS = re.compile(
     r'["\']?\s*[:=]\s*["\']?)[^"\',}\s&]+'
 )
 _JWT_DIAGNOSTIC_VALUE = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+
+
+def dhan_provider_instrument_id(security_id: str | int, segment: str) -> str:
+    """Canonical Dhan provider_instrument_id, ``SECURITY_ID|SEGMENT``."""
+    return f"{str(security_id).strip()}|{segment.strip()}"
+
+
+def dhan_provider_id_variants(security_id: str | int, segment: str) -> list[str]:
+    """Lookup keys for a Dhan instrument: canonical form first, then the legacy bare id.
+
+    Rows written before normalisation carry a bare security_id, so lookups must match both.
+    Writes must always use the canonical form.
+    """
+    return [
+        dhan_provider_instrument_id(security_id, segment),
+        str(security_id).strip(),
+    ]
+
+
+_YAHOO_OHLCV_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
+
+
+def _provider_text_frame(frame: Any) -> Any:
+    # Convert each column to text in its own dtype. Reading rows from a mixed-dtype
+    # frame upcasts float32 prices to float64 and leaks artefacts such as 1431.30004883.
+    columns = frame.reindex(columns=list(_YAHOO_OHLCV_COLUMNS))
+    text = columns.astype(str)
+    text["Volume"] = text["Volume"].where(columns["Volume"].notna(), "0")
+    return text.reset_index(drop=True)
 
 
 def _redact_diagnostic_text(value: str, secrets: tuple[str, ...] = ()) -> str:
@@ -358,6 +388,38 @@ class DhanV2Adapter:
             json.dumps(body, separators=(",", ":"), sort_keys=True),
             (self.access_token, self.client_id),
         )
+        try:
+            error_payload = json.loads(response_body)
+        except ValueError:
+            error_payload = None
+        provider_error_code = None
+        provider_message = None
+        if isinstance(error_payload, dict):
+            raw_error_code = next((
+                error_payload.get(key)
+                for key in ("errorCode", "error_code", "code")
+                if error_payload.get(key) is not None
+            ), None)
+            raw_provider_message = next((
+                error_payload.get(key)
+                for key in ("errorMessage", "error_message", "message", "remarks")
+                if isinstance(error_payload.get(key), str)
+            ), None)
+            provider_error_code = str(raw_error_code) if raw_error_code is not None else None
+            provider_message = (
+                _redact_diagnostic_text(
+                    raw_provider_message[:500],
+                    (self.access_token, self.client_id),
+                )
+                if raw_provider_message
+                else None
+            )
+        elif response.status_code >= 400 and safe_response_body:
+            provider_message = safe_response_body
+        error_details = {
+            "provider_error_code": provider_error_code,
+            "provider_message": provider_message,
+        }
         if (
             path in {"/charts/historical", "/charts/intraday"}
             and re.search(r"\bDH-907\b", response_body, re.IGNORECASE)
@@ -368,6 +430,7 @@ class DhanV2Adapter:
                 response_body=safe_response_body,
                 request_url=safe_request_url,
                 request_body=safe_request_body,
+                **error_details,
             )
         if response.status_code == 429:
             raise MarketDataProviderError(
@@ -377,6 +440,7 @@ class DhanV2Adapter:
                 response_body=safe_response_body,
                 request_url=safe_request_url,
                 request_body=safe_request_body,
+                **error_details,
             )
         if response.status_code in {401, 403}:
             raise MarketDataProviderError(
@@ -385,6 +449,7 @@ class DhanV2Adapter:
                 response_body=safe_response_body,
                 request_url=safe_request_url,
                 request_body=safe_request_body,
+                **error_details,
             )
         if response.status_code >= 500:
             raise MarketDataProviderError(
@@ -393,6 +458,7 @@ class DhanV2Adapter:
                 response_body=safe_response_body,
                 request_url=safe_request_url,
                 request_body=safe_request_body,
+                **error_details,
             )
         if response.status_code >= 400:
             raise MarketDataProviderError(
@@ -401,6 +467,7 @@ class DhanV2Adapter:
                 response_body=safe_response_body,
                 request_url=safe_request_url,
                 request_body=safe_request_body,
+                **error_details,
             )
         try:
             payload = response.json()
@@ -417,6 +484,7 @@ class DhanV2Adapter:
                 response_body=safe_response_body,
                 request_url=safe_request_url,
                 request_body=safe_request_body,
+                **error_details,
             )
         return payload
 
@@ -1170,7 +1238,7 @@ class AngelOneProvider(_HttpProvider):
             async for message in socket:
                 if not isinstance(message, bytes):
                     continue
-                tick = self.decode_stream_tick(message)
+                tick = await asyncio.to_thread(self.decode_stream_tick, message)
                 if (
                     tick["token"] == token
                     and tick["exchange_type"] == {"NSE": 1, "BSE": 3}[exchange]
@@ -1971,14 +2039,11 @@ class YahooFinanceProvider(_HttpProvider):
     def get_latest_quote(self, instrument: InstrumentCandidate) -> HistoricalBar:
         try:
             frame = self._history_frame(instrument.provider_symbol, interval="1d", period="5d")
-            row = frame.iloc[-1]
+            text_frame = _provider_text_frame(frame)
             return self._bar(
                 frame.index[-1].to_pydatetime(),
-                row["Open"],
-                row["High"],
-                row["Low"],
-                row["Close"],
-                row.get("Volume", 0),
+                *(text_frame.iat[-1, column] for column in range(4)),
+                text_frame.iat[-1, 4],
             )
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise MarketDataProviderError("invalid_provider_response") from error
@@ -2009,16 +2074,17 @@ class YahooFinanceProvider(_HttpProvider):
             end=end,
         )
         try:
+            text_frame = _provider_text_frame(frame)
             bars = []
-            for timestamp, row in frame.iterrows():
-                values = [row[key] for key in ("Open", "High", "Low", "Close")]
-                if any(value is None or str(value) == "nan" for value in values):
+            for position, timestamp in enumerate(frame.index):
+                values = [text_frame.iat[position, column] for column in range(4)]
+                if any(value is None or value == "nan" for value in values):
                     continue
                 bars.append(
                     self._bar(
                         timestamp.to_pydatetime(),
                         *values,
-                        row.get("Volume", 0),
+                        text_frame.iat[position, 4],
                     )
                 )
         except (KeyError, IndexError, TypeError, ValueError) as error:

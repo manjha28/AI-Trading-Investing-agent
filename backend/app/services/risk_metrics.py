@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.accounting import PortfolioLedger
 from app.models import Instrument, MarketQuote, Portfolio, PortfolioTransaction
-from app.services.price_freshness import classify_quote
+from app.services.price_freshness import classify_quote, venue_last_completed_session
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
@@ -23,6 +23,7 @@ def _utc(value: datetime) -> datetime:
 
 
 def position_currency_exposure(
+    db: Session,
     positions: dict[str, Any],
     instrument_by_symbol: dict[str, Instrument],
     quote_by_instrument: dict[UUID, MarketQuote | None],
@@ -45,7 +46,13 @@ def position_currency_exposure(
             continue
         quote = quote_by_instrument.get(instrument.id)
         usable, reason, _evidence = classify_quote(
-            quote, instrument, currency, now
+            quote,
+            instrument,
+            currency,
+            now,
+            last_completed_session=venue_last_completed_session(
+                db, instrument, quote.source if quote is not None else None
+            ),
         )
         if reason == "synthetic_price":
             bucket["synthetic_positions"] += 1
@@ -101,7 +108,7 @@ def build_risk_metrics(
             quotes.setdefault(quote.instrument_id, quote)
 
     exposure = position_currency_exposure(
-        ledger.positions, instrument_by_symbol, quotes, now
+        db, ledger.positions, instrument_by_symbol, quotes, now
     )
     metrics_by_symbol: dict[str, dict[str, Any]] = {}
     base_values: dict[str, Decimal] = {}
@@ -119,7 +126,13 @@ def build_risk_metrics(
             reason = "instrument_not_linked"
         else:
             usable, reason, _evidence = classify_quote(
-                quote, instrument, portfolio.base_currency, now
+                quote,
+                instrument,
+                portfolio.base_currency,
+                now,
+                last_completed_session=venue_last_completed_session(
+                    db, instrument, quote.source if quote is not None else None
+                ),
             )
             if usable and quote is not None:
                 value = quote.close * position.quantity

@@ -1,5 +1,6 @@
 import ipaddress
-import re
+from datetime import date, time
+from decimal import Decimal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr
@@ -34,24 +35,13 @@ def normalize_origin(value: str) -> str | None:
 def is_allowed_origin(
     origin: str | None,
     allowed_origins: tuple[str, ...],
-    allowed_origin_regex: str,
 ) -> bool:
     if origin is None:
         return True
     normalized = normalize_origin(origin)
     if normalized is None:
         return False
-    if (
-        normalized in allowed_origins
-        or re.fullmatch(allowed_origin_regex, normalized) is not None
-    ):
-        return True
-    parsed_origin = urlsplit(normalized)
-    return any(
-        parsed_origin.scheme == urlsplit(allowed).scheme
-        and parsed_origin.hostname == urlsplit(allowed).hostname
-        for allowed in allowed_origins
-    )
+    return normalized in allowed_origins
 
 
 def is_trusted_proxy(peer_host: str | None, configured_proxies: tuple[str, ...]) -> bool:
@@ -100,10 +90,24 @@ class Settings(BaseSettings):
     market_data_daily_freshness_seconds: int = 172800
     market_data_intraday_freshness_seconds: int = 3600
     price_usable_max_age_seconds: int = Field(default=60, gt=0)
+    # A closing price more than this many completed NSE trading sessions old is
+    # `stale` even when the stored last session is unchanged (e.g. sync broke).
+    # Counted with NSE_NON_TRADING_DATES, so weekends and holidays do not count.
+    nse_session_close_max_trading_sessions: int = Field(default=2, gt=0)
     daily_close_price_max_age_seconds: int = Field(default=172800, gt=0)
+    portfolio_value_alert_threshold: Decimal = Field(
+        default=Decimal("1.00"), ge=Decimal("0"), validation_alias="PORTFOLIO_VALUE_ALERT_THRESHOLD"
+    )
     indicator_lookback_bars: int = Field(default=500, gt=0)
     market_data_refresh_seconds: int = Field(default=300, gt=0)
     market_data_scheduler_enabled: bool = False
+    market_stream_enabled: bool = False
+    kafka_bootstrap_servers: str = "localhost:9092"
+    valkey_url: str = "redis://localhost:6379/0"
+    market_stream_poll_lookback_days: int = Field(default=5, ge=1, le=30)
+    watchlist_price_update_interval_ms: int = Field(default=100, ge=16)
+    watchlist_aggregate_update_interval_ms: int = Field(default=250, ge=16)
+    watchlist_feed_stale_after_seconds: int = Field(default=30, ge=1)
     delta_research_enabled: bool = False
     delta_research_db_path: str | None = None
     delta_research_refresh_seconds: int = Field(default=60, ge=30, le=3600)
@@ -147,16 +151,57 @@ class Settings(BaseSettings):
         ))
 
     @property
-    def allowed_origin_regex(self) -> str:
-        return r"https://.*\.app\.github\.dev"
-
-    @property
     def trusted_proxy_hosts(self) -> tuple[str, ...]:
         return tuple(
             host.strip()
             for host in self.trusted_proxy_hosts_setting.split(",")
             if host.strip()
         )
+
+
+# NSE/BSE equity session calendar, used only to decide whether a venue session is
+# open for quote freshness. Dates as supplied in the P0-B milestone brief for 2026;
+# not authoritative. Verify against the NSE trading holiday circular before relying on it.
+NSE_CALENDAR_YEARS: frozenset[int] = frozenset({2026})
+NSE_EQUITY_HOLIDAYS: frozenset[date] = frozenset(
+    {
+        date(2026, 1, 26),
+        date(2026, 3, 3),
+        date(2026, 3, 26),
+        date(2026, 3, 31),
+        date(2026, 4, 3),
+        date(2026, 4, 14),
+        date(2026, 5, 1),
+        date(2026, 5, 28),
+        date(2026, 6, 26),
+        date(2026, 9, 14),
+        date(2026, 10, 2),
+        date(2026, 10, 20),
+        date(2026, 11, 10),
+        date(2026, 11, 24),
+        date(2026, 12, 25),
+    }
+)
+# Public sources disagree on these 2026 dates. They are not included in
+# NSE_EQUITY_HOLIDAYS; a session on these days is reported as unknown.
+NSE_UNVERIFIED_HOLIDAYS: frozenset[date] = frozenset(
+    {
+        date(2026, 1, 15),
+        date(2026, 3, 21),
+    }
+)
+# Every date that is not a regular NSE trading day, for callers that only need
+# "is this a trading day" (the single NSE holiday calendar; do not duplicate it).
+NSE_NON_TRADING_DATES: frozenset[date] = NSE_EQUITY_HOLIDAYS | NSE_UNVERIFIED_HOLIDAYS
+# Muhurat special session (Sunday 2026-11-08). Its hours are not configured, so
+# the session state for this date is unknown.
+NSE_SPECIAL_SESSION_DATES: frozenset[date] = frozenset({date(2026, 11, 8)})
+# Freshness window for IN venues. NSE post-close trading runs 15:40-16:00, so the
+# window ends at 16:00 IST and post-close prints count as part of the trading day.
+# Deliberately different from the 15:30 regular close used for chart tooltips;
+# do not reuse this value for tooltips.
+NSE_FRESHNESS_SESSION_START: time = time(9, 15)
+NSE_FRESHNESS_SESSION_END: time = time(16, 0)
 
 
 settings = Settings()

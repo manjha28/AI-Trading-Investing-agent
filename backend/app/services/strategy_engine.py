@@ -9,16 +9,19 @@ or synthetic inputs are recorded as rejections with a reason; nothing is estimat
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+import pandas as pd
 
-from app.models import MarketBar
+from app.models import Instrument, MarketBar
 from app.models.strategies import Strategy, StrategySignal, StrategyVersion
 from app.services.indicators import rsi, sma
+from app.services.indicator_library import minimum_bars_for
+from app.services.strategy_contract import FastSlowMAAdapter, StrategyContext
 
 DISCLAIMER = "Decision support, not investment advice."
 DAILY_INTERVAL = "1d"
@@ -34,8 +37,10 @@ STATE_INSUFFICIENT_HISTORY = "insufficient_history"
 class StrategyParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    strategy_id: Literal["sma_rsi", "fast_slow_ma"] = "sma_rsi"
     fast_period: int = Field(ge=2, le=100)
     slow_period: int = Field(ge=3, le=250)
+    ma_type: Literal["SMA", "EMA", "RMA", "WMA", "VWMA", "TEMA", "DEMA", "TMA", "ALMA", "HMA", "LSMA", "ZLEMA"] = "EMA"
     rsi_max: Decimal | None = Field(default=None, ge=0, le=100)
     max_bar_age_days: int = Field(default=5, ge=1, le=10)
     expiry_hours: int = Field(default=48, ge=1, le=720)
@@ -60,6 +65,7 @@ class Evaluation:
     trigger_price: Decimal | None = None
     rationale: str = ""
     evidence: dict[str, Any] | None = None
+    data_sufficiency: dict[str, Any] | None = None
 
 
 def _utc(value: datetime) -> datetime:
@@ -70,13 +76,33 @@ def _text(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
 
+def _insufficient_history(
+    required: int, available: int, bars: list[MarketBar], instrument: Instrument | None,
+) -> Evaluation:
+    return Evaluation(
+        state=STATE_INSUFFICIENT_HISTORY,
+        data_sufficiency={
+            "instrument": instrument.symbol if instrument is not None else (
+                str(bars[0].instrument_id) if bars else "unavailable"
+            ),
+            "interval": DAILY_INTERVAL,
+            "source": bars[-1].source if bars else "unavailable",
+            "bars_required": required,
+            "bars_available": available,
+        },
+    )
+
+
 def evaluate_bars(
-    bars: list[MarketBar], params: StrategyParams, now: datetime
+    bars: list[MarketBar], params: StrategyParams, now: datetime,
+    instrument: Instrument | None = None,
 ) -> Evaluation:
     """Evaluate ascending daily bars. Pure and deterministic for fixed inputs."""
+    if params.strategy_id == "fast_slow_ma":
+        return _evaluate_fast_slow_bars(bars, params, now, instrument)
     required = max(params.slow_period + 1, RSI_PERIOD + 1)
     if len(bars) < required:
-        return Evaluation(state=STATE_INSUFFICIENT_HISTORY)
+        return _insufficient_history(required, len(bars), bars, instrument)
 
     fast_now = sma(bars, params.fast_period).value
     slow_now = sma(bars, params.slow_period).value
@@ -84,7 +110,7 @@ def evaluate_bars(
     fast_prev = sma(previous, params.fast_period).value
     slow_prev = sma(previous, params.slow_period).value
     if None in (fast_now, slow_now, fast_prev, slow_prev):
-        return Evaluation(state=STATE_INSUFFICIENT_HISTORY)
+        return _insufficient_history(required, len(bars), bars, instrument)
 
     if fast_prev <= slow_prev and fast_now > slow_now:
         direction = "entry"
@@ -103,7 +129,7 @@ def evaluate_bars(
         reason = "stale_bars"
     elif direction == "entry" and params.rsi_max is not None:
         if rsi_value is None:
-            return Evaluation(state=STATE_INSUFFICIENT_HISTORY)
+            return _insufficient_history(required, len(bars), bars, instrument)
         if rsi_value > params.rsi_max:
             reason = "rsi_above_max"
 
@@ -138,6 +164,92 @@ def evaluate_bars(
     )
 
 
+def _evaluate_fast_slow_bars(
+    bars: list[MarketBar], params: StrategyParams, now: datetime,
+    instrument: Instrument | None = None,
+) -> Evaluation:
+    if not bars:
+        return _insufficient_history(1, 0, bars, instrument)
+    required = max(
+        minimum_bars_for(params.ma_type.lower(), {"length": params.fast_period}),
+        minimum_bars_for(params.ma_type.lower(), {"length": params.slow_period}),
+    ) + 1
+    rows = [{
+        "time": _utc(bar.timestamp), "open": bar.open, "high": bar.high,
+        "low": bar.low, "close": bar.close, "volume": bar.volume,
+        "is_synthetic": bar.is_synthetic,
+    } for bar in bars]
+    latest = bars[-1]
+    context = StrategyContext(
+        instrument=instrument or type("StrategyInstrument", (), {
+            "id": latest.instrument_id, "product_id": str(latest.instrument_id),
+            "symbol": "unknown",
+        })(),
+        as_of=now,
+        frames={"1d": pd.DataFrame(rows)},
+        provenance={"1d": latest.source},
+    )
+    completed = context.completed_frame("1d")
+    if len(completed) < required:
+        return _insufficient_history(required, len(completed), bars, instrument)
+    adapter = FastSlowMAAdapter(
+        fast_period=params.fast_period, slow_period=params.slow_period,
+        ma_type=params.ma_type, allow_short=False,
+    )
+    signals = adapter.evaluate(context)
+    if not signals:
+        return Evaluation(state=STATE_NO_CROSSOVER)
+    signal = signals[0]
+    latest_completed = completed.iloc[-1]
+    bar_time = latest_completed["time"].to_pydatetime()
+    completed_synthetic = completed.get("is_synthetic", pd.Series(False, index=completed.index)).astype(bool)
+    reason = None
+    if completed_synthetic.any():
+        reason = "synthetic_data"
+    elif now - bar_time > timedelta(days=params.max_bar_age_days):
+        reason = "stale_bars"
+    diagnostics = dict(signal.diagnostics)
+    diagnostics.update({
+        "rule": "Fast/slow moving-average crossover on latest completed daily bar",
+        "disclaimer": DISCLAIMER,
+        "is_synthetic": bool(completed_synthetic.any()),
+        "status": "rejected" if reason else "active",
+        "rejection_reason": reason,
+    })
+    evidence = {
+        "strategy_signal": {
+            "strategy_id": signal.strategy_id,
+            "strategy_version": signal.strategy_version,
+            "product_id": signal.product_id,
+            "symbol": signal.symbol,
+            "direction": signal.direction,
+            "decision_time": signal.decision_time.isoformat(),
+            "entry_price": str(signal.entry_price) if signal.entry_price is not None else None,
+            "entry_reference": signal.entry_reference,
+            "stop_price": None,
+            "stop_logic": signal.stop_logic,
+            "target_prices": [],
+            "target_logic": signal.target_logic,
+            "invalidation_conditions": list(signal.invalidation_conditions),
+            "position_sizing_inputs": {},
+            "provenance": dict(signal.provenance),
+            "diagnostics": diagnostics,
+        },
+        **diagnostics,
+    }
+    return Evaluation(
+        state=STATE_SIGNAL,
+        direction="entry",
+        status="rejected" if reason else "active",
+        rejection_reason=reason,
+        bar_timestamp=bar_time,
+        trigger_price=signal.entry_price,
+        rationale=(f"{params.ma_type}({params.fast_period}) crossed above "
+                   f"{params.ma_type}({params.slow_period}) on the latest completed daily bar."),
+        evidence=evidence,
+    )
+
+
 def load_daily_bars(db: Session, instrument_id: UUID) -> list[MarketBar]:
     """Real daily bars from the most recent source only, ascending by time."""
     latest_source = db.scalar(
@@ -165,6 +277,37 @@ def load_daily_bars(db: Session, instrument_id: UUID) -> list[MarketBar]:
     return list(reversed(rows))
 
 
+def load_backtest_bars(
+    db: Session, instrument_id: UUID, as_of: datetime,
+) -> tuple[str | None, list[MarketBar]]:
+    """Load all completed real bars from one newest stored source; never substitute sources."""
+    source = db.scalar(
+        select(MarketBar.source)
+        .where(
+            MarketBar.instrument_id == instrument_id,
+            MarketBar.interval == DAILY_INTERVAL,
+            MarketBar.is_synthetic.is_(False),
+        )
+        .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
+        .limit(1)
+    )
+    if source is None:
+        return None, []
+    cutoff = _utc(as_of) - timedelta(days=1)
+    bars = list(db.scalars(
+        select(MarketBar)
+        .where(
+            MarketBar.instrument_id == instrument_id,
+            MarketBar.interval == DAILY_INTERVAL,
+            MarketBar.source == source,
+            MarketBar.is_synthetic.is_(False),
+            MarketBar.timestamp <= cutoff,
+        )
+        .order_by(MarketBar.timestamp.asc())
+    ))
+    return source, bars
+
+
 def expire_signals(db: Session, strategy: Strategy, now: datetime) -> None:
     changed = False
     active = db.scalars(
@@ -189,7 +332,10 @@ def record_evaluation(
     returns the existing signal and never inserts a second row.
     """
     params = StrategyParams.model_validate(version.params)
-    evaluation = evaluate_bars(load_daily_bars(db, strategy.instrument_id), params, now)
+    evaluation = evaluate_bars(
+        load_daily_bars(db, strategy.instrument_id), params, now,
+        db.get(Instrument, strategy.instrument_id),
+    )
     if evaluation.state != STATE_SIGNAL:
         return evaluation, None, False
 
