@@ -1,0 +1,777 @@
+{
+  "dataset_status": "unlabelled_for_human_review",
+  "captured_at": "2026-11-05",
+  "sample_size": 28,
+  "genuine_manual_labels": 0,
+  "sampling": "Up to three newest already-persisted records per available classifier event category; not a random market-representative sample.",
+  "examples": [
+    {
+      "news_item_id": "06833491-e92e-4fc7-8c84-6376ce58abf7",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/LOHIA2023_05112026001058_SE_Intimation_Signed.pdf",
+      "published_at": "2026-11-04T18:41:11+00:00",
+      "headline": "Lohia Corp Limited has informed the Exchange regarding a press release dated November 05, 2026, titled \"Press Release w.r.t. financials results for the quarter and half year ended September 30, 2026\".",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "quarterly_results",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Lohia Corp Limited has informed the Exchange regarding a press release dated November 05, 2026, titled \"Press Release w.r.t. financials results for the quarter and half year ended September 30, 2026\".",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "589d402c-b1f5-4afd-8d44-a3606719196d",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/LENSKART_04112026232439_Reg30_-_Audio_Recording_FR_-_SE_Intimation.pdf",
+      "published_at": "2026-11-04T18:03:47+00:00",
+      "headline": "Lenskart Solutions Limited has informed the Exchange about Link of Recording of Earnings Call with respect to Financial Results for the quarter and half-year ended September 30, 2026",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "positive",
+        "score": 0.2863,
+        "confidence": 53,
+        "event_category": "quarterly_results",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Lenskart Solutions Limited has informed the Exchange about Link of Recording of Earnings Call with respect to Financial Results for the quarter and half-year ended September 30, 2026",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "9039d4e8-05e5-486e-b5e8-5c622a4b17ed",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/CUMMINSIND_04112026232559_SEIntimationPressRelease_04112026.pdf",
+      "published_at": "2026-11-04T17:56:08+00:00",
+      "headline": "Cummins India Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"Cummins India Limited - Results for the quarter and period ended September 30, 2026\".",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "negative",
+        "score": -0.274,
+        "confidence": 53,
+        "event_category": "quarterly_results",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Cummins India Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"Cummins India Limited - Results for the quarter and period ended September 30, 2026\".",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "c3b28de0-e93f-4aea-8042-290ee5a37fe7",
+      "source": "google_news",
+      "publisher": "scanx.trade",
+      "url": "https://news.google.com/rss/articles/CBMisgFBVV95cUxOQy13dUxGSVJHUks2MS1NalVnMk9iUjFMSEZ2Y2JKUHNnQjlqVGJQaF9TUmVYaEsybFRtaEJETnhPaXVIS1dNSjk2M3UxcU9ORG5yTFQ5MkJpZl85R3ZGX2lkSkJyeDF0c25RVDJQTG05WGlvUmEtcjFQUW53THJHdmVnaHAwV0R6TGswMkdZM1g4LTkyajh5T1lCeTN0ZXVVTDZPLXlIT0FQUG05UXREUmVn?oc=5",
+      "published_at": "2026-11-04T17:37:30+00:00",
+      "headline": "TPL Plastech Q2FY27 Results: Revenue up 40% YoY, merger with parent approved - scanx.trade",
+      "available_summary": "TPL Plastech Q2FY27 Results: Revenue up 40% YoY, merger with parent approved scanx.trade",
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "positive",
+        "score": 0.4425,
+        "confidence": 58,
+        "event_category": "revenue_profit_margin",
+        "relevance_scope": "unknown",
+        "interpretation": "bullish",
+        "evidence": [
+          {
+            "text": "TPL Plastech Q2FY27 Results: Revenue up 40% YoY, merger with parent approved - scanx.trade",
+            "field": "headline"
+          },
+          {
+            "text": "TPL Plastech Q2FY27 Results: Revenue up 40% YoY, merger with parent approved scanx.trade",
+            "field": "summary"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "f2d6015a-7f82-4941-934f-e72bf36768b4",
+      "source": "google_news",
+      "publisher": "Investing.com India",
+      "url": "https://news.google.com/rss/articles/CBMiwAFBVV95cUxOalpXYVRpa1d4bTZqN1RrQmRCY1lSbWJMVzFuaXM1a0V2T3RHcU9tY0FfcHp0YXFWbTlLcFVsdng2RFgzaDlFZXVrSDRQZ1lFbzJGX3ZGRGM0SVhqY0dyaUoxQ0VzYkNQQjYzTXU3eHBlMThSdTY3MnVtdElwdVNvelJOaWZtMGFlbWlzTkFibkZFMmRiQVY1SlJub0txMzF2MGVEcWpCTlZ5UVBxT2Q3eGw0TnJ4OWNscEx2R2llTWM?oc=5",
+      "published_at": "2026-11-04T17:36:53+00:00",
+      "headline": "Banca Sistema 9M26 slides: merger completes as profit surges 57% By Investing.com - Investing.com India",
+      "available_summary": "Banca Sistema 9M26 slides: merger completes as profit surges 57% By Investing.com Investing.com India",
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "positive",
+        "score": 0.4552,
+        "confidence": 58,
+        "event_category": "revenue_profit_margin",
+        "relevance_scope": "unknown",
+        "interpretation": "bullish",
+        "evidence": [
+          {
+            "text": "Banca Sistema 9M26 slides: merger completes as profit surges 57% By Investing.com - Investing.com India",
+            "field": "headline"
+          },
+          {
+            "text": "Banca Sistema 9M26 slides: merger completes as profit surges 57% By Investing.com Investing.com India",
+            "field": "summary"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "a4367c1d-2f14-4588-bab1-9cf8c835b25c",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/WEBELSOLAR_04112026224709_Reg_30_Press_Release_and_IP.pdf",
+      "published_at": "2026-11-04T17:17:26+00:00",
+      "headline": "Websol Energy System Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"Websol Energy Q2FY27 PAT Jumps 73% YoY to &#8377;80 CroreRevenue More Than Doubles to &#8377;361 Crore (YoY)\".",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "positive",
+        "score": 0.2068,
+        "confidence": 53,
+        "event_category": "revenue_profit_margin",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Websol Energy System Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"Websol Energy Q2FY27 PAT Jumps 73% YoY to &#8377;80 CroreRevenue More Than Doubles to &#8377;361 Crore (YoY)\".",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "41067609-44ae-4954-9bb0-1547f105d03f",
+      "source": "google_news",
+      "publisher": "Multibagg AI",
+      "url": "https://news.google.com/rss/articles/CBMisAFBVV95cUxOOFdsQ1NDeVZFcl9rc3FRTmNTUlVuNHBYa3FTODdXUGRNeFJWY1lyaTFaTUxGWTdyNXpjblE1SkFWT0VOZmJNSkdWMjc2ZW1OWElGTU55eVVlQVZDUXFoS0c5WHNfZTcxWnRsNnAwV0hDUnh4NGVLWGVlSVVMLWljZ0ZER0FFcG1lckI3Zzh0ZjR4NFZuTHhoQ3NUN1U3cFY4WF9TZWU0dlJJODd0eXJTbg?oc=5",
+      "published_at": "2026-11-04T23:23:58+00:00",
+      "headline": "S A Tech Software India Limited Gets NCLT Merger Directions - Multibagg AI",
+      "available_summary": "S A Tech Software India Limited Gets NCLT Merger Directions Multibagg AI",
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "negative",
+        "score": -0.274,
+        "confidence": 58,
+        "event_category": "merger_acquisition_partnership",
+        "relevance_scope": "unknown",
+        "interpretation": "bearish",
+        "evidence": [
+          {
+            "text": "S A Tech Software India Limited Gets NCLT Merger Directions - Multibagg AI",
+            "field": "headline"
+          },
+          {
+            "text": "S A Tech Software India Limited Gets NCLT Merger Directions Multibagg AI",
+            "field": "summary"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "9668ece6-e8e8-48d0-86ce-180131d21c19",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/MEL_04112026211832_20261104IntimationBoardMeeting.pdf",
+      "published_at": "2026-11-04T15:49:19+00:00",
+      "headline": "Max Estates Limited has informed the Exchange about Acquisition.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "merger_acquisition_partnership",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Max Estates Limited has informed the Exchange about Acquisition.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "d79e1c09-e95c-420e-8e01-b83662162f34",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/bharatsahu_04112026210604_SELETTER.pdf",
+      "published_at": "2026-11-04T15:36:15+00:00",
+      "headline": "National Aluminium Company Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"NALCO s proposed Smelter Expansion at Anugola gains momentum with key approvals and partnerships in place\".",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": 0.0832,
+        "confidence": 53,
+        "event_category": "merger_acquisition_partnership",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "National Aluminium Company Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"NALCO s proposed Smelter Expansion at Anugola gains momentum with key approvals and partnerships in place\".",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "bc3c2421-d795-46ac-aaed-829e4a4cbfb4",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/UNIVCABLES_05112026004844_Outcome_BM_04112026.pdf",
+      "published_at": "2026-11-04T19:19:00+00:00",
+      "headline": "Universal Cables Limited has informed the Exchange about Completion of tenure of Shri Kishore Kumar Mehrotra as a Non-Executive Independent Director of the Company with effect from the close of business hours on 10th November, 2026 and Appointment of Shri Sutirtha Bhattacharya as an Additional Director in the category of Non-Executive Independent Director, commencing from 4th November, 2026.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "management_change",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Universal Cables Limited has informed the Exchange about Completion of tenure of Shri Kishore Kumar Mehrotra as a Non-Executive Independent Director of the Company with effect from the close of business hours on 10th November, 2026 and Appointment of Shri Sutirtha Bhattacharya as an Additional Director in the category of Non-Executive Independent Director, commencing from 4th November, 2026.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "4a3d552e-a85b-456e-b7f9-f352bf53b07e",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/LCL_ROID_103594_KMP_Doc.zip",
+      "published_at": "2026-11-04T17:49:50+00:00",
+      "headline": "Lohia Corp Limited has informed the Exchange about Resignation of Director/KMP/SMP",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "negative",
+        "score": -0.3099,
+        "confidence": 53,
+        "event_category": "management_change",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Lohia Corp Limited has informed the Exchange about Resignation of Director/KMP/SMP",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "f26cc86a-67cf-4992-8271-98de73265da9",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/SADBHAV_ROSA_103586_KMP_Doc.zip",
+      "published_at": "2026-11-04T15:52:05+00:00",
+      "headline": "Sadbhav Engineering Limited has informed the Exchange about Resignation of Statutory Auditor",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "negative",
+        "score": -0.3099,
+        "confidence": 53,
+        "event_category": "management_change",
+        "relevance_scope": "company",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Sadbhav Engineering Limited has informed the Exchange about Resignation of Statutory Auditor",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "d1705574-b109-4f15-a1e7-cb534f8a8b7c",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/PARAGMILK_04112026204836_Intimation.pdf",
+      "published_at": "2026-11-04T15:20:16+00:00",
+      "headline": "Parag Milk Foods Limited has informed Exchange about audio recordings of Earnings Call under Regulation 30 of the SEBI (LODR) Regulations.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "regulatory_government",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Parag Milk Foods Limited has informed Exchange about audio recordings of Earnings Call under Regulation 30 of the SEBI (LODR) Regulations.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "0623f9d0-9f50-42fc-b9f4-6aaab438dcc2",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/BALAMINES_04112026202028_Concall_Signed.pdf",
+      "published_at": "2026-11-04T14:51:10+00:00",
+      "headline": "Balaji Amines Limited has informed the Exchange about Intimation under Regulation 30 of the SEBI (Listing Obligations and Disclosure Requirements) Regulations, 2015-Audio Recording of the Conference Call held on 04th November, 2026",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "regulatory_government",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Balaji Amines Limited has informed the Exchange about Intimation under Regulation 30 of the SEBI (Listing Obligations and Disclosure Requirements) Regulations, 2015-Audio Recording of the Conference Call held on 04th November, 2026",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "96da2e45-56cf-407c-abb3-39ec0a569cdf",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/SCI1_04112026202018_Finalsd.pdf",
+      "published_at": "2026-11-04T14:50:54+00:00",
+      "headline": "Shipping Corporation Of India Limited has informed the Exchange regarding the Trading Window closure pursuant to SEBI (Prohibition of Insider Trading) Regulations, 2015",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "regulatory_government",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Shipping Corporation Of India Limited has informed the Exchange regarding the Trading Window closure pursuant to SEBI (Prohibition of Insider Trading) Regulations, 2015",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "5fd59a8c-30de-4c69-bce5-8e2348dfbdd7",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/kkurmi_04112026171135_Reply_to_news_clarification.pdf",
+      "published_at": "2026-11-04T11:45:18+00:00",
+      "headline": "The Exchange has sought clarification from AU Small Finance Bank Limited with respect to recent news item captioned AU Bank probes potential data leak.  The response from the Company is attached.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.0335,
+        "confidence": 53,
+        "event_category": "legal_investigation",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "The Exchange has sought clarification from AU Small Finance Bank Limited with respect to recent news item captioned AU Bank probes potential data leak.  The response from the Company is attached.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "a56b1495-8b7a-4b45-9c65-ad55a65689df",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/RCOM_04112026161913_RCOM_stock_exchange_disclosure_SBI_UP.pdf",
+      "published_at": "2026-11-04T10:49:44+00:00",
+      "headline": "Reliance Communications Limited has informed the Exchange about Fraud/Default/Arrest",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "negative",
+        "score": -0.4823,
+        "confidence": 62,
+        "event_category": "legal_investigation",
+        "relevance_scope": "unknown",
+        "interpretation": "bearish",
+        "evidence": [
+          {
+            "text": "Default",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "00b02822-89c7-495d-80ae-33469400afcb",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/KIMS_04112026204232_QIPOfinal.pdf",
+      "published_at": "2026-11-04T15:12:42+00:00",
+      "headline": "Monitoring Agency Report-QIPO",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": 0.0,
+        "confidence": 53,
+        "event_category": "fundraising_debt_capex",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Monitoring Agency Report-QIPO",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "2138c82f-3983-4905-853d-fe64b5b9c624",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/NACL2020_04112026180559_Disclosure_NAIM_V2_Signed.pdf",
+      "published_at": "2026-11-04T12:37:16+00:00",
+      "headline": "Northern Arc Capital Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"Northern Arc Diversified Debt Fund raises &#8377;400 Crore+; Northern Arc India Impact Fund matured with 14.59% Gross XIRR\".",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "negative",
+        "score": -0.4926,
+        "confidence": 53,
+        "event_category": "fundraising_debt_capex",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Northern Arc Capital Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"Northern Arc Diversified Debt Fund raises &#8377;400 Crore+; Northern Arc India Impact Fund matured with 14.59% Gross XIRR\".",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "7433ad1f-4861-476c-8487-057af9905b6a",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/SUNILBCML_04112026222744_BCML_SEIntimation_TDSComm_2627.pdf",
+      "published_at": "2026-11-04T16:58:01+00:00",
+      "headline": "Balrampur Chini Mills Limited has informed the Exchange regarding 'Communication to the Shareholders regarding Tax Deduction at Source on Dividend payout'.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "dividend_buyback_corporate_action",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Balrampur Chini Mills Limited has informed the Exchange regarding 'Communication to the Shareholders regarding Tax Deduction at Source on Dividend payout'.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "c8e3eb0a-7a24-4032-9c16-8352976da74a",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/chaithanya_lakshmi_esab_co_in_04112026213732_OutcomeofBM_DivandRD041126_signed.pdf",
+      "published_at": "2026-11-04T16:07:51+00:00",
+      "headline": "Esab India Limited has informed the Exchange that Record date for the purpose of Dividend  is 10-Nov-2026.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "dividend_buyback_corporate_action",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Esab India Limited has informed the Exchange that Record date for the purpose of Dividend  is 10-Nov-2026.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "9352c03e-7b5a-48ac-9526-63f2c33b2233",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/chaithanya_lakshmi_esab_co_in_04112026213554_OutcomeofBM_DivandRD041126_signed.pdf",
+      "published_at": "2026-11-04T16:06:14+00:00",
+      "headline": "Esab India Limited has informed the Exchange that Board of Directors at its meeting held on November 04, 2026, declared Interim Dividend of Rs. 20 per equity share.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": 0.0502,
+        "confidence": 53,
+        "event_category": "dividend_buyback_corporate_action",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Esab India Limited has informed the Exchange that Board of Directors at its meeting held on November 04, 2026, declared Interim Dividend of Rs. 20 per equity share.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "1c483f9c-8285-455f-b261-dc90379808f2",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/TENNECO_04112026225104_BMOutcomeIntimation_Signed.pdf",
+      "published_at": "2026-11-04T17:24:24+00:00",
+      "headline": "Tenneco Clean Air India Limited has informed the Exchange about Capacity addition",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": 0.1315,
+        "confidence": 53,
+        "event_category": "product_launch_expansion",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Tenneco Clean Air India Limited has informed the Exchange about Capacity addition",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "af48618d-e14b-43c0-8010-77dd88103783",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/INTERNATIONAL_04112026194229_KSHIntimationofCapacityExpansion_04112026FinalSigned.pdf",
+      "published_at": "2026-11-04T14:12:45+00:00",
+      "headline": "KSH International Limited has informed the Exchange about Capacity addition",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "product_launch_expansion",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "KSH International Limited has informed the Exchange about Capacity addition",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "604995cf-7082-4c94-b131-18745eb97746",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/ENGINERSIN_04112026172729_43aa8843-5f98-424a-9f82-3cee56ba8a64.pdf",
+      "published_at": "2026-11-04T11:57:41+00:00",
+      "headline": "Engineers India Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"EIL Forays into Maritime sector\".",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 53,
+        "event_category": "sector_development",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Engineers India Limited has informed the Exchange regarding a press release dated November 04, 2026, titled \"EIL Forays into Maritime sector\".",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "ea9ed4a4-34d4-490e-af63-8107aef75c05",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/SPIC_05112026004040_Press_release_Q2_2026-27_final.pdf",
+      "published_at": "2026-11-04T19:11:00+00:00",
+      "headline": "Southern Petrochemicals Industries Corporation  Limited has informed the Exchange regarding a press release dated November 05, 2026, titled \"Unaudited Financial Results for the second quarter / half year ended 30th September 2026\".",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 45,
+        "event_category": "unknown",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Southern Petrochemicals Industries Corporation  Limited has informed the Exchange regarding a press release dated November 05, 2026, titled \"Unaudited Financial Results for the second quarter / half year ended 30th September 2026\".",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "42503d88-621e-469f-b8d7-df94ecf1792b",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/LOHIA2023_05112026003739_SE_Intimation_1.pdf",
+      "published_at": "2026-11-04T19:07:56+00:00",
+      "headline": "Lohia Corp Limited has informed the Exchange about Investor Presentation",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 45,
+        "event_category": "unknown",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Lohia Corp Limited has informed the Exchange about Investor Presentation",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    },
+    {
+      "news_item_id": "33a9ef07-e2e0-4088-8148-cd1b230327a2",
+      "source": "nse",
+      "publisher": null,
+      "url": "https://nsearchives.nseindia.com/corporate/ZENITHSTL_05112026000602_Outcome_of_BM_Zenith.pdf",
+      "published_at": "2026-11-04T18:37:40+00:00",
+      "headline": "Zenith Steel Pipes & Industries Limited has submitted to the Exchange, the financial results for the period ended September 30, 2026.",
+      "available_summary": null,
+      "expected_sentiment": null,
+      "expected_event_category": null,
+      "review_reason": "UNLABELLED: a human reviewer must assign the expected sentiment, event category and rationale from the headline/available summary; do not use subsequent price movement.",
+      "actual": {
+        "sentiment": "neutral",
+        "score": -0.1471,
+        "confidence": 45,
+        "event_category": "unknown",
+        "relevance_scope": "unknown",
+        "interpretation": "uncertain",
+        "evidence": [
+          {
+            "text": "Zenith Steel Pipes & Industries Limited has submitted to the Exchange, the financial results for the period ended September 30, 2026.",
+            "field": "headline"
+          }
+        ]
+      },
+      "classifier_version": "hybrid-v1.2-vader"
+    }
+  ]
+}

@@ -1,19 +1,29 @@
 """Template-rendered, provenance-preserving instrument research briefs."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 
-from app.api.market_data import _exclusive_selected_source, _market_data_credentials
+from app.api.market_data import (
+    _exclusive_selected_source,
+    _market_data_credentials,
+    _providers,
+    _resolve_provider_candidate,
+    create_market_data_provider_chain,
+)
 from app.broker_adapters import BrokerAdapterError
 from app.config import settings
+from app.db import engine
+from app.market_data import MarketDataProviderError
 from app.models import (
     Instrument,
     InstrumentFundamental,
@@ -22,10 +32,13 @@ from app.models import (
     InstrumentSnapshot,
     MarketBar,
     MarketDataSync,
+    NewsItem,
+    NewsSourcePoll,
 )
 from app.research_service import is_stale as is_source_stale
 from app.services import fundamentals as fundamentals_service
 from app.services.indicators import compute_indicators
+from app.services.news_sentiment import CLASSIFIER_VERSION, aggregate_instrument_sentiment
 from app.services.source_registry import FetchedSource, fetch_instrument_sources
 
 logger = logging.getLogger(__name__)
@@ -159,7 +172,34 @@ def _fundamentals_section(
         for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
     )
     if external_snapshot is not None:
-        snapshot_section = external_snapshot
+        snapshot_section = dict(external_snapshot)
+        alternate_fields: dict[str, dict[str, str]] = {}
+        conflicts: list[dict[str, str]] = []
+        if snapshot is not None and snapshot.source != external_snapshot.get("source"):
+            stored_values = external_snapshot.get("values", {})
+            for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry"):
+                stored_value = getattr(snapshot, field)
+                current_value = stored_values.get(field, {}).get("value") if isinstance(stored_values.get(field), dict) else None
+                if stored_value is None:
+                    continue
+                alternate_fields[field] = {
+                    "value": str(stored_value), "source": snapshot.source,
+                    "fetched_at": snapshot.fetched_at.isoformat(),
+                }
+                if current_value is not None:
+                    try:
+                        if Decimal(str(current_value)) != Decimal(str(stored_value)):
+                            conflicts.append({"field": field, "source_a": str(external_snapshot.get("source")),
+                                              "value_a": str(current_value), "source_b": snapshot.source,
+                                              "value_b": str(stored_value)})
+                    except (InvalidOperation, ValueError):
+                        if str(current_value).casefold() != str(stored_value).casefold():
+                            conflicts.append({"field": field, "source_a": str(external_snapshot.get("source")),
+                                              "value_a": str(current_value), "source_b": snapshot.source,
+                                              "value_b": str(stored_value)})
+        snapshot_section["alternate_sources"] = alternate_fields
+        snapshot_section["conflicts"] = conflicts
+        snapshot_section["comparison_status"] = "conflicting_values" if conflicts else "no_conflict_detected"
         snapshot_has_values = external_snapshot["status"] == "available"
     elif snapshot is None:
         quality.append({
@@ -640,13 +680,13 @@ def render_brief(
     selected_source: str | None = None,
     external_snapshot: dict[str, Any] | None = None,
     external_reason: str | None = None,
+    sentiment_section: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     quality: list[dict[str, str]] = []
     fundamentals, periods = _fundamentals_section(
         db,
         instrument.id,
         quality,
-        selected_source=selected_source,
         external_snapshot=external_snapshot,
         external_reason=external_reason,
     )
@@ -655,6 +695,9 @@ def render_brief(
     )
     financial_trend = _financial_trend_section(periods, quality)
     news = _source_sections(fetched, quality)
+    sentiment = sentiment_section or aggregate_instrument_sentiment(db, instrument.id, period_days=30)
+    sentiment["validation_status"] = "provisional_unlabelled"
+    sentiment["classifier_version"] = CLASSIFIER_VERSION
     for failure in failures:
         quality.append({
             "kind": "failed_fetch",
@@ -668,6 +711,7 @@ def render_brief(
         "technicals": technicals,
         "financials_trend": financial_trend,
         "news": news,
+        "news_sentiment": sentiment,
         "data_quality": {
             "status": "issues" if quality else "clear",
             "items": quality,
@@ -677,88 +721,434 @@ def render_brief(
     return sections, quality
 
 
+def _progress_event(
+    db: Session,
+    run: InstrumentResearchRun,
+    component: str,
+    state: str,
+    detail: str,
+    **metadata: Any,
+) -> bool:
+    db.refresh(run)
+    if run.status == "cancelled":
+        return False
+    if run.cancel_requested:
+        run.status = "cancelled"
+        run.finished_at = datetime.now(timezone.utc)
+        events = list(run.progress or [])
+        events.append({"component": component, "state": "cancelled",
+                       "detail": "The run stopped at a safe component boundary.",
+                       "updated_at": datetime.now(timezone.utc).isoformat()})
+        run.progress = events[-40:]
+        db.commit()
+        return False
+    events = list(run.progress or [])
+    events.append({
+        "component": component,
+        "state": state,
+        "detail": detail,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **metadata,
+    })
+    run.progress = events[-40:]
+    db.commit()
+    db.refresh(run)
+    return True
+
+
+def start_instrument_research(
+    db: Session, user_id: UUID, instrument: Instrument
+) -> tuple[InstrumentResearchRun, bool]:
+    """Create one active per-user/instrument run or reuse the current one."""
+    now = datetime.now(timezone.utc)
+    active = db.scalar(select(InstrumentResearchRun).where(
+        InstrumentResearchRun.user_id == user_id,
+        InstrumentResearchRun.instrument_id == instrument.id,
+        InstrumentResearchRun.status == "running",
+    ).order_by(InstrumentResearchRun.started_at.desc()).limit(1))
+    if active is not None:
+        started = active.started_at.replace(tzinfo=timezone.utc) if active.started_at.tzinfo is None else active.started_at
+        if now - started < timedelta(minutes=15):
+            return active, False
+        active.status = "failed"
+        active.finished_at = now
+        active.failures = [*(active.failures or []), {
+            "source": "orchestrator", "stage": "recovery", "url": "",
+            "reason": "The previous research worker stopped before completion; this run is safe to retry.",
+        }]
+        active.progress = [*(active.progress or []), {
+            "component": "recovery", "state": "failed",
+            "detail": "The prior run exceeded the recovery window.", "updated_at": now.isoformat(),
+        }]
+        db.commit()
+    recent = db.scalar(select(InstrumentResearchRun).where(
+        InstrumentResearchRun.user_id == user_id,
+        InstrumentResearchRun.instrument_id == instrument.id,
+        InstrumentResearchRun.status.in_(["complete", "partial"]),
+    ).order_by(InstrumentResearchRun.started_at.desc()).limit(1))
+    if recent is not None and recent.finished_at is not None:
+        finished = recent.finished_at.replace(tzinfo=timezone.utc) if recent.finished_at.tzinfo is None else recent.finished_at
+        # Debounce repeated clicks briefly after completion as well as while a
+        # run is active; source collection can legitimately take over a minute.
+        if now - finished < timedelta(minutes=5):
+            return recent, False
+    run = InstrumentResearchRun(
+        id=uuid4(), instrument_id=instrument.id, user_id=user_id, started_at=now,
+        finished_at=None, status="running", sources_attempted=0, sources_succeeded=0,
+        failures=[], progress=[{
+            "component": "orchestrator", "state": "queued",
+            "detail": "Research run accepted for this instrument.", "updated_at": now.isoformat(),
+        }],
+    )
+    db.add(run)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        active = db.scalar(select(InstrumentResearchRun).where(
+            InstrumentResearchRun.user_id == user_id,
+            InstrumentResearchRun.instrument_id == instrument.id,
+            InstrumentResearchRun.status == "running",
+        ).order_by(InstrumentResearchRun.started_at.desc()).limit(1))
+        if active is None:
+            raise
+        return active, False
+    db.refresh(run)
+    return run, True
+
+
+def _refresh_yahoo_fundamentals(
+    db: Session, instrument: Instrument
+) -> tuple[str, str | None, str | None]:
+    snapshot = db.scalar(select(InstrumentSnapshot).where(
+        InstrumentSnapshot.instrument_id == instrument.id,
+        InstrumentSnapshot.source == "yfinance",
+    ))
+    now = datetime.now(timezone.utc)
+    snapshot_has_values = snapshot is not None and any(
+        getattr(snapshot, field) is not None
+        for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
+    )
+    periods_have_values = bool(db.scalar(select(func.count()).select_from(InstrumentFundamental).where(
+        InstrumentFundamental.instrument_id == instrument.id,
+        InstrumentFundamental.source == "yfinance",
+        (InstrumentFundamental.revenue.is_not(None)) | (InstrumentFundamental.net_income.is_not(None)) |
+        (InstrumentFundamental.eps.is_not(None)) | (InstrumentFundamental.total_assets.is_not(None)),
+    )))
+    if snapshot is not None and (snapshot_has_values or periods_have_values) and not fundamentals_service.is_stale(snapshot.fetched_at, now):
+        return "cached", None, snapshot.fetched_at.isoformat()
+    try:
+        providers = _providers(create_market_data_provider_chain(("yfinance",)))
+        provider = next((item for item in providers if item.name == "yfinance"), None)
+        if provider is None:
+            return "unavailable", "Yahoo Finance collector is not configured.", None
+        candidate, _mapping = _resolve_provider_candidate(db, instrument, provider)
+        _rows, snapshot = fundamentals_service.sync_instrument_fundamentals(
+            db, instrument, candidate.provider_symbol
+        )
+        return "refreshed", None, snapshot.fetched_at.isoformat()
+    except (BrokerAdapterError, HTTPException, MarketDataProviderError, TimeoutError, ValueError) as exc:
+        db.rollback()
+        category = getattr(exc, "code", type(exc).__name__)
+        return "failed", str(category)[:120], None
+
+
+def _cached_dhan_snapshot(
+    db: Session, user_id: UUID, instrument_id: UUID
+) -> dict[str, Any] | None:
+    previous = latest_brief(db, user_id, instrument_id)
+    if previous is None:
+        return None
+    section = (previous[1].sections or {}).get("fundamentals", {})
+    snapshot = section.get("snapshot") if isinstance(section, dict) else None
+    if not isinstance(snapshot, dict) or snapshot.get("source") != "dhan":
+        return None
+    fetched = snapshot.get("fetched_at")
+    if not fetched:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        timestamp = timestamp.replace(tzinfo=timezone.utc) if timestamp.tzinfo is None else timestamp
+    except (AttributeError, ValueError):
+        return None
+    if datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc) <= timedelta(hours=24):
+        return snapshot
+    return None
+
+
+def _execute_instrument_research(
+    db: Session, run: InstrumentResearchRun
+) -> tuple[InstrumentResearchRun, InstrumentResearchBrief | None]:
+    instrument = db.get(Instrument, run.instrument_id)
+    if instrument is None:
+        run.status = "failed"
+        run.finished_at = datetime.now(timezone.utc)
+        run.failures = [{"source": "instrument_master", "stage": "resolve", "url": "",
+                         "reason": "The selected instrument no longer exists."}]
+        db.commit()
+        return run, None
+    if not _progress_event(db, run, "checking_existing_data", "running", "Inspecting stored market, financial, news and sentiment data."):
+        return run, None
+    latest_sync = db.scalar(select(MarketDataSync).where(
+        MarketDataSync.instrument_id == instrument.id, MarketDataSync.interval == "1d"
+    ).order_by(MarketDataSync.attempted_at.desc()).limit(1))
+    latest_bar = db.scalar(select(MarketBar).where(
+        MarketBar.instrument_id == instrument.id, MarketBar.interval == "1d",
+        MarketBar.is_synthetic.is_(instrument.is_synthetic),
+    ).order_by(MarketBar.timestamp.desc()).limit(1))
+    if not _progress_event(
+        db, run, "checking_existing_data", "completed", "Stored data inspection completed.",
+        daily_bar_at=latest_bar.timestamp.isoformat() if latest_bar else None,
+        daily_bar_source=latest_bar.source if latest_bar else None,
+        last_market_sync_status=latest_sync.status if latest_sync else None,
+    ):
+        return run, None
+    bar_age = datetime.now(timezone.utc) - (
+        latest_bar.timestamp.replace(tzinfo=timezone.utc)
+        if latest_bar and latest_bar.timestamp.tzinfo is None
+        else latest_bar.timestamp.astimezone(timezone.utc) if latest_bar else datetime.now(timezone.utc)
+    )
+    technical_state = "missing" if latest_bar is None else "stale" if bar_age > timedelta(days=7) else "cached"
+    _progress_event(
+        db, run, "technical_intelligence", technical_state,
+        "Using existing daily bars; the existing market-data history-sync endpoint handles missing bars before this run.",
+        source=latest_bar.source if latest_bar else None,
+        retrieved_at=latest_bar.retrieved_at.isoformat() if latest_bar else None,
+        validation_status="stored" if latest_bar else "missing",
+    )
+
+    external_snapshot = None
+    external_reason = None
+    yahoo_state = "not_checked"
+    yahoo_timestamp = None
+    yahoo_reason = None
+    try:
+        yahoo_state, yahoo_reason, yahoo_timestamp = _refresh_yahoo_fundamentals(db, instrument)
+    except Exception as exc:  # Collector failure remains isolated from other components.
+        logger.warning("Yahoo fundamentals refresh failed error_class=%s", type(exc).__name__)
+        yahoo_state, yahoo_reason, yahoo_timestamp = "failed", type(exc).__name__, None
+    if not _progress_event(
+        db, run, "yahoo_fundamentals", yahoo_state,
+        yahoo_reason or "Independent supplementary financial collector; stale after 95 days.",
+        source="yfinance", retrieved_at=yahoo_timestamp,
+    ):
+        return run, None
+
+    dhan_state = "unsupported"
+    if not instrument.is_synthetic:
+        external_snapshot = _cached_dhan_snapshot(db, run.user_id, instrument.id)
+        if external_snapshot is not None:
+            dhan_state = "cached"
+        else:
+            external_snapshot, external_reason = _fetch_dhan_company_info(db, run.user_id, instrument)
+            dhan_state = "refreshed" if external_snapshot else "unavailable"
+    if not _progress_event(
+        db, run, "dhan_company_info", dhan_state,
+        "Dhan company overview is an independent optional financial source; it does not replace filings or statements.",
+        source="dhan" if external_snapshot else None,
+        retrieved_at=external_snapshot.get("fetched_at") if external_snapshot else None,
+    ):
+        return run, None
+
+    fetched_result = fetch_instrument_sources(db, run.user_id, instrument)
+    news_state = "refreshed" if fetched_result.sources else "unavailable"
+    if not _progress_event(
+        db, run, "company_ir_news", news_state,
+        "Checked enabled, permitted company and publisher source links for this instrument.",
+        sources_attempted=fetched_result.attempted, sources_succeeded=len(fetched_result.sources),
+    ):
+        return run, None
+
+    try:
+        sentiment = aggregate_instrument_sentiment(db, instrument.id, period_days=30)
+        sentiment_state = sentiment["status"]
+        sentiment_detail = f"Existing classifier {CLASSIFIER_VERSION}; sentiment remains provisional and does not drive a recommendation."
+    except Exception as exc:
+        sentiment = {"status": "unavailable", "sentiment": None, "score": None,
+                     "confidence_score": None, "events": [], "article_count": 0, "event_count": 0,
+                     "coverage": {}, "classifier_version": CLASSIFIER_VERSION}
+        sentiment_state = "failed"
+        sentiment_detail = f"Sentiment lookup failed ({type(exc).__name__}); other components continue."
+    if not _progress_event(
+        db, run, "news_sentiment", sentiment_state, sentiment_detail,
+        classifier_version=CLASSIFIER_VERSION,
+        event_count=sentiment.get("event_count", 0), article_count=sentiment.get("article_count", 0),
+    ):
+        return run, None
+
+    selected_source = _exclusive_selected_source(db, run.user_id)
+    sections, quality = render_brief(
+        db, instrument, fetched_result.sources, fetched_result.failures,
+        selected_source=selected_source,
+        external_snapshot=external_snapshot, external_reason=external_reason,
+        sentiment_section=sentiment,
+    )
+    nse_filings_count = db.scalar(select(func.count()).select_from(NewsItem).where(
+        NewsItem.instrument_id == instrument.id, NewsItem.source == "nse"
+    )) or 0
+    poll_rows = {row.source: row for row in db.scalars(select(NewsSourcePoll).where(
+        NewsSourcePoll.source.in_(["nse", "google_news", "gdelt"])
+    )).all()}
+
+    def poll_status(source: str) -> dict[str, Any]:
+        row = poll_rows.get(source)
+        if row is None:
+            return {"state": "not_polled"}
+        if row.last_successful_at is None:
+            state = "unavailable" if row.last_error_category or row.rate_limited else "not_polled"
+        elif row.rate_limited or row.last_error_category:
+            state = "partial"
+        elif row.articles_discovered == 0:
+            state = "successful_empty"
+        else:
+            state = "available"
+        return {"state": state, "last_attempted_at": row.last_attempted_at.isoformat(),
+                "last_successful_at": row.last_successful_at.isoformat() if row.last_successful_at else None,
+                "last_article_at": row.last_article_at.isoformat() if row.last_article_at else None,
+                "articles_discovered": row.articles_discovered,
+                "last_error_category": row.last_error_category, "rate_limited": row.rate_limited}
+
+    collector_status = {
+        "nse_filings": {**poll_status("nse"), "mapped_records": int(nse_filings_count)},
+        "bse_filings": {"state": "unavailable", "detail": "No BSE filing collector is currently installed."},
+        "screener_fundamentals": {"state": "unavailable", "detail": "No Screener.in collector is currently installed."},
+        "yahoo_fundamentals": {"state": yahoo_state, "source": "yfinance", "retrieved_at": yahoo_timestamp},
+        "dhan_company_info": {"state": dhan_state, "source": "dhan" if external_snapshot else None},
+        "company_ir_feeds": {"state": news_state, "source_count": len(fetched_result.sources)},
+        "google_news": poll_status("google_news"),
+        "gdelt": poll_status("gdelt"),
+    }
+    sections["collector_status"] = collector_status
+    if not _progress_event(db, run, "validating_evidence", "completed",
+                           "Component values retain their source and freshness; missing sources remain unavailable."):
+        return run, None
+    usable_sections = (
+        sections["technicals"]["status"] == "available"
+        or sections["fundamentals"]["status"] == "available"
+        or sections["news"]["status"] == "available"
+        or sentiment.get("status") in {"available", "stale"}
+    )
+    all_sections_available = all(sections[name]["status"] == "available"
+                                 for name in ("technicals", "fundamentals", "news"))
+    if not usable_sections:
+        status = "failed"
+    elif fetched_result.failures or not all_sections_available or quality:
+        status = "partial"
+    else:
+        status = "complete"
+    run = db.scalar(select(InstrumentResearchRun).where(
+        InstrumentResearchRun.id == run.id,
+    ).with_for_update())
+    if run is None or run.status != "running":
+        return run, None
+    if run.cancel_requested:
+        run.status = "cancelled"
+        run.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        return run, None
+    if not _progress_event(db, run, "preparing_snapshot", "running", "Persisting the immutable research brief and provenance."):
+        return run, None
+    run = db.get(InstrumentResearchRun, run.id)
+    if run is None or run.status == "cancelled":
+        return run, None
+    run.sources_attempted = fetched_result.attempted
+    run.sources_succeeded = len(fetched_result.sources)
+    run.failures = fetched_result.failures
+    run.finished_at = datetime.now(timezone.utc)
+    run.status = status
+    brief = InstrumentResearchBrief(
+        id=uuid4(), run_id=run.id, instrument_id=instrument.id,
+        sections=jsonable_encoder(sections), renderer="template",
+        data_quality=jsonable_encoder(quality), created_at=run.finished_at,
+    )
+    db.add(brief)
+    db.commit()
+    db.refresh(run)
+    db.refresh(brief)
+    _progress_event(db, run, "preparing_snapshot", "completed", "Immutable research brief and provenance persisted.")
+    return run, brief
+
+
+def fail_instrument_research_run(db: Session, run_id: UUID) -> None:
+    """Persist a consistent terminal failure after logging the active exception."""
+    db.rollback()
+    failed = db.get(InstrumentResearchRun, run_id)
+    if failed is not None and failed.status == "running":
+        failed_at = datetime.now(timezone.utc)
+        failed_events = list(failed.progress or [])
+        for event in failed_events:
+            if event.get("state") == "running":
+                event["state"] = "failed"
+                event["detail"] = "Component failed before its result could be saved."
+                event["updated_at"] = failed_at.isoformat()
+        failed_events.append({
+            "component": "orchestrator", "state": "failed",
+            "detail": "Research run failed before a complete snapshot was persisted.",
+            "updated_at": failed_at.isoformat(),
+        })
+        failed.status = "cancelled" if failed.cancel_requested else "failed"
+        failed.finished_at = failed_at
+        if not failed.cancel_requested:
+            failed.failures = [*(failed.failures or []), {
+                "source": "orchestrator", "stage": "execute", "url": "",
+                "reason": "Research orchestration failed; see backend traceback for details.",
+            }]
+            failed_events[-1]["state"] = "failed"
+        else:
+            failed_events[-1]["state"] = "cancelled"
+            failed_events[-1]["detail"] = "Run cancelled after the current source request."
+        failed.progress = failed_events[-40:]
+        db.commit()
+    logger.exception("Instrument research run failed run_id=%s", run_id)
+
+
+def process_instrument_research(run_id: UUID) -> None:
+    from sqlalchemy.orm import Session as DatabaseSession
+
+    with DatabaseSession(engine) as db:
+        run = db.get(InstrumentResearchRun, run_id)
+        if run is None or run.status != "running":
+            return
+        try:
+            _execute_instrument_research(db, run)
+        except Exception:
+            fail_instrument_research_run(db, run_id)
+
+
+def recover_stale_research_run(run: InstrumentResearchRun, db: Session) -> None:
+    if run.status != "running":
+        return
+    now = datetime.now(timezone.utc)
+    started = run.started_at.replace(tzinfo=timezone.utc) if run.started_at.tzinfo is None else run.started_at
+    if now - started <= timedelta(minutes=15):
+        return
+    run.status = "failed"
+    run.finished_at = now
+    run.failures = [*(run.failures or []), {
+        "source": "orchestrator", "stage": "recovery", "url": "",
+        "reason": "The run exceeded the recovery window and can be retried.",
+    }]
+    run.progress = [*(run.progress or []), {
+        "component": "recovery", "state": "failed",
+        "detail": "A previous worker stopped before completion.", "updated_at": now.isoformat(),
+    }]
+    db.commit()
+
+
 def run_instrument_research(
     db: Session, user_id: UUID, instrument: Instrument
 ) -> tuple[InstrumentResearchRun, InstrumentResearchBrief]:
-    started_at = datetime.now(timezone.utc)
-    run = InstrumentResearchRun(
-        id=uuid4(),
-        instrument_id=instrument.id,
-        user_id=user_id,
-        started_at=started_at,
-        finished_at=None,
-        status="running",
-        sources_attempted=0,
-        sources_succeeded=0,
-        failures=[],
-    )
-    db.add(run)
-    db.commit()
-    try:
-        selected_source = _exclusive_selected_source(db, user_id)
-        external_snapshot = None
-        external_reason = None
-        if selected_source == "dhan" and not instrument.is_synthetic:
-            external_snapshot, external_reason = _fetch_dhan_company_info(
-                db, user_id, instrument
-            )
-        fetched_result = fetch_instrument_sources(db, user_id, instrument)
-        sections, quality = render_brief(
-            db,
-            instrument,
-            fetched_result.sources,
-            fetched_result.failures,
-            selected_source=selected_source,
-            external_snapshot=external_snapshot,
-            external_reason=external_reason,
-        )
-        succeeded = len(fetched_result.sources)
-        usable_sections = (
-            sections["technicals"]["status"] == "available"
-            or sections["fundamentals"]["status"] == "available"
-            or sections["news"]["status"] == "available"
-        )
-        all_sections_available = all(
-            sections[name]["status"] == "available"
-            for name in ("technicals", "fundamentals", "news")
-        )
-        if not usable_sections:
-            status = "failed"
-        elif fetched_result.failures or not all_sections_available or quality:
-            status = "partial"
-        else:
-            status = "complete"
-        run.sources_attempted = fetched_result.attempted
-        run.sources_succeeded = succeeded
-        run.failures = fetched_result.failures
-        run.finished_at = datetime.now(timezone.utc)
-        run.status = status
-        brief = InstrumentResearchBrief(
-            id=uuid4(),
-            run_id=run.id,
-            instrument_id=instrument.id,
-            sections=sections,
-            renderer="template",
-            data_quality=quality,
-            created_at=run.finished_at,
-        )
-        db.add(brief)
-        db.commit()
-        db.refresh(run)
-        db.refresh(brief)
-        return run, brief
-    except Exception as exc:
-        db.rollback()
-        failed_run = db.get(InstrumentResearchRun, run.id)
-        if failed_run is not None:
-            failed_run.status = "failed"
-            failed_run.finished_at = datetime.now(timezone.utc)
-            db.commit()
-        logger.error(
-            "Instrument research pipeline failed (exception_class=%s)",
-            type(exc).__name__,
-        )
-        raise
+    """Synchronous compatibility helper for internal callers and focused tests."""
+    run, created = start_instrument_research(db, user_id, instrument)
+    if not created:
+        existing = db.scalar(select(InstrumentResearchBrief).where(InstrumentResearchBrief.run_id == run.id))
+        if existing is None:
+            raise RuntimeError("research_run_already_active")
+        return run, existing
+    run, brief = _execute_instrument_research(db, run)
+    if brief is None:
+        raise RuntimeError("research_run_cancelled_or_interrupted")
+    return run, brief
 
 
 def latest_brief(

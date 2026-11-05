@@ -280,17 +280,29 @@ def load_daily_bars(db: Session, instrument_id: UUID) -> list[MarketBar]:
 def load_backtest_bars(
     db: Session, instrument_id: UUID, as_of: datetime,
 ) -> tuple[str | None, list[MarketBar]]:
-    """Load all completed real bars from one newest stored source; never substitute sources."""
+    """Load one completed raw source suitable for derived corporate-action adjustment."""
     source = db.scalar(
         select(MarketBar.source)
         .where(
             MarketBar.instrument_id == instrument_id,
             MarketBar.interval == DAILY_INTERVAL,
             MarketBar.is_synthetic.is_(False),
+            MarketBar.source == "yfinance",
         )
         .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
         .limit(1)
     )
+    if source is None:
+        source = db.scalar(
+            select(MarketBar.source)
+            .where(
+                MarketBar.instrument_id == instrument_id,
+                MarketBar.interval == DAILY_INTERVAL,
+                MarketBar.is_synthetic.is_(False),
+            )
+            .order_by(MarketBar.timestamp.desc(), MarketBar.retrieved_at.desc())
+            .limit(1)
+        )
     if source is None:
         return None, []
     cutoff = _utc(as_of) - timedelta(days=1)

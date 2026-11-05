@@ -24,6 +24,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
+JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
+
 
 class User(Base):
     __tablename__ = "users"
@@ -311,12 +313,13 @@ class CorporateAction(Base):
     __tablename__ = "corporate_actions"
     __table_args__ = (
         CheckConstraint(
-            "action_type IN ('split', 'bonus', 'dividend')",
+            "action_type IN ('split', 'bonus', 'dividend', 'rights')",
             name="ck_corporate_actions_type",
         ),
         CheckConstraint(
             "(action_type IN ('split', 'bonus') AND ratio IS NOT NULL AND ratio > 0 AND amount IS NULL) "
-            "OR (action_type = 'dividend' AND ratio IS NULL AND amount IS NOT NULL AND amount > 0)",
+            "OR (action_type = 'dividend' AND ratio IS NULL AND amount IS NOT NULL AND amount > 0) "
+            "OR (action_type = 'rights' AND ratio IS NOT NULL AND ratio > 0 AND amount IS NOT NULL AND amount > 0)",
             name="ck_corporate_actions_values",
         ),
         Index("ix_corporate_actions_user_instrument_date", "user_id", "instrument_id", "ex_date"),
@@ -334,7 +337,36 @@ class CorporateAction(Base):
     ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    source_reference: Mapped[str | None] = mapped_column(String(512))
+    announcement_date: Mapped[date | None] = mapped_column(Date)
+    record_date: Mapped[date | None] = mapped_column(Date)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_by: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_corporate_actions_verified_by_users"),
+    )
+    is_discrepant: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    discrepancy_note: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CorporateActionCoverage(Base):
+    __tablename__ = "corporate_action_coverage"
+    __table_args__ = (
+        UniqueConstraint("user_id", "instrument_id", "source", name="uq_corporate_action_coverage_owner_instrument_source"),
+        CheckConstraint("status IN ('verified', 'unverified')", name="ck_corporate_action_coverage_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    instrument_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_reference: Mapped[str | None] = mapped_column(String(512))
+    detail: Mapped[str | None] = mapped_column(String(500))
 
 
 class CorporateActionApplication(Base):
@@ -391,6 +423,97 @@ class InstrumentProviderIdentifier(Base):
     is_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     instrument: Mapped[Instrument] = relationship(back_populates="provider_identifiers")
+
+
+class NewsItem(Base):
+    __tablename__ = "news_items"
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_news_items_source_external_id"),
+                      Index("ix_news_items_published", "published_at"),
+                      Index("ix_news_items_instrument_published", "instrument_id", "published_at"))
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    external_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(2048))
+    instrument_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="SET NULL"))
+    symbol_raw: Mapped[str | None] = mapped_column(String(96))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    publisher: Mapped[str | None] = mapped_column(String(200))
+    category: Mapped[str | None] = mapped_column(String(160))
+    headline: Mapped[str] = mapped_column(String(1000), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text)
+    raw_payload: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
+
+
+class NewsIngestionFailure(Base):
+    __tablename__ = "news_ingestion_failures"
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol_raw: Mapped[str | None] = mapped_column(String(96))
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    detail: Mapped[str] = mapped_column(String(1000), nullable=False)
+
+
+class NewsSourcePoll(Base):
+    __tablename__ = "news_source_polls"
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_successful_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_article_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    articles_discovered: Mapped[int] = mapped_column(default=0, nullable=False)
+    articles_inserted: Mapped[int] = mapped_column(default=0, nullable=False)
+    duplicates: Mapped[int] = mapped_column(default=0, nullable=False)
+    failure_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    last_error_category: Mapped[str | None] = mapped_column(String(64))
+    rate_limited: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+
+class NewsSentimentAnalysis(Base):
+    __tablename__ = "news_sentiment_analyses"
+    __table_args__ = (
+        UniqueConstraint("news_item_id", "classifier_version", name="uq_news_sentiment_item_version"),
+        CheckConstraint("sentiment IN ('positive', 'negative', 'neutral', 'mixed')", name="ck_news_sentiment_label"),
+        CheckConstraint("sentiment_score >= -1 AND sentiment_score <= 1", name="ck_news_sentiment_score"),
+        CheckConstraint("strength >= 0 AND strength <= 1", name="ck_news_sentiment_strength"),
+        CheckConstraint("confidence_score >= 0 AND confidence_score <= 100", name="ck_news_sentiment_confidence"),
+        CheckConstraint("impact IN ('low', 'medium', 'high')", name="ck_news_sentiment_impact"),
+        Index("ix_news_sentiment_event", "event_key"),
+        Index("ix_news_sentiment_analyzed", "analyzed_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    news_item_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("news_items.id", ondelete="CASCADE"), nullable=False
+    )
+    classifier_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sentiment: Mapped[str] = mapped_column(String(16), nullable=False)
+    sentiment_score: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    strength: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    impact: Mapped[str] = mapped_column(String(8), nullable=False)
+    confidence_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_category: Mapped[str] = mapped_column(String(64), nullable=False)
+    relevance_scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    interpretation: Mapped[str] = mapped_column(String(16), nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+    event_key: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class NewsSentimentFailure(Base):
+    __tablename__ = "news_sentiment_failures"
+    __table_args__ = (UniqueConstraint("news_item_id", "classifier_version", name="uq_news_sentiment_failure_item_version"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    news_item_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("news_items.id", ondelete="CASCADE"), nullable=False
+    )
+    classifier_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    retry_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    error_category: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class MarketBar(Base):
@@ -814,7 +937,7 @@ class InstrumentResearchRun(Base):
     __tablename__ = "instrument_research_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('running', 'complete', 'partial', 'failed')",
+            "status IN ('running', 'complete', 'partial', 'failed', 'cancelled')",
             name="ck_instrument_research_runs_status",
         ),
         CheckConstraint(
@@ -827,6 +950,14 @@ class InstrumentResearchRun(Base):
             "user_id",
             "instrument_id",
             "started_at",
+        ),
+        Index(
+            "uq_instrument_research_run_active",
+            "user_id",
+            "instrument_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+            sqlite_where=text("status = 'running'"),
         ),
     )
 
@@ -843,6 +974,8 @@ class InstrumentResearchRun(Base):
     sources_attempted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sources_succeeded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failures: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False, default=list)
+    progress: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False, default=list)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class InstrumentResearchBrief(Base):

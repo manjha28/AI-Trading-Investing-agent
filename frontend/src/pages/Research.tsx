@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
 
 type Instrument = { id: string; symbol: string; display_name: string; venue: string; is_synthetic: boolean };
-type MarketDataSettings = { selected_provider: string | null };
 type WatchlistEntry = { instrument_id: string; symbol: string };
 type SourceLink = { id: string; instrument_id: string; url: string; label: string; enabled: boolean; created_at: string };
 type Source = {
@@ -49,6 +48,41 @@ type NewsItem = {
   url: string;
   source_id: string;
 };
+type StoredNewsItem = {
+  external_id: string; source: string; source_url: string | null; instrument_id: string | null;
+  symbol_raw: string | null; published_at: string; retrieved_at: string; publisher: string | null;
+  category: string | null; headline: string; body: string | null; full_text_status: string;
+  published_time_kind: string;
+};
+type NewsSourceHealth = {
+  source: string; status: string; last_attempted_at: string; last_successful_poll_at: string | null;
+  last_successful_article_at: string | null; articles_discovered: number; articles_inserted: number;
+  duplicate_count: number; failure_count: number; last_error_category: string | null; rate_limited: boolean;
+};
+type SentimentArticle = {
+  news_item_id: string; source: string; publisher: string | null; url: string | null;
+  headline: string; summary: string | null; published_at: string; instrument_id: string | null;
+  symbol_raw: string | null; category: string | null; full_text_status: string;
+  sentiment: 'positive' | 'negative' | 'neutral' | 'mixed'; score: number; strength: number;
+  impact: 'low' | 'medium' | 'high'; confidence_score: number; event_category: string;
+  relevance_scope: string; interpretation: string; explanation: string;
+  evidence: { field: string; text: string }[]; event_key: string; classifier_version: string; analyzed_at: string;
+};
+type SentimentEvent = {
+  event_key: string; sentiment: string; score: number; confidence_score: number; impact: string;
+  event_category: string; relevance_scope: string; contradictory_sources: boolean;
+  news_item_ids: string[]; sources: string[]; items: SentimentArticle[];
+};
+type SentimentAggregate = {
+  status: 'available' | 'stale' | 'not_analyzed' | 'analysis_failed' | 'source_unavailable' | 'no_news_found' | 'successful_empty' | string;
+  scope: string; scope_id: string | null; sentiment: 'positive' | 'negative' | 'neutral' | 'mixed' | null; interpretation: string | null;
+  score: number | null; strength: number | null; confidence_score: number | null;
+  event_count: number; article_count: number; counts: Record<string, number>;
+  contradictory_evidence: boolean; freshness: { latest_published_at: string | null; age_hours: number | null; is_stale: boolean };
+  coverage: { period_days: number; analyzed_events: number; unanalysed_news_items: number; available_source_fraction: number; analysis: { available_items: number; analyzed_items: number; pending_items: number; failed_items: number }; sources: { source: string; status: string; rate_limited: boolean; last_error_category: string | null }[] };
+  events: SentimentEvent[]; instrument?: { id: string; symbol: string; name: string; sector: string | null; industry: string | null };
+};
+type SentimentHistoryPoint = { date: string; score: number; event_count: number; article_count: number };
 type NewsSource = {
   source_id: string;
   title: string;
@@ -84,6 +118,8 @@ type Brief = {
         source?: string;
         fetched_at?: string;
         stale?: boolean;
+        comparison_status?: string;
+        conflicts?: { field: string; source_a: string; value_a: string; source_b: string; value_b: string }[];
       };
       periods: FundamentalPeriod[];
     };
@@ -106,15 +142,26 @@ type Brief = {
       }[];
     };
     news: { status: string; message: string | null; items: NewsItem[]; sources: NewsSource[] };
+    news_sentiment?: SentimentAggregate & { validation_status?: string; classifier_version?: string };
+    collector_status?: Record<string, { state: string; detail?: string; source?: string | null; records?: number; retrieved_at?: string | null; source_count?: number; sources?: string[] }>;
     data_quality: { status: string; items: QualityItem[] };
     disclaimer: string;
   };
 };
 type FactDraft = { statement: string; as_of: string; source_ids: string[] };
+type ResearchProgressEvent = { component: string; state: string; detail: string; updated_at: string; source?: string | null; retrieved_at?: string | null; [key: string]: unknown };
+type ResearchRunState = {
+  run_id: string; instrument_id: string; status: Brief['status'] | 'cancelled';
+  started_at: string; finished_at: string | null; sources_attempted: number; sources_succeeded: number;
+  failures: Brief['failures']; progress: ResearchProgressEvent[]; brief: Brief | null; reused: boolean;
+};
 type BatchRunResult = {
   instrument: Instrument;
   brief: Brief | null;
   error: string | null;
+  status?: ResearchRunState['status'] | 'preparing';
+  run_id?: string;
+  progress?: ResearchProgressEvent[];
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -135,6 +182,21 @@ function sourceFailureSummary(failure: Brief['failures'][number]): string {
     return 'The source could not be reached. Verify the URL and provider availability.';
   }
   return 'This source could not be fetched. Verify that the URL is a public, permitted feed.';
+}
+
+function sentimentStatusText(aggregate: SentimentAggregate | null): string {
+  if (!aggregate) return 'Sentiment data is loading.';
+  if (aggregate.status === 'no_news_found') return 'No news found in the selected period.';
+  if (aggregate.status === 'not_analyzed') return 'News is available but has not yet been analyzed.';
+  if (aggregate.status === 'analysis_failed') return 'Analysis failed for available news; retry will occur automatically.';
+  if (aggregate.status === 'source_unavailable') return 'News sources are unavailable; no sentiment score is reported.';
+  if (aggregate.status === 'stale') return 'Analyzed news is stale; treat this context as uncertain.';
+  if (aggregate.confidence_score !== null && aggregate.confidence_score < 45) return 'Analysis is uncertain because evidence or source coverage is limited.';
+  return 'Sentiment is derived from persisted headlines and permitted summaries.';
+}
+
+function scoreLabel(score: number | null): string {
+  return score === null ? 'Unavailable' : `${score > 0 ? '+' : ''}${score.toFixed(3)} / 1.000`;
 }
 
 export function Research({ watchlist, addInstrumentToWatchlist, removeInstrumentFromWatchlist }: {
@@ -163,6 +225,79 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [storedNews, setStoredNews] = useState<StoredNewsItem[]>([]);
+  const [storedNewsError, setStoredNewsError] = useState('');
+  const [newsHealth, setNewsHealth] = useState<NewsSourceHealth[]>([]);
+  const [marketSentiment, setMarketSentiment] = useState<SentimentAggregate | null>(null);
+  const [instrumentSentiments, setInstrumentSentiments] = useState<SentimentAggregate[]>([]);
+  const [sectorSentiments, setSectorSentiments] = useState<SentimentAggregate[]>([]);
+  const [recentSentiment, setRecentSentiment] = useState<SentimentArticle[]>([]);
+  const [selectedSentiment, setSelectedSentiment] = useState<SentimentAggregate | null>(null);
+  const [selectedSentimentHistory, setSelectedSentimentHistory] = useState<SentimentHistoryPoint[]>([]);
+  const [sentimentBusy, setSentimentBusy] = useState(false);
+  const [sentimentError, setSentimentError] = useState('');
+
+  const refreshSentiment = useCallback(async () => {
+    const requests = await Promise.allSettled([
+      apiRequest<SentimentAggregate>('/news/sentiment/market?period_days=7'),
+      apiRequest<SentimentAggregate[]>('/news/sentiment/instruments?period_days=7&limit=100'),
+      apiRequest<SentimentAggregate[]>('/news/sentiment/sectors?period_days=7'),
+      apiRequest<SentimentArticle[]>('/news/sentiment/recent?limit=30&period_days=30'),
+    ]);
+    if (requests[0].status === 'fulfilled') setMarketSentiment(requests[0].value);
+    if (requests[1].status === 'fulfilled') setInstrumentSentiments(requests[1].value);
+    if (requests[2].status === 'fulfilled') setSectorSentiments(requests[2].value);
+    if (requests[3].status === 'fulfilled') setRecentSentiment(requests[3].value);
+    const failed = requests.find((request) => request.status === 'rejected');
+    setSentimentError(failed?.status === 'rejected' && failed.reason instanceof Error ? failed.reason.message : '');
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void apiRequest<StoredNewsItem[]>('/news?limit=50').then((items) => {
+      if (active) setStoredNews(items);
+    }).catch((requestError: Error) => {
+      if (active) setStoredNewsError(requestError.message);
+    });
+    void apiRequest<NewsSourceHealth[]>('/news/sources/health').then((rows) => {
+      if (active) setNewsHealth(rows);
+    }).catch(() => undefined);
+    void refreshSentiment();
+    return () => { active = false; };
+  }, [refreshSentiment]);
+
+  useEffect(() => {
+    if (!selected) {
+      setSelectedSentiment(null);
+      setSelectedSentimentHistory([]);
+      return;
+    }
+    let active = true;
+    void Promise.allSettled([
+      apiRequest<SentimentAggregate>(`/news/sentiment/instruments/${selected.id}?period_days=7`),
+      apiRequest<SentimentHistoryPoint[]>(`/news/sentiment/history?period_days=90&instrument_id=${selected.id}`),
+    ]).then(([summary, history]) => {
+      if (active && summary.status === 'fulfilled') setSelectedSentiment(summary.value);
+      if (active && history.status === 'fulfilled') setSelectedSentimentHistory(history.value);
+    });
+    return () => { active = false; };
+  }, [selected?.id]);
+
+  async function runSentimentAnalysis() {
+    setSentimentBusy(true);
+    setSentimentError('');
+    try {
+      const result = await apiRequest<{ examined: number; analyzed: number; already_analyzed: number }>(
+        '/news/sentiment/analyze?limit=500&period_days=30', { method: 'POST' },
+      );
+      setNotice(`News analysis processed ${result.analyzed} items; ${result.already_analyzed} already had this classifier version.`);
+      await refreshSentiment();
+    } catch (requestError) {
+      setSentimentError(requestError instanceof Error ? requestError.message : 'Sentiment analysis failed.');
+    } finally {
+      setSentimentBusy(false);
+    }
+  }
 
   const refreshNotesAndSources = useCallback(async (instrumentId: string) => {
     const [detail, links] = await Promise.all([
@@ -220,6 +355,35 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
     await runResearchBatch([selected]);
   }
 
+  async function refreshSelectedData() {
+    if (!selected || selected.is_synthetic) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const now = new Date();
+      const start = new Date(now);
+      start.setUTCFullYear(start.getUTCFullYear() - 2);
+      const query = new URLSearchParams({
+        start: start.toISOString(), end: now.toISOString(), interval: '1d', limit: '500',
+      });
+      const result = await apiRequest<{ bars: unknown[] }>(
+        `/market-data/instruments/${selected.id}/history/sync?${query}`, { method: 'POST' },
+      );
+      setNotice(result.bars.length
+        ? `History sync returned ${result.bars.length} stored or refreshed daily bars for ${selected.symbol}.`
+        : `History sync returned no daily bars for ${selected.symbol}; existing report data is unchanged.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Data refresh failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function viewPreviousReport() {
+    document.getElementById('research-report')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   function toggleBatchInstrument(instrument: Instrument) {
     setBatchResults([]);
     setBatchSelection((current) => {
@@ -242,15 +406,12 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
     setBatchResults([]);
     let successCount = 0;
     const syncWarnings: string[] = [];
-    let selectedProvider: string | null = null;
-    try {
-      selectedProvider = (await apiRequest<MarketDataSettings>('/market-data/settings')).selected_provider;
-    } catch {
-      syncWarnings.push('Selected market-data source could not be confirmed; provider fundamentals sync was skipped.');
-    }
     for (const instrument of instrumentsToRun.slice(0, MAX_BATCH_INSTRUMENTS)) {
       try {
+        const clientProgress: ResearchProgressEvent[] = [];
         if (!instrument.is_synthetic) {
+          clientProgress.push({ component: 'market_data_sync', state: 'running', detail: 'Checking missing daily bars through the existing provider-priority and history-sync path.', updated_at: new Date().toISOString() });
+          setBatchResults((current) => [...current.filter((item) => item.instrument.id !== instrument.id), { instrument, brief: null, error: null, status: 'preparing', progress: [...clientProgress] }]);
           const now = new Date();
           const start = new Date(now);
           start.setUTCFullYear(start.getUTCFullYear() - 2);
@@ -260,46 +421,52 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
             interval: '1d',
             limit: '500',
           });
-          const historyResult = await Promise.resolve().then(() => apiRequest<{ bars: unknown[] }>(
+          const historyResult = await Promise.resolve().then(() => apiRequest<{ bars: unknown[]; provider_attempts?: { provider: string; outcome: string }[] }>(
             `/market-data/instruments/${instrument.id}/history/sync?${syncQuery}`,
             { method: 'POST' },
           )).then((value) => ({ status: 'fulfilled' as const, value }), (reason: unknown) => ({ status: 'rejected' as const, reason }));
           if (historyResult.status === 'rejected') {
             syncWarnings.push(`${instrument.symbol}: historical data sync failed.`);
+            clientProgress[0] = { ...clientProgress[0], state: 'failed', detail: 'Existing history-sync request failed; stored bars remain available for the report.' };
           } else if (historyResult.value.bars.length === 0) {
             syncWarnings.push(`${instrument.symbol}: no real daily bars were returned.`);
-          }
-          if (selectedProvider === 'yfinance') {
-            try {
-              const fundamentalsResult = await apiRequest<{ status: 'available' | 'unavailable'; message: string }>(
-                `/market-data/instruments/${instrument.id}/fundamentals/sync`,
-                { method: 'POST' },
-              );
-              if (fundamentalsResult.status === 'unavailable') {
-                syncWarnings.push(`${instrument.symbol}: ${fundamentalsResult.message}`);
-              }
-            } catch {
-              syncWarnings.push(`${instrument.symbol}: fundamentals sync failed.`);
-            }
+            clientProgress[0] = { ...clientProgress[0], state: 'unavailable', detail: 'History sync returned no daily bars; no values will be fabricated.' };
+          } else {
+            clientProgress[0] = { ...clientProgress[0], state: 'checked', detail: `${historyResult.value.bars.length} stored or refreshed daily bars returned by the configured provider chain.` };
           }
         }
-        const result = await apiRequest<Brief>(`/research/instruments/${instrument.id}/run`, {
+        let run = await apiRequest<ResearchRunState>(`/research/instruments/${instrument.id}/run`, {
           method: 'POST',
           body: '{}',
         });
-        successCount += 1;
-        setBatchResults((current) => [...current, { instrument, brief: result, error: null }]);
-        if (selected?.id === instrument.id) {
-          setBrief(result);
-          try {
-            await refreshNotesAndSources(instrument.id);
-          } catch (refreshError) {
-            setError(refreshError instanceof Error ? refreshError.message : 'Research sources saved, but the page could not refresh its source list.');
+        const updateRun = (value: ResearchRunState) => {
+          setBatchResults((current) => [...current.filter((item) => item.instrument.id !== instrument.id), {
+            instrument, brief: value.brief, error: null, status: value.status,
+            run_id: value.run_id, progress: value.progress,
+          }]);
+        };
+        updateRun(run);
+        while (run.status === 'running') {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          run = await apiRequest<ResearchRunState>(`/research/runs/${run.run_id}`);
+          updateRun(run);
+        }
+        if (run.brief) {
+          successCount += 1;
+          if (selected?.id === instrument.id) {
+            setBrief(run.brief);
+            try {
+              await refreshNotesAndSources(instrument.id);
+            } catch (refreshError) {
+              setError(refreshError instanceof Error ? refreshError.message : 'Research sources saved, but the page could not refresh its source list.');
+            }
           }
+        } else if (run.status === 'failed' || run.status === 'cancelled') {
+          syncWarnings.push(`${instrument.symbol}: research ${run.status}.`);
         }
       } catch (requestError) {
         const message = requestError instanceof Error ? requestError.message : 'Research run failed.';
-        setBatchResults((current) => [...current, { instrument, brief: null, error: message }]);
+        setBatchResults((current) => [...current.filter((item) => item.instrument.id !== instrument.id), { instrument, brief: null, error: message, status: 'failed' }]);
       }
     }
     const failureCount = instrumentsToRun.length - successCount;
@@ -311,6 +478,17 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
       ? `${runNotice} Data sync notes: ${uniqueSyncWarnings.join(' ')}`
       : runNotice);
     setBusy(false);
+  }
+
+  async function cancelResearchRun(runId: string) {
+    try {
+      const state = await apiRequest<ResearchRunState>(`/research/runs/${runId}/cancel`, { method: 'POST', body: '{}' });
+      setBatchResults((current) => current.map((item) => item.run_id === runId
+        ? { ...item, status: state.status, progress: state.progress }
+        : item));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Research cancellation failed.');
+    }
   }
 
   async function addSourceLink(event: FormEvent<HTMLFormElement>) {
@@ -453,12 +631,75 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
     || legacySources.find((source) => source.id === id)?.publisher
     || legacySources.find((source) => source.id === id)?.url
     || 'Saved source';
+  const visibleInstrumentSentiments = watchlist.length
+    ? instrumentSentiments.filter((item) => watchlist.some((entry) => entry.instrument_id === item.instrument?.id))
+    : instrumentSentiments.slice(0, 12);
+  const impactfulSentiment = recentSentiment.filter((item) => item.impact === 'high').slice(0, 8);
+  const visibleRecentSentiment = impactfulSentiment.length ? impactfulSentiment : recentSentiment.slice(0, 6);
 
   return (
     <div className="backfill-page research-pipeline-page">
       <p className="decision-disclaimer">Decision support, not investment advice. The template brief uses stored data and cited sources; it does not use AI to calculate or invent figures.</p>
       {error && <p className="form-error" role="alert">{error}</p>}
       {notice && <p className="alerts-notice" role="status">{notice}</p>}
+
+      <details className="research-market-intel">
+        <summary>Market news & sentiment · {storedNews.length} persisted articles · {marketSentiment?.event_count ?? 0} analyzed events</summary>
+      <section className="data-section research-brief-section" aria-label="Persisted market news">
+        <div className="section-heading"><div><p className="eyebrow">MARKET INTEL</p><h2>Persisted news</h2></div><span className="section-count">{storedNews.length}</span></div>
+        {storedNewsError && <p className="research-status-line">News feed unavailable: {storedNewsError}</p>}
+        {newsHealth.length > 0 && <div className="research-value-grid" aria-label="News source health">{newsHealth.map((source) => <span key={source.source}>
+          <small>{source.source} · {source.status}{source.rate_limited ? ' · rate limited' : ''}</small>
+          <strong>{source.articles_discovered} discovered · {source.articles_inserted} inserted · {source.duplicate_count} duplicates</strong>
+          <small>Attempt {new Date(source.last_attempted_at).toLocaleString()} · last success {source.last_successful_poll_at ? new Date(source.last_successful_poll_at).toLocaleString() : 'none'} · last article {source.last_successful_article_at ? new Date(source.last_successful_article_at).toLocaleString() : 'none'} · failures {source.failure_count}{source.last_error_category ? ` · ${source.last_error_category}` : ''}</small>
+        </span>)}</div>}
+        {storedNews.length === 0 && !storedNewsError && <p className="research-status-line">No persisted news items are available yet.</p>}
+        {storedNews.map((item) => <article className="backfill-card research-news-item" key={`${item.source}-${item.external_id}`}>
+          <strong>{item.headline}</strong>
+          <span>{item.publisher ?? item.source} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(item.published_at))} IST{item.published_time_kind === 'gdelt_seen_at' ? ' · GDELT first seen' : ''}</span>
+          <span>{item.symbol_raw ?? 'Market-wide'} · {item.category ?? 'Uncategorized'} · News sentiment unavailable</span>
+          {item.body && <p>{item.body} <small>(feed description; not full article text)</small></p>}
+          <small>Full text: {item.full_text_status === 'available' ? 'available' : 'not stored'}</small>
+          {item.source_url && <a href={item.source_url} target="_blank" rel="noreferrer">Open original article</a>}
+        </article>)}
+      </section>
+
+      <section className="data-section research-brief-section" aria-label="News sentiment analysis">
+        <div className="section-heading"><div><p className="eyebrow">NEWS SENTIMENT</p><h2>Evidence-linked sentiment</h2></div>
+          <button className="secondary-button" type="button" disabled={sentimentBusy} onClick={() => void runSentimentAnalysis()}>{sentimentBusy ? 'Analyzing persisted news…' : 'Analyze next 500 news items'}</button>
+        </div>
+        {sentimentError && <p className="form-error" role="alert">{sentimentError}</p>}
+        <p className="research-status-line">Local VADER plus financial event/context rules. Uses persisted headlines and permitted summaries only; no paid service is called.</p>
+        <div className="research-value-grid">
+          <span><small>Indian market · last 7 days · {marketSentiment?.status ?? 'loading'}</small>
+            <strong>{marketSentiment?.sentiment ? `${marketSentiment.sentiment.toUpperCase()} · ${scoreLabel(marketSentiment.score)}` : 'No sentiment score'}</strong>
+            <small>{sentimentStatusText(marketSentiment)}</small>
+            <small>Confidence {marketSentiment?.confidence_score ?? '—'}/100 · {marketSentiment?.event_count ?? 0} unique events · {marketSentiment?.article_count ?? 0} articles</small>
+            {marketSentiment?.freshness.latest_published_at && <small>Latest analyzed publication {new Date(marketSentiment.freshness.latest_published_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST</small>}
+          </span>
+          <span><small>Unique-event distribution</small><strong>Positive {marketSentiment?.counts.positive ?? 0} · Negative {marketSentiment?.counts.negative ?? 0}</strong>
+            <small>Neutral {marketSentiment?.counts.neutral ?? 0} · Mixed {marketSentiment?.counts.mixed ?? 0}</small><small>Counts are event groups, not duplicated publisher articles.</small>
+            <small>{marketSentiment?.coverage.analysis.pending_items ?? 0} pending · {marketSentiment?.coverage.analysis.failed_items ?? 0} failed · {marketSentiment?.coverage.analysis.analyzed_items ?? 0} analyzed for this classifier version.</small></span>
+        </div>
+        <div className="research-value-grid">
+          <span><small>Individual stock sentiment · mapped instruments</small>
+            {visibleInstrumentSentiments.length === 0 ? <strong>No analyzed company news is mapped to this watchlist yet.</strong> : visibleInstrumentSentiments.slice(0, 12).map((item) => <small key={item.scope_id}><strong>{item.instrument?.symbol ?? item.scope_id}:</strong> {item.sentiment ?? item.status} · {scoreLabel(item.score)} · confidence {item.confidence_score ?? '—'}/100</small>)}
+          </span>
+          <span><small>Sector sentiment · persisted sector mappings only</small>
+            {sectorSentiments.length === 0 ? <strong>Sector sentiment unavailable; no saved sector mappings are available.</strong> : sectorSentiments.slice(0, 12).map((item) => <small key={item.scope_id}><strong>{item.scope_id}:</strong> {item.sentiment ?? item.status} · {scoreLabel(item.score)} · {item.event_count} events</small>)}
+          </span>
+        </div>
+        <h3>Recent impactful news</h3>
+        {visibleRecentSentiment.length === 0 && <p className="research-status-line">{marketSentiment?.status === 'not_analyzed' ? 'News has not yet been analyzed.' : marketSentiment?.status === 'source_unavailable' ? 'News source unavailable; no recent analyzed events.' : 'No analyzed recent events are available.'}</p>}
+        {visibleRecentSentiment.map((item) => <article className="backfill-card research-news-item" key={item.news_item_id}>
+          <strong>{item.headline}</strong><span>{item.interpretation === 'uncertain' ? `UNCERTAIN · model label ${item.sentiment.toUpperCase()}` : item.sentiment.toUpperCase()} · {item.event_category.replaceAll('_', ' ')} · impact {item.impact} · confidence {item.confidence_score}/100 · {item.symbol_raw ?? (item.instrument_id ? 'Mapped company' : item.relevance_scope)}</span>
+          <span>{item.publisher ?? item.source} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(item.published_at))} IST</span>
+          <small>{item.explanation} Evidence: {item.evidence.map((evidence) => evidence.text).join(' · ')}</small>
+          {item.summary && <p>{item.summary} <small>(available feed summary)</small></p>}{item.url && <a href={item.url} target="_blank" rel="noreferrer">Open source article</a>}
+        </article>)}
+        {marketSentiment?.coverage.sources.map((source) => <small className="research-source-citation" key={`sentiment-${source.source}`}>{source.source}: {source.status}{source.rate_limited ? ' · rate limited' : ''}{source.last_error_category ? ` · ${source.last_error_category}` : ''}</small>)}
+      </section>
+      </details>
 
       <section className="data-section research-search-panel">
         <div className="section-heading"><div><p className="eyebrow">INSTRUMENT RESEARCH</p><h2>Find an instrument</h2></div></div>
@@ -491,19 +732,44 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
 
       {batchResults.length > 0 && <section className="research-batch-results">
         <div className="section-heading"><div><p className="eyebrow">BATCH RESULTS</p><h2>Research runs</h2></div><span className="section-count">{batchResults.length}</span></div>
-        {batchResults.map(({ instrument, brief: result, error: resultError }) => <details className="data-section research-batch-result" key={instrument.id} open={batchResults.length === 1}>
-          <summary><strong>{instrument.symbol} · {instrument.display_name}</strong><span className={resultError ? 'research-run-status research-status-failed' : `research-run-status research-status-${result?.status ?? 'failed'}`}>{resultError ? 'request failed' : result?.status}</span></summary>
-          {resultError ? <p className="form-error" role="alert">{resultError}</p> : result && <ResearchBriefView brief={result} />}
+        {batchResults.map((item) => <details className="data-section research-batch-result" key={item.instrument.id}>
+          <summary><strong>{item.instrument.symbol} · {item.instrument.display_name}</strong><span className={item.error ? 'research-run-status research-status-failed' : `research-run-status research-status-${item.status ?? item.brief?.status ?? 'preparing'}`}>{item.error ? 'request failed' : item.status ?? item.brief?.status ?? 'preparing'}</span></summary>
+          {item.error ? <p className="form-error" role="alert">{item.error}</p> : <>
+            {item.status === 'running' && item.run_id && <button className="text-button" type="button" onClick={() => void cancelResearchRun(item.run_id!)}>Cancel this research run</button>}
+            {item.progress && <div className="research-section-status-grid" aria-label={`${item.instrument.symbol} research progress`}>
+              {item.progress.slice(-8).map((step, index) => <article key={`${step.component}-${step.updated_at}-${index}`}>
+                <small>{step.component.replaceAll('_', ' ')}</small><strong>{step.state}</strong><span>{step.detail}</span>
+                {step.source && <small>{step.source}{step.retrieved_at ? ` · ${new Date(step.retrieved_at).toLocaleString()}` : ''}</small>}
+              </article>)}
+            </div>}
+            {item.brief && item.instrument.id !== selected?.id && <ResearchBriefView brief={item.brief} instrument={item.instrument} />}
+          </>}
         </details>)}
       </section>}
 
       {selected && <>
         <section className="data-section research-selected-panel">
           <div className="section-heading">
-            <div><p className="eyebrow">SELECTED INSTRUMENT</p><h2>{selected.symbol} · {selected.display_name}</h2></div>
-            <button className="primary-button" type="button" onClick={() => void runResearch()} disabled={busy}>{busy ? 'Researching…' : 'Run research'}</button>
+            <div><p className="eyebrow">SELECTED INSTRUMENT</p><h2>{selected.symbol} · {selected.display_name}</h2><p className="research-subtitle">{selected.venue} · {selected.is_synthetic ? 'Synthetic instrument' : 'NSE/BSE equity'}</p></div>
+            <div className="research-action-bar" aria-label="Selected stock research actions">
+              {!selected.is_synthetic && <button className="secondary-button" type="button" onClick={() => void refreshSelectedData()} disabled={busy}>{busy ? 'Working…' : 'Refresh data'}</button>}
+              <button className="primary-button" type="button" onClick={() => void runResearch()} disabled={busy}>{busy ? 'Researching…' : 'Run research'}</button>
+              {brief && <button className="text-button" type="button" onClick={viewPreviousReport}>Previous report · {new Date(brief.created_at).toLocaleDateString()}</button>}
+            </div>
           </div>
-          <p className="research-subtitle">{selected.venue} · Template renderer · Reads stored fundamentals and OHLCV; never fetches or stores full page bodies.</p>
+          <p className="research-subtitle">Research reuses stored fundamentals and OHLCV, refreshes missing daily bars through the configured provider path, and preserves the last completed report if a new run fails.</p>
+        </section>
+
+        <section className="data-section research-brief-section" aria-label="Selected instrument news sentiment">
+          <h3>{selected.symbol} sentiment · {selectedSentiment?.status ?? 'loading'}</h3>
+          <p className="research-status-line">{sentimentStatusText(selectedSentiment)}</p>
+          {selectedSentiment?.sentiment && <p><strong>{selectedSentiment.sentiment.toUpperCase()}</strong> · score {scoreLabel(selectedSentiment.score)} · confidence {selectedSentiment.confidence_score}/100 · {selectedSentiment.event_count} events · contradictory evidence {selectedSentiment.contradictory_evidence ? 'present' : 'not detected'}</p>}
+          {selectedSentiment?.events.slice(0, 5).map((event) => <article className="backfill-card research-news-item" key={event.event_key}>
+            <strong>{event.sentiment.toUpperCase()} · {event.event_category.replaceAll('_', ' ')} · {event.impact} impact</strong>
+            {event.items.map((item) => <div key={item.news_item_id}><span>{item.publisher ?? item.source} · {item.headline}</span>{item.url && <a href={item.url} target="_blank" rel="noreferrer">Source</a>}</div>)}
+          </article>)}
+          <h4>Historical sentiment</h4>
+          {selectedSentimentHistory.length < 3 ? <p className="research-status-line">Not enough analyzed history to show a trend.</p> : selectedSentimentHistory.slice(-30).map((point) => <small className="research-source-citation" key={point.date}>{point.date}: {scoreLabel(point.score)} · {point.event_count} events</small>)}
         </section>
 
         <section className="entry-section research-source-manager">
@@ -524,7 +790,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
           ))}
         </section>
 
-        {brief && batchResults.length === 0 && <ResearchBriefView brief={brief} />}
+        {brief && <ResearchBriefView brief={brief} instrument={selected} />}
 
         <details className="data-section my-notes-section">
           <summary><span><span className="eyebrow">OPTIONAL</span><strong>My notes</strong></span><small>Personal, source-cited notes</small></summary>
@@ -569,8 +835,8 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
   );
 }
 
-export function ResearchBriefView({ brief }: { brief: Brief }) {
-  const { fundamentals, technicals, financials_trend: trend, news, data_quality: quality } = brief.sections;
+export function ResearchBriefView({ brief, instrument }: { brief: Brief; instrument?: Instrument | null }) {
+  const { fundamentals, technicals, financials_trend: trend, news, news_sentiment: sentiment, collector_status: collectors, data_quality: quality } = brief.sections;
   const qualityGroups = new Map<string, QualityItem>();
   quality.items.forEach((item) => qualityGroups.set(`${item.kind}|${item.reason}`, item));
   const groupedQuality = Array.from(qualityGroups.values()).map((item) => ({
@@ -595,10 +861,45 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
   quality.items.forEach((item) => provenance.set(item.field_path, item.reason));
   const displayValue = (value: string | null) => value === null
     ? 'Unavailable'
-    : Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
-  return <section className="data-section research-brief">
-    <div className="section-heading"><div><p className="eyebrow">RESEARCH BRIEF · {brief.renderer.toUpperCase()}</p><h2>Evidence and data</h2></div><span className={`research-run-status research-status-${brief.status}`}>{brief.status}</span></div>
-    <p className="research-subtitle">Generated {new Date(brief.created_at).toLocaleString()}</p>
+    : Number(value).toLocaleString('en-IN', { maximumFractionDigits: 4 });
+  const intelligence = [
+    ['Fundamental', fundamentals.status, fundamentals.status === 'available' ? `${fundamentals.periods.length} stored statement periods` : 'Insufficient stored evidence'],
+    ['Financial trends', trend.status, trend.periods.length ? `${trend.periods.length} comparable periods` : 'Comparable history unavailable'],
+    ['Technical', technicals.status, `${technicals.bars_available} daily bars · ${technicals.source ?? 'source unavailable'}`],
+    ['News & sentiment', sentiment?.status ?? news.status, sentiment?.sentiment ? `${sentiment.sentiment} · ${sentiment.event_count} events` : 'No validated sentiment score'],
+  ];
+  const horizons = ['Intraday', 'Swing', 'Positional', 'Long-term'];
+  return <section className="data-section research-brief" id="research-report">
+    <header className="research-report-header">
+      <div><p className="eyebrow">ALGORITHMIC RESEARCH REPORT</p>
+        <h2>{instrument ? `${instrument.symbol} · ${instrument.display_name}` : 'Stock research report'}</h2>
+        <p>{instrument?.venue ?? 'Exchange unavailable'} · As of {new Date(brief.created_at).toLocaleString()}</p>
+      </div>
+      <span className={`research-run-status research-status-${brief.status}`}>{brief.status === 'partial' ? 'Evidence incomplete' : brief.status}</span>
+    </header>
+    <section className="research-overall-assessment">
+      <div><p className="eyebrow">OVERALL ALGORITHMIC ASSESSMENT</p><h3>Not yet scored</h3></div>
+      <p>The unified decision engine and recommendation logic are not implemented. This report presents available evidence without inventing a rating or investment recommendation.</p>
+    </section>
+    <section className="research-intelligence-grid" aria-label="Independent intelligence components">
+      {intelligence.map(([name, status, evidence]) => <article key={name}>
+        <small>{name} intelligence</small><strong>{status}</strong><span>Score unavailable</span><p>{evidence}</p>
+      </article>)}
+    </section>
+    <section className="research-horizon-grid" aria-label="Assessment horizons">
+      {horizons.map((horizon) => <article key={horizon}><small>{horizon}</small><strong>Not assessed</strong><span>Horizon-specific engine not implemented</span></article>)}
+    </section>
+    <p className="research-subtitle">Evidence snapshot generated {new Date(brief.created_at).toLocaleString()}. Technical levels, valuation comparisons, scenarios, risk gates and recommendations are not produced unless supported by implemented components and sufficient data.</p>
+    <nav className="research-report-nav" aria-label="Research report sections">
+      <a href="#research-report">Overview</a>
+      <a href="#research-fundamentals">Fundamentals</a>
+      <a href="#research-financial-statements">Financial statements</a>
+      <a href="#research-technicals">Technical analysis</a>
+      <a href="#research-news">News</a>
+      {sentiment && <a href="#research-sentiment">Sentiment</a>}
+    </nav>
+    <details className="research-diagnostics">
+      <summary>Research run diagnostics · {brief.status} · {brief.failures.length} source/run failures</summary>
     <div className="research-section-status-grid">
       {[
         ['Fundamentals', fundamentals.status, fundamentals.status === 'available' ? `${fundamentals.periods.length} stored periods` : 'No non-null provider values'],
@@ -615,11 +916,13 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
         <details><summary>Fetch details</summary><small>{failure.stage} · {failure.reason}</small><a href={failure.url} target="_blank" rel="noreferrer">{failure.url}</a></details>
       </article>)}
     </section>}
+    </details>
 
-    <section className="research-brief-section">
+    <section className="research-brief-section" id="research-fundamentals">
       <h3>Fundamentals</h3>
       <p className="research-status-line">{fundamentals.status === 'unavailable' ? 'Unavailable from stored providers.' : 'Stored M5.3 fundamentals; values are not estimated.'}</p>
       {fundamentals.snapshot.status === 'available' && fundamentals.snapshot.values && <>
+        {fundamentals.snapshot.conflicts && fundamentals.snapshot.conflicts.length > 0 && <p className="form-error">Conflicting provider values were retained separately; no value was averaged or silently reconciled. {fundamentals.snapshot.conflicts.map((conflict) => `${conflict.field}: ${conflict.source_a} ${conflict.value_a} vs ${conflict.source_b} ${conflict.value_b}`).join(' · ')}</p>}
         <div className="research-snapshot-grid">{Object.entries(fundamentals.snapshot.values).map(([name, item]) => <article key={name}>
           <small>{name.replaceAll('_', ' ')}</small><strong>{displayValue(name === 'shares_outstanding' && item.value !== null && Number(item.value) === 0 ? null : item.value)}</strong>
         </article>)}</div>
@@ -634,7 +937,7 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
       </div>}
     </section>
 
-    <section className="research-brief-section">
+    <section className="research-brief-section" id="research-technicals">
       <h3>Technicals · stored daily OHLCV</h3>
       {technicals.message && <p className="research-status-line">{technicals.message}</p>}
       <div className="research-value-grid">{Object.entries(technicals.indicators).map(([name, item]) => <span key={name}>
@@ -645,7 +948,7 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
       {technicals.source && <small>Source {technicals.source} · latest bar {technicals.latest_bar ? new Date(technicals.latest_bar).toLocaleString() : 'unavailable'}</small>}
     </section>
 
-    <section className="research-brief-section">
+    <section className="research-brief-section" id="research-financial-statements">
       <h3>Financials trend · year-on-year from stored periods</h3>
       {trend.status === 'unavailable' && <p className="research-status-line">Unavailable: no comparable stored periods.</p>}
       {trend.periods.map((period) => <article className="research-period-card" key={`${period.period_type}-${period.period_end}`}>
@@ -657,7 +960,7 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
       </article>)}
     </section>
 
-    <section className="research-brief-section">
+    <section className="research-brief-section" id="research-news">
       <h3>News and source citations</h3>
       {news.status === 'unavailable' && <p className="research-status-line">{news.message ?? 'No permitted configured news feeds returned parseable headlines. Add an issuer investor-relations or exchange feed URL.'}</p>}
       {news.items.map((item, index) => {
@@ -674,6 +977,31 @@ export function ResearchBriefView({ brief }: { brief: Brief }) {
         <span>{source.publisher} · fetched {new Date(source.fetched_at).toLocaleString()}</span>
       </article>)}
     </section>
+
+    {sentiment && <section className="research-brief-section" id="research-sentiment">
+      <h3>News sentiment · provisional context</h3>
+      <p className="research-status-line">{sentiment.status === 'available' || sentiment.status === 'stale'
+        ? `${sentiment.sentiment?.toUpperCase() ?? 'UNCERTAIN'} · score ${scoreLabel(sentiment.score)} · confidence ${sentiment.confidence_score ?? '—'}/100 · ${sentiment.event_count} events from ${sentiment.article_count} articles.`
+        : `Sentiment ${sentiment.status}; no score is substituted for missing data.`}</p>
+      <small>Classifier {sentiment.classifier_version ?? 'unknown'} · validation {sentiment.validation_status ?? 'unknown'} · this heuristic context is not predictive validation.</small>
+      {sentiment.events.slice(0, 5).map((event) => <article className="backfill-card research-news-item" key={event.event_key}>
+        <strong>{event.sentiment.toUpperCase()} · {event.event_category.replaceAll('_', ' ')} · {event.impact} impact</strong>
+        <small>Confidence {event.confidence_score}/100 · sources {event.sources.join(', ')} · {event.news_item_ids.length} linked item(s){event.contradictory_sources ? ' · contradictory reports' : ''}</small>
+        {event.items.slice(0, 3).map((item) => <span key={item.news_item_id}>{item.headline} · {item.publisher ?? item.source}{item.url ? <> · <a href={item.url} target="_blank" rel="noreferrer">source</a></> : null}</span>)}
+      </article>)}
+    </section>}
+
+    {collectors && <details className="research-provenance research-collector-details">
+      <summary>Independent source coverage and collector status</summary>
+      <div className="research-section-status-grid">{Object.entries(collectors).map(([name, item]) => <article key={name}>
+        <small>{name.replaceAll('_', ' ')}</small><strong>{item.state}</strong>
+        {item.records !== undefined && <span>{item.records} mapped record(s)</span>}
+        {item.source_count !== undefined && <span>{item.source_count} enabled source(s) checked</span>}
+        {item.detail && <span>{item.detail}</span>}
+        {item.source && <span>Source: {item.source}{item.retrieved_at ? ` · ${new Date(item.retrieved_at).toLocaleString()}` : ''}</span>}
+        {item.sources && <span>News sources: {item.sources.length ? item.sources.join(', ') : 'no analyzed items attributed'}</span>}
+      </article>)}</div>
+    </details>}
 
     <section className="research-brief-section research-quality-section">
       <h3>Data quality</h3>

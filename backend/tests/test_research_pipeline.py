@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app import research_service
+from app.services import research_pipeline
 from app.db import Base, get_db
 from app.main import app
 from app.models import (
@@ -36,15 +37,43 @@ def test_engine():
 
 
 @pytest.fixture
-def client(test_engine) -> Iterator[TestClient]:
+def client(test_engine, monkeypatch) -> Iterator[TestClient]:
+    app.state.test_engine = test_engine
     def override_get_db():
         with Session(test_engine) as session:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+
+    def process_test_run(run_id):
+        with Session(test_engine) as session:
+            run = session.get(InstrumentResearchRun, run_id)
+            if run is not None and run.status == "running":
+                try:
+                    research_pipeline._execute_instrument_research(session, run)
+                except Exception:
+                    research_pipeline.fail_instrument_research_run(session, run_id)
+
+    monkeypatch.setattr(research_pipeline, "process_instrument_research", process_test_run)
+    monkeypatch.setattr(research_pipeline, "_refresh_yahoo_fundamentals",
+                        lambda _db, _instrument: ("unavailable", "Mocked test collector", None))
+    monkeypatch.setattr(research_pipeline, "_fetch_dhan_company_info",
+                        lambda _db, _user_id, _instrument: (None, "Mocked test collector"))
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+def completed_research_response(client: TestClient, response):
+    assert response.status_code == 202, response.text
+    run_id = response.json()["run_id"]
+    status = client.get(f"/api/v1/research/runs/{run_id}")
+    assert status.status_code == 200, status.text
+    result = status.json()
+    assert result["status"] != "running"
+    if result["brief"] is None:
+        raise AssertionError(result)
+    return {**result["brief"], "progress": result["progress"], "reused": result["reused"]}
 
 
 @pytest.fixture
@@ -85,7 +114,18 @@ def csrf(client: TestClient) -> dict[str, str]:
 def get_instrument_id(client: TestClient) -> str:
     response = client.get("/api/v1/market-data/instruments?query=ALPHA")
     assert response.status_code == 200
-    return response.json()[0]["id"]
+    instrument_id = response.json()[0]["id"]
+    with Session(client.app.state.test_engine) as db:
+        instrument = db.get(Instrument, UUID(instrument_id))
+        assert instrument is not None
+        instrument.venue = "NSE"
+        instrument.country = "IN"
+        instrument.currency = "INR"
+        instrument.timezone = "Asia/Kolkata"
+        instrument.is_synthetic = False
+        instrument.relink_required = False
+        db.commit()
+    return instrument_id
 
 
 def set_instrument_real(test_engine, instrument_id: str) -> None:
@@ -187,9 +227,10 @@ def test_robots_disallow_blocks_fetch(client, test_engine, monkeypatch, network_
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
+    run = completed_research_response(client, response)
     assert fetched == []
-    assert response.json()["failures"][0]["reason"] == "Source disallowed by robots.txt."
+    assert run["failures"][0]["reason"] == "Source disallowed by robots.txt."
+    assert any(step["component"] == "validating_evidence" for step in run["progress"])
 
 
 def test_per_host_rate_limit_enforces_one_request_each_second(monkeypatch) -> None:
@@ -233,11 +274,11 @@ def test_duplicate_content_hash_reuses_existing_source(
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
-    assert response.json()["sources_succeeded"] == 2
+    run = completed_research_response(client, response)
+    assert run["sources_succeeded"] == 2
     with Session(test_engine) as db:
         assert db.scalar(select(func.count()).select_from(ResearchSource)) == 1
-    refs = response.json()["sections"]["news"]["sources"]
+    refs = run["sections"]["news"]["sources"]
     assert refs[0]["source_id"] == refs[1]["source_id"]
 
 
@@ -268,8 +309,7 @@ def test_failed_source_is_recorded_and_run_is_partial(
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
-    run = response.json()
+    run = completed_research_response(client, response)
     assert run["status"] == "partial"
     assert run["sources_attempted"] == 2
     assert run["sources_succeeded"] == 1
@@ -294,8 +334,7 @@ def test_empty_brief_marks_sections_unavailable(
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
-    brief = response.json()
+    brief = completed_research_response(client, response)
     sections = brief["sections"]
     assert brief["status"] == "failed"
     assert sections["fundamentals"]["status"] == "unavailable"
@@ -328,8 +367,7 @@ def test_failed_news_source_keeps_usable_technical_report_partial(
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
-    brief = response.json()
+    brief = completed_research_response(client, response)
     assert brief["status"] == "partial"
     assert brief["sections"]["technicals"]["status"] == "available"
     assert brief["sections"]["news"]["status"] == "unavailable"
@@ -360,8 +398,8 @@ def test_synthetic_bars_are_not_used_for_real_instrument_technicals(
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
-    technicals = response.json()["sections"]["technicals"]
+    brief = completed_research_response(client, response)
+    technicals = brief["sections"]["technicals"]
     assert technicals["status"] == "unavailable"
     assert technicals["bars_available"] == 0
     assert "Only synthetic daily bars are stored" in technicals["message"]
@@ -381,8 +419,8 @@ def test_insufficient_real_history_is_reported_without_fabricating_bars(
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
-    technicals = response.json()["sections"]["technicals"]
+    brief = completed_research_response(client, response)
+    technicals = brief["sections"]["technicals"]
     assert technicals["status"] == "insufficient_history"
     assert technicals["bars_available"] == 1
     assert all(item["bars_used"] == 1 for item in technicals["indicators"].values())
@@ -411,13 +449,96 @@ def test_all_null_fundamentals_are_unavailable(
         headers=csrf(client),
     )
 
-    assert response.status_code == 200, response.text
-    fundamentals = response.json()["sections"]["fundamentals"]
+    brief = completed_research_response(client, response)
+    fundamentals = brief["sections"]["fundamentals"]
     assert fundamentals["status"] == "unavailable"
     assert any(
         item["reason"] == "No non-null provider fundamentals are stored."
-        for item in response.json()["data_quality"]
+        for item in brief["data_quality"]
     )
+
+
+def test_repeated_research_click_reuses_recent_completed_run(client, test_engine, monkeypatch, network_fixtures):
+    register(client, test_engine, "research-idempotent@example.com")
+    instrument_id = get_instrument_id(client)
+    set_candidates(monkeypatch)
+    monkeypatch.setattr(research_pipeline, "aggregate_instrument_sentiment", lambda *_args, **_kwargs: {
+        "status": "available", "scope": "company", "scope_id": instrument_id,
+        "sentiment": "positive", "interpretation": "positive", "score": 0.2,
+        "strength": 0.2, "confidence_score": 55, "event_count": 1, "article_count": 1,
+        "counts": {"positive": 1, "negative": 0, "neutral": 0, "mixed": 0},
+        "contradictory_evidence": False,
+        "freshness": {"latest_published_at": datetime.now(timezone.utc), "age_hours": 0.0, "is_stale": False},
+        "coverage": {"period_days": 30, "analyzed_events": 1, "unanalysed_news_items": 0,
+                     "available_source_fraction": 1.0, "analysis": {}, "sources": []},
+        "aggregation": {"method": "test fixture", "classifier_version": "test"},
+        "events": [],
+    })
+    first = client.post(f"/api/v1/research/instruments/{instrument_id}/run", headers=csrf(client))
+    first_run = completed_research_response(client, first)
+    second = client.post(f"/api/v1/research/instruments/{instrument_id}/run", headers=csrf(client))
+    assert second.status_code == 202, second.text
+    second_state = second.json()
+    assert second_state["run_id"] == first_run["run_id"]
+    assert second_state["reused"] is True
+    with Session(test_engine) as db:
+        assert db.scalar(select(func.count()).select_from(InstrumentResearchRun)) == 1
+
+
+def test_snapshot_json_encodes_sentiment_publication_datetime(client, test_engine, monkeypatch, network_fixtures):
+    register(client, test_engine, "research-snapshot-datetime@example.com")
+    instrument_id = get_instrument_id(client)
+    set_candidates(monkeypatch)
+    publication_time = datetime(2026, 11, 5, 9, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(research_pipeline, "aggregate_instrument_sentiment", lambda *_args, **_kwargs: {
+        "status": "available", "scope": "company", "scope_id": instrument_id,
+        "sentiment": "neutral", "interpretation": "neutral", "score": 0.0,
+        "strength": 0.0, "confidence_score": 30, "event_count": 1, "article_count": 1,
+        "counts": {"positive": 0, "negative": 0, "neutral": 1, "mixed": 0},
+        "contradictory_evidence": False,
+        "freshness": {"latest_published_at": publication_time, "age_hours": 1.0, "is_stale": False},
+        "coverage": {"period_days": 30, "analyzed_events": 1, "unanalysed_news_items": 0,
+                     "available_source_fraction": 1.0, "analysis": {}, "sources": []},
+        "aggregation": {"method": "test fixture", "classifier_version": "test"},
+        "events": [],
+    })
+
+    response = client.post(f"/api/v1/research/instruments/{instrument_id}/run", headers=csrf(client))
+    result = completed_research_response(client, response)
+    assert result["status"] == "partial"
+    assert result["sections"]["news_sentiment"]["freshness"]["latest_published_at"] == publication_time.isoformat()
+    assert any(step["component"] == "preparing_snapshot" and step["state"] == "completed" for step in result["progress"])
+    latest_states = {step["component"]: step["state"] for step in result["progress"]}
+    assert all(state != "running" for state in latest_states.values())
+
+
+def test_failed_research_run_can_be_retried(client, test_engine, monkeypatch, network_fixtures):
+    register(client, test_engine, "research-retry@example.com")
+    instrument_id = get_instrument_id(client)
+    set_candidates(monkeypatch)
+    original_encoder = research_pipeline.jsonable_encoder
+    monkeypatch.setattr(research_pipeline, "jsonable_encoder", lambda _value: (_ for _ in ()).throw(TypeError("Object of type datetime is not JSON serializable")))
+    first = client.post(f"/api/v1/research/instruments/{instrument_id}/run", headers=csrf(client))
+    assert first.status_code == 202
+    first_state = client.get(f"/api/v1/research/runs/{first.json()['run_id']}").json()
+    assert first_state["status"] == "failed"
+    assert any(step["component"] == "preparing_snapshot" and step["state"] == "failed" for step in first_state["progress"])
+    assert not any(step["state"] == "running" for step in first_state["progress"])
+
+    monkeypatch.setattr(research_pipeline, "jsonable_encoder", original_encoder)
+    monkeypatch.setattr(research_pipeline, "aggregate_instrument_sentiment", lambda *_args, **_kwargs: {
+        "status": "no_news_found", "scope": "company", "scope_id": instrument_id,
+        "sentiment": None, "interpretation": None, "score": None, "strength": None,
+        "confidence_score": None, "event_count": 0, "article_count": 0,
+        "counts": {"positive": 0, "negative": 0, "neutral": 0, "mixed": 0},
+        "contradictory_evidence": False,
+        "freshness": {"latest_published_at": None, "age_hours": None, "is_stale": False},
+        "coverage": {"period_days": 30, "analyzed_events": 0, "unanalysed_news_items": 0,
+                     "available_source_fraction": 1.0, "analysis": {}, "sources": []},
+        "aggregation": {"method": "test fixture", "classifier_version": "test"}, "events": [],
+    })
+    second = client.post(f"/api/v1/research/instruments/{instrument_id}/run", headers=csrf(client))
+    assert second.status_code == 202 and second.json()["run_id"] != first.json()["run_id"]
 
 
 def test_source_links_are_owner_scoped(client, test_engine, monkeypatch) -> None:

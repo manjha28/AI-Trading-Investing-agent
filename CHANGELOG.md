@@ -110,3 +110,12 @@
 - Frontend: remove the Transactions view and preserve the read-only Dhan trade/cash mirror component pending its destination.
 - Trade journal: mount the retained read-only Dhan trade and cash mirror in a Broker history tab.
 - Sanitised committed environment examples and recorded the unbaselined backend suite count (443 passed, 50 failed, 2 skipped).
+- Stabilised Codespaces frontend/API port forwarding, HTTPS HMR, and one-command local service startup.
+- Added attributable corporate-action ingestion, non-destructive adjustment lineage, and fail-closed raw-basis checks for backtests.
+- M1 corporate actions: ingest Yahoo dividends and splits for every bar-backed instrument, record coverage failures, preserve user entries, and keep raw OHLC immutable.
+- Milestone A: add idempotent storage and read API for NSE corporate filings and Yahoo Finance news, with publication-time provenance and failure records.
+- Milestone B: add bounded Google News RSS and GDELT metadata discovery, Yahoo fail-fast throttling, source health, and persisted Market Intel display.
+- News sentiment: add versioned local VADER/context analysis, duplicate-aware event aggregation, evidence-linked APIs, and Research dashboard integration.
+- News sentiment: add restart-safe background analysis, per-item failure retry tracking, processing status, and an unlabelled review fixture from persisted headlines.
+- Research orchestration: add per-instrument idempotent background runs, component freshness/provenance, progress polling and cancellation.
+- Research UI: surface selected-stock actions, add report section navigation, and keep Market Intel diagnostics compact.

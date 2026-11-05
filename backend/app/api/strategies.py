@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.api.auth import get_active_session, require_csrf
 from app.db import get_db
 from app.models import Instrument, UserSession
+from app.models import CorporateAction
+from app.corporate_action_service import adjusted_bars_for_backtest
 from app.models.strategies import Strategy, StrategySignal, StrategyVersion
 from app.services.strategy_engine import (
     DISCLAIMER,
@@ -117,6 +119,7 @@ class BacktestRequest(BaseModel):
     brokerage_bps: Decimal = Field(default=Decimal("3"), ge=0, le=1000)
     exchange_charges_bps: Decimal = Field(default=Decimal("3"), ge=0, le=1000)
     slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
+    include_dividends: bool = False
     stop_atr_multiple: Decimal = Field(default=Decimal("1.5"), gt=0, le=100)
     target_r_multiple: Decimal = Field(default=Decimal("3"), gt=0, le=100)
 
@@ -432,9 +435,27 @@ def backtest_strategy(
         target_r_multiple=payload.target_r_multiple,
     )
     try:
+        adjusted_bars = adjusted_bars_for_backtest(
+            db,
+            active_session.user_id,
+            instrument,
+            bars,
+            include_dividends=payload.include_dividends,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail={
+            "code": "corporate_action_data_unavailable",
+            "message": str(error),
+            "instrument": instrument.symbol,
+            "interval": "1d",
+            "source": source or "unavailable",
+            "bars_required": required,
+            "bars_available": len(bars),
+        }) from error
+    try:
         result = run_backtest(
             instrument=instrument,
-            bars=bars,
+            bars=adjusted_bars,
             source=source or "unavailable",
             params=params,
             strategy_version=version.version,
@@ -462,6 +483,35 @@ def backtest_strategy(
             "bars_required": required,
             "bars_available": len(bars),
         }) from error
+    used_action_ids = {action_id for bar in adjusted_bars for action_id in bar.applied_action_ids}
+    applied_actions = db.scalars(select(CorporateAction).where(
+        CorporateAction.user_id == active_session.user_id,
+        CorporateAction.id.in_(used_action_ids),
+    )).all() if used_action_ids else []
+    result["adjustments"] = {
+        "series": "derived_backward_adjusted",
+        "split_bonus_mandatory": True,
+        "dividends_included": payload.include_dividends,
+        "bar_factors": [
+            {
+                "timestamp": bar.timestamp.isoformat(),
+                "price_factor": str(bar.adjustment_factor),
+                "actions_applied": [str(action_id) for action_id in bar.applied_action_ids],
+                "dividends_included": bar.dividends_included,
+            }
+            for bar in adjusted_bars
+        ],
+        "actions": [
+            {
+                "id": str(action.id), "ex_date": action.ex_date.isoformat(),
+                "action_type": action.action_type,
+                "ratio": str(action.ratio) if action.ratio is not None else None,
+                "amount": str(action.amount) if action.amount is not None else None,
+                "source": action.source, "source_reference": action.source_reference,
+            }
+            for action in applied_actions
+        ],
+    }
     result["disclaimer"] = DISCLAIMER
     return result
 

@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,7 +18,10 @@ from app.accounting import (
 )
 from app.api.auth import get_active_session, require_csrf
 from app.api.portfolio_transactions import get_owned_portfolio, get_transactions
-from app.corporate_action_service import get_portfolio_corporate_actions
+from app.corporate_action_service import (
+    get_portfolio_corporate_actions,
+    sync_yfinance_corporate_actions,
+)
 from app.db import get_db
 from app.models import (
     CorporateAction,
@@ -33,16 +36,22 @@ router = APIRouter(prefix="/corporate-actions", tags=["corporate actions"])
 
 class CorporateActionCreate(BaseModel):
     instrument_id: UUID
-    action_type: Literal["split", "bonus", "dividend"]
+    action_type: Literal["split", "bonus", "dividend", "rights"]
     ex_date: date
+    announcement_date: date | None = None
+    record_date: date | None = None
     ratio: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=8)
     amount: Decimal | None = Field(default=None, gt=0, max_digits=24, decimal_places=8)
+    source_reference: str | None = Field(default=None, max_length=512)
 
     @model_validator(mode="after")
     def validate_action_value(self):
         if self.action_type in {"split", "bonus"}:
             if self.ratio is None or self.amount is not None:
                 raise ValueError("Split and bonus actions require ratio and no amount")
+        elif self.action_type == "rights":
+            if self.ratio is None or self.amount is None:
+                raise ValueError("Rights actions require offer ratio and subscription amount")
         elif self.amount is None or self.ratio is not None:
             raise ValueError("Dividend actions require a per-share amount and no ratio")
         return self
@@ -54,9 +63,16 @@ class CorporateActionResponse(BaseModel):
     symbol: str
     action_type: str
     ex_date: date
+    announcement_date: date | None
+    record_date: date | None
     ratio: Decimal | None
     amount: Decimal | None
     source: str
+    source_reference: str | None
+    verified_at: datetime | None
+    verified_by: UUID | None
+    is_discrepant: bool
+    discrepancy_note: str | None
     created_at: datetime
 
 
@@ -99,9 +115,16 @@ def _action_response(action: CorporateAction, symbol: str) -> CorporateActionRes
         symbol=symbol,
         action_type=action.action_type,
         ex_date=action.ex_date,
+        announcement_date=action.announcement_date,
+        record_date=action.record_date,
         ratio=action.ratio,
         amount=action.amount,
         source=action.source,
+        source_reference=action.source_reference,
+        verified_at=action.verified_at,
+        verified_by=action.verified_by,
+        is_discrepant=action.is_discrepant,
+        discrepancy_note=action.discrepancy_note,
         created_at=action.created_at,
     )
 
@@ -211,6 +234,15 @@ def list_corporate_actions(
     ]
 
 
+@router.post("/ingest/yfinance")
+def ingest_yfinance_actions(
+    active_session: UserSession = Depends(require_verified_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return sync_yfinance_corporate_actions(db, active_session.user_id)
+
+
 @router.post("", response_model=CorporateActionResponse, status_code=201)
 def create_corporate_action(
     payload: CorporateActionCreate,
@@ -226,9 +258,14 @@ def create_corporate_action(
         instrument_id=instrument.id,
         action_type=payload.action_type,
         ex_date=payload.ex_date,
+        announcement_date=payload.announcement_date,
+        record_date=payload.record_date,
         ratio=payload.ratio,
         amount=payload.amount,
         source="manual",
+        source_reference=payload.source_reference,
+        verified_at=None,
+        verified_by=None,
         created_at=datetime.now(timezone.utc),
     )
     db.add(action)
@@ -283,6 +320,11 @@ def apply_corporate_action(
     instrument = db.get(Instrument, action.instrument_id)
     if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    if action.action_type == "rights":
+        raise HTTPException(
+            status_code=422,
+            detail="Rights action accounting is not supported; record terms for review only.",
+        )
     if action.action_type == "dividend" and instrument.currency != portfolio.base_currency:
         raise HTTPException(
             status_code=422,

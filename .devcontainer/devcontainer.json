@@ -8,11 +8,10 @@
       "version": "22"
     }
   },
-  "forwardPorts": [5173, 8000, 5432],
+  "forwardPorts": [5173, 8000],
   "portsAttributes": {
-    "8000": { "label": "FastAPI", "onAutoForward": "notify", "visibility": "public" },
-    "5173": { "label": "Vite", "onAutoForward": "openBrowser", "visibility": "public" },
-    "5432": { "label": "PostgreSQL", "onAutoForward": "ignore" }
+    "8000": { "label": "FastAPI API", "onAutoForward": "notify", "visibility": "private" },
+    "5173": { "label": "Trading Copilot", "onAutoForward": "openBrowser", "visibility": "private" }
   },
   "postCreateCommand": "python -m pip install -r backend/requirements.txt && cd frontend && npm install"
 }

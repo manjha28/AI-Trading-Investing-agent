@@ -10,6 +10,7 @@ from app.api.auth import router as auth_router
 from app.api.alerts import router as alerts_router
 from app.api.brokers import router as brokers_router
 from app.api.corporate_actions import router as corporate_actions_router
+from app.api.news import router as news_router
 from app.api.delta_research import router as delta_research_router
 from app.delta_research.collector import delta_research_manager
 from app.api.position_theses import router as position_theses_router
@@ -26,6 +27,9 @@ from app.api.portfolios import router as portfolios_router
 from app.api.portfolio_transactions import router as portfolio_transactions_router
 from app.api.trades import router as trades_router
 from app.config import settings
+from app.db import engine
+from app.services.news_sentiment import analyze_news_items
+from sqlalchemy.orm import Session
 from app.market_data_scheduler import (
     alert_evaluation_loop,
     dhan_backend_capture_loop,
@@ -47,6 +51,23 @@ class BrokerCallbackAccessLogFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(BrokerCallbackAccessLogFilter())
 
 
+def _process_sentiment_batch() -> None:
+    with Session(engine) as db:
+        analyze_news_items(db, limit=500, period_days=3650)
+
+
+async def news_sentiment_processing_loop() -> None:
+    """Drain persisted news in bounded batches; pending rows survive restarts."""
+    while True:
+        try:
+            await asyncio.to_thread(_process_sentiment_batch)
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "Scheduled news sentiment batch failed error_class=%s", type(error).__name__
+            )
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await dhan_live_feed_hub.start()
@@ -55,10 +76,12 @@ async def lifespan(_app: FastAPI):
     alert_task = None
     delta_task = None
     dhan_capture_task = None
+    sentiment_task = None
     if "pytest" not in sys.modules:
         snapshot_task = asyncio.create_task(portfolio_snapshot_loop())
         dhan_capture_task = asyncio.create_task(dhan_backend_capture_loop())
         alert_task = asyncio.create_task(alert_evaluation_loop())
+        sentiment_task = asyncio.create_task(news_sentiment_processing_loop())
     if settings.market_data_scheduler_enabled and "pytest" not in sys.modules:
         scheduler_task = asyncio.create_task(market_data_refresh_loop())
     if settings.delta_research_enabled and "pytest" not in sys.modules:
@@ -93,6 +116,12 @@ async def lifespan(_app: FastAPI):
                 await alert_task
             except asyncio.CancelledError:
                 pass
+        if sentiment_task is not None:
+            sentiment_task.cancel()
+            try:
+                await sentiment_task
+            except asyncio.CancelledError:
+                pass
 
 app = FastAPI(
     title=settings.app_name,
@@ -119,6 +148,7 @@ app.include_router(market_data_router, prefix="/api/v1")
 app.include_router(indicators_router, prefix="/api/v1")
 app.include_router(brokers_router, prefix="/api/v1")
 app.include_router(corporate_actions_router, prefix="/api/v1")
+app.include_router(news_router, prefix="/api/v1")
 app.include_router(research_router, prefix="/api/v1")
 app.include_router(position_theses_router, prefix="/api/v1")
 app.include_router(delta_research_router, prefix="/api/v1")

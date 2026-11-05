@@ -257,7 +257,7 @@ class _HttpProvider:
             name=self.name,
             healthy=False,
             is_mock=False,
-            capabilities=("instrument_search", "instrument_lookup", "historical_ohlcv", "latest_quote"),
+            capabilities=("instrument_search", "instrument_lookup", "historical_ohlcv", "latest_quote", "news"),
             status="credentials_configured_connectivity_unverified",
         )
 
@@ -1886,16 +1886,16 @@ class YahooFinanceProvider(_HttpProvider):
         )
 
     @staticmethod
-    def _thread_call(function, *args, **kwargs):
+    def _thread_call(function, *args, _max_attempts: int = 3, **kwargs):
         global _yfinance_cooldown_until
         with _yfinance_cooldown_lock:
             if time.monotonic() < _yfinance_cooldown_until:
                 raise MarketDataProviderError("yfinance_cooldown_active")
-        for attempt in range(3):
+        for attempt in range(_max_attempts):
             try:
                 return _YFINANCE_EXECUTOR.submit(function, *args, **kwargs).result()
             except Exception as error:
-                if attempt == 2:
+                if attempt == _max_attempts - 1:
                     error_text = f"{type(error).__name__} {error}".casefold()
                     if "429" in error_text or "rate limit" in error_text:
                         category = "rate_limited"
@@ -2030,6 +2030,46 @@ class YahooFinanceProvider(_HttpProvider):
         if frame is None or frame.empty:
             raise MarketDataProviderError("provider_quote_unavailable")
         return frame
+
+    def get_corporate_actions(self, ticker: str) -> list[dict[str, Any]]:
+        """Read Yahoo's event feed independently of the raw OHLC history path."""
+        def fetch():
+            return yf.Ticker(ticker, session=self._session()).actions
+
+        frame = self._thread_call(fetch)
+        if frame is None or not hasattr(frame, "iterrows"):
+            raise MarketDataProviderError("invalid_corporate_action_response")
+        events: list[dict[str, Any]] = []
+        for stamp, row in frame.iterrows():
+            ex_date = stamp.date() if hasattr(stamp, "date") else date.fromisoformat(str(stamp)[:10])
+            for column, action_type in (("Stock Splits", "split"), ("Dividends", "dividend")):
+                raw = row.get(column)
+                if raw is None or str(raw).casefold() in {"nan", "none", "<na>"}:
+                    continue
+                value = Decimal(str(raw))
+                if not value.is_finite() or value <= 0:
+                    continue
+                events.append({
+                    "ex_date": ex_date,
+                    "action_type": action_type,
+                    "ratio": value if action_type == "split" else None,
+                    "amount": value if action_type == "dividend" else None,
+                })
+        return events
+
+    def get_news(self, ticker: str) -> list[dict[str, Any]]:
+        """Read Yahoo Finance news without changing the raw price-history path."""
+        def fetch():
+            return yf.Ticker(ticker, session=self._session()).news
+
+        # News polling is optional and often covers many instruments. Fail fast
+        # on one request; _thread_call records the shared Yahoo cooldown on 429.
+        items = self._thread_call(fetch, _max_attempts=1)
+        if items is None:
+            return []
+        if not isinstance(items, list):
+            raise MarketDataProviderError("invalid_news_response")
+        return [dict(item) for item in items if isinstance(item, dict)]
 
     def get_latest_quote(self, instrument: InstrumentCandidate) -> HistoricalBar:
         try:

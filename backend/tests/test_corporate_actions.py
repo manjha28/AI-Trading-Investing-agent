@@ -1,4 +1,8 @@
 from collections.abc import Iterator
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from uuid import UUID
+from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
@@ -10,8 +14,16 @@ from app.main import app
 from app.models import (
     CorporateAction,
     CorporateActionApplication,
+    CorporateActionCoverage,
+    Instrument,
+    MarketBar,
     PortfolioTransaction,
     User,
+)
+from app.corporate_action_service import (
+    CorporateActionCoverageError,
+    adjusted_bars_for_backtest,
+    sync_yfinance_corporate_actions,
 )
 
 
@@ -65,7 +77,7 @@ def csrf(client: TestClient) -> dict[str, str]:
     return {"X-CSRF-Token": client.cookies.get("csrf_token", "")}
 
 
-def create_position(client: TestClient, name: str) -> tuple[dict, dict]:
+def create_position(client: TestClient, test_engine, name: str) -> tuple[dict, dict]:
     portfolio_response = client.post(
         "/api/v1/portfolios",
         headers=csrf(client),
@@ -96,8 +108,17 @@ def create_position(client: TestClient, name: str) -> tuple[dict, dict]:
         },
     )
     assert buy.status_code == 201, buy.text
-    instruments = client.get("/api/v1/market-data/instruments?query=ALPHA").json()
-    instrument = next(item for item in instruments if item["venue"] == "DEMO_US")
+    with Session(test_engine) as db:
+        user = db.scalar(select(User).order_by(User.created_at.desc()))
+        assert user is not None
+        row = Instrument(
+            id=uuid4(), symbol="ALPHA", display_name="Alpha Test", asset_class="equity",
+            venue="DEMO_US", currency="USD", country="US", timezone="America/New_York",
+            is_synthetic=False, relink_required=False, created_at=datetime.now(timezone.utc),
+        )
+        db.add(row)
+        db.commit()
+        instrument = {"id": str(row.id), "symbol": row.symbol, "venue": row.venue}
     linked = client.post(
         f"/api/v1/portfolios/{portfolio_id}/positions/ALPHA/instrument",
         headers=csrf(client),
@@ -105,6 +126,48 @@ def create_position(client: TestClient, name: str) -> tuple[dict, dict]:
     )
     assert linked.status_code == 200, linked.text
     return portfolio, instrument
+
+
+def seed_adjustment_instrument(client: TestClient, test_engine) -> tuple[str, str]:
+    email = "adjustment@example.com"
+    register(client, email)
+    verify_email(test_engine, email)
+    _, instrument = create_position(client, test_engine, "Adjustment portfolio")
+    with Session(test_engine) as db:
+        row = db.get(Instrument, UUID(instrument["id"]))
+        assert row is not None
+        row.venue = "NSE"
+        row.country = "IN"
+        row.timezone = "Asia/Kolkata"
+        row.currency = "INR"
+        user_id = db.scalar(select(User.id).where(User.email == email))
+        assert user_id is not None
+        db.add(CorporateActionCoverage(
+            user_id=user_id,
+            instrument_id=row.id,
+            source="yfinance",
+            status="verified",
+            checked_at=datetime(2026, 1, 10, tzinfo=timezone.utc),
+            source_reference="ALPHA.NS",
+        ))
+        db.add_all([
+            MarketBar(
+                instrument_id=row.id, interval="1d",
+                timestamp=datetime(2026, 1, 9, tzinfo=timezone.utc),
+                open=Decimal("100"), high=Decimal("110"), low=Decimal("90"),
+                close=Decimal("100"), volume=Decimal("10"), source="yfinance",
+                retrieved_at=datetime(2026, 1, 10, tzinfo=timezone.utc), is_synthetic=False,
+            ),
+            MarketBar(
+                instrument_id=row.id, interval="1d",
+                timestamp=datetime(2026, 1, 10, tzinfo=timezone.utc),
+                open=Decimal("50"), high=Decimal("55"), low=Decimal("45"),
+                close=Decimal("50"), volume=Decimal("20"), source="yfinance",
+                retrieved_at=datetime(2026, 1, 11, tzinfo=timezone.utc), is_synthetic=False,
+            ),
+        ])
+        db.commit()
+        return str(user_id), str(row.id)
 
 
 def create_action(
@@ -128,6 +191,8 @@ def create_action(
         },
     )
     assert response.status_code == 201, response.text
+    assert response.json()["verified_at"] is None
+    assert response.json()["verified_by"] is None
     return response.json()
 
 
@@ -144,7 +209,7 @@ def test_split_application_is_idempotent_reversible_and_preserves_cost_and_start
     email = "split@example.com"
     register(client, email)
     verify_email(test_engine, email)
-    portfolio, instrument = create_position(client, "Split portfolio")
+    portfolio, instrument = create_position(client, test_engine, "Split portfolio")
     action = create_action(client, instrument["id"], "split", ratio="2")
 
     applied = apply_action(client, portfolio["id"], action["id"])
@@ -183,7 +248,7 @@ def test_one_to_one_bonus_creates_new_holding_period_without_changing_total_cost
     email = "bonus@example.com"
     register(client, email)
     verify_email(test_engine, email)
-    portfolio, instrument = create_position(client, "Bonus portfolio")
+    portfolio, instrument = create_position(client, test_engine, "Bonus portfolio")
     action = create_action(client, instrument["id"], "bonus", ratio="1")
     applied = apply_action(client, portfolio["id"], action["id"])
     assert applied.status_code == 200, applied.text
@@ -215,7 +280,7 @@ def test_cash_dividend_uses_ex_date_shares_and_updates_cash_and_realized_income(
     email = "dividend@example.com"
     register(client, email)
     verify_email(test_engine, email)
-    portfolio, instrument = create_position(client, "Dividend portfolio")
+    portfolio, instrument = create_position(client, test_engine, "Dividend portfolio")
     action = create_action(client, instrument["id"], "dividend", amount="2")
 
     applied = apply_action(client, portfolio["id"], action["id"])
@@ -234,7 +299,7 @@ def test_corporate_actions_require_verified_email_and_are_user_scoped(
     client: TestClient, test_engine
 ) -> None:
     register(client, "owner@example.com")
-    portfolio, instrument = create_position(client, "Owner portfolio")
+    portfolio, instrument = create_position(client, test_engine, "Owner portfolio")
 
     assert client.get("/api/v1/corporate-actions").status_code == 403
     assert client.get("/api/v1/corporate-actions").json()["detail"]["code"] == "email_verification_required"
@@ -266,3 +331,115 @@ def test_corporate_actions_require_verified_email_and_are_user_scoped(
         assert hidden_applications.status_code == 404
     finally:
         other.close()
+
+
+def test_split_adjustment_is_backward_only_and_keeps_action_lineage(
+    client: TestClient, test_engine
+) -> None:
+    user_id, instrument_id = seed_adjustment_instrument(client, test_engine)
+    with Session(test_engine) as db:
+        action = CorporateAction(
+            user_id=UUID(user_id), instrument_id=UUID(instrument_id),
+            action_type="split", ex_date=date(2026, 1, 10), ratio=Decimal("2"),
+            amount=None, source="manual", source_reference="owner reference",
+            created_at=datetime(2026, 1, 10, tzinfo=timezone.utc),
+        )
+        db.add(action)
+        db.flush()
+        raw = list(db.scalars(select(MarketBar).where(
+            MarketBar.instrument_id == UUID(instrument_id)
+        ).order_by(MarketBar.timestamp)))
+        adjusted = adjusted_bars_for_backtest(
+            db, UUID(user_id), db.get(Instrument, UUID(instrument_id)), raw,
+            raw_price_basis_verified=True,
+        )
+        assert adjusted[0].close == Decimal("50")
+        assert adjusted[0].volume == Decimal("20")
+        assert adjusted[0].applied_action_ids == (action.id,)
+        assert adjusted[1].close == Decimal("50")
+        assert raw[0].close == Decimal("100")
+
+
+def test_bonus_adjustment_uses_bonus_share_ratio(client: TestClient, test_engine) -> None:
+    user_id, instrument_id = seed_adjustment_instrument(client, test_engine)
+    with Session(test_engine) as db:
+        action = CorporateAction(
+            user_id=UUID(user_id), instrument_id=UUID(instrument_id),
+            action_type="bonus", ex_date=date(2026, 1, 10), ratio=Decimal("1"),
+            amount=None, source="manual", created_at=datetime(2026, 1, 10, tzinfo=timezone.utc),
+        )
+        db.add(action)
+        db.flush()
+        raw = list(db.scalars(select(MarketBar).where(
+            MarketBar.instrument_id == UUID(instrument_id)
+        ).order_by(MarketBar.timestamp)))
+        adjusted = adjusted_bars_for_backtest(
+            db, UUID(user_id), db.get(Instrument, UUID(instrument_id)), raw,
+            raw_price_basis_verified=True,
+        )
+        assert adjusted[0].close == Decimal("50")
+        assert adjusted[0].volume == Decimal("20")
+        assert adjusted[0].applied_action_ids == (action.id,)
+
+
+def test_yfinance_conflict_keeps_both_rows_and_flags_them(
+    client: TestClient, test_engine
+) -> None:
+    user_id, instrument_id = seed_adjustment_instrument(client, test_engine)
+    with Session(test_engine) as db:
+        db.add(CorporateAction(
+            user_id=UUID(user_id), instrument_id=UUID(instrument_id),
+            action_type="split", ex_date=date(2026, 1, 10), ratio=Decimal("3"),
+            amount=None, source="manual", created_at=datetime(2026, 1, 10, tzinfo=timezone.utc),
+        ))
+        db.commit()
+
+        class Provider:
+            def get_corporate_actions(self, ticker):
+                assert ticker == "ALPHA.NS"
+                return [{
+                    "ex_date": date(2026, 1, 10), "action_type": "split",
+                    "ratio": Decimal("2"), "amount": None,
+                }]
+
+        report = sync_yfinance_corporate_actions(db, UUID(user_id), provider=Provider())
+        rows = db.scalars(select(CorporateAction).where(
+            CorporateAction.instrument_id == UUID(instrument_id),
+            CorporateAction.ex_date == date(2026, 1, 10),
+        )).all()
+        assert report["actions_inserted"] == 1
+        assert len(rows) == 2
+        assert {row.source for row in rows} == {"manual", "yfinance"}
+        assert all(row.is_discrepant for row in rows)
+        assert next(row for row in rows if row.source == "manual").verified_at is None
+        assert next(row for row in rows if row.source == "yfinance").verified_at is not None
+
+        repeated = sync_yfinance_corporate_actions(db, UUID(user_id), provider=Provider())
+        assert repeated["actions_inserted"] == 0
+        assert db.scalar(select(func.count(CorporateAction.id)).where(
+            CorporateAction.instrument_id == UUID(instrument_id),
+            CorporateAction.ex_date == date(2026, 1, 10),
+        )) == 2
+
+
+def test_unavailable_action_source_marks_instrument_unverified(
+    client: TestClient, test_engine
+) -> None:
+    user_id, instrument_id = seed_adjustment_instrument(client, test_engine)
+    with Session(test_engine) as db:
+        class Provider:
+            def get_corporate_actions(self, ticker):
+                raise RuntimeError("provider unavailable")
+
+        report = sync_yfinance_corporate_actions(db, UUID(user_id), provider=Provider())
+        coverage = db.scalar(select(CorporateActionCoverage).where(
+            CorporateActionCoverage.instrument_id == UUID(instrument_id)
+        ))
+        assert report["instruments_unverified"] == 1
+        assert coverage is not None and coverage.status == "unverified"
+        raw = list(db.scalars(select(MarketBar).where(
+            MarketBar.instrument_id == UUID(instrument_id)
+        ).order_by(MarketBar.timestamp)))
+        instrument = db.get(Instrument, UUID(instrument_id))
+        with pytest.raises(CorporateActionCoverageError, match="unverified"):
+            adjusted_bars_for_backtest(db, UUID(user_id), instrument, raw)

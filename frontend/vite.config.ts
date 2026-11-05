@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(() => {
 	const codespaceName = process.env.CODESPACE_NAME;
 	const portForwardingDomain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
+	const isCodespaces = process.env.CODESPACES === 'true' || Boolean(codespaceName);
 	const codespacesHost =
 		codespaceName && portForwardingDomain
 			? `${codespaceName}-5173.${portForwardingDomain}`
@@ -22,11 +23,11 @@ export default defineConfig(() => {
 			port: 5173,
 			strictPort: true,
 			allowedHosts,
-			hmr: codespacesHost
+			hmr: isCodespaces
 				? {
 						protocol: 'wss',
-						host: codespacesHost,
 						clientPort: 443,
+						...(codespacesHost ? { host: codespacesHost } : {}),
 					}
 				: undefined,
 			watch: {

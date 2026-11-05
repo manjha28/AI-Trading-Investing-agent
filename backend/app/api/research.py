@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -152,6 +152,21 @@ class ResearchBriefResponse(BaseModel):
     data_quality: list[dict[str, str]]
     created_at: datetime
     disclaimer: str = DISCLAIMER
+
+
+class ResearchRunStatusResponse(BaseModel):
+    run_id: UUID
+    instrument_id: UUID
+    status: Literal["running", "complete", "partial", "failed", "cancelled"]
+    started_at: datetime
+    finished_at: datetime | None
+    sources_attempted: int
+    sources_succeeded: int
+    failures: list[dict[str, str]]
+    progress: list[dict]
+    cancel_requested: bool
+    brief: ResearchBriefResponse | None = None
+    reused: bool = False
 
 
 class SourceLinkCreate(BaseModel):
@@ -441,23 +456,87 @@ def _brief_response(
     )
 
 
+def _run_status_response(
+    db: Session, run: InstrumentResearchRun, *, reused: bool = False
+) -> ResearchRunStatusResponse:
+    brief = db.scalar(select(InstrumentResearchBrief).where(
+        InstrumentResearchBrief.run_id == run.id
+    ))
+    return ResearchRunStatusResponse(
+        run_id=run.id, instrument_id=run.instrument_id, status=run.status,
+        started_at=run.started_at, finished_at=run.finished_at,
+        sources_attempted=run.sources_attempted, sources_succeeded=run.sources_succeeded,
+        failures=run.failures, progress=run.progress or [], cancel_requested=run.cancel_requested,
+        brief=_brief_response(run, brief) if brief is not None else None, reused=reused,
+    )
+
+
 @router.post(
     "/instruments/{instrument_id}/run",
-    response_model=ResearchBriefResponse,
+    response_model=ResearchRunStatusResponse,
+    status_code=202,
 )
 def run_instrument_research(
     instrument_id: UUID,
+    background_tasks: BackgroundTasks,
     active_session: UserSession = Depends(require_verified_session),
     _: UserSession = Depends(require_csrf),
     db: Session = Depends(get_db),
-) -> ResearchBriefResponse:
+) -> ResearchRunStatusResponse:
     instrument = db.get(Instrument, instrument_id)
     if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    run, brief = research_pipeline.run_instrument_research(
+    if instrument.asset_class != "equity" or instrument.country.upper() != "IN" or instrument.venue.upper() not in {
+        "NSE", "XNSE", "NSI", "NSE_EQ", "BSE", "XBOM", "BOM", "BSE_EQ",
+    }:
+        raise HTTPException(status_code=422, detail="Research orchestration supports NSE/BSE equities only.")
+    run, created = research_pipeline.start_instrument_research(
         db, active_session.user_id, instrument
     )
-    return _brief_response(run, brief)
+    if created:
+        background_tasks.add_task(research_pipeline.process_instrument_research, run.id)
+    return _run_status_response(db, run, reused=not created)
+
+
+@router.get("/runs/{run_id}", response_model=ResearchRunStatusResponse)
+def get_research_run_status(
+    run_id: UUID,
+    active_session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> ResearchRunStatusResponse:
+    run = db.scalar(select(InstrumentResearchRun).where(
+        InstrumentResearchRun.id == run_id,
+        InstrumentResearchRun.user_id == active_session.user_id,
+    ))
+    if run is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    research_pipeline.recover_stale_research_run(run, db)
+    return _run_status_response(db, run)
+
+
+@router.post("/runs/{run_id}/cancel", response_model=ResearchRunStatusResponse)
+def cancel_research_run(
+    run_id: UUID,
+    active_session: UserSession = Depends(require_verified_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> ResearchRunStatusResponse:
+    run = db.scalar(select(InstrumentResearchRun).where(
+        InstrumentResearchRun.id == run_id,
+        InstrumentResearchRun.user_id == active_session.user_id,
+    ))
+    if run is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    if run.status == "running":
+        run.cancel_requested = True
+        run.progress = [*(run.progress or []), {
+            "component": "orchestrator", "state": "cancellation_requested",
+            "detail": "The current source request will finish before the worker stops at a component boundary.",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }]
+        db.commit()
+        db.refresh(run)
+    return _run_status_response(db, run)
 
 
 @router.get(
