@@ -52,8 +52,14 @@ class ValkeyLatestStateStore:
         raw_values = self._client.mget([latest_key(item) for item in ids])
         found: dict[str, dict[str, Any]] = {}
         for instrument_id, raw in zip(ids, raw_values, strict=True):
-            if raw is not None:
-                found[instrument_id] = json.loads(raw)
+            if raw is None:
+                continue
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                continue  # corrupt value: treated as absent, never repaired or fabricated
+            if isinstance(value, dict):
+                found[instrument_id] = value
         return found
 
 

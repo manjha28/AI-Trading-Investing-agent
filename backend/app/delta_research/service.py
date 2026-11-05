@@ -63,7 +63,7 @@ def get_status(now: datetime | None = None) -> DeltaResearchStatus:
                 warnings.append("The configured research store could not be read.")
 
     if settings.delta_research_enabled and feed["state"] in {
-        "degraded", "reconnecting", "stopped_after_failures"
+        "degraded", "reconnecting", "unavailable"
     }:
         warnings.append("The public market feed is not healthy; see feed health for details.")
     if settings.delta_research_enabled and feed.get("last_error"):

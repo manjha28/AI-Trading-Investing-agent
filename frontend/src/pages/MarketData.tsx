@@ -19,6 +19,7 @@ import {
   type WorkspaceState,
 } from '../components/useWorkspace';
 import { DataFreshnessIndicator, type DataProvenance } from '../components/market/DataFreshnessIndicator';
+import { depthStatusView, type DepthStatus } from '../lib/depthStatus';
 import { useSnapshotFallback, selectFreshestSource } from '../hooks/useSnapshotFallback';
 import { useWatchlistStream, type WatchlistStreamStatus } from '../hooks/useWatchlistStream';
 import { FRESHNESS_PRIOR_CLOSE, resolveMarketPrice } from '../lib/priceStates';
@@ -230,7 +231,7 @@ type CompanyProfile = {
 };
 type DepthLevel = { quantity: number; orders: number; price: string };
 type DepthMessage =
-  | { type: 'status'; status: MarketStreamStatus; message?: string; last_snapshot_at?: string | null; feed_health?: DhanFeedHealth | null }
+  | { type: 'status'; status: DepthStatus; reason?: string; message?: string; last_snapshot_at?: string | null; feed_health?: DhanFeedHealth | null }
   | {
     type: 'depth';
     instrument_id: string;
@@ -390,7 +391,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [signalPositionType, setSignalPositionType] = useState<'' | 'call' | 'put'>('');
   const [signalPositionStrike, setSignalPositionStrike] = useState('');
   const [signalPositionEntryPremium, setSignalPositionEntryPremium] = useState('');
-  const [depthStatus, setDepthStatus] = useState<MarketStreamStatus>('not_configured');
+  const [depthStatus, setDepthStatus] = useState<DepthStatus>('not_configured');
   const [depthMessage, setDepthMessage] = useState('');
   const [depthLastSnapshotAt, setDepthLastSnapshotAt] = useState<string | null>(null);
   const [depthSnapshot, setDepthSnapshot] = useState<Extract<DepthMessage, { type: 'depth' }> | null>(null);
@@ -766,7 +767,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
         marketClosed = message.status === 'market_closed';
         setLiveLastSnapshotAt(message.last_snapshot_at ?? null);
         setLiveFeedStatus(message.status);
-        if (message.status === 'active' || message.status === 'market_closed' || message.status === 'unavailable') {
+        if (message.status !== 'connecting' && message.status !== 'reconnecting') {
           if (connectionTimer !== undefined) window.clearTimeout(connectionTimer);
         }
         setLiveFeedMessage(message.message ?? (
@@ -1295,9 +1296,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
         return;
       }
       if (message.type === 'status') {
-        providerActive = message.status === 'active';
+        providerActive = message.status === 'active' || message.status === 'subscribed';
         marketClosed = message.status === 'market_closed';
-        unavailable = message.status === 'unavailable';
+        unavailable = ['unavailable', 'failed', 'unsupported'].includes(message.status);
         setDepthStatus(message.status);
         setDepthMessage(message.message ?? '');
         setDepthLastSnapshotAt((current) => message.last_snapshot_at ?? current);
@@ -1897,17 +1898,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                 ? new Date(detailQuote.retrieved_at).toLocaleString()
                                 : 'Not available'}
                         </p>
-                        <p className="market-provenance" role="status">
-                          {depthStatus === 'market_closed'
-                            ? `Market closed. Last known snapshot: ${depthLastSnapshotAt
-                              ? new Date(depthLastSnapshotAt).toLocaleString()
-                              : detailQuote
-                                ? new Date(detailQuote.retrieved_at).toLocaleString()
-                                : 'Not available'}.`
-                            : depthStatus === 'not_configured'
-                              ? 'Select Dhan as the market-data source and open this tab to subscribe.'
-                              : depthMessage || `Market depth: ${depthStatus.replaceAll('_', ' ')}.`}
-                        </p>
+                        {(() => {
+                          const view = depthStatusView(depthStatus, depthMessage, depthLastSnapshotAt ?? detailQuote?.retrieved_at ?? null);
+                          return <p className={`market-provenance depth-status depth-status-${view.tone}`} role="status">
+                            <strong>{view.label}</strong> · {view.text}
+                          </p>;
+                        })()}
                         {depthSnapshot && depthSnapshot.instrument_id !== activeDetailInstrumentId && (
                           <p className="market-provenance" role="status">
                             Depth snapshot belongs to another instrument and is hidden.
@@ -1916,6 +1912,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         <p className="market-provenance" role="status">
                           Time and sales: unavailable. The Dhan depth feed in this build does not supply a trade tape.
                         </p>
+                        {depthSnapshot && depthSnapshot.instrument_id === activeDetailInstrumentId && depthStatus !== 'active' && (
+                          <p className="market-provenance" role="status">These levels are the last received snapshot and are not live.</p>
+                        )}
                         {depthSnapshot && depthSnapshot.instrument_id === activeDetailInstrumentId && (
                           <div className="table-scroll">
                             <table>

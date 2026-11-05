@@ -117,11 +117,96 @@ def test_financial_trends_score_and_non_positive_base_excluded():
     assert none["status"] == "blocked"
 
 
-def test_implausible_growth_is_excluded_and_flagged():
+def test_large_growth_from_small_base_is_kept_but_saturates_and_is_noted():
     trend = {"status": "available", "periods": [trend_period(2025, revenue=5000, net_income=20, eps=15, free_cash_flow=10)]}
     result = rs.score_financial_trends(trend, {"periods": []})
-    assert "revenue_growth" not in {m["key"] for m in result["factors"]}
-    assert any("implausible" in m for m in result["missing"])
+    revenue = next(m for m in result["factors"] if m["key"] == "revenue_growth")
+    assert revenue["sub_score"] == 100
+    assert any("very small base" in n for n in result["notes"])
+
+
+def test_mixed_currency_blocks_trends():
+    trend = {"status": "available", "periods": [trend_period(2025, revenue=10, net_income=10, eps=10, free_cash_flow=10),
+                                               {**trend_period(2024, revenue=10, net_income=10), "currency": "USD"}]}
+    assert rs.score_financial_trends(trend, {"periods": []})["status"] == "blocked"
+
+
+def test_profit_to_loss_scores_zero_and_loss_to_profit_is_undefined_not_scored():
+    # prior > 0, now loss: pipeline growth = (-50-100)/100 = -150%
+    down = {"status": "available", "periods": [trend_period(2025, revenue=5, net_income=-150, eps=-150, free_cash_flow=-150)]}
+    result = rs.score_financial_trends(down, {"periods": []})
+    ni = next(m for m in result["factors"] if m["key"] == "net_income_growth")
+    assert ni["sub_score"] == 0
+    # loss -> profit: pipeline emits growth None (non-positive base); must be excluded and explained, never scored
+    up = {"status": "available", "periods": [trend_period(2025, revenue=30, net_income=None, eps=None, free_cash_flow=None)]}
+    result = rs.score_financial_trends(up, {"periods": []})
+    assert "net_income_growth" not in {m["key"] for m in result["factors"]}
+    assert any("loss-to-profit" in m for m in result["missing"])
+
+
+# ---- EASEMYTRIP-shaped fixtures: ILLUSTRATIVE numbers modelled on an asset-light, thin-margin,
+# ---- low-debt travel platform whose share count moved sharply after a bonus + split. Not filings data.
+def emt_periods(*, profitable=True):
+    ni = (260, 380) if profitable else (-40, -90)
+    return [
+        period(2024, revenue=1400, net_income=ni[0], eps=1.5, total_equity=1300, total_debt=20, total_assets=1600, total_liabilities=300,
+               operating_cash_flow=ni[0] * 0.9 if profitable else 30, free_cash_flow=200 if profitable else 10, shares_outstanding=1730),
+        period(2025, revenue=1800, net_income=ni[1], eps=0.2, total_equity=1650, total_debt=25, total_assets=2000, total_liabilities=350,
+               operating_cash_flow=ni[1] * 0.8 if profitable else -20, free_cash_flow=300 if profitable else -40, shares_outstanding=3540),
+    ]
+
+
+def test_easemytrip_profitable_share_split_is_not_dilution_and_eps_growth_is_not_comparable():
+    periods = emt_periods()
+    fund = {"periods": periods}
+    result = rs.score_fundamental(fund, "Consumer Cyclical", "Travel Services")
+    keys = {m["key"] for m in result["factors"]}
+    assert result["status"] == "scored" and "share_change" not in keys
+    assert any("split/bonus" in m for m in result["missing"])
+    trend = {"status": "available", "periods": [trend_period(2025, revenue=28.6, net_income=46.2, eps=-86.7, free_cash_flow=50)]}
+    t = rs.score_financial_trends(trend, fund)
+    assert "eps_growth" not in {m["key"] for m in t["factors"]}
+    assert any("per-share growth is not comparable" in m for m in t["missing"])
+    assert t["status"] == "scored"
+
+
+def test_easemytrip_loss_making_cash_conversion_is_not_counted_as_missing_data():
+    result = rs.score_fundamental({"periods": emt_periods(profitable=False)}, "Consumer Cyclical", "Travel Services")
+    keys = {m["key"] for m in result["factors"]}
+    assert "cash_conversion" not in keys and not any(m.startswith("Cash conversion") for m in result["missing"])
+    assert any("not meaningful" in n for n in result["notes"])
+    margin = next(m for m in result["factors"] if m["key"] == "net_margin")
+    assert margin["value"] < 0 and margin["sub_score"] < 25
+    complete = rs.score_fundamental({"periods": emt_periods()}, "Consumer Cyclical", "Travel Services")
+    assert result["score"] < complete["score"]
+
+
+def test_incomplete_data_lowers_coverage_and_confidence():
+    full = rs.score_fundamental({"periods": emt_periods()}, None, None)
+    thin_periods = emt_periods()
+    for p in thin_periods:
+        for name in ("total_debt", "operating_cash_flow"):
+            p["values"][name] = fv(None)
+    thin = rs.score_fundamental({"periods": thin_periods}, None, None)
+    assert thin["status"] == "scored"
+    assert thin["coverage_pct"] < full["coverage_pct"] and thin["confidence"] < full["confidence"]
+    for p in thin_periods:
+        for name in ("total_liabilities", "free_cash_flow", "total_assets"):
+            p["values"][name] = fv(None)
+    assert rs.score_fundamental({"periods": thin_periods}, None, None)["status"] == "blocked"
+
+
+def test_horizon_confidence_is_penalised_when_a_component_is_excluded_but_score_is_renormalised():
+    full = rs.build_assessment(sections(sentiment=good_sentiment()), instrument_id="I1", now=NOW)
+    partial = rs.build_assessment(sections(sentiment={"status": "no_news_found", "events": []}), instrument_id="I1", now=NOW)
+    f, p = full["horizons"]["swing"], partial["horizons"]["swing"]
+    assert p["confidence"] < f["confidence"]
+    used = [full["components"][k] for k in ("fundamental", "technical", "financial_trends")]
+    # effective weights renormalise to 1 and the score is the weighted mean of scored components only
+    assert abs(sum(c["effective_weight"] for c in p["contributions"]) - 1) < 0.01
+    expected = sum(c["weight"] * c["score"] for c in p["contributions"]) / sum(c["weight"] for c in p["contributions"])
+    assert abs(p["score"] - expected) < 0.11
+    assert all(c["score"] is not None for c in used)
 
 
 def test_conflicting_annual_and_quarterly_growth_reduces_confidence():

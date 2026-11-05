@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import asyncio
 import json
 import sqlite3
@@ -224,11 +224,13 @@ def test_research_store_read_connection_is_query_only(tmp_path) -> None:
             store.connection.execute("DELETE FROM products")
 
 
-def test_websocket_failures_back_off_stop_at_limit_and_deduplicate_logs(
+def test_websocket_failures_back_off_with_jitter_report_unavailable_and_keep_retrying(
     tmp_path, monkeypatch, caplog
 ) -> None:
     attempts = 0
     delays: list[float] = []
+    collector = DeltaPublicCollector(tmp_path / "not-created.sqlite3")
+    states: list[str] = []
 
     class FailedConnection:
         async def __aenter__(self):
@@ -240,10 +242,15 @@ def test_websocket_failures_back_off_stop_at_limit_and_deduplicate_logs(
     def failing_connect(*_args, **_kwargs):
         nonlocal attempts
         attempts += 1
+        if attempts >= 7:
+            collector._stop.set()
         return FailedConnection()
+
+    real_wait_for = asyncio.wait_for
 
     async def immediate_wait(awaitable, timeout):
         delays.append(timeout)
+        states.append(collector.status()["state"])
         awaitable.close()
         raise TimeoutError
 
@@ -252,14 +259,63 @@ def test_websocket_failures_back_off_stop_at_limit_and_deduplicate_logs(
     monkeypatch.setattr(collector_module, "MAX_CONSECUTIVE_FAILURES", 4)
     monkeypatch.setattr(collector_module, "MAX_RECONNECT_SECONDS", 2)
 
-    collector = DeltaPublicCollector(tmp_path / "not-created.sqlite3")
     asyncio.run(collector._websocket_loop())
 
-    assert attempts == 4
-    assert delays == [1, 2, 2]
-    assert collector.status()["state"] == "stopped_after_failures"
-    assert collector.status()["consecutive_failures"] == 4
+    assert attempts == 7  # keeps retrying past the failure threshold instead of giving up
+    assert len(delays) == 6
+    for failures, delay in enumerate(delays, start=1):
+        step = min(2 ** (failures - 1), 2)
+        assert step * 0.5 <= delay <= step  # bounded exponential backoff with jitter
+    assert states[:3] == ["reconnecting"] * 3 and states[3:] == ["unavailable"] * 3
+    status = collector.status()
+    assert status["stream_state"] == "unavailable" and status["is_live"] is False
     assert len([record for record in caplog.records if "Delta public collector error" in record.message]) == 1
+    assert real_wait_for is not None
+
+
+def test_idle_websocket_without_heartbeat_forces_a_reconnect(tmp_path, monkeypatch) -> None:
+    collector = DeltaPublicCollector(tmp_path / "idle.sqlite3")
+    connects = 0
+
+    class SilentSocket:
+        async def send(self, _data):
+            return None
+
+        async def recv(self):
+            await asyncio.sleep(3600)
+
+    class SilentConnection:
+        async def __aenter__(self):
+            return SilentSocket()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    def silent_connect(*_args, **_kwargs):
+        nonlocal connects
+        connects += 1
+        if connects >= 2:
+            collector._stop.set()
+        return SilentConnection()
+
+    monkeypatch.setattr(collector_module, "connect", silent_connect)
+    monkeypatch.setattr(collector_module, "WS_IDLE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(collector_module, "reconnect_delay", lambda _n: 0.0)
+    monkeypatch.setattr(collector, "_save_health", lambda force=False: None)
+    asyncio.run(collector._websocket_loop())
+    assert connects == 2 and collector._reconnects == 2
+    assert collector.status()["connected"] is False
+
+
+def test_stream_state_never_reports_live_when_disconnected_or_stale() -> None:
+    now = datetime.now(timezone.utc)
+    fresh = now - timedelta(seconds=5)
+    old = now - timedelta(seconds=600)
+    assert collector_module.classify_stream_state(True, fresh, now, "connected") == "connected"
+    assert collector_module.classify_stream_state(True, old, now, "connected") == "stale"
+    assert collector_module.classify_stream_state(True, None, now, "connected") == "stale"
+    assert collector_module.classify_stream_state(False, fresh, now, "reconnecting") == "reconnecting"
+    assert collector_module.classify_stream_state(False, fresh, now, "unavailable") == "unavailable"
 
 
 def test_sse_subscriber_queue_is_bounded_and_reports_dropped_events(tmp_path) -> None:

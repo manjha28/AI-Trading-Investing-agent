@@ -30,7 +30,12 @@ def require_enabled() -> None:
     if not settings.market_stream_enabled:
         raise HTTPException(
             status_code=503,
-            detail={"code": "market_stream_disabled", "message": "Market streaming is disabled."},
+            detail={
+                "code": "market_stream_disabled",
+                "message": "Market streaming is disabled.",
+                "status": "unavailable",
+                "bars": [],
+            },
         )
 
 
@@ -89,14 +94,28 @@ def latest_bars(
     try:
         raw = store.get_many(ids)
     except redis.RedisError as exc:
+        # Truthful and structured: no data is returned or implied, and the client may retry.
         raise HTTPException(
             status_code=503,
-            detail={"code": "latest_state_unavailable", "message": "Live state store is unreachable."},
+            detail={
+                "code": "latest_state_unavailable",
+                "message": "Live state store is unreachable.",
+                "status": "unavailable",
+                "bars": [],
+            },
+            headers={"Retry-After": "5"},
         ) from exc
     now = datetime.now(timezone.utc)
     bars = []
+    unreadable: list[str] = []
     for instrument_id, payload in raw.items():
-        age_seconds, freshness = _freshness(payload["interval"], payload["bar_timestamp"], now)
+        try:
+            age_seconds, freshness = _freshness(payload["interval"], payload["bar_timestamp"], now)
+            record = {k: payload[k] for k in (
+                "provider", "interval", "bar_timestamp", "open", "high", "low", "close", "volume", "ingested_at")}
+        except (KeyError, ValueError, TypeError):
+            unreadable.append(instrument_id)  # a corrupt stored tick is reported, never repaired or guessed
+            continue
         bars.append(
             {
                 "instrument_id": instrument_id,
@@ -115,7 +134,14 @@ def latest_bars(
             }
         )
     missing = [str(item) for item in ids if str(item) not in raw]
-    return {"bars": bars, "missing_instrument_ids": missing, "disclaimer": DISCLAIMER}
+    status = "no_data" if not bars else "stale" if all(b["freshness"] == "stale" for b in bars) else "ok"
+    return {
+        "bars": bars,
+        "missing_instrument_ids": missing,
+        "unreadable_instrument_ids": unreadable,
+        "status": status,
+        "disclaimer": DISCLAIMER,
+    }
 
 
 @router.post("/poll", status_code=202, dependencies=[Depends(require_enabled)])

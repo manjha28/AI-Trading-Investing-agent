@@ -752,15 +752,42 @@ def _normalize_dhan_trades(
     return normalized
 
 
+def _ledger_has_provider_id(row: dict[str, Any]) -> bool:
+    value = row.get("vouchernumber")
+    return value is not None and bool(str(value).strip())
+
+
+def _ledger_content_identifiable(row: dict[str, Any]) -> bool:
+    """A row without a voucher number may be keyed by content only when the provider
+    supplied the date, a debit or credit amount and the cumulative running balance.
+    The running balance orders lines, so the combination is stable across syncs."""
+    if row.get("voucherdate") in (None, "") or row.get("runbal") in (None, ""):
+        return False
+    return row.get("debit") not in (None, "") or row.get("credit") not in (None, "")
+
+
+def _ledger_content_signature(row: dict[str, Any]) -> str:
+    return json.dumps(
+        {k: row.get(k) for k in ("voucherdate", "narration", "voucherdesc", "exchange", "debit", "credit", "runbal")},
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
+
+
 def _normalize_dhan_ledger(
-    rows: list[dict[str, Any]], user_id: UUID, synced_at: datetime
+    rows: list[dict[str, Any]], user_id: UUID, synced_at: datetime, *, ordinal: int = 0
 ) -> list[DhanLedgerMirror]:
+    """``ordinal`` distinguishes byte-identical provider lines (n-th occurrence in one
+    response); it is only used for content-derived keys. Provider IDs are never invented:
+    a content-keyed row keeps ``provider_entry_id`` NULL."""
     normalized = []
     for row in rows:
-        entry_id = row.get("vouchernumber")
-        if entry_id is None or not str(entry_id).strip():
-            raise BrokerAdapterError("Dhan ledger response is missing its entry ID")
-        provider_entry_id = str(entry_id)[:64]
+        keyed = _ledger_has_provider_id(row)
+        if not keyed and not _ledger_content_identifiable(row):
+            raise BrokerAdapterError(
+                "Dhan ledger response is missing its entry ID and lacks the date, amount and "
+                "running balance needed for a content-derived key"
+            )
+        provider_entry_id = str(row["vouchernumber"]).strip()[:64] if keyed else None
         line_identity = {
             "provider_entry_id": provider_entry_id,
             "voucherdate": row.get("voucherdate"),
@@ -771,6 +798,9 @@ def _normalize_dhan_ledger(
             "credit": row.get("credit"),
             "runbal": row.get("runbal"),
         }
+        if not keyed:
+            line_identity["key_basis"] = "content"
+            line_identity["ordinal"] = ordinal
         line_key = hashlib.sha256(
             json.dumps(
                 line_identity,
@@ -806,8 +836,17 @@ def _normalize_dhan_ledger(
 def _record_dhan_ledger_exceptions(
     db: Session, user_id: UUID, rows: list[dict[str, Any]], seen_at: datetime
 ) -> list[dict[str, Any]]:
+    """Quarantine rows that have neither a provider ID nor enough data for a content key.
+
+    Identical rows in one response get distinct fingerprints (ordinal) so none collapses
+    into another; a repeat sync refreshes last_seen_at/occurrence_count instead of
+    leaving a stale first-seen record. Counted once per sync, not per duplicate sighting."""
     recorded = []
+    seen_signatures: dict[str, int] = {}
     for row in rows:
+        signature = _ledger_content_signature(row)
+        ordinal = seen_signatures.get(signature, 0)
+        seen_signatures[signature] = ordinal + 1
         evidence = {
             "voucherdate": row.get("voucherdate"),
             "narration": row.get("narration"),
@@ -815,7 +854,10 @@ def _record_dhan_ledger_exceptions(
             "exchange": row.get("exchange"),
             "debit": row.get("debit"),
             "credit": row.get("credit"),
+            "runbal": row.get("runbal"),
         }
+        if ordinal:
+            evidence["ordinal"] = ordinal
         fingerprint = hashlib.sha256(json.dumps(
             evidence, sort_keys=True, separators=(",", ":"), default=str
         ).encode()).hexdigest()
@@ -842,7 +884,9 @@ def _record_dhan_ledger_exceptions(
                 occurrence_count=1,
             ))
             recorded.append({"date": str(row.get("voucherdate") or "unknown"), "description": description, "debit": str(debit) if debit is not None else None, "credit": str(credit) if credit is not None else None})
-        # Existing exceptions stay unchanged: one first-seen record is enough.
+        else:
+            existing.last_seen_at = seen_at
+            existing.occurrence_count += 1
     return recorded
 
 
@@ -925,6 +969,20 @@ def _upsert_dhan_ledger_entry(db: Session, row: DhanLedgerMirror) -> bool:
                 DhanLedgerMirror.entry_id == row.provider_entry_id,
                 DhanLedgerMirror.provider_entry_id.is_(None),
             )
+        ) if row.provider_entry_id is not None else None
+    if existing is None and row.provider_entry_id is not None:
+        # A row mirrored earlier by content (no provider ID) must be adopted, not duplicated,
+        # once the provider supplies its voucher number.
+        existing = db.scalar(
+            select(DhanLedgerMirror).where(
+                DhanLedgerMirror.user_id == row.user_id,
+                DhanLedgerMirror.source == row.source,
+                DhanLedgerMirror.provider_entry_id.is_(None),
+                DhanLedgerMirror.entry_date == row.entry_date,
+                DhanLedgerMirror.debit == row.debit,
+                DhanLedgerMirror.credit == row.credit,
+                DhanLedgerMirror.running_balance == row.running_balance,
+            ).limit(1)
         )
     if existing is None:
         db.add(row)
@@ -1519,28 +1577,37 @@ def sync_broker(
             ledger_records = dhan_reader.get_ledger(
                 dhan_from_date.isoformat(), dhan_to_date.isoformat()
             )
-            unkeyed_ledger_count = sum(
-                not row.get("vouchernumber") for row in ledger_records
-            )
+            unmirrorable = [
+                row for row in ledger_records
+                if not _ledger_has_provider_id(row) and not _ledger_content_identifiable(row)
+            ]
             known_ledger_exceptions = _record_dhan_ledger_exceptions(
-                db,
-                _user_id(active_session),
-                [row for row in ledger_records if not row.get("vouchernumber")],
-                now,
+                db, _user_id(active_session), unmirrorable, now,
             )
-            if unkeyed_ledger_count:
+            content_keyed_count = sum(
+                1 for row in ledger_records
+                if not _ledger_has_provider_id(row) and _ledger_content_identifiable(row)
+            )
+            if unmirrorable:
                 logger.warning(
-                    "Dhan ledger entries skipped because provider entry IDs are missing count=%d",
-                    unkeyed_ledger_count,
+                    "Dhan ledger entries quarantined: no provider entry ID and insufficient data "
+                    "for a content key count=%d content_keyed=%d",
+                    len(unmirrorable), content_keyed_count,
                 )
             normalized_ledger = []
             malformed_ledger_count = 0
+            occurrences: dict[str, int] = {}
             for index, row in enumerate(ledger_records):
-                if not row.get("vouchernumber") or not str(row["vouchernumber"]).strip():
+                if not _ledger_has_provider_id(row) and not _ledger_content_identifiable(row):
                     continue
+                ordinal = 0
+                if not _ledger_has_provider_id(row):
+                    signature = _ledger_content_signature(row)
+                    ordinal = occurrences.get(signature, 0)
+                    occurrences[signature] = ordinal + 1
                 try:
                     normalized_ledger.extend(_normalize_dhan_ledger(
-                        [row], _user_id(active_session), now
+                        [row], _user_id(active_session), now, ordinal=ordinal
                     ))
                 except BrokerAdapterError:
                     malformed_ledger_count += 1
@@ -1553,6 +1620,8 @@ def sync_broker(
                 "record_count": str(len(normalized_ledger)),
                 "received_count": str(len(ledger_records)),
                 "malformed_count": str(malformed_ledger_count),
+                "content_keyed_count": str(content_keyed_count),
+                "quarantined_count": str(len(unmirrorable)),
                 "known_exception_count": str(len(known_ledger_exceptions)),
                 "known_exceptions": known_ledger_exceptions,
             }

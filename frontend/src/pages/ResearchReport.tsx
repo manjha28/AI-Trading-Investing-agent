@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { apiRequest } from '../api';
+import { formatMoney } from '../lib/formatMoney';
 import { CandleChart, sessionCloseForVenue } from '../components/CandleChart';
 import type {
   Assessment, Brief, ComponentKey, FundamentalPeriod, HorizonKey, Instrument, QualityItem, ScoreComponent,
@@ -153,10 +154,11 @@ function FactorTable({ component }: { component: ScoreComponent }) {
   </table></div>;
 }
 
-const STATEMENT_ROWS: [string, string][] = [
-  ['revenue', 'Revenue'], ['net_income', 'Net income'], ['eps', 'EPS'], ['operating_margin', 'Operating margin (%)'],
-  ['total_assets', 'Total assets'], ['total_liabilities', 'Total liabilities'], ['total_equity', 'Total equity'],
-  ['operating_cash_flow', 'Operating cash flow'], ['free_cash_flow', 'Free cash flow'], ['total_debt', 'Total debt'], ['shares_outstanding', 'Shares outstanding'],
+// Third item: true for monetary totals shown in compact units; EPS, margins and share counts keep their own units.
+const STATEMENT_ROWS: [string, string, boolean][] = [
+  ['revenue', 'Revenue', true], ['net_income', 'Net income', true], ['eps', 'EPS (per share)', false], ['operating_margin', 'Operating margin (%)', false],
+  ['total_assets', 'Total assets', true], ['total_liabilities', 'Total liabilities', true], ['total_equity', 'Total equity', true],
+  ['operating_cash_flow', 'Operating cash flow', true], ['free_cash_flow', 'Free cash flow', true], ['total_debt', 'Total debt', true], ['shares_outstanding', 'Shares outstanding (count)', false],
 ];
 
 function StatementsTable({ brief }: { brief: Brief }) {
@@ -170,14 +172,15 @@ function StatementsTable({ brief }: { brief: Brief }) {
       <div className="rt-seg" role="group" aria-label="Statement frequency">
         {(['annual', 'quarterly'] as const).map((k) => <button key={k} type="button" aria-pressed={kind === k} className={kind === k ? 'active' : ''} onClick={() => setKind(k)}>{k === 'annual' ? 'Annual' : 'Quarterly'}</button>)}
       </div>
-      <small>Currency as reported by provider: {currencies.join(', ') || '—'}. Unit scale is not specified by the provider and is shown as stored. “—” means not stored.</small>
+      <small>Currency from provider metadata: {currencies.join(', ') || '—'}. Monetary totals are in compact Indian units (K, L, Cr, Lakh Cr) only when the currency is INR; other currencies are shown in full. Stored values are unchanged (hover a cell to see the raw value). “—” means not stored.</small>
     </div>
     {periods.length === 0 ? <p className="rt-empty">No {kind} periods are stored for this instrument.</p> : <div className="rt-table-wrap"><table className="rt-table rt-fin">
       <thead><tr><th>Line item</th>{periods.map((p) => <th key={p.period_end}>{p.period_end}{p.stale && <span className="rt-stale"> stale</span>}</th>)}</tr></thead>
       <tbody>
-        {STATEMENT_ROWS.map(([key, label]) => <tr key={key}><th scope="row">{label}</th>{periods.map((p) => {
+        {STATEMENT_ROWS.map(([key, label, money]) => <tr key={key}><th scope="row">{label}</th>{periods.map((p) => {
           const raw = p.values[key]?.value ?? null;
-          return <td key={p.period_end}>{key === 'shares_outstanding' && raw !== null && Number(raw) === 0 ? '—' : num(raw, 2)}</td>;
+          if (key === 'shares_outstanding' && raw !== null && Number(raw) === 0) return <td key={p.period_end}>—</td>;
+          return <td key={p.period_end} title={raw === null ? undefined : `Stored value: ${raw}`}>{money ? formatMoney(raw, p.currency) : num(raw, 2)}</td>;
         })}</tr>)}
         <tr className="rt-subhead"><th colSpan={periods.length + 1}>Year-on-year growth</th></tr>
         {(['revenue', 'net_income', 'eps', 'free_cash_flow'] as const).map((key) => <tr key={`g-${key}`}><th scope="row">{words(key)}</th>{periods.map((p) => {
@@ -288,7 +291,7 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
           })}
         </div> : <p className="rt-empty">Scores are not part of this older report. Run research again.</p>}
         <h4>Company snapshot</h4>
-        {fundamentals.snapshot.status === 'available' ? <dl className="rt-kv">{Object.entries(snap).map(([name, item]) => <div key={name}><dt>{words(name)}</dt><dd>{item.value === null ? '—' : Number.isFinite(Number(item.value)) && name !== 'sector' && name !== 'industry' ? num(item.value, 2) : item.value}</dd></div>)}</dl>
+        {fundamentals.snapshot.status === 'available' ? <dl className="rt-kv">{Object.entries(snap).map(([name, item]) => <div key={name}><dt>{words(name)}</dt><dd>{item.value === null ? '—' : name === 'market_cap' ? formatMoney(item.value, instrument?.currency) : Number.isFinite(Number(item.value)) && name !== 'sector' && name !== 'industry' ? num(item.value, 2) : item.value}</dd></div>)}</dl>
           : <p className="rt-empty">No company snapshot is stored.</p>}
         {fundamentals.snapshot.conflicts && fundamentals.snapshot.conflicts.length > 0 && <Reasons title="Providers disagree (values kept separate, never averaged)" kind="warn"
           items={fundamentals.snapshot.conflicts.map((c) => `${words(c.field)}: ${c.source_a} ${c.value_a} vs ${c.source_b} ${c.value_b}`)} />}

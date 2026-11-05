@@ -120,3 +120,5 @@
 - Research orchestration: add per-instrument idempotent background runs, component freshness/provenance, progress polling and cancellation.
 - Research UI: surface selected-stock actions, add report section navigation, and keep Market Intel diagnostics compact.
 - Research scoring: add provisional four-dimension, four-horizon scoring engine with evidence/risk gates and session-aware daily-bar staleness; redesign Research page as a dark terminal with tabbed report.
+- Stream reliability: explicit stream_state/is_live health, Dhan depth reconnect with restored subscriptions, Delta collector idle watchdog and perpetual jittered retry, structured /market-stream/latest 503/stale responses, and content-keyed Dhan ledger reconciliation for entries without voucher numbers.
+- Dhan market depth: accept canonical SECURITY_ID|SEGMENT mappings, report specific unsupported/no-data/stale/failed states with real reasons, bound depth reconnects, and drop empty depth slots.

@@ -1704,8 +1704,9 @@ class DhanAdapter(BrokerAdapter):
             subscriptions: Mapping[str, tuple[str, str]],
         ) -> dict[tuple[str, str], str]:
             return {
-                (segment, str(security_id)): instrument_id
+                (segment, str(security_id).split("|", 1)[0].strip()): instrument_id
                 for instrument_id, (segment, security_id) in subscriptions.items()
+                if str(security_id).split("|", 1)[0].strip().isdigit()
             }
 
         def request_message(request_code: int, items: list[tuple[str, str]]) -> str:
@@ -1740,8 +1741,8 @@ class DhanAdapter(BrokerAdapter):
                 for start in range(0, len(items), 100):
                     batch = items[start:start + 100]
                     await connection.send(request_message(23, batch))
-                logger.info("Dhan depth feed connected subscriptions=%d", len(current))
-                await status_callback("active")
+                logger.info("Dhan depth feed subscribed subscriptions=%d", len(current))
+                await status_callback("subscribed")
                 snapshots: dict[str, dict[str, Any]] = {}
                 receive_task = asyncio.create_task(connection.recv())
                 update_task = asyncio.create_task(subscription_updates.get())
@@ -1755,14 +1756,15 @@ class DhanAdapter(BrokerAdapter):
                             desired = subscription_items(update_task.result())
                             removed = list(current.keys() - desired.keys())
                             added = list(desired.keys() - current.keys())
+                            previous_ids = set(current.values())
+                            current = desired  # record before sending; see ticker feed
                             for request_code, changed in ((24, removed), (23, added)):
                                 for start in range(0, len(changed), 100):
                                     await connection.send(
                                         request_message(request_code, changed[start:start + 100])
                                     )
-                            for instrument_id in set(current.values()) - set(desired.values()):
+                            for instrument_id in previous_ids - set(desired.values()):
                                 snapshots.pop(instrument_id, None)
-                            current = desired
                             logger.info(
                                 "Dhan depth feed subscriptions updated subscribed=%d "
                                 "unsubscribed=%d total=%d",
@@ -1777,6 +1779,14 @@ class DhanAdapter(BrokerAdapter):
                             message = receive_task.result()
                             receive_task = asyncio.create_task(connection.recv())
                             if not isinstance(message, bytes):
+                                # Provider text frames (errors/notices) were silently dropped before;
+                                # log them (credentials redacted) so a silent feed is diagnosable.
+                                logger.warning(
+                                    "Dhan depth feed text frame=%s",
+                                    _safe_dhan_close_reason(
+                                        str(message)[:200], access_token, tokens.get("client_id", "")
+                                    ),
+                                )
                                 continue
                             offset = 0
                             while offset < len(message):
@@ -2307,6 +2317,11 @@ class DhanAdapter(BrokerAdapter):
                                 desired = subscription_items(update_task.result())
                                 removed = list(current.keys() - desired.keys())
                                 added = list(desired.keys() - current.keys())
+                                # Record the desired set before any send: if the socket drops
+                                # mid-update the reconnect must restore the new subscriptions
+                                # (the queued update has already been consumed).
+                                current = desired
+                                subscription_acknowledged.intersection_update(current.values())
                                 if added:
                                     acknowledgement_complete = False
                                     await status_callback("connecting")
@@ -2336,8 +2351,6 @@ class DhanAdapter(BrokerAdapter):
                                         payload.encode("utf-8").hex(),
                                     )
                                     await connection.send(payload)
-                                current = desired
-                                subscription_acknowledged.intersection_update(current.values())
                                 logger.info(
                                     "Dhan live feed subscriptions updated subscribed=%d unsubscribed=%d total=%d",
                                     len(added),

@@ -471,3 +471,64 @@ def test_poll_rejects_unknown_instrument_and_bad_interval(client, test_engine, e
         app.dependency_overrides.pop(get_event_publisher, None)
     assert unknown.status_code == 404
     assert invalid.status_code == 422
+
+
+class _UnreachableStore:
+    def get_many(self, _ids):
+        import redis
+        raise redis.ConnectionError("valkey down")
+
+    def upsert_if_newer(self, _event):
+        raise AssertionError("not used")
+
+
+def _get_latest(client, store, ids):
+    app.dependency_overrides[get_latest_store] = lambda: store
+    try:
+        return client.get("/api/v1/market-stream/latest", params={"instrument_ids": ",".join(map(str, ids))})
+    finally:
+        app.dependency_overrides.pop(get_latest_store, None)
+
+
+def test_snapshot_store_outage_is_a_structured_503_without_any_data(client, test_engine, enabled):
+    register(client, test_engine, "outage@example.com", verified=True)
+    response = _get_latest(client, _UnreachableStore(), [uuid4()])
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "latest_state_unavailable"
+    assert detail["status"] == "unavailable" and detail["bars"] == []
+    assert response.headers["retry-after"] == "5"
+
+
+def test_disabled_stream_503_is_structured_and_carries_no_bars(client, test_engine):
+    register(client, test_engine, "off2@example.com", verified=True)
+    detail = client.get(f"/api/v1/market-stream/latest?instrument_ids={uuid4()}").json()["detail"]
+    assert detail["code"] == "market_stream_disabled" and detail["status"] == "unavailable" and detail["bars"] == []
+
+
+def test_snapshot_without_any_tick_reports_no_data_and_never_fabricates(client, test_engine, enabled):
+    register(client, test_engine, "empty@example.com", verified=True)
+    missing = uuid4()
+    body = _get_latest(client, InMemoryLatestStateStore(), [missing]).json()
+    assert body["status"] == "no_data" and body["bars"] == [] and body["missing_instrument_ids"] == [str(missing)]
+
+
+def test_snapshot_status_is_stale_when_every_stored_bar_is_stale(client, test_engine, enabled):
+    register(client, test_engine, "stale@example.com", verified=True)
+    old_id = uuid4()
+    store = InMemoryLatestStateStore()
+    store.upsert_if_newer(make_event(instrument_id=old_id, bar_timestamp=NOW - timedelta(days=3), interval="1h"))
+    body = _get_latest(client, store, [old_id]).json()
+    assert body["status"] == "stale" and body["bars"][0]["freshness"] == "stale"
+
+
+def test_corrupt_stored_tick_is_reported_unreadable_not_a_500(client, test_engine, enabled):
+    register(client, test_engine, "corrupt@example.com", verified=True)
+    bad = uuid4()
+
+    class CorruptStore(InMemoryLatestStateStore):
+        def get_many(self, ids):
+            return {str(i): {"interval": "1m", "bar_timestamp": "not-a-timestamp"} for i in ids}
+
+    body = _get_latest(client, CorruptStore(), [bad]).json()
+    assert body["unreadable_instrument_ids"] == [str(bad)] and body["bars"] == [] and body["status"] == "no_data"

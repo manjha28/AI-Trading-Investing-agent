@@ -3042,3 +3042,164 @@ def test_p0h2_identity_index_blocks_duplicate_equity_but_allows_segment_split():
     ]
     ddl = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
     assert "NULLS NOT DISTINCT" in ddl
+
+
+# ───────────── Dhan 20-level depth: route, mapping and forwarding ─────────────
+def _prepare_depth(client, test_engine, monkeypatch, *, provider_id="1333|NSE_EQ", verified=True,
+                   venue="NSE", segment_mapping=True):
+    register(client, f"depth-{uuid4().hex[:6]}@example.com")
+    prepare_dhan_quote(client, test_engine, monkeypatch)
+    with Session(test_engine) as session:
+        user_session = session.scalar(select(UserSession).where(
+            UserSession.token_hash == hash_token(client.cookies.get("session_token"))))
+        user_session.user.two_factor_enabled = True
+        user_session.two_factor_verified = True
+        instrument = Instrument(
+            symbol="HDFCBANK", display_name="HDFC Bank", asset_class="equity", venue=venue,
+            currency="INR", country="IN", timezone="Asia/Kolkata", created_at=datetime.now(timezone.utc),
+        )
+        session.add(instrument)
+        session.flush()
+        if segment_mapping:
+            session.add(InstrumentProviderIdentifier(
+                instrument_id=instrument.id, provider="dhan", provider_instrument_id=provider_id,
+                provider_symbol="HDFCBANK", is_verified=verified, last_seen_at=datetime.now(timezone.utc)))
+        session.commit()
+        instrument_id = str(instrument.id)
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_a, **_k: "open")
+    monkeypatch.setattr(market_data, "_default_market_data_source", lambda *_a, **_k: "dhan")
+    monkeypatch.setattr(market_data, "_fresh_dhan_tokens_worker",
+                        lambda *_a, **_k: {"access_token": "token-value", "client_id": "client-value"})
+    return instrument_id
+
+
+def _depth_ws(client, instrument_id):
+    return client.websocket_connect(
+        f"/api/v1/market-data/instruments/{instrument_id}/depth",
+        headers={"Origin": settings.frontend_origin},
+    )
+
+
+def _levels(start_price, filled=5):
+    return [
+        {"price": Decimal(start_price) + index if index < filled else Decimal("0"),
+         "quantity": 100 * (index + 1) if index < filled else 0, "orders": index + 1 if index < filled else 0}
+        for index in range(20)
+    ]
+
+
+def test_depth_route_accepts_canonical_mapping_and_forwards_only_real_levels(client, test_engine, monkeypatch):
+    instrument_id = _prepare_depth(client, test_engine, monkeypatch)
+    joined: dict = {}
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait({"type": "status", "status": "subscribed"})
+    queue.put_nowait({"type": "depth", "instrument_id": instrument_id, "depth": {
+        "timestamp": datetime(2026, 11, 5, 5, 0, tzinfo=timezone.utc),
+        "bids": _levels("1500"), "asks": _levels("1501")}})
+
+    async def join(feed, _group, subscriptions, _token, _tokens):
+        joined.update(feed=feed, subscriptions=subscriptions)
+        return queue
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join)
+    with _depth_ws(client, instrument_id) as stream:
+        assert stream.receive_json()["status"] == "connecting"
+        assert stream.receive_json()["status"] == "subscribed"
+        depth = stream.receive_json()
+    # the bare numeric security id and NSE_EQ segment (from the canonical SECURITY_ID|SEGMENT) are subscribed
+    assert joined["feed"] == "depth"
+    assert joined["subscriptions"] == {instrument_id: ("NSE_EQ", "1333")}
+    assert depth["type"] == "depth" and depth["instrument_id"] == instrument_id
+    assert len(depth["bids"]) == 5 and len(depth["asks"]) == 5  # empty zero slots are not levels
+    assert depth["bids"][0] == {"price": "1500", "quantity": 100, "orders": 1}
+    assert depth["timestamp"].startswith("2026-11-05T05:00:00") and depth["timestamp_basis"] == "server_received_at"
+    assert all(Decimal(level["price"]) > 0 and level["quantity"] > 0 for level in depth["bids"] + depth["asks"])
+
+
+def test_depth_route_still_accepts_legacy_bare_security_id(client, test_engine, monkeypatch):
+    instrument_id = _prepare_depth(client, test_engine, monkeypatch, provider_id="1333")
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait({"type": "status", "status": "subscribed"})
+
+    async def join(_feed, _group, subscriptions, *_a):
+        assert subscriptions == {instrument_id: ("NSE_EQ", "1333")}
+        return queue
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join)
+    with _depth_ws(client, instrument_id) as stream:
+        assert stream.receive_json()["status"] == "connecting"
+        assert stream.receive_json()["status"] == "subscribed"
+
+
+@pytest.mark.parametrize("kwargs,reason", [
+    ({"verified": False}, "mapping_unverified"),
+    ({"segment_mapping": False}, "mapping_missing"),
+    ({"provider_id": "1333|BSE_EQ"}, "mapping_segment_mismatch"),
+    ({"provider_id": "ABC|NSE_EQ"}, "mapping_malformed"),
+    ({"venue": "BSE"}, "unsupported_venue"),
+])
+def test_depth_route_reports_the_specific_reason_instead_of_a_generic_mapping_error(
+    client, test_engine, monkeypatch, kwargs, reason
+):
+    instrument_id = _prepare_depth(client, test_engine, monkeypatch, **kwargs)
+
+    async def must_not_join(*_a):
+        raise AssertionError("an unverified or unsupported instrument must never reach the upstream feed")
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", must_not_join)
+    with _depth_ws(client, instrument_id) as stream:
+        message = stream.receive_json()
+    assert message["status"] == "unsupported" and message["reason"] == reason and message["message"]
+
+
+def test_depth_route_reports_no_data_instead_of_loading_forever(client, test_engine, monkeypatch):
+    instrument_id = _prepare_depth(client, test_engine, monkeypatch)
+    monkeypatch.setattr(market_data, "DEPTH_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(market_data, "DEPTH_NO_DATA_AFTER_SECONDS", 0.0)
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait({"type": "status", "status": "subscribed"})
+
+    async def join(*_a):
+        return queue
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join)
+    with _depth_ws(client, instrument_id) as stream:
+        assert stream.receive_json()["status"] == "connecting"
+        assert stream.receive_json()["status"] == "subscribed"
+        no_data = stream.receive_json()
+    assert no_data["status"] == "no_data" and "entitlement" in no_data["message"]
+
+
+def test_depth_route_marks_levels_stale_when_updates_stop(client, test_engine, monkeypatch):
+    instrument_id = _prepare_depth(client, test_engine, monkeypatch)
+    monkeypatch.setattr(market_data, "DEPTH_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(settings, "watchlist_feed_stale_after_seconds", 0)
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait({"type": "depth", "instrument_id": instrument_id, "depth": {
+        "timestamp": datetime.now(timezone.utc), "bids": _levels("10"), "asks": _levels("11")}})
+
+    async def join(*_a):
+        return queue
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join)
+    with _depth_ws(client, instrument_id) as stream:
+        assert stream.receive_json()["status"] == "connecting"
+        assert stream.receive_json()["type"] == "depth"
+        stale = stream.receive_json()
+    assert stale["status"] == "stale"
+
+
+def test_depth_route_surfaces_the_actual_upstream_failure_reason(client, test_engine, monkeypatch):
+    instrument_id = _prepare_depth(client, test_engine, monkeypatch)
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait({"type": "error", "status_code": 4403,
+                      "message": "Dhan depth feed closed code=4403 reason=depth entitlement missing"})
+
+    async def join(*_a):
+        return queue
+
+    monkeypatch.setattr(market_data.dhan_live_feed_hub, "join", join)
+    with _depth_ws(client, instrument_id) as stream:
+        assert stream.receive_json()["status"] == "connecting"
+        failed = stream.receive_json()
+    assert failed["status"] == "failed" and "entitlement missing" in failed["message"]

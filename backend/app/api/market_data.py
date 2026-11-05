@@ -15,6 +15,7 @@ from collections import OrderedDict
 from functools import lru_cache
 from datetime import time as datetime_time
 from enum import Enum
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Mapping, TypedDict
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -32,6 +33,7 @@ from sqlalchemy.orm import Session, selectinload
 from websockets.exceptions import InvalidStatus, WebSocketException
 
 from app.broker_adapters import (
+    _dhan_backoff_seconds,
     BrokerAdapterError,
     BrokerRateLimited,
     BrokerReconnectRequired,
@@ -308,6 +310,30 @@ def _websocket_origin_allowed(route: str, websocket: WebSocket) -> bool:
     return allowed
 
 
+def classify_stream_state(
+    connection_state: str, last_packet_at: datetime | None, stale_after_seconds: float, now: datetime
+) -> str:
+    """Explicit stream health: connected | reconnecting | unavailable | stale.
+
+    Only "connected" means live data is flowing. An active socket whose last packet is
+    older than the stale threshold is "stale", never "connected"."""
+    if connection_state == "active":
+        if last_packet_at is None:
+            return "reconnecting"
+        age = (now - last_packet_at).total_seconds()
+        return "stale" if age > stale_after_seconds else "connected"
+    if connection_state in {"connecting", "reconnecting", "subscribed"}:
+        return "reconnecting"  # not live: no packet has been received on this connection
+    return "unavailable"
+
+
+def _depth_failure_is_retryable(error: BrokerAdapterError) -> bool:
+    """Transient socket closures (no code, RFC 6455 1000-1015, HTTP 429/5xx) are retried;
+    authentication/authorisation rejections and Dhan 4xxx codes are terminal."""
+    code = error.status_code
+    return code is None or 1000 <= code <= 1015 or code == 429 or 500 <= code <= 599
+
+
 class DhanLiveFeedHub:
     def __init__(self) -> None:
         self._adapter = DhanAdapter()
@@ -355,8 +381,14 @@ class DhanLiveFeedHub:
     def health(self, feed: str) -> dict[str, Any]:
         state = self._feed_health[feed]
         last_packet_at = state["last_successful_packet_at"]
+        stream_state = classify_stream_state(
+            state["connection_state"], last_packet_at,
+            state["stale_after_seconds"], datetime.now(timezone.utc),
+        )
         return {
             **state,
+            "stream_state": stream_state,
+            "is_live": stream_state == "connected",
             "last_successful_packet_at": (
                 last_packet_at.isoformat() if last_packet_at is not None else None
             ),
@@ -633,6 +665,11 @@ class DhanLiveFeedHub:
                 health["last_failure_at"] = datetime.now(timezone.utc)
                 await asyncio.to_thread(self._open_feed_gaps, feed, reason or "connection failure")
                 return
+            if status == "subscribed":
+                # Upstream subscription request sent; not live until a packet arrives.
+                health["connection_state"] = "subscribed"
+                self._publish(feed, {"type": "status", "status": "subscribed"})
+                return
             if status == "unknown_response":
                 health["unknown_response_count"] += 1
                 return
@@ -701,16 +738,7 @@ class DhanLiveFeedHub:
                         instrument_id,
                     )
             else:
-                async for instrument_id, depth in self._adapter.stream_watchlist_market_depth(
-                    access_token, tokens, initial, updates, status_callback
-                ):
-                    await status_callback("packet_received")
-                    self._depth_snapshot_times[instrument_id] = depth["timestamp"]
-                    self._publish(
-                        feed,
-                        {"type": "depth", "instrument_id": instrument_id, "depth": depth},
-                        instrument_id,
-                    )
+                await self._run_depth_with_reconnect(feed, access_token, tokens, updates, status_callback)
         except asyncio.CancelledError:
             raise
         except BrokerReconnectRequired as error:
@@ -744,6 +772,57 @@ class DhanLiveFeedHub:
                 self._tasks[feed] = None
                 self._updates[feed] = None
                 self._credentials[feed] = None
+
+    async def _run_depth_with_reconnect(
+        self,
+        feed: str,
+        access_token: str,
+        tokens: Mapping[str, str],
+        updates: asyncio.Queue[dict[str, tuple[str, str]]],
+        status_callback: Callable[..., Awaitable[None]],
+    ) -> None:
+        """Depth has no internal retry loop: restore subscriptions after transient closures
+        with bounded, jittered exponential backoff on the single shared upstream."""
+        attempt = 0
+        while True:
+            initial = self._all_subscriptions(feed)
+            if not initial:
+                return
+            while not updates.empty():  # queued updates are superseded by `initial`
+                updates.get_nowait()
+            try:
+                async for instrument_id, depth in self._adapter.stream_watchlist_market_depth(
+                    access_token, tokens, initial, updates, status_callback
+                ):
+                    attempt = 0
+                    await status_callback("packet_received")
+                    self._depth_snapshot_times[instrument_id] = depth["timestamp"]
+                    self._publish(
+                        feed,
+                        {"type": "depth", "instrument_id": instrument_id, "depth": depth},
+                        instrument_id,
+                    )
+                return  # adapter ended because no subscriptions remain
+            except asyncio.CancelledError:
+                raise
+            except BrokerReconnectRequired:
+                raise
+            except BrokerAdapterError as error:
+                if not _depth_failure_is_retryable(error):
+                    raise
+                reason = str(error)
+            attempt += 1
+            if attempt > DEPTH_MAX_RECONNECT_ATTEMPTS:
+                raise BrokerAdapterError(
+                    f"Dhan depth feed stayed unavailable after {DEPTH_MAX_RECONNECT_ATTEMPTS} reconnect "
+                    f"attempts: {reason}"
+                )
+            delay = _dhan_backoff_seconds(min(2 ** attempt, 60))
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            await status_callback("connection_failure", reason)
+            await status_callback("reconnecting", reason, delay, retry_at.isoformat())
+            logger.info("Dhan depth feed reconnect scheduled attempt=%d backoff_seconds=%.2f", attempt, delay)
+            await asyncio.sleep(delay)
 
     def _open_feed_gaps(self, feed: str, reason: str) -> None:
         now = datetime.now(timezone.utc)
@@ -6214,6 +6293,65 @@ async def _stream_angel_one_quote(
             pass
 
 
+DEPTH_SUPPORTED_SEGMENTS = {"NSE_EQ"}
+DEPTH_NO_DATA_AFTER_SECONDS = 20.0
+DEPTH_POLL_SECONDS = 5.0
+DEPTH_MAX_RECONNECT_ATTEMPTS = 6
+_NSE_VENUES = {"NSE", "XNSE", "NSI", "NSE_EQ"}
+
+
+def resolve_dhan_depth_target(instrument: Any) -> tuple[tuple[str, str] | None, str, str]:
+    """Return ``((segment, security_id), "", "")`` or ``(None, reason_code, message)``.
+
+    Verification is never bypassed: only a stored ``is_verified`` Dhan mapping is used.
+    The canonical stored id is ``SECURITY_ID|SEGMENT``; legacy rows hold the bare security id.
+    Both forms are accepted, but a segment that contradicts the instrument's venue is rejected.
+    """
+    if (
+        (instrument.country or "").upper() != "IN"
+        or (instrument.currency or "").upper() != "INR"
+        or instrument.asset_class != "equity"
+        or instrument.is_synthetic
+    ):
+        return None, "unsupported_instrument", (
+            "Dhan 20-level market depth is available only for NSE equity instruments."
+        )
+    if (instrument.venue or "").upper() not in _NSE_VENUES:
+        return None, "unsupported_venue", (
+            f"Dhan 20-level market depth is available only for NSE equity; this instrument trades on {instrument.venue}."
+        )
+    segment = "NSE_EQ"
+    mappings = [m for m in instrument.provider_identifiers if m.provider == "dhan"]
+    verified = next((m for m in mappings if m.is_verified), None)
+    if verified is None:
+        return None, "mapping_unverified" if mappings else "mapping_missing", (
+            "The stored Dhan instrument mapping is not verified yet."
+            if mappings
+            else "No Dhan instrument mapping is stored for this instrument. Load its quote or sync history with Dhan selected to create and verify one."
+        )
+    security_id, separator, mapped_segment = verified.provider_instrument_id.strip().partition("|")
+    if not security_id.isdigit():
+        return None, "mapping_malformed", (
+            "The verified Dhan mapping does not contain a numeric security id, so depth cannot be subscribed."
+        )
+    if separator and mapped_segment != segment:
+        return None, "mapping_segment_mismatch", (
+            f"The verified Dhan mapping is for segment {mapped_segment}, which does not match this NSE equity instrument."
+        )
+    if segment not in DEPTH_SUPPORTED_SEGMENTS:  # defensive; keeps the support list authoritative
+        return None, "unsupported_segment", "Dhan 20-level market depth does not support this segment."
+    return (segment, security_id), "", ""
+
+
+def clean_depth_levels(levels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Dhan always sends 20 slots; unused slots are zero price/quantity and are not real levels."""
+    return [
+        {**level, "price": str(level["price"])}
+        for level in levels
+        if level["quantity"] > 0 and level["price"] > 0
+    ]
+
+
 @router.websocket("/instruments/{instrument_id}/depth")
 async def dhan_market_depth_stream(
     websocket: WebSocket,
@@ -6287,20 +6425,27 @@ async def dhan_market_depth_stream(
         .where(Instrument.id == instrument_id)
         .options(selectinload(Instrument.provider_identifiers))
     )
-    if (
-        instrument is None
-        or instrument.country.upper() != "IN"
-        or instrument.currency.upper() != "INR"
-        or instrument.asset_class != "equity"
-        or instrument.is_synthetic
-    ):
+    if instrument is None:
         await websocket.send_json({
             "type": "status",
-            "status": "unavailable",
-            "message": "Dhan market depth is unavailable for this instrument.",
+            "status": "unsupported",
+            "reason": "instrument_not_found",
+            "message": "This instrument does not exist.",
         })
         await websocket.close(code=4404)
         return
+    target, reason_code, reason_message = resolve_dhan_depth_target(instrument)
+    if target is None:
+        logger.info("dhan_depth_unsupported instrument_id=%s reason=%s", instrument.id, reason_code)
+        await websocket.send_json({
+            "type": "status",
+            "status": "unsupported",
+            "reason": reason_code,
+            "message": reason_message,
+        })
+        await websocket.close(code=4404)
+        return
+    exchange_segment, security_id = target
     last_snapshot_at = dhan_live_feed_hub.last_depth_snapshot_at(instrument.id)
 
     async def send_status(
@@ -6338,26 +6483,6 @@ async def dhan_market_depth_stream(
         await websocket.close(code=4404)
         return
     adapter = DhanAdapter()
-    mapping = next(
-        (
-            item
-            for item in instrument.provider_identifiers
-            if item.provider == adapter.slug and item.is_verified
-        ),
-        None,
-    )
-    exchange_segment = (
-        "NSE_EQ"
-        if instrument.venue.upper() in {"NSE", "XNSE", "NSI", "NSE_EQ"}
-        else None
-    )
-    if mapping is None or not mapping.provider_instrument_id.isdigit() or exchange_segment is None:
-        await send_status(
-            "unavailable",
-            "A verified Dhan instrument mapping is required for market depth.",
-        )
-        await websocket.close(code=4404)
-        return
     try:
         tokens = await asyncio.to_thread(
             _fresh_dhan_tokens_worker, active_session.user_id, adapter
@@ -6374,7 +6499,7 @@ async def dhan_market_depth_stream(
         feed_queue = await dhan_live_feed_hub.join(
             "depth",
             group_id,
-            {str(instrument.id): (exchange_segment, mapping.provider_instrument_id)},
+            {str(instrument.id): (exchange_segment, security_id)},
             tokens["access_token"],
             tokens,
         )
@@ -6403,14 +6528,43 @@ async def dhan_market_depth_stream(
                 stream_task.cancel()
 
     client_monitor = asyncio.create_task(monitor_client())
+    subscribed_at = time.monotonic()
+    last_depth_monotonic: float | None = None
+    announced: str | None = None  # last no_data/stale notice, so each is sent once per episode
     try:
         while True:
-            event = await feed_queue.get()
+            try:
+                event = await asyncio.wait_for(feed_queue.get(), timeout=DEPTH_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                # Never leave the UI in an endless "connecting": say what is (not) arriving.
+                if last_depth_monotonic is None:
+                    if (
+                        time.monotonic() - subscribed_at >= DEPTH_NO_DATA_AFTER_SECONDS
+                        and announced != "no_data"
+                    ):
+                        announced = "no_data"
+                        await send_status(
+                            "no_data",
+                            "Dhan accepted the connection but has sent no 20-level depth for this "
+                            "instrument. Your Dhan account may lack the Full Market Depth "
+                            "entitlement, or the instrument may not be eligible.",
+                        )
+                elif (
+                    time.monotonic() - last_depth_monotonic
+                    > settings.watchlist_feed_stale_after_seconds
+                    and announced != "stale"
+                ):
+                    announced = "stale"
+                    await send_status(
+                        "stale",
+                        "No depth update has arrived recently; the levels shown are the last received.",
+                    )
+                continue
             if event["type"] == "status":
                 await send_status(event["status"])
                 continue
             if event["type"] == "error":
-                await send_status("unavailable", event["message"])
+                await send_status("failed", event["message"])
                 reason = event["message"][:120]
                 close_code = _dhan_feed_close_code(
                     event.get("status_code"), "depth_upstream_http_rejected"
@@ -6429,19 +6583,17 @@ async def dhan_market_depth_stream(
                 continue
             depth = event["depth"]
             last_snapshot_at = datetime.now(timezone.utc)
+            last_depth_monotonic = time.monotonic()
+            announced = None
             await websocket.send_json({
                 "type": "depth",
                 "instrument_id": str(event["instrument_id"]),
+                # Dhan's depth packet carries no exchange timestamp: this is the server receipt time.
                 "timestamp": depth["timestamp"].isoformat(),
+                "timestamp_basis": "server_received_at",
                 "last_snapshot_at": last_snapshot_at.isoformat(),
-                "bids": [
-                    {**level, "price": str(level["price"])}
-                    for level in depth["bids"]
-                ],
-                "asks": [
-                    {**level, "price": str(level["price"])}
-                    for level in depth["asks"]
-                ],
+                "bids": clean_depth_levels(depth["bids"]),
+                "asks": clean_depth_levels(depth["asks"]),
             })
     except WebSocketDisconnect:
         return
@@ -6450,11 +6602,11 @@ async def dhan_market_depth_stream(
     except BrokerReconnectRequired:
         credential.expires_at = datetime.now(timezone.utc)
         db.commit()
-        await send_status("unavailable", "Reconnect Dhan to renew its market-data session.")
+        await send_status("failed", "Reconnect Dhan to renew its market-data session.")
         await websocket.close(code=4401)
     except InvalidStatus as error:
         await send_status(
-            "unavailable",
+            "failed",
             f"Dhan rejected the market-depth handshake (HTTP {error.response.status_code}).",
         )
         await websocket.close(code=1011)
@@ -6465,7 +6617,7 @@ async def dhan_market_depth_stream(
             type(error).__name__,
         )
         await send_status(
-            "unavailable",
+            "failed",
             f"Dhan market depth disconnected ({type(error).__name__}).",
         )
         await websocket.close(code=1011)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import json
 import logging
 import sqlite3
@@ -25,10 +26,32 @@ REST_URL = "https://api.india.delta.exchange"
 PUBLIC_WS_URL = "wss://public-socket.india.delta.exchange"
 MAX_CONSECUTIVE_FAILURES = 8
 MAX_RECONNECT_SECONDS = 60
+# Delta sends heartbeats about every 30 s once enabled; silence beyond this means a dead link
+# that TCP/ping keepalive has not yet noticed, so reconnect instead of waiting indefinitely.
+WS_IDLE_TIMEOUT_SECONDS = 90
+STREAM_STALE_AFTER_SECONDS = 90
 MAX_SUBSCRIBERS = 32
 SUBSCRIBER_QUEUE_SIZE = 256
 WRITE_QUEUE_SIZE = 128
 PRODUCT_REFRESH_SECONDS = 6 * 60 * 60
+
+
+def reconnect_delay(consecutive_failures: int) -> float:
+    """Bounded exponential backoff with jitter (50-100% of the capped step)."""
+    step = min(2 ** max(0, consecutive_failures - 1), MAX_RECONNECT_SECONDS)
+    return random.uniform(step * 0.5, step)
+
+
+def classify_stream_state(connected: bool, last_event_at: datetime | None, now: datetime,
+                          state: str, stale_after: float = STREAM_STALE_AFTER_SECONDS) -> str:
+    """connected | reconnecting | unavailable | stale. Only "connected" means live data."""
+    if connected:
+        if last_event_at is None or (now - last_event_at).total_seconds() > stale_after:
+            return "stale"
+        return "connected"
+    if state in {"unavailable", "stopped", "disabled", "not_started"}:
+        return "unavailable"
+    return "reconnecting"
 
 
 def _event_time(value: Any) -> datetime | None:
@@ -118,11 +141,16 @@ class DeltaPublicCollector:
                     store_summary = store.summary()
             except (OSError, RuntimeError, sqlite3.Error, ValueError):
                 store_summary = None
+        stream_state = classify_stream_state(
+            self._connected, self._last_event_at, datetime.now(timezone.utc), self._state
+        )
         return {
             "enabled": settings.delta_research_enabled,
             "configured": bool(settings.delta_research_db_path),
             "state": self._state,
             "connected": self._connected,
+            "stream_state": stream_state,
+            "is_live": stream_state == "connected",
             "reconnects": self._reconnects,
             "consecutive_failures": self._consecutive_failures,
             "dropped_events": self._dropped_events,
@@ -168,7 +196,7 @@ class DeltaPublicCollector:
                 tickers = await self._fetch_tickers(client)
                 observed_at = datetime.now(timezone.utc)
                 await asyncio.to_thread(self._persist_rest_snapshot, tickers, observed_at)
-                if self._state != "stopped_after_failures":
+                if self._state != "unavailable":
                     self._state = "connected" if self._connected else "collecting"
                     self._source_errors.pop("rest", None)
                     self._last_rest_success_at = datetime.now(timezone.utc)
@@ -260,7 +288,9 @@ class DeltaPublicCollector:
         )
 
     async def _websocket_loop(self) -> None:
-        while not self._stop.is_set() and self._consecutive_failures < MAX_CONSECUTIVE_FAILURES:
+        # Never gives up permanently: after repeated failures the stream is reported
+        # "unavailable" and retried at the capped interval, so it recovers on its own.
+        while not self._stop.is_set():
             try:
                 async with connect(
                     self.websocket_url,
@@ -290,13 +320,15 @@ class DeltaPublicCollector:
                         "event": "health",
                         "data": await asyncio.to_thread(self.status),
                     })
-                    async for frame in websocket:
+                    while True:
+                        try:
+                            frame = await asyncio.wait_for(websocket.recv(), WS_IDLE_TIMEOUT_SECONDS)
+                        except asyncio.TimeoutError:
+                            raise ConnectionError("Delta public websocket idle: no frame or heartbeat") from None
                         await self._handle_frame(frame)
-                    if not self._stop.is_set():
-                        raise ConnectionError("Delta public websocket closed")
             except asyncio.CancelledError:
                 raise
-            except (OSError, WebSocketException, ValueError, TypeError, json.JSONDecodeError) as exc:
+            except Exception as exc:  # noqa: BLE001 - any failure must reconnect, never kill the collector
                 await self._record_failure(exc, "websocket")
                 self._reconnects += 1
             finally:
@@ -304,22 +336,16 @@ class DeltaPublicCollector:
             if self._stop.is_set():
                 break
             if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                self._state = "stopped_after_failures"
-                await asyncio.to_thread(self._save_health, force=True)
-                await self._publish({
-                    "event": "health",
-                    "data": await asyncio.to_thread(self.status),
-                })
-                break
-            delay = min(2 ** max(0, self._consecutive_failures - 1), MAX_RECONNECT_SECONDS)
-            self._state = "reconnecting"
+                self._state = "unavailable"
+            else:
+                self._state = "reconnecting"
             await asyncio.to_thread(self._save_health, force=True)
             await self._publish({
                 "event": "health",
                 "data": await asyncio.to_thread(self.status),
             })
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                await asyncio.wait_for(self._stop.wait(), timeout=reconnect_delay(self._consecutive_failures))
             except TimeoutError:
                 pass
 
@@ -455,7 +481,8 @@ class DeltaPublicCollector:
         await asyncio.to_thread(self._save_health, force=True)
 
     def _refresh_state(self) -> None:
-        if self._state == "stopped_after_failures":
+        if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not self._connected:
+            self._state = "unavailable"
             return
         self._last_error = "; ".join(
             f"{source}: {error}"

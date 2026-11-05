@@ -193,7 +193,9 @@ def score_fundamental(fundamentals: dict[str, Any], sector: str | None, industry
         if need("Liabilities to assets", liabilities is not None and assets is not None and assets > 0, "needs total liabilities and assets"):
             m = float(liabilities / assets)  # type: ignore[operator]
             metrics.append(_metric("liabilities_to_assets", "Liabilities to assets", m, "x", _lerp(m, [(0.4, 100), (0.6, 70), (0.8, 40), (1.0, 0)]), "total liabilities / total assets"))
-        if need("Cash conversion", ocf is not None and income is not None and income > 0, "needs operating cash flow and positive net income"):
+        if income is not None and income <= 0:
+            notes.append("Cash conversion is not meaningful with non-positive net income; excluded from the applicable set (not counted as missing data).")
+        elif need("Cash conversion", ocf is not None and income is not None, "needs operating cash flow and net income"):
             m = float(ocf / income)  # type: ignore[operator]
             metrics.append(_metric("cash_conversion", "Cash conversion", m, "x", _lerp(m, [(0, 0), (0.5, 45), (0.8, 75), (1.0, 100)]), "operating cash flow / net income"))
         if need("Free-cash-flow margin", fcf is not None and revenue is not None and revenue > 0, "needs free cash flow and positive revenue"):
@@ -203,7 +205,10 @@ def score_fundamental(fundamentals: dict[str, Any], sector: str | None, industry
     shares_prior = _field(prior["values"], "shares_outstanding") if prior else None
     if need("Share dilution", bool(shares_now and shares_prior and shares_now > 0 and shares_prior > 0), "needs two comparable annual share counts"):
         m = float((shares_now - shares_prior) / shares_prior * 100)  # type: ignore[operator]
-        metrics.append(_metric("share_change", "Share count change", m, "%", _lerp(m, [(-1, 100), (0, 85), (2, 60), (5, 30), (10, 0)]), "year-on-year shares outstanding"))
+        if abs(m) >= SHARE_DISCONTINUITY_PCT:
+            missing.append(f"Share dilution: share count changed {m:+.0f}% year-on-year, which is more likely a split/bonus/consolidation than dilution; excluded (verify against corporate actions).")
+        else:
+            metrics.append(_metric("share_change", "Share count change", m, "%", _lerp(m, [(-1, 100), (0, 85), (2, 60), (5, 30), (10, 0)]), "year-on-year shares outstanding"))
     missing.append("Interest coverage: interest expense is not stored.")
     if financial:
         notes.append("Bank/NBFC/insurer: leverage, margin and cash-flow ratios are not comparable and are excluded; asset quality, NIM and capital adequacy are not stored, so confidence is capped at 50.")
@@ -225,8 +230,26 @@ def score_fundamental(fundamentals: dict[str, Any], sector: str | None, industry
 
 
 # ───────────────────────── Financial trends (growth / direction) ─────────────────────────
+# A share-count move this large between comparable periods is treated as a split/bonus/consolidation,
+# not dilution, and per-share growth across it is not comparable. Provisional heuristic.
+SHARE_DISCONTINUITY_PCT = 25.0
 GROWTH_ANCHORS = [(-25, 0), (0, 35), (10, 60), (20, 80), (35, 100)]
 TREND_METRICS = (("revenue", "Revenue"), ("net_income", "Net profit"), ("eps", "EPS"), ("free_cash_flow", "Free cash flow"))
+
+
+def _share_discontinuities(fund_periods: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """(period_type, period_end) pairs whose share count moved >= SHARE_DISCONTINUITY_PCT vs the comparable prior period."""
+    result: set[tuple[str, str]] = set()
+    for p in fund_periods:
+        now = _field(p["values"], "shares_outstanding")
+        end = date.fromisoformat(p["period_end"])
+        for q in fund_periods:
+            if q.get("period_type") != p.get("period_type") or not 360 <= (end - date.fromisoformat(q["period_end"])).days <= 370:
+                continue
+            before = _field(q["values"], "shares_outstanding")
+            if now and before and now > 0 and before > 0 and abs(float((now - before) / before * 100)) >= SHARE_DISCONTINUITY_PCT:
+                result.add((p["period_type"], p["period_end"]))
+    return result
 
 
 def score_financial_trends(trend: dict[str, Any], fundamentals: dict[str, Any]) -> dict[str, Any]:
@@ -234,23 +257,29 @@ def score_financial_trends(trend: dict[str, Any], fundamentals: dict[str, Any]) 
     periods = trend.get("periods") or []
     if trend.get("status") != "available" or not periods:
         return _component(key, blockers=["No comparable annual or quarterly periods (360-370 days apart) are stored."])
+    currencies = {p.get("currency") for p in periods}
+    if len(currencies) > 1:
+        return _component(key, blockers=[f"Trend periods report mixed currencies {sorted(map(str, currencies))}; growth across them is not comparable and no FX conversion is applied."])
     metrics: list[dict[str, Any]] = []
     missing: list[str] = []
     conflicts: list[str] = []
-    notes = ["Growth is year-on-year against a positive prior-period base only; growth from a non-positive base is not meaningful and is excluded."]
+    notes = ["Growth is year-on-year against a positive prior-period base only; growth from a zero or negative base (including loss-to-profit turnarounds) is undefined and excluded rather than scored."]
+    share_jump = _share_discontinuities(fundamentals.get("periods") or [])
     for name, label in TREND_METRICS:
         growth: dict[str, list[float]] = {"annual": [], "quarterly": []}
         for period in sorted(periods, key=lambda p: p["period_end"]):
             raw = _dec(((period.get("values") or {}).get(name) or {}).get("year_on_year_growth_pct"))
             if raw is None or period.get("period_type") not in growth:
                 continue
-            if abs(raw) > 1000:
-                missing.append(f"{label} {period['period_type']} {period['period_end']}: growth of {raw}% is implausible; excluded as a probable unit/period error.")
+            if name == "eps" and (period["period_type"], period["period_end"]) in share_jump:
+                missing.append(f"EPS {period['period_type']} {period['period_end']}: share count changed sharply (split/bonus?); per-share growth is not comparable and is excluded.")
                 continue
+            if abs(raw) > 1000:
+                notes.append(f"{label} {period['period_type']} {period['period_end']}: growth of {raw}% is from a very small base; the sub-score saturates.")
             growth[period["period_type"]].append(float(raw))
         legs = [g[-1] for g in growth.values() if g]
         if not legs:
-            missing.append(f"{label}: no comparable year-on-year growth observation.")
+            missing.append(f"{label}: no meaningful year-on-year growth (prior base missing, zero or negative, e.g. loss-to-profit).")
             continue
         base = sum(_lerp(g, GROWTH_ANCHORS) for g in legs) / len(legs)
         observed = (growth["annual"] or growth["quarterly"])[-3:]
