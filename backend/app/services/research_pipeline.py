@@ -39,6 +39,7 @@ from app.research_service import is_stale as is_source_stale
 from app.services import fundamentals as fundamentals_service
 from app.services.indicators import compute_indicators
 from app.services.news_sentiment import CLASSIFIER_VERSION, aggregate_instrument_sentiment
+from app.services.research_scoring import build_assessment, daily_bar_staleness
 from app.services.source_registry import FetchedSource, fetch_instrument_sources
 
 logger = logging.getLogger(__name__)
@@ -546,6 +547,7 @@ def _technicals_section(
                 "reason": "The indicator includes synthetic stored market bars.",
             })
     latest_is_stale = False
+    staleness: dict[str, Any] | None = None
     if latest is None:
         quality.append({
             "kind": "unavailable",
@@ -561,21 +563,18 @@ def _technicals_section(
             ),
         })
     else:
-        now = datetime.now(timezone.utc)
-        freshness_limit = settings.daily_close_price_max_age_seconds
-        latest_bar_timestamp = latest.timestamp
-        if latest_bar_timestamp.tzinfo is None:
-            latest_bar_timestamp = latest_bar_timestamp.replace(tzinfo=timezone.utc)
-        close_age = (now - latest_bar_timestamp).total_seconds()
-        latest_is_stale = close_age < 0 or close_age > freshness_limit
+        staleness = daily_bar_staleness(
+            latest.timestamp, datetime.now(timezone.utc),
+            country=instrument.country if instrument is not None else None,
+            continuous=instrument is not None and (instrument.asset_class or "").lower() == "crypto",
+            age_limit_seconds=settings.daily_close_price_max_age_seconds,
+        )
+        latest_is_stale = staleness["stale"]
         if latest_is_stale:
             quality.append({
                 "kind": "stale",
                 "field_path": "market_bars[interval=1d]",
-                "reason": (
-                    "The latest daily close exceeds the configured freshness "
-                    f"limit of {freshness_limit} seconds."
-                ),
+                "reason": staleness["reason"],
             })
         if latest.is_synthetic:
             quality.append({
@@ -616,6 +615,8 @@ def _technicals_section(
         "interval": "1d",
         "source": latest.source if latest else None,
         "latest_bar": latest.timestamp.isoformat() if latest else None,
+        "latest_close": _number(bars[-1].close) if bars else None,
+        "staleness": staleness,
         "bars_available": len(bars),
         "indicators": indicator_values,
     }
@@ -718,6 +719,12 @@ def render_brief(
         },
         "disclaimer": DISCLAIMER,
     }
+    # Scoring failure must never discard the evidence pack; it is reported, not swallowed.
+    try:
+        sections["assessment"] = build_assessment(sections, instrument_id=str(instrument.id))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("research_assessment_failed error_class=%s", type(exc).__name__)
+        sections["assessment"] = {"error": f"Scoring failed ({type(exc).__name__}); evidence is unaffected."}
     return sections, quality
 
 

@@ -119,3 +119,4 @@
 - News sentiment: add restart-safe background analysis, per-item failure retry tracking, processing status, and an unlabelled review fixture from persisted headlines.
 - Research orchestration: add per-instrument idempotent background runs, component freshness/provenance, progress polling and cancellation.
 - Research UI: surface selected-stock actions, add report section navigation, and keep Market Intel diagnostics compact.
+- Research scoring: add provisional four-dimension, four-horizon scoring engine with evidence/risk gates and session-aware daily-bar staleness; redesign Research page as a dark terminal with tabbed report.

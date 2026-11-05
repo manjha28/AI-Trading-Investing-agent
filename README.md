@@ -23,7 +23,7 @@ Then run:
 pip install -r requirements.txt
 cp .env.example .env
 alembic upgrade head
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Start PostgreSQL before the migration. For local development, the Codespaces Compose setup provides PostgreSQL; outside Codespaces, run `docker compose -f .devcontainer/docker-compose.yml up -d postgres` from the repository root. The default connection uses the Compose hostname `postgres` and the `copilot` database user; when running the backend outside the Compose network, override `DATABASE_URL` to use `localhost` or your managed database host.
@@ -51,7 +51,9 @@ The Vite server must listen on `0.0.0.0`; the `dev` script already does this. In
 3. Keep the port private unless you intentionally need to share the app. Do not open port `8000` expecting the React UI; that is the API.
 4. If the app was installed as a PWA, first open the live forwarded Vite port in a browser tab. A previously installed app can show an old/offline shell.
 
-Port `5173` is configured with `onAutoForward: openBrowser` in `.devcontainer/devcontainer.json`. The actual forwarded URL is Codespaces-specific; `localhost:5173` inside the dev container is not necessarily the same as `localhost` on your personal computer.
+Ports `5173` and `8000` are declared in `.devcontainer/devcontainer.json` so Codespaces restores both forwards after reconnects and rebuilds. Port 5173 opens the app automatically; port 8000 is privately forwarded for direct API access. The actual forwarded URL is Codespaces-specific; `localhost:5173` inside the dev container is not necessarily the same as `localhost` on your personal computer.
+
+To start both services together in Codespaces from the repository root, run `make dev-codespaces`. It binds Vite and Uvicorn to `0.0.0.0`, keeps the Vite API proxy on `127.0.0.1:8000`, and stops the sibling process if either service exits. For local development, start the backend and frontend separately using the commands above; Vite uses its normal local HMR settings outside Codespaces.
 
 ### Frontend troubleshooting
 
