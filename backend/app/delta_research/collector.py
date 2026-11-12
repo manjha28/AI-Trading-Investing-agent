@@ -19,6 +19,7 @@ from websockets.exceptions import WebSocketException
 
 from app.config import settings
 from app.delta_research.store import DeltaResearchStore
+from app.ws_diagnostics import describe_ws_failure
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ MAX_CONSECUTIVE_FAILURES = 8
 MAX_RECONNECT_SECONDS = 60
 # Delta sends heartbeats about every 30 s once enabled; silence beyond this means a dead link
 # that TCP/ping keepalive has not yet noticed, so reconnect instead of waiting indefinitely.
-WS_IDLE_TIMEOUT_SECONDS = 90
+WS_IDLE_TIMEOUT_SECONDS = 75  # assumes ~30 s heartbeats; the all-symbol ticker normally sends far more often
 STREAM_STALE_AFTER_SECONDS = 90
 MAX_SUBSCRIBERS = 32
 SUBSCRIBER_QUEUE_SIZE = 256
@@ -92,6 +93,8 @@ class DeltaPublicCollector:
         self._dropped_events = 0
         self._last_event_at: datetime | None = None
         self._last_error: str | None = None
+        self._last_failure_reason: str | None = None
+        self._last_failure_at: datetime | None = None
         self._last_logged_error: str | None = None
         self._source_errors: dict[str, str] = {}
         self._last_rest_success_at: datetime | None = None
@@ -156,6 +159,8 @@ class DeltaPublicCollector:
             "dropped_events": self._dropped_events,
             "last_event_at": self._last_event_at,
             "last_error": self._last_error,
+            "last_failure_reason": self._last_failure_reason,
+            "last_failure_at": self._last_failure_at,
             "store": store_summary,
         }
 
@@ -329,6 +334,10 @@ class DeltaPublicCollector:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - any failure must reconnect, never kill the collector
+                if self._stop.is_set():
+                    # Application shutdown (e.g. uvicorn --reload) closes the socket itself; it is not an upstream failure.
+                    logger.info("Delta public websocket closed by application shutdown")
+                    break
                 await self._record_failure(exc, "websocket")
                 self._reconnects += 1
             finally:
@@ -469,13 +478,16 @@ class DeltaPublicCollector:
     async def _record_failure(self, error: Exception, source: str) -> None:
         if source == "websocket":
             self._consecutive_failures += 1
-        self._source_errors[source] = type(error).__name__
+        reason = describe_ws_failure(error) if source == "websocket" else type(error).__name__
+        self._source_errors[source] = reason
+        self._last_failure_reason = reason
+        self._last_failure_at = datetime.now(timezone.utc)
         self._refresh_state()
         if self._last_error != self._last_logged_error:
             logger.warning(
-                "Delta public collector error source=%s kind=%s",
+                "Delta public collector error source=%s reason=%s",
                 source,
-                type(error).__name__,
+                self._source_errors.get(source, type(error).__name__),
             )
             self._last_logged_error = self._last_error
         await asyncio.to_thread(self._save_health, force=True)

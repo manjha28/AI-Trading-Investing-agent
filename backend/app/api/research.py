@@ -8,10 +8,14 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+import threading
+
 from app import research_service
 from app.api.auth import get_active_session, require_csrf
+from app.config import settings
 from app.db import get_db
 from app.models import (
+    AiStockAnalysis,
     Instrument,
     InstrumentResearchBrief,
     InstrumentResearchRun,
@@ -20,7 +24,8 @@ from app.models import (
     ResearchSource,
     UserSession,
 )
-from app.services import research_pipeline
+from app.services import ai_analyst, fundamentals_feed, research_pipeline, screener_import
+from app.services.research_scoring import HORIZONS
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -668,3 +673,193 @@ def delete_instrument_source_link(
     db.delete(link)
     db.commit()
     return Response(status_code=204)
+
+
+# ───────────────────────── Optional AI analyst (user-triggered) ─────────────────────────
+AI_DISCLAIMER = (
+    "AI analysis is a model-generated judgement over the stored snapshot, shown separately from the "
+    "algorithmic score. Decision support, not investment advice."
+)
+_ai_in_flight: set[tuple[UUID, UUID, str]] = set()
+_ai_in_flight_lock = threading.Lock()
+
+
+class AiAnalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    horizon: Literal["swing", "positional", "long_term"]
+
+
+def _ai_row_response(row: AiStockAnalysis, *, cached: bool, comparison: dict | None = None) -> dict:
+    return {
+        "id": str(row.id), "brief_id": str(row.brief_id), "instrument_id": str(row.instrument_id),
+        "horizon": row.horizon, "provider": row.model.partition(":")[0],
+        "model": row.model.partition(":")[2] or row.model, "prompt_version": row.prompt_version,
+        "snapshot_hash": row.snapshot_hash, "source": row.source, "created_at": row.created_at,
+        "cached": cached, "result": row.result, "usage": row.usage,
+        "comparison": comparison if comparison is not None else (row.result or {}).get("comparison"),
+        "disclaimer": AI_DISCLAIMER,
+    }
+
+
+def _ai_status() -> dict:
+    key = settings.gemini_api_key
+    model = ai_analyst.configured_model()
+    return {
+        "enabled": settings.ai_enabled,
+        "configured": bool(key and key.get_secret_value() and model),
+        "provider": ai_analyst.PROVIDER,
+        "model": model or settings.gemini_model,
+    }
+
+
+@router.get("/instruments/{instrument_id}/ai-analysis")
+def get_ai_analyses(
+    instrument_id: UUID,
+    active_session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Stored analyses for the latest research snapshot. Never calls the AI provider."""
+    if db.get(Instrument, instrument_id) is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    latest = research_pipeline.latest_brief(db, active_session.user_id, instrument_id)
+    rows = []
+    if latest is not None:
+        rows = list(db.scalars(select(AiStockAnalysis).where(
+            AiStockAnalysis.user_id == active_session.user_id,
+            AiStockAnalysis.brief_id == latest[1].id,
+            AiStockAnalysis.model == ai_analyst.model_id(),
+            AiStockAnalysis.prompt_version == ai_analyst.PROMPT_VERSION,
+        )))
+    return {
+        **_ai_status(), "brief_id": str(latest[1].id) if latest else None,
+        # Stored analyses for horizons Research no longer supports (e.g. intraday) stay in the table, untouched, but are not served.
+        "analyses": {row.horizon: _ai_row_response(row, cached=True) for row in rows if row.horizon in HORIZONS},
+        "disclaimer": AI_DISCLAIMER,
+    }
+
+
+@router.post("/instruments/{instrument_id}/ai-analysis")
+def run_ai_analysis(
+    instrument_id: UUID,
+    payload: AiAnalysisRequest,
+    active_session: UserSession = Depends(require_verified_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict:
+    status_info = _ai_status()
+    if not status_info["enabled"]:
+        raise HTTPException(status_code=503, detail={"code": "ai_disabled", "message": "AI analysis is disabled on this server."})
+    if not status_info["configured"]:
+        raise HTTPException(status_code=503, detail={"code": "ai_not_configured", "message": "No Gemini API key (GEMINI_API_KEY) or valid GEMINI_MODEL is configured on the server."})
+    instrument = db.get(Instrument, instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    latest = research_pipeline.latest_brief(db, active_session.user_id, instrument_id)
+    if latest is None:
+        raise HTTPException(status_code=409, detail={"code": "no_research_snapshot", "message": "Run research first; AI analysis reads a stored snapshot."})
+    _run, brief = latest
+    cache_filter = (
+        AiStockAnalysis.user_id == active_session.user_id, AiStockAnalysis.brief_id == brief.id,
+        AiStockAnalysis.horizon == payload.horizon, AiStockAnalysis.model == ai_analyst.model_id(),
+        AiStockAnalysis.prompt_version == ai_analyst.PROMPT_VERSION,
+    )
+    existing = db.scalar(select(AiStockAnalysis).where(*cache_filter))
+    if existing is not None:
+        return _ai_row_response(existing, cached=True)
+
+    key = (active_session.user_id, brief.id, payload.horizon)
+    with _ai_in_flight_lock:
+        if key in _ai_in_flight:
+            raise HTTPException(status_code=409, detail={"code": "ai_in_progress", "message": "This analysis is already running."})
+        _ai_in_flight.add(key)
+    try:
+        now = ai_analyst.utcnow()
+        pack = ai_analyst.build_evidence_pack(
+            brief.sections, instrument=instrument, horizon=payload.horizon, brief_created_at=brief.created_at, now=now,
+        )
+        usage = None
+        if ai_analyst.has_usable_evidence(pack):
+            try:
+                result, usage = ai_analyst.analyse(pack, payload.horizon, settings.gemini_api_key.get_secret_value())  # type: ignore[union-attr]
+            except ai_analyst.AiAnalysisError as error:
+                raise HTTPException(status_code=error.status_code, detail={"code": error.code, "message": error.message}) from error
+            source = "gemini"
+        else:
+            result, source = ai_analyst.local_insufficient_result(pack), "local_gate"
+        comparison = ai_analyst.compare_with_algorithm(result, pack)
+        row = AiStockAnalysis(
+            user_id=active_session.user_id, brief_id=brief.id, instrument_id=instrument.id, horizon=payload.horizon,
+            model=ai_analyst.model_id(), prompt_version=ai_analyst.PROMPT_VERSION,
+            snapshot_hash=ai_analyst.snapshot_hash(pack), source=source,
+            result={**result, "comparison": comparison},
+            usage=usage, created_at=now,
+        )
+        db.add(row)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            row = db.scalar(select(AiStockAnalysis).where(*cache_filter))
+            if row is None:
+                raise
+            return _ai_row_response(row, cached=True)
+        db.refresh(row)
+        return _ai_row_response(row, cached=False, comparison=comparison)
+    finally:
+        with _ai_in_flight_lock:
+            _ai_in_flight.discard(key)
+
+
+# ───────────────────────── Optional Screener gap-fill (owner-supplied page) ─────────────────────────
+class ScreenerImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    html: str = Field(min_length=200, max_length=screener_import.MAX_HTML_BYTES)
+
+
+@router.get("/instruments/{instrument_id}/fundamentals-gaps")
+def get_fundamentals_gaps(
+    instrument_id: UUID,
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    if db.get(Instrument, instrument_id) is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    instrument = db.get(Instrument, instrument_id)
+    return {**screener_import.fundamentals_gaps(db, instrument_id), "coverage": fundamentals_feed.instrument_coverage(db, instrument),
+            "disclaimer": DISCLAIMER}
+
+
+@router.get("/fundamentals-coverage")
+def get_fundamentals_coverage(
+    limit: int = Query(default=200, ge=1, le=1000),
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Overall and per-stock fundamentals coverage, last retrieval per source, and unresolved gaps."""
+    return {**fundamentals_feed.coverage_report(db, limit=limit), "disclaimer": DISCLAIMER}
+
+
+@router.post("/instruments/{instrument_id}/screener-import")
+def import_screener_page(
+    instrument_id: UUID,
+    payload: ScreenerImportRequest,
+    _session: UserSession = Depends(require_verified_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Fill gaps from a Screener company page the owner saved from their own browser. Never fetches screener.in."""
+    instrument = db.get(Instrument, instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    try:
+        parsed = screener_import.parse_screener_html(payload.html)
+        before = screener_import.fundamentals_gaps(db, instrument_id)
+        result = screener_import.apply_gap_fill(db, instrument, parsed)
+    except screener_import.ScreenerParseError as error:
+        db.rollback()
+        raise HTTPException(status_code=422, detail={"code": str(error), "message": "The pasted page could not be used safely."}) from error
+    return {
+        "basis": parsed.basis, "source": screener_import.SOURCE, **result.as_dict(),
+        "gaps_before": before, "gaps_after": screener_import.fundamentals_gaps(db, instrument_id),
+        "disclaimer": DISCLAIMER,
+    }

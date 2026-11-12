@@ -506,7 +506,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
               : <span className="rt-muted">No instrument selected. Search above to begin.</span>}
           </div>
           <div className="rt-horizon-select" role="group" aria-label="Investment horizon">
-            {(['intraday', 'swing', 'positional', 'long_term'] as const).map((key) => <button key={key} type="button" aria-pressed={horizon === key} className={horizon === key ? 'active' : ''} onClick={() => setHorizon(key)}>
+            {(['swing', 'positional', 'long_term'] as const).map((key) => <button key={key} type="button" aria-pressed={horizon === key} className={horizon === key ? 'active' : ''} onClick={() => setHorizon(key)}>
               {key === 'long_term' ? 'Long-term' : key[0].toUpperCase() + key.slice(1)}</button>)}
           </div>
           <div className="rt-actions">
@@ -602,7 +602,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
           <strong>Research running…</strong>
           {selectedResult.run_id && <button className="rt-btn rt-ghost" type="button" onClick={() => void cancelResearchRun(selectedResult.run_id!)}>Cancel run</button>}
         </section>}
-        {brief ? <ResearchBriefView brief={brief} instrument={selected} horizon={horizon} onHorizon={setHorizon} sentimentHistory={selectedSentimentHistory} />
+        {brief ? <ResearchBriefView brief={brief} instrument={selected} horizon={horizon} onHorizon={setHorizon} sentimentHistory={selectedSentimentHistory} showAi />
           : <section className="rt-card rt-empty-state"><h3>No research report yet</h3><p>Run research to calculate component scores, horizon assessments and evidence for {selected.symbol}.</p></section>}
 
         <details className="rt-card rt-collapsible">

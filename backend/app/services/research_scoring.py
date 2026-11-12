@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.services import valuation_scoring
 from app.config import (
     NSE_CALENDAR_YEARS,
     NSE_EQUITY_HOLIDAYS,
@@ -19,41 +20,53 @@ from app.config import (
     NSE_UNVERIFIED_HOLIDAYS,
 )
 
-MODEL_VERSION = "research-score-0.1.0-provisional"
+MODEL_VERSION = "research-score-0.2.0-provisional"  # 0.1.0 (four components) stays on every historical assessment
 IST = ZoneInfo("Asia/Kolkata")
 # Daily bars are published some time after the 15:30 close; do not call a session
 # "missing" until this grace has passed. Provisional assumption.
 EOD_PUBLICATION_GRACE = timedelta(hours=2)
 
-COMPONENTS = ("fundamental", "technical", "financial_trends", "news_sentiment")
+COMPONENTS = ("fundamental", "technical", "financial_trends", "news_sentiment", "valuation")
 COMPONENT_LABELS = {
     "fundamental": "Fundamental Intelligence",
     "technical": "Technical Intelligence",
     "financial_trends": "Financial Trends Intelligence",
     "news_sentiment": "News & Sentiment Intelligence",
+    "valuation": "Valuation Intelligence",
 }
-HORIZONS = ("intraday", "swing", "positional", "long_term")
-HORIZON_LABELS = {"intraday": "Intraday", "swing": "Swing", "positional": "Positional", "long_term": "Long-term"}
+# Research covers Swing, Positional and Long-term only. Intraday is a separate future screener.
+HORIZONS = ("swing", "positional", "long_term")
+HORIZON_LABELS = {"swing": "Swing", "positional": "Positional", "long_term": "Long-term"}
 # Starting hypotheses, NOT validated weights.
+# Model 0.2.0: valuation weights per docs/valuation-scoring-methodology.md section 4 (swing 5%, positional 15%, long-term 20%),
+# taken proportionally from the four existing components so each horizon still sums to 1. Unvalidated hypotheses.
 HORIZON_WEIGHTS: dict[str, dict[str, float]] = {
-    "intraday": {"fundamental": 0.05, "technical": 0.55, "financial_trends": 0.10, "news_sentiment": 0.30},
+    "swing": {"fundamental": 0.1425, "technical": 0.38, "financial_trends": 0.19, "news_sentiment": 0.2375, "valuation": 0.05},
+    "positional": {"fundamental": 0.2125, "technical": 0.2125, "financial_trends": 0.255, "news_sentiment": 0.17, "valuation": 0.15},
+    "long_term": {"fundamental": 0.32, "technical": 0.08, "financial_trends": 0.28, "news_sentiment": 0.12, "valuation": 0.20},
+}
+# Model 0.1.0 weights, kept for reference and for the equivalence test: the 0.2.0 weights with valuation excluded
+# renormalise to exactly these.
+HORIZON_WEIGHTS_V0_1_0: dict[str, dict[str, float]] = {
     "swing": {"fundamental": 0.15, "technical": 0.40, "financial_trends": 0.20, "news_sentiment": 0.25},
     "positional": {"fundamental": 0.25, "technical": 0.25, "financial_trends": 0.30, "news_sentiment": 0.20},
     "long_term": {"fundamental": 0.40, "technical": 0.10, "financial_trends": 0.35, "news_sentiment": 0.15},
 }
+# A component listed here is dropped from the horizon's weight AND coverage denominator when it cannot be scored, so a
+# new component that is not yet computable (e.g. valuation without a peer universe) cannot lower coverage, confidence or a
+# recommendation for instruments that have complete evidence in the original four. Every other component keeps the
+# existing behaviour: a blocked component lowers coverage and confidence.
+OPTIONAL_COMPONENTS = ("valuation",)
 # A horizon is not assessed unless this share of its weight is backed by scored
 # components and each critical component is scored. Provisional.
 MIN_SCORED_WEIGHT = 0.60
 REQUIRED_COMPONENTS: dict[str, tuple[str, ...]] = {
-    "intraday": ("technical",), "swing": ("technical",), "positional": (), "long_term": ("fundamental",),
+    "swing": ("technical",), "positional": (), "long_term": ("fundamental",),
 }
 BUY_THRESHOLD = 65.0
 HOLD_THRESHOLD = 45.0
 MIN_CONFIDENCE_FOR_BUY = 40.0
 MIN_COMPANY_EVENTS = 3
-# The technical engine scores stored DAILY bars only; intraday scoring needs
-# intraday-bar indicators that the research pipeline does not compute.
-INTRADAY_SUPPORTED = False
 NOT_IMPLEMENTED_GATES = [
     "liquidity: no traded-value/liquidity measure is in the evidence pack",
     "corporate-event risk: corporate actions are not linked into the research pack",
@@ -268,7 +281,12 @@ def score_financial_trends(trend: dict[str, Any], fundamentals: dict[str, Any]) 
     for name, label in TREND_METRICS:
         growth: dict[str, list[float]] = {"annual": [], "quarterly": []}
         for period in sorted(periods, key=lambda p: p["period_end"]):
-            raw = _dec(((period.get("values") or {}).get(name) or {}).get("year_on_year_growth_pct"))
+            item = (period.get("values") or {}).get(name) or {}
+            raw = _dec(item.get("year_on_year_growth_pct"))
+            if raw is None and item.get("change_kind") == "turned_negative":
+                # Positive -> negative has no meaningful percentage any more; it is still the worst outcome and
+                # scores exactly as the previous (<= -25%, clamped) percentage did.
+                raw = Decimal(-100)
             if raw is None or period.get("period_type") not in growth:
                 continue
             if name == "eps" and (period["period_type"], period["period_end"]) in share_jump:
@@ -424,6 +442,32 @@ def score_news_sentiment(sentiment: dict[str, Any] | None, instrument_id: str, n
                       conflicts=conflicts, flags=flags, notes=notes)
 
 
+# ───────────────────────── Valuation (peer-relative, from the shared valuation evidence) ─────────────────────────
+def score_valuation_component(valuation: dict[str, Any] | None, sector: str | None, industry: str | None) -> dict[str, Any]:
+    key = "valuation"
+    if not valuation or valuation.get("error"):
+        return _component(key, blockers=["Valuation evidence is unavailable for this report."])
+    # The scoring result stored with the evidence is the single source; it is recomputed only for evidence that lacks it.
+    result = valuation.get("scoring") or valuation_scoring.score_valuation(valuation, sector=sector, industry=industry)
+    metrics = result.get("metrics") or {}
+    factors = []
+    for name, m in metrics.items():
+        if m.get("scored"):
+            labels = {"pe_ttm": "P/E", "pb": "P/B", "price_to_sales": "Price / Sales", "peg": "PEG", "ev_ebitda": "EV / EBITDA"}
+            factors.append(_metric(name, labels.get(name, name), float(m["value"]), "x", m["score"],
+                                   f"cheaper than {100 - float(m['percentile_rank']):.0f}% of {m['peers']} peers ({m['origin']}{' - ' + m['provider'] if m.get('provider') else ''})"))
+    missing = [f"{name}: {m['reason']}" for name, m in metrics.items() if not m.get("scored")]
+    notes = [f"Sector family: {result['sector_family']}; peer-relative, no universal cutoffs. Valuation model {result['version']} is provisional.",
+             "Market capitalisation is context only and is never scored."]
+    coverage = result.get("coverage_pct", 0.0) / 100
+    if result["status"] != "scored":
+        comp = _component(key, coverage=coverage, missing=missing, blockers=result["blockers"] or ["Valuation could not be scored."], notes=notes)
+        return comp
+    comp = _component(key, score=result["score"], confidence=result["confidence"], coverage=coverage, metrics=factors, missing=missing, notes=notes)
+    comp["interpretation"] = result["label"]  # attractive / fair / expensive (valuation reads cheaper-is-better, unlike "strong")
+    return comp
+
+
 # ───────────────────────── Horizons and recommendation ─────────────────────────
 def assess_horizons(components: dict[str, dict[str, Any]]) -> dict[str, Any]:
     technical_ok = components["technical"]["status"] == "scored"
@@ -431,16 +475,16 @@ def assess_horizons(components: dict[str, dict[str, Any]]) -> dict[str, Any]:
     for horizon in HORIZONS:
         weights = HORIZON_WEIGHTS[horizon]
         scored = {k: c for k, c in components.items() if c["status"] == "scored"}
-        scored_weight = sum(weights[k] for k in scored)
+        excluded = [k for k in OPTIONAL_COMPONENTS if k in components and k not in scored]
+        denominator = 1.0 - sum(weights[k] for k in excluded)  # weight of the components that are applicable to this instrument
+        scored_weight = sum(weights[k] for k in scored) / denominator
         blockers: list[str] = []
-        if horizon == "intraday" and not INTRADAY_SUPPORTED:
-            blockers.append("Intraday scoring needs intraday-bar indicators and a current intraday feed; the research pipeline scores stored daily bars only.")
         for required in REQUIRED_COMPONENTS[horizon]:
             if required not in scored:
                 blockers.append(f"{COMPONENT_LABELS[required]} is required for {HORIZON_LABELS[horizon]} and is blocked: {'; '.join(components[required]['blockers'])}")
         if scored_weight < MIN_SCORED_WEIGHT:
             blockers.append(f"Only {scored_weight:.0%} of the {HORIZON_LABELS[horizon]} weight is backed by scored components (minimum {MIN_SCORED_WEIGHT:.0%}).")
-        base = {"horizon": horizon, "label": HORIZON_LABELS[horizon], "weights": weights,
+        base = {"horizon": horizon, "label": HORIZON_LABELS[horizon], "weights": weights, "excluded_optional": excluded,
                 "scored_weight": round(scored_weight, 3), "blockers": blockers}
         if blockers:
             result[horizon] = {**base, "score": None, "recommendation": "INSUFFICIENT_EVIDENCE", "confidence": None,
@@ -449,11 +493,12 @@ def assess_horizons(components: dict[str, dict[str, Any]]) -> dict[str, Any]:
             continue
         # Weights of unscored components are redistributed over scored ones only
         # after the coverage check above; unscored components are never zero/neutral.
-        contributions = [{"component": k, "weight": weights[k], "effective_weight": round(weights[k] / scored_weight, 4),
+        total_scored = sum(weights[k] for k in scored)
+        contributions = [{"component": k, "weight": weights[k], "effective_weight": round(weights[k] / total_scored, 4),
                           "score": scored[k]["score"]} for k in scored]
-        score = sum(weights[k] * scored[k]["score"] for k in scored) / scored_weight
-        # Unscored components contribute zero confidence, so thin coverage lowers confidence.
-        confidence = sum(weights[k] * scored[k]["confidence"] for k in scored)
+        score = sum(weights[k] * scored[k]["score"] for k in scored) / total_scored
+        # Unscored (applicable) components contribute zero confidence, so thin coverage lowers confidence.
+        confidence = sum(weights[k] * scored[k]["confidence"] for k in scored) / denominator
         raw = "BUY" if score >= BUY_THRESHOLD else "HOLD" if score >= HOLD_THRESHOLD else "AVOID"
         gates: list[dict[str, str]] = []
         if not technical_ok:
@@ -461,7 +506,7 @@ def assess_horizons(components: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if confidence < MIN_CONFIDENCE_FOR_BUY:
             gates.append({"code": "low_confidence", "detail": f"Confidence {confidence:.0f} is below {MIN_CONFIDENCE_FOR_BUY:.0f}."})
         news = components["news_sentiment"]
-        if news["status"] == "scored" and news["conflicts"] and weights["news_sentiment"] >= 0.20:
+        if news["status"] == "scored" and news["conflicts"] and weights["news_sentiment"] / denominator >= 0.20:
             gates.append({"code": "contradictory_evidence", "detail": "News evidence is materially contradictory."})
         fundamental = components["fundamental"]
         if fundamental["status"] == "scored" and fundamental["risk_flags"]:
@@ -485,6 +530,7 @@ def build_assessment(sections: dict[str, Any], *, instrument_id: str, now: datet
         "technical": score_technical(sections["technicals"]),
         "financial_trends": score_financial_trends(sections["financials_trend"], fundamentals),
         "news_sentiment": score_news_sentiment(sections.get("news_sentiment"), instrument_id, now),
+        "valuation": score_valuation_component(sections.get("valuation"), sector, industry),
     }
     return {
         "model_version": MODEL_VERSION,
@@ -492,6 +538,8 @@ def build_assessment(sections: dict[str, Any], *, instrument_id: str, now: datet
                        "statement": "Weights, anchors and thresholds are unvalidated hypotheses. Scores are not validated predictions of future returns."},
         "generated_at": now.isoformat(),
         "weights": HORIZON_WEIGHTS,
+        "optional_components": list(OPTIONAL_COMPONENTS),
+        "valuation_model_version": valuation_scoring.SCORING_VERSION,
         "thresholds": {"buy": BUY_THRESHOLD, "hold": HOLD_THRESHOLD, "min_confidence_for_buy": MIN_CONFIDENCE_FOR_BUY,
                        "min_scored_weight": MIN_SCORED_WEIGHT, "min_company_events": MIN_COMPANY_EVENTS},
         "sector": sector, "financial_sector": is_financial_sector(sector, industry),

@@ -994,6 +994,7 @@ tbody tr:last-child td { border-bottom: 0; }
   font-family: inherit;
 }
 .portfolio-unavailable {
+  flex-wrap: wrap;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1118,3 +1119,22 @@ tbody tr:last-child td { border-bottom: 0; }
   .overview-grid { grid-template-columns: minmax(0, 1fr); }
   .overview-rail { position: static; }
 }
+
+/* Company metrics (Info tab): reuses the existing fundamental-snapshot-grid cards */
+.company-metrics { display: grid; gap: 18px; width: 100%; justify-self: stretch; margin-top: 8px; text-align: left; }
+.company-metrics-section { display: grid; gap: 8px; min-width: 0; }
+.company-metrics-section h4 { margin: 0; font-size: 12px; color: var(--ink); }
+.company-metrics-note, .company-metrics-source { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.company-metrics-source { padding-top: 2px; }
+.company-metrics-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; vertical-align: middle; }
+.company-metrics-bar { display: flex; height: 6px; overflow: hidden; border-radius: 3px; background: rgba(128, 140, 150, .18); }
+.company-metrics-bar span { display: block; min-width: 1px; height: 100%; }
+@media (max-width: 600px) { .company-metrics { gap: 14px; } }
+
+/* Research uses the full content width with tighter chrome (scoped to pages that contain the Research report). */
+.workspace:has(.rt-root) { padding: 16px clamp(10px, 1.6vw, 22px) 14px; }
+.workspace:has(.rt-root) .workspace-header { min-height: 48px; margin-bottom: 12px; }
+.workspace:has(.rt-root) .workspace-footer { margin-top: 12px; padding: 8px 0; }
+
+.market-status-partial { color: #e2bd68; border-color: #5b4825; background: #211b10; text-transform: none; }
+.portfolio-unavailable-reason { display: block; flex-basis: 100%; white-space: normal; color: inherit; opacity: 0.85; }

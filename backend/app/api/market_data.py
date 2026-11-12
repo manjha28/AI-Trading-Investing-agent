@@ -24,8 +24,8 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import Response
-from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import delete, func, or_, select
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, ProgrammingError
@@ -86,6 +86,7 @@ from app.services.options_signal_engine import (
     OptionsSignalInput,
     evaluate_options_signal,
 )
+from app.services import dhan_company_info
 from app.services import fundamentals as fundamentals_service
 from app.services.price_freshness import (
     QUOTE_SOURCE_BAR_SOURCE,
@@ -740,6 +741,7 @@ class DhanLiveFeedHub:
             else:
                 await self._run_depth_with_reconnect(feed, access_token, tokens, updates, status_callback)
         except asyncio.CancelledError:
+            logger.info("Dhan shared feed cancelled feed=%s (application shutdown or last client left; not an upstream failure)", feed)
             raise
         except BrokerReconnectRequired as error:
             self._publish(
@@ -1278,6 +1280,7 @@ class CompanyProfileResponse(BaseModel):
     fetched_at: datetime | None
     message: str
     instrument_master: InstrumentMasterInfo
+    company_info: dict[str, Any] | None = None
     disclaimer: str = "Company information is provider-reported decision support, not investment advice. No FX conversion is applied."
 
 
@@ -1898,13 +1901,6 @@ def _market_session_state(
     if current_utc.tzinfo is None:
         current_utc = current_utc.replace(tzinfo=timezone.utc)
     local = current_utc.astimezone(zone)
-    if (
-        country == "IN"
-        and local.weekday() < 5
-        and local.date() not in NSE_NON_TRADING_DATES
-        and settings.nse_no_continuous_trading_start <= local.time() < settings.nse_no_continuous_trading_end
-    ):
-        return "no_continuous_trading"
     session_open = local.replace(
         hour=opening.hour,
         minute=opening.minute,
@@ -2653,45 +2649,115 @@ def _find_provider_mapping(
     return mappings[0] if mappings else None
 
 
-def _upsert_provider_instrument(
-    db: Session, candidate: InstrumentCandidate, observed_at: datetime
-) -> Instrument:
-    if candidate.is_synthetic:
-        raise MarketDataProviderError("synthetic_market_data_disabled")
-    mapping = _find_provider_mapping(db, candidate)
-    if mapping is not None:
-        mapping.provider_symbol = candidate.provider_symbol
-        mapping.is_verified = candidate.is_verified
-        mapping.last_seen_at = observed_at
-        return mapping.instrument
+def _identity_filter(candidate: InstrumentCandidate):
+    """Canonical identity = the columns of uq_instruments_identity; NULLs compare equal (NULLS NOT DISTINCT)."""
+    def same(column, value):
+        return column.is_(None) if value is None else column == value
 
-    instrument = Instrument(
-        symbol=candidate.symbol,
-        display_name=candidate.display_name,
-        asset_class=candidate.asset_class,
-        venue=candidate.venue,
-        currency=candidate.currency,
-        country=candidate.country,
-        timezone=candidate.timezone,
-        multiplier=candidate.multiplier,
-        expiry=candidate.expiry,
-        strike=candidate.strike,
-        option_type=candidate.option_type,
-        is_synthetic=candidate.is_synthetic,
-        created_at=observed_at,
+    return and_(
+        Instrument.venue == candidate.venue,
+        Instrument.symbol == candidate.symbol,
+        Instrument.asset_class == candidate.asset_class,
+        same(Instrument.expiry, candidate.expiry),
+        same(Instrument.option_type, candidate.option_type),
+        same(Instrument.strike, candidate.strike),
     )
-    instrument.provider_identifiers.append(
-        InstrumentProviderIdentifier(
+
+
+def _find_instrument_by_identity(db: Session, candidate: InstrumentCandidate) -> Instrument | None:
+    return db.scalar(
+        select(Instrument)
+        .where(_identity_filter(candidate))
+        .options(selectinload(Instrument.provider_identifiers))
+    )
+
+
+def _refresh_mapping(
+    mapping: InstrumentProviderIdentifier, candidate: InstrumentCandidate, observed_at: datetime
+) -> None:
+    mapping.provider_symbol = candidate.provider_symbol
+    # A provider that merely lists the instrument again must never un-verify an established mapping.
+    mapping.is_verified = mapping.is_verified or candidate.is_verified
+    mapping.last_seen_at = observed_at
+
+
+def _adopt_existing_instrument(
+    instrument: Instrument, candidate: InstrumentCandidate, observed_at: datetime
+) -> Instrument:
+    """Attach this provider's identifier to an instrument that already exists under the same canonical identity.
+
+    Existing UUID, other mappings and market data are untouched. Identity and market-semantic columns are never
+    rewritten; a missing display name may be filled. A provider that already has a mapping on the instrument
+    (verified or not) is left alone rather than given a second, ambiguous identifier.
+    """
+    keys = set(_provider_id_lookup_keys(candidate))
+    same_provider = [m for m in instrument.provider_identifiers if m.provider == candidate.provider]
+    exact = next((m for m in same_provider if m.provider_instrument_id in keys), None)
+    if exact is not None:
+        _refresh_mapping(exact, candidate, observed_at)
+    elif not same_provider:
+        instrument.provider_identifiers.append(InstrumentProviderIdentifier(
             provider=candidate.provider,
             provider_instrument_id=candidate.provider_instrument_id,
             provider_symbol=candidate.provider_symbol,
             is_verified=candidate.is_verified,
             last_seen_at=observed_at,
-        )
-    )
-    db.add(instrument)
-    db.flush()
+        ))
+    if not (instrument.display_name or "").strip() and candidate.display_name:
+        instrument.display_name = candidate.display_name
     return instrument
+
+
+def _upsert_provider_instrument(
+    db: Session, candidate: InstrumentCandidate, observed_at: datetime
+) -> Instrument:
+    """Resolve by provider id, then by canonical identity, and only then insert (race-safe via a savepoint)."""
+    if candidate.is_synthetic:
+        raise MarketDataProviderError("synthetic_market_data_disabled")
+    for _attempt in range(2):
+        mapping = _find_provider_mapping(db, candidate)
+        if mapping is not None:
+            _refresh_mapping(mapping, candidate, observed_at)
+            return mapping.instrument
+        existing = _find_instrument_by_identity(db, candidate)
+        if existing is not None:
+            return _adopt_existing_instrument(existing, candidate, observed_at)
+
+        instrument = Instrument(
+            symbol=candidate.symbol,
+            display_name=candidate.display_name,
+            asset_class=candidate.asset_class,
+            venue=candidate.venue,
+            currency=candidate.currency,
+            country=candidate.country,
+            timezone=candidate.timezone,
+            multiplier=candidate.multiplier,
+            expiry=candidate.expiry,
+            strike=candidate.strike,
+            option_type=candidate.option_type,
+            is_synthetic=candidate.is_synthetic,
+            created_at=observed_at,
+        )
+        instrument.provider_identifiers.append(
+            InstrumentProviderIdentifier(
+                provider=candidate.provider,
+                provider_instrument_id=candidate.provider_instrument_id,
+                provider_symbol=candidate.provider_symbol,
+                is_verified=candidate.is_verified,
+                last_seen_at=observed_at,
+            )
+        )
+        try:
+            # The savepoint confines a conflict to this insert: the request's transaction stays usable.
+            with db.begin_nested():
+                db.add(instrument)
+                db.flush()
+            return instrument
+        except IntegrityError:
+            # A concurrent request inserted the same instrument/provider id first. The loser re-resolves
+            # and adopts the winner's row on the next pass instead of failing or duplicating it.
+            logger.info("instrument_upsert_conflict symbol=%s venue=%s; adopting existing row", candidate.symbol, candidate.venue)
+    raise MarketDataProviderError("instrument_identity_conflict")
 
 
 def _get_instrument(db: Session, instrument_id: UUID) -> Instrument:
@@ -4001,7 +4067,7 @@ def search_instruments(
         for instrument in instruments:
             db.refresh(instrument)
         return [_instrument_response(instrument) for instrument in instruments]
-    except (MarketDataProviderError, TimeoutError, ValueError):
+    except (MarketDataProviderError, TimeoutError, ValueError, IntegrityError):
         db.rollback()
         raise HTTPException(status_code=503, detail="Instrument search is temporarily unavailable")
 
@@ -4068,6 +4134,36 @@ def _fundamental_period_responses(
             free_cash_flow_yoy_growth_pct=_growth(row.free_cash_flow, prior.free_cash_flow if prior else None),
         ))
     return values
+
+
+def _dhan_company_details(
+    db: Session, user_id: UUID, instrument: Instrument
+) -> tuple[dict[str, Any] | None, datetime | None, str]:
+    """(raw Dhan CO/RATIOS/SHP payload, actual retrieval time, reason when unavailable). One request per security is shared
+    by concurrent callers and cached briefly; a failure is reported, never raised."""
+    mapping = next((m for m in instrument.provider_identifiers if m.provider == "dhan" and m.is_verified), None)
+    if mapping is None:
+        return None, None, "No verified Dhan instrument mapping is available."
+    security_id, _, segment = mapping.provider_instrument_id.partition("|")
+    if not security_id.isdigit() or segment not in {"NSE_EQ", "BSE_EQ"}:
+        return None, None, "Dhan Company Info supports only verified NSE/BSE equity mappings."
+    try:
+        _, provider, _ = _market_data_credentials(db, user_id, "dhan")
+        if provider is None:
+            return None, None, "No authenticated Dhan connection is available."
+
+        def request_company_info() -> dict[str, Any] | None:
+            return {"retrieved_at": datetime.now(timezone.utc), "data": provider.adapter.get_company_info(
+                provider.tokens["access_token"], provider.tokens, security_id, segment, metrics=("CO", "RATIOS", "SHP"))}
+
+        # Dhan returns {"CO": {...}, "RATIOS": {...}, "SHP": {...}} directly under "data". The retrieval time travels with
+        # the payload so a cached response never claims to be fresher than it is.
+        fetched = dhan_company_info.fetch_once(f"raw:{security_id}", request_company_info)
+    except (HTTPException, BrokerAdapterError):
+        return None, None, "Dhan Company Info is unavailable for this instrument."
+    if not fetched:
+        return None, None, "Dhan Company Info returned no usable profile fields."
+    return fetched["data"], fetched["retrieved_at"], ""
 
 
 @router.get(
@@ -4158,49 +4254,20 @@ def get_instrument_company_profile(
                 message="Company profile is unavailable from the selected Angel One source.",
                 instrument_master=instrument_master,
             )
-        mapping = next((
-            item for item in instrument.provider_identifiers
-            if item.provider == "dhan" and item.is_verified
-        ), None)
-        if mapping is None:
-            unavailable_reason = "No verified Dhan instrument mapping is available."
-            company_data = None
-        else:
-            parts = mapping.provider_instrument_id.split("|", maxsplit=1)
-            security_id = parts[0]
-            segment = parts[1] if len(parts) == 2 else ""
-            if not security_id.isdigit() or segment not in {"NSE_EQ", "BSE_EQ"}:
-                unavailable_reason = "Dhan Company Info supports only verified NSE/BSE equity mappings."
-                company_data = None
-            else:
-                try:
-                    _, provider, _ = _market_data_credentials(db, _session.user_id, "dhan")
-                    if provider is None:
-                        unavailable_reason = "No authenticated Dhan connection is available."
-                        company_data = None
-                    else:
-                        response_data = provider.adapter.get_company_info(
-                            provider.tokens["access_token"], provider.tokens,
-                            security_id, segment,
-                        )
-                        company_data = response_data.get(security_id)
-                        if isinstance(company_data, list):
-                            company_data = company_data[0] if company_data else None
-                        unavailable_reason = "Dhan Company Info returned no usable profile fields."
-                except (HTTPException, BrokerAdapterError):
-                    unavailable_reason = "Dhan Company Info is unavailable for this instrument."
-                    company_data = None
+        company_data, company_retrieved_at, unavailable_reason = _dhan_company_details(db, _session.user_id, instrument)
         overview = company_data.get("CO") if isinstance(company_data, dict) and isinstance(company_data.get("CO"), dict) else {}
-        sector = overview.get("SECTOR") or None
-        industry = overview.get("INDUSTRY") or None
+        sector = (overview.get("SECTOR") or "").strip() or None if isinstance(overview.get("SECTOR"), str) else None
+        industry = (overview.get("INDUSTRY") or "").strip() or None if isinstance(overview.get("INDUSTRY"), str) else None
         raw_market_cap = overview.get("MARKET_CAP")
         try:
-            market_cap = Decimal(str(raw_market_cap)) * Decimal("10000000") if raw_market_cap is not None else None
-            if market_cap is not None and not market_cap.is_finite():
+            market_cap = Decimal(str(raw_market_cap)) * Decimal("10000000") if raw_market_cap not in (None, "") else None
+            if market_cap is not None and not (market_cap.is_finite() and market_cap > 0):
                 market_cap = None
         except (InvalidOperation, TypeError, ValueError):
             market_cap = None
-        available = any(value is not None for value in (sector, industry, market_cap))
+        company_info = dhan_company_info.describe_all(company_data, fetched_at=company_retrieved_at) if isinstance(company_data, dict) else None
+        available = company_info is not None and any(
+            f["presence"] == "populated" for g in company_info["groups"] for f in g["fields"])
         return CompanyProfileResponse(
             instrument_id=instrument.id,
             symbol=instrument.symbol,
@@ -4212,12 +4279,13 @@ def get_instrument_company_profile(
             market_cap=market_cap,
             currency=instrument.currency if market_cap is not None else None,
             source=source_label,
-            fetched_at=datetime.now(timezone.utc) if available else None,
+            fetched_at=company_retrieved_at if available else None,
             message=(
-                "Dhan Company Info overview returned. Description and unsupported fields are unavailable."
-                if available else unavailable_reason
+                "Dhan Company Info returned. Every field Dhan sent is listed below with its verification status."
+                if available else (unavailable_reason or "Dhan Company Info returned no usable profile fields.")
             ),
             instrument_master=instrument_master,
+            company_info=company_info if available else None,
         )
     mapping = next(
         (
@@ -4234,6 +4302,14 @@ def get_instrument_company_profile(
             instrument.symbol, instrument.venue, instrument.country
         )
     )
+    # Dhan's Company Info is shown whenever Dhan is connected and mapped, even when Yahoo supplies the profile text.
+    dhan_info: dict[str, Any] | None = None
+    try:
+        dhan_data, dhan_at, _reason = _dhan_company_details(db, _session.user_id, instrument)
+        if isinstance(dhan_data, dict):
+            dhan_info = dhan_company_info.describe_all(dhan_data, fetched_at=dhan_at)
+    except Exception:  # noqa: BLE001 - informational only; never break the profile response
+        dhan_info = None
     try:
         profile = fundamentals_service.fetch_yfinance_company_profile(provider_symbol)
     except MarketDataProviderError as error:
@@ -4260,6 +4336,7 @@ def get_instrument_company_profile(
                 else "Yahoo Finance did not provide a company profile for this instrument."
             ),
             instrument_master=instrument_master,
+            company_info=dhan_info,
         )
     except (TimeoutError, ValueError):
         return CompanyProfileResponse(
@@ -4276,6 +4353,7 @@ def get_instrument_company_profile(
             fetched_at=None,
             message="Yahoo Finance did not provide a company profile for this instrument.",
             instrument_master=instrument_master,
+            company_info=dhan_info,
         )
     has_profile = any(
         profile.get(field) is not None
@@ -4299,6 +4377,7 @@ def get_instrument_company_profile(
             else "Yahoo Finance returned no company-profile fields for this instrument."
         ),
         instrument_master=instrument_master,
+        company_info=dhan_info,
     )
 
 
@@ -9229,6 +9308,54 @@ def get_history_sync_job(
         if job is None or job.get("owner_id") != str(_user.id):
             raise HTTPException(status_code=404, detail="History sync job not found.")
         return {key: value for key, value in job.items() if key != "owner_id"}
+
+
+class IntradayBatchBackfillBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    instrument_ids: list[UUID] = Field(min_length=1, max_length=50)
+    start: date
+    end: date
+
+
+@router.post("/backfill/intraday-1m", status_code=202)
+def start_intraday_1m_backfill(
+    body: IntradayBatchBackfillBody,
+    background_tasks: BackgroundTasks,
+    active_session: UserSession = Depends(require_verified_market_session),
+    _: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Backfill 1-minute candles for the chosen instruments over [start, end] (exchange sessions, inclusive).
+
+    Poll ``GET /market-data/history/sync-jobs/{id}``: it reports per-instrument progress, rate-limit pauses, and before/after missing share.
+    """
+    from app.services import intraday_backfill
+
+    user_id = active_session.user_id
+    selected_source = _selected_market_data_source(db, user_id, _available_market_data_sources(db, user_id))
+    if selected_source != "dhan":
+        raise HTTPException(status_code=409, detail="Dhan must be the selected market-data source to backfill 1-minute history.")
+    if body.end < body.start or (body.end - body.start).days > 400:
+        raise HTTPException(status_code=422, detail="Window must be 1-400 days and end on or after start.")
+    ist = ZoneInfo("Asia/Kolkata")
+    start_utc = datetime.combine(body.start, datetime.min.time(), tzinfo=ist).astimezone(timezone.utc)
+    end_utc = datetime.combine(body.end + timedelta(days=1), datetime.min.time(), tzinfo=ist).astimezone(timezone.utc)
+    ordered_ids = list(dict.fromkeys(body.instrument_ids))
+    instruments = [_get_instrument(db, instrument_id) for instrument_id in ordered_ids]
+    if any(instrument.is_synthetic for instrument in instruments):
+        raise HTTPException(status_code=409, detail="Synthetic instruments cannot sync market history.")
+    key = (user_id, intraday_backfill.BATCH_KEY)
+    with _history_sync_jobs_lock:
+        existing = _history_sync_jobs_in_flight.get(key)
+        if existing is not None:
+            snapshot = {k: v for k, v in _history_sync_jobs[existing].items() if k != "owner_id"}
+            return {**snapshot, "already_running": True}
+        job = intraday_backfill.new_job(user_id, instruments, start_utc, end_utc)
+        _history_sync_jobs[job["id"]] = job
+        _history_sync_jobs_in_flight[key] = job["id"]
+        snapshot = {k: v for k, v in job.items() if k != "owner_id"}
+    background_tasks.add_task(intraday_backfill.run_batch, job["id"], user_id, [i.id for i in instruments], start_utc, end_utc)
+    return {**snapshot, "already_running": False}
 
 
 @router.post("/backfill/intraday/watchlist")

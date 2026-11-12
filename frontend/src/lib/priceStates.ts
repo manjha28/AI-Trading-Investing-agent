@@ -17,7 +17,7 @@ export type ValuationBasis =
   | typeof BASIS_BROKER_SNAPSHOT
   | typeof BASIS_UNAVAILABLE;
 
-export type MarketDataStatus = 'live' | 'delayed' | 'session_close' | 'unavailable' | 'synthetic' | 'unknown';
+export type MarketDataStatus = 'live' | 'delayed' | 'session_close' | 'partial' | 'unavailable' | 'synthetic' | 'unknown';
 
 // Freshness and basis are related but not identical. `live`, `delayed`, `session_close` and
 // `prior_close` freshness each label a valuation basis; `historical` and the rest have none.
@@ -89,10 +89,15 @@ export function resolveMarketPrice(input: {
 export function deriveMarketDataStatus(rows: PriceStateRow[] | null | undefined): MarketDataStatus {
   if (rows === null || rows === undefined) return 'unknown';
   if (rows.length === 0) return 'unavailable';
-  if (rows.some((row) => row.freshness === 'unavailable' || (row.freshness === 'stale' && row.basis !== BASIS_DELAYED && row.basis !== BASIS_PRIOR_CLOSE))) {
-    return 'unavailable';
-  }
-  if (rows.some((row) => (row.basis ?? BASIS_UNAVAILABLE) === BASIS_UNAVAILABLE)) return 'unavailable';
+  const isUnusable = (row: PriceStateRow) =>
+    row.freshness === 'unavailable'
+    || (row.freshness === 'stale' && row.basis !== BASIS_DELAYED && row.basis !== BASIS_PRIOR_CLOSE)
+    || (row.basis ?? BASIS_UNAVAILABLE) === BASIS_UNAVAILABLE;
+  const usable = rows.filter((row) => !isUnusable(row));
+  // Some rows priced and some not: the portfolio is valued over the priced rows and the
+  // rest are disclosed, so the status says so instead of reading as a total outage.
+  if (usable.length === 0) return 'unavailable';
+  if (usable.length < rows.length) return 'partial';
   if (rows.some((row) => row.is_synthetic)) return 'synthetic';
   if (rows.some((row) => row.basis === BASIS_DELAYED)) return 'delayed';
   if (rows.some((row) => row.basis === BASIS_SESSION_CLOSE || row.basis === BASIS_PRIOR_CLOSE)) {
@@ -141,6 +146,8 @@ export function marketStatusLabel(status: MarketDataStatus): string {
       return 'Closing prices';
     case 'synthetic':
       return 'Synthetic';
+    case 'partial':
+      return 'Partial coverage';
     case 'unknown':
       return 'Checking…';
     default:

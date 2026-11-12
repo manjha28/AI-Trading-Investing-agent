@@ -948,11 +948,20 @@ def test_broker_summary_does_not_use_missing_or_stale_quote(
 
     assert response.status_code == 200, response.text
     dhan = response.json()["brokers"][0]
-    assert dhan["market_value"] is None
-    assert dhan["total_value"] is None
-    assert dhan["unrealized_pnl"] is None
-    assert dhan["day_change"] is None
-    assert expected_reason in dhan["unavailable_reasons"]["market_value"]
+    if quote_mode == "stale":
+        # Nothing could be priced, so there is nothing to value: blank with the reason.
+        assert dhan["market_value"] is None
+        assert dhan["total_value"] is None
+        assert dhan["unrealized_pnl"] is None
+        assert dhan["day_change"] is None
+        assert expected_reason in dhan["unavailable_reasons"]["market_value"]
+    else:
+        # XYZ has no LTP; SBIN does. SBIN is valued and XYZ is disclosed, never zero-filled.
+        assert Decimal(dhan["market_value"]) == Decimal("330")
+        assert dhan["unrealized_pnl"] is not None
+        assert [item["symbol"] for item in dhan["coverage"]["excluded"]] == ["XYZ"]
+        assert expected_reason in dhan["coverage"]["excluded"][0]["reason"]
+        assert "XYZ (no usable price)" in dhan["unavailable_reasons"]["market_value"]
 
 
 def test_broker_summary_falls_back_in_configured_provider_priority(
@@ -1164,7 +1173,7 @@ def test_broker_summary_uses_last_completed_session_close(
     } == {previous_session.isoformat()}
 
 
-def test_broker_summary_does_not_partial_sum_without_last_session_close(
+def test_broker_summary_values_priceable_rows_and_discloses_the_rest(
     clients, test_engine, encryption_key, monkeypatch
 ) -> None:
     first, _ = clients
@@ -1188,17 +1197,71 @@ def test_broker_summary_does_not_partial_sum_without_last_session_close(
 
     assert response.status_code == 200, response.text
     dhan = response.json()["brokers"][0]
-    assert dhan["market_value"] is None
-    assert dhan["total_value"] is None
-    assert dhan["day_change"] is None
-    assert "XYZ" in dhan["unavailable_reasons"]["market_value"]
-    assert "2026-10-27" in dhan["unavailable_reasons"]["market_value"]
+    coverage = dhan["coverage"]
+    assert coverage["partial"] is True
+    assert (coverage["priced"], coverage["total"]) == (2, 3)
+    assert [item["symbol"] for item in coverage["excluded"]] == ["XYZ"]
+    assert "XYZ (no usable price)" in coverage["note"]
+    # Portfolio Value, Unrealized P&L and Day Change all degrade the same way:
+    # computed over the two priced rows, each carrying the same exclusion note.
+    assert Decimal(dhan["market_value"]) == Decimal("330")
+    assert dhan["total_value"] is not None
+    assert dhan["unrealized_pnl"] is not None
+    assert dhan["unavailable_reasons"]["market_value"] == coverage["note"]
+    assert dhan["unavailable_reasons"]["unrealized_pnl"] == coverage["note"]
     assert dhan["provenance"]["market_value"]["coverage"] == {
         "priced": 2,
         "total": 3,
         "unit": "open rows",
     }
     assert any("XYZ" in item for item in dhan["provenance"]["market_value"]["exclusions"])
+
+
+def test_unpriceable_fno_position_is_excluded_not_blanking_holdings_cards(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    first, _ = clients
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    current_time = datetime(2026, 10, 27, 16, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    monkeypatch.setattr(brokers, "_now", lambda: current_time)
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_a, **_k: "closed")
+    _add_portfolio_close_bars(test_engine, (date(2026, 10, 27), date(2026, 10, 26)))
+    with Session(test_engine) as db:
+        owner = db.scalar(select(BrokerMirror.user_id).limit(1))
+        db.add(BrokerMirror(
+            user_id=owner,
+            broker="dhan",
+            kind="position",
+            symbol="ONGC-NOV2026-222-PE",
+            exchange="NSE_FNO",
+            product="MARGIN",
+            security_id="55555",
+            quantity=Decimal("4500"),
+            average_price=Decimal("1.855"),
+            position_type="LONG",
+            unrealized_profit=Decimal("-247.50"),
+            synced_at=current_time,
+        ))
+        db.commit()
+    monkeypatch.setattr(DhanAdapter, "get_market_quotes_batch", lambda *_args: {"NSE_FNO": {}})  # provider omits the contract
+
+    response = first.get("/api/v1/brokers/portfolio-summary")
+
+    assert response.status_code == 200, response.text
+    dhan = response.json()["brokers"][0]
+    coverage = dhan["coverage"]
+    assert coverage["partial"] is True
+    assert [item["symbol"] for item in coverage["excluded"]] == ["ONGC-NOV2026-222-PE"]
+    assert coverage["excluded"][0]["kind"] == "position"
+    assert coverage["excluded"][0]["broker_unrealized_profit"] == "-247.50000000"
+    # Same rows as the all-priced baseline (SBIN holding + SBIN position + XYZ holding):
+    # the unpriced option adds nothing to value or P&L and blanks no card.
+    assert Decimal(dhan["market_value"]) == Decimal("380")
+    assert Decimal(dhan["unrealized_pnl"]) == Decimal("57.50")
+    assert dhan["day_change"] is not None and Decimal(dhan["day_change"]) == Decimal("17")
+    assert Decimal(dhan["total_value"]) == Decimal("430")
+    for figure in ("market_value", "unrealized_pnl", "day_change"):
+        assert "ONGC-NOV2026-222-PE (no usable price)" in dhan["unavailable_reasons"][figure]
 
 
 def test_broker_holdings_are_in_coverage_and_backfill_selection(
@@ -1476,8 +1539,10 @@ def test_broker_summary_leaves_unresolved_all_exchange_holding_blank(
     assert response.status_code == 200, response.text
     assert requests == [{"NSE_EQ": ["3045"]}]
     dhan = response.json()["brokers"][0]
-    assert dhan["market_value"] is None
-    reason = dhan["unavailable_reasons"]["market_value"]
+    assert Decimal(dhan["market_value"]) == Decimal("330")
+    excluded = dhan["coverage"]["excluded"]
+    assert excluded and all(item["kind"] == "holding" for item in excluded)
+    reason = "; ".join(item["reason"] for item in excluded)
     assert reason.startswith("Unverified Dhan provider mapping")
     assert "Missing input:" not in reason
     assert "PCJEWELLER" in reason
@@ -3298,3 +3363,104 @@ def test_valuation_and_watchlist_select_the_same_dhan_quote(monkeypatch) -> None
         str(evidence["quote_freshness_status"]), quote.timestamp, instrument, now
     )
     assert basis == "session_close"
+
+
+def _seed_cnc_sale(test_engine, *, sold: Decimal | None) -> None:
+    """TEST DATA: SBIN is a 2-share delivery holding in the shared fixture; optionally add a CNC sale row for it."""
+    if sold is None:
+        return
+    with Session(test_engine) as db:
+        holding = db.scalar(select(BrokerMirror).where(BrokerMirror.symbol == "SBIN", BrokerMirror.kind == "holding"))
+        db.add(BrokerMirror(
+            user_id=holding.user_id, broker="dhan", kind="position", symbol="SBIN", exchange="NSE", product="CNC",
+            security_id=holding.security_id, quantity=-sold, average_price=Decimal("112"), position_type="SHORT",
+            realized_profit=Decimal("0"), unrealized_profit=Decimal("-4"), synced_at=holding.synced_at,
+        ))
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    ("sold", "effective", "sbin_value"),
+    [(None, Decimal("2"), Decimal("220")), (Decimal("1"), Decimal("1"), Decimal("110")), (Decimal("2"), Decimal("0"), Decimal("0"))],
+    ids=["no-sale", "partial-sale", "full-sale"],
+)
+def test_holdings_are_valued_on_effective_quantity_after_a_same_day_cnc_sale(
+    clients, test_engine, encryption_key, monkeypatch, sold, effective, sbin_value
+) -> None:
+    first, _ = clients
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    current_time = datetime(2026, 10, 27, 16, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    monkeypatch.setattr(brokers, "_now", lambda: current_time)
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_a, **_k: "closed")
+    _add_portfolio_close_bars(test_engine, (date(2026, 10, 27), date(2026, 10, 26)))
+    _seed_cnc_sale(test_engine, sold=sold)
+    monkeypatch.setattr(
+        DhanAdapter, "get_market_quotes_batch",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("live quote attempted")),
+    )
+
+    portfolio = first.get("/api/v1/brokers/dhan/portfolio").json()
+    sbin = next(row for row in portfolio["holdings"] if row["symbol"] == "SBIN")
+    assert Decimal(sbin["quantity"]) == Decimal("2")                      # broker quantity is untouched
+    assert Decimal(sbin["sold_today_quantity"]) == (sold or Decimal("0"))
+    assert Decimal(sbin["effective_quantity"]) == effective
+    assert Decimal(sbin["live_valuation"]["market_value"]) == sbin_value
+
+    summary = first.get("/api/v1/brokers/portfolio-summary").json()["brokers"][0]
+    # SBIN holding + SBIN intraday position (1 x 110) + XYZ holding (1 x 50) at the fixture closes
+    assert Decimal(summary["market_value"]) == sbin_value + Decimal("110") + Decimal("50")
+    assert "T+1" in summary["provenance"]["market_value"]["description"]
+    assert summary["provenance"]["market_value"]["settlement"]["settles"] == "T+1"
+
+
+def test_fno_position_is_priced_from_its_own_dhan_security_id(clients, test_engine, encryption_key, monkeypatch) -> None:
+    """The option is priced by (NSE_FNO, security ID) from the broker row, with no local instrument mapping. TEST DATA quote."""
+    first, _ = clients
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    now_ist = datetime(2026, 11, 2, 10, 30, tzinfo=ZoneInfo("Asia/Kolkata"))   # a normal trading Monday, session open
+    monkeypatch.setattr(brokers, "_now", lambda: now_ist)
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_a, **_k: "open")
+    _add_portfolio_close_bars(test_engine, (date(2026, 11, 2), date(2026, 10, 30)))
+    with Session(test_engine) as db:
+        owner = db.scalar(select(BrokerMirror.user_id).limit(1))
+        db.add(BrokerMirror(user_id=owner, broker="dhan", kind="position", symbol="ONGC-NOV2026-222-PE", exchange="NSE_FNO", product="MARGIN",
+                            security_id="122031", quantity=Decimal("4500"), average_price=Decimal("1.855"), position_type="LONG",
+                            unrealized_profit=Decimal("-22.50"), synced_at=now_ist))
+        db.commit()
+    seen: list[dict] = []
+
+    def quotes(_self, _token, _tokens, instruments_by_segment, **_kw):
+        seen.append(instruments_by_segment)
+        stamp = now_ist.astimezone(timezone.utc) - timedelta(seconds=5)
+        bar = lambda c: HistoricalBar(timestamp=stamp, open=Decimal(c), high=Decimal(c), low=Decimal(c), close=Decimal(c), volume=Decimal("10"))  # noqa: E731
+        return {"NSE_EQ": {"3045": bar("110"), "9999": bar("50")}, "NSE_FNO": {"122031": bar("1.85")}}
+
+    monkeypatch.setattr(DhanAdapter, "get_market_quotes_batch", quotes)
+    monkeypatch.setattr(DhanAdapter, "derivative_contract_name", staticmethod(lambda segment, sid: "ONGC-Nov2026-222-PE" if (segment, sid) == ("NSE_FNO", "122031") else None))
+
+    summary = first.get("/api/v1/brokers/portfolio-summary").json()["brokers"][0]
+    assert any(batch.get("NSE_FNO") == ["122031"] for batch in seen)
+    assert summary["coverage"]["partial"] is False and summary["coverage"]["excluded"] == []
+    # option market value = 4500 x 1.85, added to SBIN holding (2x110) + SBIN position (1x110) + XYZ (1x50)
+    assert Decimal(summary["market_value"]) == Decimal("380") + Decimal("4500") * Decimal("1.85")
+
+
+def test_fno_position_whose_security_id_the_master_lists_as_another_contract_is_withheld(clients, test_engine, encryption_key, monkeypatch) -> None:
+    first, _ = clients
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    now_ist = datetime(2026, 11, 2, 10, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    monkeypatch.setattr(brokers, "_now", lambda: now_ist)
+    monkeypatch.setattr(market_data, "_market_session_state", lambda *_a, **_k: "open")
+    _add_portfolio_close_bars(test_engine, (date(2026, 11, 2), date(2026, 10, 30)))
+    with Session(test_engine) as db:
+        owner = db.scalar(select(BrokerMirror.user_id).limit(1))
+        db.add(BrokerMirror(user_id=owner, broker="dhan", kind="position", symbol="ONGC-NOV2026-222-PE", exchange="NSE_FNO", product="MARGIN",
+                            security_id="122031", quantity=Decimal("4500"), average_price=Decimal("1.855"), position_type="LONG", synced_at=now_ist))
+        db.commit()
+    stamp = now_ist.astimezone(timezone.utc)
+    bar = HistoricalBar(timestamp=stamp, open=Decimal("1"), high=Decimal("1"), low=Decimal("1"), close=Decimal("1"), volume=Decimal("1"))
+    monkeypatch.setattr(DhanAdapter, "get_market_quotes_batch", lambda *_a, **_k: {"NSE_EQ": {"3045": bar, "9999": bar}, "NSE_FNO": {"122031": bar}})
+    monkeypatch.setattr(DhanAdapter, "derivative_contract_name", staticmethod(lambda *_a: "ONGC-Nov2026-230-PE"))   # a stale or different contract
+
+    excluded = first.get("/api/v1/brokers/portfolio-summary").json()["brokers"][0]["coverage"]["excluded"]
+    assert [x["symbol"] for x in excluded] == ["ONGC-NOV2026-222-PE"] and "lists security ID 122031 as ONGC-Nov2026-230-PE" in excluded[0]["reason"]

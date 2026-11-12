@@ -15,6 +15,7 @@ from app.services.indicator_library import calculate_indicator, minimum_bars_for
 from app.services.strategy_contract import FastSlowMAAdapter, SMARSIAdapter, StrategyContext
 from app.services.strategy_engine import RSI_PERIOD, StrategyParams
 from app.services.trade_metrics import CENT, net_pnl, summarize_net_pnls
+from app.services.transaction_costs import get_schedule, per_unit_round_trip
 
 
 BPS = Decimal("10000")
@@ -23,8 +24,7 @@ UNIT = Decimal("1")
 
 @dataclass(frozen=True)
 class BacktestAssumptions:
-    brokerage_bps: Decimal = Decimal("3")
-    exchange_charges_bps: Decimal = Decimal("3")
+    fee_schedule: str = "dhan_nse_delivery_2026_11"   # daily-bar positions are held across sessions: delivery, not intraday (MIS)
     slippage_bps: Decimal = Decimal("5")
     stop_atr_multiple: Decimal = Decimal("1.5")
     target_r_multiple: Decimal = Decimal("3")
@@ -109,8 +109,8 @@ def _close_position(position: dict[str, Any], raw_exit: Decimal, exit_time: date
     slip_rate = assumptions.slippage_bps / BPS
     exit_fill = raw_exit * (UNIT - slip_rate)
     entry_fill = position["entry_fill"]
-    charge_rate = (assumptions.brokerage_bps + assumptions.exchange_charges_bps) / BPS
-    fees = ((entry_fill + exit_fill) * charge_rate).quantize(CENT, rounding=ROUND_HALF_EVEN)
+    # one analytical unit: costed by the central engine on a realistic reference position, scaled to one unit (no local fee formula)
+    fees = per_unit_round_trip("long", entry_fill, exit_fill, get_schedule(assumptions.fee_schedule)).quantize(CENT, rounding=ROUND_HALF_EVEN)
     journal_shape = SimpleNamespace(
         side="long", entry_price=entry_fill, exit_price=exit_fill,
         quantity=UNIT, multiplier=UNIT, fees=fees,
@@ -295,8 +295,8 @@ def run_backtest(
         "stop": f"ATR(14) x {assumptions.stop_atr_multiple}; ATR uses the decision-bar prefix",
         "target": f"{assumptions.target_r_multiple}R from entry based on the stop distance",
         "same_bar_stop_and_target": "stop first; OHLC does not identify intraday order",
-        "brokerage_bps_per_side": assumptions.brokerage_bps,
-        "exchange_charges_bps_per_side": assumptions.exchange_charges_bps,
+        "fee_schedule": get_schedule(assumptions.fee_schedule).describe(),
+        "fee_basis": "central transaction-cost engine on a Rs 1,00,000 reference position scaled to one unit; income tax excluded",
         "slippage_bps_per_side": assumptions.slippage_bps,
         "costs_label": "assumptions, not broker-confirmed charges",
         "quantity_basis": "one analytical unit per trade; no position sizing or portfolio equity",

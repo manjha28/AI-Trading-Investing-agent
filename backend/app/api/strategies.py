@@ -24,6 +24,7 @@ from app.services.strategy_engine import (
     record_evaluation,
 )
 from app.services.strategy_contract import registry_payload
+from app.services.transaction_costs import get_schedule
 from app.services.backtest_engine import (
     BacktestAssumptions,
     InsufficientBacktestHistory,
@@ -116,8 +117,7 @@ class EvaluationResponse(BaseModel):
 class BacktestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    brokerage_bps: Decimal = Field(default=Decimal("3"), ge=0, le=1000)
-    exchange_charges_bps: Decimal = Field(default=Decimal("3"), ge=0, le=1000)
+    fee_schedule: str = Field(default="dhan_nse_delivery_2026_11", max_length=64)
     slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
     include_dividends: bool = False
     stop_atr_multiple: Decimal = Field(default=Decimal("1.5"), gt=0, le=100)
@@ -179,7 +179,8 @@ def list_strategies(
         .where(Strategy.user_id == active_session.user_id)
         .order_by(Strategy.created_at.desc())
     )
-    return [_strategy_response(db, strategy) for strategy in strategies]
+    # Intraday strategies (definition-bearing versions) are managed by /signals-lab; this legacy daily list is unchanged for existing rows.
+    return [_strategy_response(db, strategy) for strategy in strategies if _version_row(db, strategy, strategy.current_version).definition is None]
 
 
 @router.get("/catalog")
@@ -311,6 +312,8 @@ def create_version(
     strategy = _owned_strategy(db, active_session.user_id, strategy_id)
     if strategy.status == "retired":
         raise HTTPException(status_code=409, detail="Retired strategies cannot be versioned")
+    if _version_row(db, strategy, strategy.current_version).definition is not None:
+        raise HTTPException(status_code=409, detail="Intraday strategy: create versions from the Signals workspace (/signals-lab)")
     now = _now()
     next_version = strategy.current_version + 1
     db.add(StrategyVersion(
@@ -387,6 +390,8 @@ def evaluate_strategy(
     now = _now()
     expire_signals(db, strategy, now)
     version = _version_row(db, strategy, strategy.current_version)
+    if version.definition is not None:
+        raise HTTPException(status_code=409, detail="Intraday strategy: use the Signals workspace (/signals-lab)")
     evaluation, signal, duplicate = record_evaluation(db, strategy, version, now)
     if duplicate:
         result = "duplicate"
@@ -410,6 +415,8 @@ def backtest_strategy(
 ) -> dict[str, Any]:
     strategy = _owned_strategy(db, active_session.user_id, strategy_id)
     version = _version_row(db, strategy, strategy.current_version)
+    if version.definition is not None:
+        raise HTTPException(status_code=409, detail="Intraday strategy: use the Signals workspace (/signals-lab)")
     params = StrategyParams.model_validate(version.params)
     instrument = db.get(Instrument, strategy.instrument_id)
     if instrument is None:
@@ -427,9 +434,12 @@ def backtest_strategy(
             "bars_required": required,
             "bars_available": len(bars),
         })
+    try:
+        get_schedule(payload.fee_schedule)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     assumptions = BacktestAssumptions(
-        brokerage_bps=payload.brokerage_bps,
-        exchange_charges_bps=payload.exchange_charges_bps,
+        fee_schedule=payload.fee_schedule,
         slippage_bps=payload.slippage_bps,
         stop_atr_multiple=payload.stop_atr_multiple,
         target_r_multiple=payload.target_r_multiple,

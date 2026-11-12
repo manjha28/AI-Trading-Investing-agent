@@ -117,11 +117,6 @@ def resolve_market_price(
     state = venue_session(instrument, now)
     session_state = state.state if state is not None else "unknown"
     local_now = _utc(now).astimezone(ZoneInfo(instrument.timezone))
-    if (
-        (getattr(instrument, "country", "") or "").upper() == "IN"
-        and settings.nse_no_continuous_trading_start <= local_now.time() < min(settings.nse_no_continuous_trading_end, time(15, 30))
-    ):
-        session_state = "no_continuous_trading"
     if is_synthetic or price is None or observed_at is None:
         return {
             "price": None,

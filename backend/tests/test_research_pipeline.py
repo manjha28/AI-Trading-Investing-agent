@@ -55,6 +55,9 @@ def client(test_engine, monkeypatch) -> Iterator[TestClient]:
                     research_pipeline.fail_instrument_research_run(session, run_id)
 
     monkeypatch.setattr(research_pipeline, "process_instrument_research", process_test_run)
+    # These tests exercise stored-data scenarios; candle recovery has its own tests (test_latest_candle_recovery.py).
+    monkeypatch.setattr(research_pipeline, "ensure_latest_daily_candle", lambda *_a, **_k: {
+        "action": "none", "session": None, "state_before": None, "persisted": None, "provider": None, "attempts": [], "reason": "disabled_in_test"})
     monkeypatch.setattr(research_pipeline, "_refresh_yahoo_fundamentals",
                         lambda _db, _instrument: ("unavailable", "Mocked test collector", None))
     monkeypatch.setattr(research_pipeline, "_fetch_dhan_company_info",

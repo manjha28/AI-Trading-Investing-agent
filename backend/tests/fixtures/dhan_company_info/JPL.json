@@ -1,0 +1,52 @@
+{
+ "source": "Real Dhan Company Info response captured 2026-11-05 (audit)",
+ "request": {
+  "securityId": "766830",
+  "exchangeSegment": "NSE_EQ",
+  "instrument": "EQUITY",
+  "metrics": [
+   "CO",
+   "RATIOS",
+   "SHP"
+  ]
+ },
+ "response": {
+  "securityId": "766830",
+  "data": {
+   "CO": {
+    "MARKET_CAP": 1310997.6289588,
+    "INDUSTRY": "",
+    "SECTOR": "",
+    "DIVIDEND_YIELD": 0,
+    "EPS": 33.63,
+    "EBITDA": 76255.4,
+    "BOOK_VALUE": 397.64,
+    "FIFTY_TWO_WEEK_HIGH": 1489.7,
+    "FIFTY_TWO_WEEK_LOW": 1119
+   },
+   "RATIOS": {
+    "PE_RATIO": 41.3,
+    "PB_RATIO": 3.58,
+    "DEBT_TO_EQUITY": 0.27,
+    "PE_TO_SECTOR_PE": 0.5709940550255772,
+    "ROE": null,
+    "ROCE": 8.94,
+    "INDUSTRY_EPS": 3.35,
+    "INDUSTRY_DEBT_TO_EQUITY": 0.69,
+    "INDUSTRY_PB_RATIO": 2.78,
+    "INDUSTRY_CURRENT_RATIO": 1.15,
+    "INDUSTRY_DIVIDEND_YIELD": 0.6,
+    "INDUSTRY_OPERATING_MARGIN": 23.21
+   },
+   "SHP": {
+    "REPORTING_PERIOD": null,
+    "PROMOTER_HOLDING": 64.48,
+    "DII_HOLDING": 0.71,
+    "CHANGE_IN_DII_HOLDING": null,
+    "FII_HOLDING": 32.54,
+    "CHANGE_IN_FII_HOLDING": null,
+    "PUBLIC_HOLDING": 1.8
+   }
+  }
+ }
+}

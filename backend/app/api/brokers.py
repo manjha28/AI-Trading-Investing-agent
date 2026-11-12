@@ -11,7 +11,7 @@ from datetime import date, datetime, time as wall_time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -2576,6 +2576,7 @@ def get_dhan_portfolio_mirror(
         if row not in open_positions and not _is_cnc_sale(row)
     ]
     delivery_sales = [row for row in rows if _is_cnc_sale(row)]
+    sold_today_map = _delivery_sold_today(rows)
     return {
         "source": "dhan",
         "currency": "INR",
@@ -2604,6 +2605,8 @@ def get_dhan_portfolio_mirror(
                 "instrument_id": resolved_instrument_id(row),
                 "isin": row.isin,
                 "quantity": row.quantity,
+                "sold_today_quantity": _row_sold_today(row, sold_today_map),
+                "effective_quantity": max(Decimal("0"), row.quantity - _row_sold_today(row, sold_today_map)),
                 "average_price": row.average_price,
                 "live_valuation": live_valuation(row),
                 "synced_at": row.synced_at,
@@ -2680,6 +2683,22 @@ def _is_cnc_sale(row: BrokerMirror) -> bool:
         (row.product or "").strip().upper() == "CNC"
         and row.quantity < 0
     )
+
+
+def _delivery_sold_today(rows: list[BrokerMirror]) -> dict[str, Decimal]:
+    """Quantity sold today per instrument from Dhan CNC sale rows (negative-quantity CNC positions), keyed by security ID."""
+    sold: dict[str, Decimal] = {}
+    for sale in rows:
+        if _is_cnc_sale(sale):
+            key = sale.security_id or sale.symbol
+            sold[key] = sold.get(key, Decimal("0")) - sale.quantity
+    return sold
+
+
+def _row_sold_today(row: BrokerMirror, sold: dict[str, Decimal]) -> Decimal:
+    if _broker_row_portfolio(row) != "holding":
+        return Decimal("0")
+    return sold.get(row.security_id or row.symbol, Decimal("0"))
 
 
 def _observation_price_basis(quote: Any, instrument: Any, db: Session) -> str:
@@ -2770,11 +2789,51 @@ def _calculate_broker_values(
     ]
     snapshot_known = bool(rows)
     broker_snapshot_at = max((row.synced_at for row in rows), default=None)
+    # Convention: delivery (CNC) sales settle T+1 and Dhan keeps reporting the full holding quantity on trade day. Holdings are valued on
+    # EFFECTIVE quantity = broker quantity - quantity sold today and not yet settled, so shares already sold are not counted as stock
+    # while their proceeds sit in the cash/receivable figure. Broker rows are never modified.
+    sold_today_by_key = _delivery_sold_today(rows)
+
+    def sold_today_of(row: BrokerMirror) -> Decimal:
+        return _row_sold_today(row, sold_today_by_key)
+
+    def qty_of(row: BrokerMirror) -> Decimal:
+        return max(Decimal("0"), row.quantity - sold_today_of(row))
+
     missing_ltp = [
         missing_quote_by_row_id[row.id].removeprefix("Missing input: ")
         for row in active_rows
         if row.id not in quote_by_row_id
     ]
+    # The one place partial coverage is decided, for holdings and positions alike:
+    # every card is computed over the rows with a usable price, and the rows left
+    # out are disclosed rather than blanking the portfolio.
+    valued_rows = [row for row in active_rows if row.id in quote_by_row_id]
+    unvalued_rows = [row for row in active_rows if row.id not in quote_by_row_id]
+    coverage_exclusions = [
+        {
+            "symbol": row.symbol,
+            "kind": _broker_row_portfolio(row),
+            "reason": missing_quote_by_row_id.get(row.id, "Missing input: no usable price").removeprefix(
+                "Missing input: "
+            ),
+            "broker_unrealized_profit": (
+                str(row.unrealized_profit)
+                if _broker_row_portfolio(row) == "position" and row.unrealized_profit is not None
+                else None
+            ),
+        }
+        for row in unvalued_rows
+    ]
+    coverage_note = (
+        "Excludes "
+        + str(len(unvalued_rows))
+        + (" position" if len(unvalued_rows) == 1 else " positions/holdings")
+        + ": "
+        + "; ".join(f"{item['symbol']} (no usable price)" for item in coverage_exclusions)
+        if unvalued_rows
+        else None
+    )
     quote_observations_by_row: dict[UUID, dict[str, str | None]] = {}
     for row in active_rows:
         quote_and_instrument = quote_by_row_id.get(row.id)
@@ -2787,7 +2846,9 @@ def _calculate_broker_values(
                 quote.source,
                 quote.timestamp,
             ),
-            "quantity": str(row.quantity),
+            "quantity": str(qty_of(row)),
+            "broker_quantity": str(row.quantity),
+            "sold_today_quantity": str(sold_today_of(row)),
             "ltp": str(quote.close),
             "price_basis": _observation_price_basis(quote, instrument, db),
             "price_age_seconds": _price_age_seconds(quote),
@@ -2818,7 +2879,7 @@ def _calculate_broker_values(
     ]
     invested_cost = (
         sum(
-            (row.quantity * row.average_price for row in holdings),
+            (qty_of(row) * row.average_price for row in holdings),
             Decimal("0"),
         )
         if holdings and all(row.average_price is not None for row in holdings)
@@ -2894,19 +2955,21 @@ def _calculate_broker_values(
     all_market_value = (
         sum(
             (
-                row.quantity * quote_by_row_id[row.id][0].close
-                for row in active_rows
+                qty_of(row) * quote_by_row_id[row.id][0].close
+                for row in valued_rows
             ),
             Decimal("0"),
         )
-        if active_rows and not missing_ltp
+        if valued_rows
         else Decimal("0")
         if snapshot_known and not active_rows
         else None
     )
     market_value_reason = (
         _portfolio_input_reason(missing_ltp)
-        if missing_ltp
+        if missing_ltp and not valued_rows
+        else coverage_note
+        if coverage_note
         else None
         if snapshot_known and not active_rows
         else "Missing input: no open holdings or positions."
@@ -2916,9 +2979,26 @@ def _calculate_broker_values(
     market_value_provenance = {
         "type": "derived",
         "description": (
-            "Quantity × verified fresh quote; when markets are closed, the "
-            "last completed-session EOD close."
+            "Effective quantity × verified fresh quote; when markets are closed, the "
+            "last completed-session EOD close. Effective quantity = broker holding quantity "
+            "minus quantity sold today (CNC sales settle T+1; Dhan keeps reporting the full holding). "
+            "Sale proceeds are not added separately: they are expected to be in Dhan's available "
+            "balance, so each rupee is counted once (stock sold today is excluded, proceeds are cash)."
         ),
+        "settlement": {
+            "convention": "sold_today_excluded_proceeds_in_cash",
+            "settles": "T+1",
+            "sold_today": [
+                {
+                    "symbol": row.symbol,
+                    "broker_quantity": str(row.quantity),
+                    "sold_today_quantity": str(sold_today_of(row)),
+                    "effective_quantity": str(qty_of(row)),
+                }
+                for row in holdings
+                if sold_today_of(row) != 0
+            ],
+        },
         "quote_observations": quote_observations,
         "coverage": {
             "priced": len(quote_by_row_id),
@@ -2937,28 +3017,29 @@ def _calculate_broker_values(
         for row in holdings
         if row.id not in quote_by_row_id
     ]
+    priced_holdings = [row for row in holdings if row.id in quote_by_row_id]
     holdings_missing_cost = [
-        row.symbol for row in holdings if row.average_price is None
+        row.symbol for row in priced_holdings if row.average_price is None
     ]
     holdings_market_value = (
         sum(
             (
-                row.quantity * quote_by_row_id[row.id][0].close
-                for row in holdings
+                qty_of(row) * quote_by_row_id[row.id][0].close
+                for row in priced_holdings
             ),
             Decimal("0"),
         )
-        if holdings and not holdings_missing_ltp
+        if priced_holdings
         else Decimal("0")
         if snapshot_known and not holdings
         else None
     )
     holdings_cost = (
         sum(
-            (row.quantity * row.average_price for row in holdings),
+            (qty_of(row) * row.average_price for row in priced_holdings),
             Decimal("0"),
         )
-        if holdings and not holdings_missing_cost
+        if priced_holdings and not holdings_missing_cost
         else None
     )
     holdings_pnl = (
@@ -2968,15 +3049,16 @@ def _calculate_broker_values(
         if snapshot_known and not holdings
         else None
     )
+    priced_positions = [row for row in positions if row.id in quote_by_row_id]
     missing_position_pnl = [
-        row.symbol for row in positions if row.unrealized_profit is None
+        row.symbol for row in priced_positions if row.unrealized_profit is None
     ]
     position_pnl = (
         sum(
-            (row.unrealized_profit for row in positions),
+            (row.unrealized_profit for row in priced_positions),
             Decimal("0"),
         )
-        if positions and not missing_position_pnl
+        if priced_positions and not missing_position_pnl
         else Decimal("0")
         if snapshot_known and not positions
         else None
@@ -2986,8 +3068,6 @@ def _calculate_broker_values(
     pnl_provenance_parts: list[str] = []
     if holdings:
         if holdings_pnl is None:
-            if holdings_missing_ltp:
-                pnl_reasons.extend(holdings_missing_ltp)
             if holdings_missing_cost:
                 pnl_reasons.append(
                     "average cost for holdings "
@@ -3003,10 +3083,11 @@ def _calculate_broker_values(
         pnl_provenance_parts.append("no delivery holdings in the broker snapshot")
     if positions:
         if position_pnl is None:
-            pnl_reasons.append(
-                "Dhan unrealizedProfit for positions "
-                + ", ".join(missing_position_pnl)
-            )
+            if missing_position_pnl:
+                pnl_reasons.append(
+                    "Dhan unrealizedProfit for positions "
+                    + ", ".join(missing_position_pnl)
+                )
         else:
             pnl_components.append(position_pnl)
             pnl_provenance_parts.append(
@@ -3017,15 +3098,17 @@ def _calculate_broker_values(
         pnl_provenance_parts.append("no open positions in the broker snapshot")
     unrealized_pnl = (
         sum(pnl_components, Decimal("0"))
-        if pnl_components and not pnl_reasons
+        if pnl_components and not pnl_reasons and (valued_rows or not active_rows)
         else None
     )
     unrealized_pnl_reason = (
         _portfolio_input_reason(pnl_reasons)
         if pnl_reasons
+        else _portfolio_input_reason(missing_ltp)
+        if unvalued_rows and not valued_rows
         else "Missing input: no open holdings or positions."
         if not pnl_components
-        else None
+        else coverage_note
     )
     unrealized_pnl_provenance = {
         "type": "combined" if len(pnl_provenance_parts) > 1 else (
@@ -3069,8 +3152,13 @@ def _calculate_broker_values(
             ],
             *[
                 f"{row.symbol}: Dhan unrealizedProfit unavailable."
-                for row in positions
+                for row in priced_positions
                 if row.unrealized_profit is None
+            ],
+            *[
+                missing_quote_by_row_id[row.id]
+                for row in positions
+                if row.id not in quote_by_row_id
             ],
         ],
     }
@@ -3289,7 +3377,7 @@ def _calculate_broker_values(
     day_change = (
         sum(
             (
-                row.quantity
+                qty_of(row)
                 * (
                     quote_by_row_id[row.id][0].close
                     - adjusted_previous_closes[row.id][0]
@@ -3298,7 +3386,7 @@ def _calculate_broker_values(
             ),
             Decimal("0"),
         )
-        if day_change_rows and not missing_day_ltp
+        if day_change_rows
         else None
     )
     missing_previous_close = [
@@ -3308,7 +3396,7 @@ def _calculate_broker_values(
     ]
     day_change_reason = (
         _portfolio_input_reason(missing_day_ltp)
-        if missing_day_ltp
+        if missing_day_ltp and day_change is None and not missing_day_previous_close
         else (
             "Partial day change: excluded "
             + "; ".join(
@@ -3337,7 +3425,7 @@ def _calculate_broker_values(
         if missing_day_previous_close
         else "Missing input: no stored real daily previous close for any open instrument."
         if not day_change_rows
-        else None
+        else coverage_note
     )
     day_change_provenance = {
         "type": "derived",
@@ -3457,14 +3545,14 @@ def _calculate_broker_values(
             # tick time, so it has no meaningful age.
             "price_age_seconds": _price_age_seconds(quote),
             "source": provider_family(quote.source),
-            "market_value": quote.close * row.quantity,
+            "market_value": quote.close * qty_of(row),
             "unrealized_profit": (
-                (quote.close - row.average_price) * row.quantity
+                (quote.close - row.average_price) * qty_of(row)
                 if row.average_price is not None
                 else None
             ),
             "day_change": (
-                row.quantity * (quote.close - adjusted[0])
+                qty_of(row) * (quote.close - adjusted[0])
                 if adjusted is not None
                 else None
             ),
@@ -3489,6 +3577,13 @@ def _calculate_broker_values(
         }
     return {
         "row_valuations": row_valuations,
+        "coverage": {
+            "priced": len(valued_rows),
+            "total": len(active_rows),
+            "partial": bool(unvalued_rows) and bool(valued_rows),
+            "excluded": coverage_exclusions,
+            "note": coverage_note,
+        },
         "invested_cost": invested_cost,
         "positions_exposure": positions_exposure,
         "market_value": all_market_value,
@@ -3579,6 +3674,24 @@ def _calculate_broker_values(
     }
 
 
+_DERIVATIVE_QUOTE_SEGMENTS = frozenset({"NSE_FNO", "BSE_FNO"})
+_DERIVATIVE_NAMESPACE = UUID("6f1d2c1e-8f4a-4b53-9a57-3a7a0f0e6b10")
+
+
+def _derivative_instrument(row: BrokerMirror, security_id: str, segment: str) -> Instrument:
+    """Transient (never persisted) instrument describing the exact F&O contract a broker row holds, for session and freshness rules only."""
+    contract = Instrument(
+        id=uuid5(_DERIVATIVE_NAMESPACE, f"dhan:{segment}:{security_id}"), symbol=row.symbol, display_name=row.symbol, asset_class="option",
+        venue="NSE" if segment.startswith("NSE") else "BSE", currency="INR", country="IN", timezone="Asia/Kolkata",
+        is_synthetic=False, relink_required=False,
+    )
+    # Identity is the broker's own (segment, security ID), confirmed against the current instrument master by the caller.
+    contract.provider_identifiers = [InstrumentProviderIdentifier(
+        provider="dhan", provider_instrument_id=f"{security_id}|{segment}", provider_symbol=row.symbol, is_verified=True,
+    )]
+    return contract
+
+
 def _dhan_quote_evidence(
     db: Session,
     rows: list[BrokerMirror],
@@ -3595,9 +3708,15 @@ def _dhan_quote_evidence(
         return {}, {}, {}, {}
     row_security_segment: dict[UUID, tuple[str, str]] = {}
     missing: dict[UUID, str] = {}
+    # F&O contracts are priced by the exact (segment, security ID) the broker reports; they have no local Instrument row and are not
+    # looked up in the equity instrument mapping.
+    derivative_security: dict[UUID, tuple[str, str]] = {}
     for row in active_rows:
         segment = _dhan_quote_segment(row.exchange)
         security_id = row.security_id
+        if segment in _DERIVATIVE_QUOTE_SEGMENTS and security_id is not None and security_id.isdigit():
+            derivative_security[row.id] = (security_id, segment)
+            continue
         if segment is None:
             try:
                 master_mapping = DhanAdapter.find_verified_equity_mapping_by_identity(
@@ -3807,8 +3926,12 @@ def _dhan_quote_evidence(
     for segment, security_id in batch_instruments.values():
         instruments_by_segment.setdefault(segment, []).append(security_id)
 
+    for derivative_sid, derivative_segment in derivative_security.values():
+        instruments_by_segment.setdefault(derivative_segment, []).append(derivative_sid)
+
     batch_failures: dict[str, str] = {}
     fetched_quotes: dict[UUID, MarketQuote] = {}
+    derivative_fetch: dict[str, dict[str, Any]] = {}
     if instruments_by_segment:
         credential = db.scalar(
             select(BrokerCredential).where(
@@ -3847,6 +3970,7 @@ def _dhan_quote_evidence(
                     f"Dhan batched quote request failed ({error.category})."
                 )
             else:
+                derivative_fetch = fetched_by_segment
                 dhan_cache_by_instrument = {
                     quote.instrument_id: quote
                     for quote in cached_quotes
@@ -4028,6 +4152,43 @@ def _dhan_quote_evidence(
             continue
         quote_by_row_id[row.id] = (eod_close, instrument)
         missing.pop(row.id, None)
+
+    for row in active_rows:
+        pair = derivative_security.get(row.id)
+        if pair is None:
+            continue
+        derivative_security_id, derivative_segment = pair
+        bar = derivative_fetch.get(derivative_segment, {}).get(derivative_security_id)
+        if bar is None:
+            missing[row.id] = (
+                f"Missing input: Dhan returned no quote for {row.symbol} "
+                f"(security ID {derivative_security_id}, {derivative_segment})"
+                + (f"; {batch_failures['all']}" if batch_failures.get("all") else ".")
+            )
+            continue
+        listed_as = DhanAdapter.derivative_contract_name(derivative_segment, derivative_security_id)
+        if listed_as is None or listed_as.casefold() != row.symbol.strip().casefold():
+            missing[row.id] = (
+                f"Unverified Dhan contract for {row.symbol}: the current instrument master lists security ID "
+                f"{derivative_security_id} as {listed_as or 'nothing'}; price withheld."
+            )
+            continue
+        contract = _derivative_instrument(row, derivative_security_id, derivative_segment)
+        contract_quote = MarketQuote(
+            instrument_id=contract.id, source="dhan", timestamp=bar.timestamp, open=bar.open, high=bar.high,
+            low=bar.low, close=bar.close, volume=bar.volume, retrieved_at=now, is_synthetic=False,
+        )
+        usable, reason, evidence = classify_quote(
+            contract_quote, contract, "INR", now,
+            last_completed_session=market_data_api._expected_market_session_date(contract, now),
+        )
+        if usable and evidence["quote_freshness_status"] in USABLE_FRESHNESS_STATUSES:
+            quote_by_row_id[row.id] = (contract_quote, contract)
+        else:
+            missing[row.id] = (
+                f"Missing input: usable LTP for {row.symbol}; quote is "
+                f"{evidence['quote_freshness_status']} ({reason or 'freshness check failed'})."
+            )
 
     previous_close_by_instrument: dict[UUID, MarketBar] = {}
     quote_by_instrument = {
@@ -4444,6 +4605,7 @@ def get_broker_portfolio_summary(
                 str(broker_day_change) if broker_day_change is not None else None
             ),
             "unavailable_reasons": unavailable_reasons,
+            "coverage": broker_values.get("coverage") if is_dhan else None,
             "provenance": broker_provenance,
             "stream_rows": (
                 [

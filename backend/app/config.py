@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     indicator_lookback_bars: int = Field(default=500, gt=0)
     market_data_refresh_seconds: int = Field(default=300, gt=0)
     market_data_scheduler_enabled: bool = False
+    job_worker_enabled: bool = True                                # durable job queue worker + scan scheduler (per-owner scan switch is off by default)
+    derivatives_scheduler_enabled: bool = False                    # daily instrument-master refresh
+    derivatives_master_refresh_hour_ist: int = Field(default=8, ge=0, le=23)
+    derivatives_chain_poll_enabled: bool = False                   # live option-chain snapshot polling (rate-limited)
+    derivatives_chain_poll_interval_seconds: int = Field(default=300, ge=60)
+    derivatives_chain_poll_max_underlyings: int = Field(default=10, ge=1, le=100)
     market_stream_enabled: bool = False
     kafka_bootstrap_servers: str = "localhost:9092"
     valkey_url: str = "redis://localhost:6379/0"
@@ -111,6 +117,20 @@ class Settings(BaseSettings):
     watchlist_price_update_interval_ms: int = Field(default=100, ge=16)
     watchlist_aggregate_update_interval_ms: int = Field(default=250, ge=16)
     watchlist_feed_stale_after_seconds: int = Field(default=30, ge=1)
+    # Optional AI narration/analysis. Off by default; everything else works with it disabled.
+    ai_enabled: bool = False
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_timeout_seconds: int = Field(default=90, ge=5, le=300)
+    # Authorised fundamentals feed (e.g. a licensed vendor). OFF by default; Screener.in has no authorised automated access.
+    fundamentals_feed_enabled: bool = False
+    fundamentals_feed_base_url: str | None = None
+    fundamentals_feed_api_key: SecretStr | None = None
+    fundamentals_feed_source_name: str = Field(default="licensed_feed", pattern=r"^[a-z0-9_]{3,24}$")
+    fundamentals_feed_min_interval_seconds: float = Field(default=2.0, ge=0.5, le=60)
+    fundamentals_feed_batch_size: int = Field(default=5, ge=1, le=50)
+    fundamentals_feed_cycle_minutes: int = Field(default=30, ge=5, le=1440)
+    fundamentals_feed_refresh_hours: int = Field(default=168, ge=1, le=24 * 60)
     delta_research_enabled: bool = False
     delta_research_db_path: str | None = None
     delta_research_refresh_seconds: int = Field(default=60, ge=30, le=3600)
@@ -168,6 +188,7 @@ class Settings(BaseSettings):
 NSE_CALENDAR_YEARS: frozenset[int] = frozenset({2026})
 NSE_EQUITY_HOLIDAYS: frozenset[date] = frozenset(
     {
+        date(2026, 1, 15),  # Municipal Corporation Election (Maharashtra); confirmed via the NSE trading-holiday API (CM segment) on 2026-11-11
         date(2026, 1, 26),
         date(2026, 3, 3),
         date(2026, 3, 26),
@@ -185,11 +206,11 @@ NSE_EQUITY_HOLIDAYS: frozenset[date] = frozenset(
         date(2026, 12, 25),
     }
 )
-# Public sources disagree on these 2026 dates. They are not included in
-# NSE_EQUITY_HOLIDAYS; a session on these days is reported as unknown.
+# Public sources disagreed on these 2026 dates. 2026-01-15 was confirmed as a trading
+# holiday by the NSE API on 2026-11-11 and moved to NSE_EQUITY_HOLIDAYS; 2026-03-21 is a
+# Saturday (non-trading regardless) and stays here pending a circular.
 NSE_UNVERIFIED_HOLIDAYS: frozenset[date] = frozenset(
     {
-        date(2026, 1, 15),
         date(2026, 3, 21),
     }
 )

@@ -24,7 +24,7 @@ export type Note = {
   confidence: 'low' | 'medium' | 'high';
   stale: boolean;
 };
-export type FieldValue = { value: string | null; field_path: string };
+export type FieldValue = { value: string | null; field_path: string; source?: string; fetched_at?: string; basis?: string; derived?: boolean };
 export type FundamentalPeriod = {
   period_type: 'annual' | 'quarterly';
   period_end: string;
@@ -33,6 +33,8 @@ export type FundamentalPeriod = {
   source: string;
   fetched_at: string;
   stale: boolean;
+  statement_basis?: string | null;
+  extra_metrics?: Record<string, { value: string; source: string; fetched_at: string; basis?: string }>;
 };
 export type IndicatorValue = {
   value: string | null;
@@ -140,7 +142,7 @@ export type Brief = {
         period_type: string;
         period_end: string;
         currency: string;
-        values: Record<string, { value: string | null; year_on_year_growth_pct: string | null; field_paths: string[] }>;
+        values: Record<string, { value: string | null; year_on_year_growth_pct: string | null; change_kind?: ChangeKind; absolute_change?: string | null; field_paths: string[] }>;
       }[];
     };
     news: { status: string; message: string | null; items: NewsItem[]; sources: NewsSource[] };
@@ -148,6 +150,8 @@ export type Brief = {
     collector_status?: Record<string, { state: string; detail?: string; source?: string | null; records?: number; retrieved_at?: string | null; source_count?: number; sources?: string[] }>;
     data_quality: { status: string; items: QualityItem[] };
     assessment?: Assessment;
+    valuation?: Valuation;
+    shareholding?: Shareholding;
     disclaimer: string;
   };
 };
@@ -167,8 +171,12 @@ export type BatchRunResult = {
   progress?: ResearchProgressEvent[];
 };
 
-export type ComponentKey = 'fundamental' | 'technical' | 'financial_trends' | 'news_sentiment';
-export type HorizonKey = 'intraday' | 'swing' | 'positional' | 'long_term';
+export type ChangeKind =
+  | 'growth' | 'turned_negative' | 'turned_positive' | 'turned_zero' | 'from_zero' | 'unchanged' | 'unavailable'
+  | 'both_negative_narrowed' | 'both_negative_widened' | 'both_negative_unchanged';
+
+export type ComponentKey = 'fundamental' | 'technical' | 'financial_trends' | 'news_sentiment' | 'valuation';
+export type HorizonKey = 'swing' | 'positional' | 'long_term';
 export type ScoreFactor = { key: string; label: string; value: number; unit: string; sub_score: number; basis: string };
 export type ScoreComponent = {
   key: ComponentKey; label: string; status: 'scored' | 'blocked'; score: number | null; interpretation: string | null;
@@ -187,4 +195,49 @@ export type Assessment = {
   weights: Record<HorizonKey, Record<ComponentKey, number>>; thresholds: Record<string, number>;
   sector: string | null; financial_sector: boolean; not_implemented_gates: string[];
   components: Record<ComponentKey, ScoreComponent>; horizons: Record<HorizonKey, HorizonAssessment>;
+};
+
+export type AiScenario = { thesis: string; drivers: string[]; invalidated_by: string[] };
+export type AiComparison = {
+  algorithmic_score: number | null; algorithmic_recommendation: string | null; ai_score: number | null; ai_recommendation: string;
+  score_gap: number | null; level: 'aligned' | 'moderate' | 'material' | 'not_comparable'; recommendation_differs: boolean | null; note?: string;
+};
+export type AiAnalysis = {
+  id: string; brief_id: string; horizon: HorizonKey; model: string; prompt_version: string; snapshot_hash: string;
+  provider: string; source: 'gemini' | 'local_gate'; created_at: string; cached: boolean; comparison: AiComparison | null; disclaimer: string;
+  usage: { prompt_tokens?: number; completion_tokens?: number } | null;
+  result: {
+    score: number | null; recommendation: string; confidence: number; summary: string; reasoning: string;
+    strengths: string[]; weaknesses: string[]; risks: string[]; bull_case: AiScenario; bear_case: AiScenario;
+    data_gaps: string[]; disagreement_explanation: string; guardrails_applied: string[];
+    valuation_view?: AiValuationView; // absent on analyses made before prompt ai-analyst-v3-valuation
+  };
+};
+export type AiValuationView = {
+  label: 'expensive' | 'fairly_valued' | 'potentially_undervalued' | 'insufficient_evidence'; summary: string; supporting_metrics: string[];
+  provider_vs_calculated: string[]; limitations: string[]; effect_on_assessment: string; model_label?: string;
+};
+export type AiStatus = { enabled: boolean; configured: boolean; provider: string; model: string; brief_id: string | null; analyses: Partial<Record<HorizonKey, AiAnalysis>> };
+
+export type ValuationInput = { name: string; value: string | null; unit: string; source: string | null; period_end: string | null; fetched_at: string | null; statement_basis: string | null };
+export type ValuationCrossCheck = { origin: string; value: string; difference_pct: string; disagrees: boolean; label: string };
+export type ValuationMetric = {
+  key: string; label: string; status: 'calculated' | 'reported' | 'unavailable' | 'not_meaningful'; value: string | null; unit: string;
+  origin?: 'provider_reported' | 'calculated' | null; provider?: string | null; reporting_period?: string | null; retrieved_at?: string | null;
+  reason: string | null; basis: string; inputs: ValuationInput[]; warnings: string[]; freshness: string; statement_basis: string | null;
+  cross_check?: ValuationCrossCheck | null; provider_reported?: string; // provider_reported: pre-0.2.0 briefs only
+};
+export type PeerMetric = { peer_count: number; status: string; reason?: string; peer_median?: string; peer_p25?: string; peer_p75?: string; percentile_rank?: string; subject?: string };
+export type ValuationScoring = { version: string; status: 'scored' | 'blocked'; score: number | null; label: string | null; confidence: number | null; coverage_pct: number; blockers: string[]; sector_family: string };
+export type Valuation = {
+  error?: string; model_version: string; currency: string; as_of: string; score?: null; score_note?: string; scoring?: ValuationScoring | null;
+  price: { value: string | null; as_of: string | null; current: boolean; problem: string | null };
+  metrics: Record<string, ValuationMetric>; data_gaps: string[];
+  peer_comparison: { status: string; reason?: string; peer_group?: string; note?: string; metrics: Record<string, PeerMetric> } | null;
+};
+
+export type ShareholdingHolding = { key: string; label: string; percent: string | null; unit: string };
+export type Shareholding = {
+  status: 'available' | 'unavailable'; source: string | null; retrieved_at: string | null; reporting_period: null; reporting_period_note: string;
+  holdings: ShareholdingHolding[]; sum_percent?: string | null; not_itemised_percent?: string | null; warnings: string[];
 };

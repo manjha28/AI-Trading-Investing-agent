@@ -3203,3 +3203,39 @@ def test_depth_route_surfaces_the_actual_upstream_failure_reason(client, test_en
         assert stream.receive_json()["status"] == "connecting"
         failed = stream.receive_json()
     assert failed["status"] == "failed" and "entitlement missing" in failed["message"]
+
+
+def test_repeated_instrument_search_is_idempotent_and_returns_200(client: TestClient, test_engine) -> None:
+    register(client, "repeat-search@example.com")
+    first = client.get("/api/v1/market-data/instruments?query=ALPHA&limit=30")
+    assert first.status_code == 200, first.text
+    with Session(test_engine) as db:
+        rows_after_first = db.scalar(select(func.count()).select_from(Instrument))
+    for _ in range(3):
+        again = client.get("/api/v1/market-data/instruments?query=ALPHA&limit=30")
+        assert again.status_code == 200, again.text
+        assert sorted(item["id"] for item in again.json()) == sorted(item["id"] for item in first.json())
+    with Session(test_engine) as db:
+        assert db.scalar(select(func.count()).select_from(Instrument)) == rows_after_first
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "expected"),
+    [(15, 14, "open"), (15, 20, "open"), (15, 29, "open"), (15, 31, "closed")],
+)
+def test_nse_session_has_no_pre_close_gap_in_either_classifier(hour, minute, expected) -> None:
+    from app.services.price_freshness import resolve_market_price
+
+    instrument = SimpleNamespace(country="IN", timezone="Asia/Kolkata")
+    now = datetime(2026, 10, 26, hour, minute, tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc)
+
+    assert market_data._market_session_state(instrument, now) == expected
+    resolved = resolve_market_price(
+        instrument,
+        price=Decimal("100"),
+        provider="dhan",
+        observed_at=now,
+        now=now,
+        is_official_close=False,
+    )
+    assert resolved["session_state"] == expected

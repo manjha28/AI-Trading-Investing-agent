@@ -1,7 +1,9 @@
 """Template-rendered, provenance-preserving instrument research briefs."""
 
 import logging
-from datetime import datetime, timedelta, timezone
+import threading
+import time
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,7 +20,10 @@ from app.api.market_data import (
     _market_data_credentials,
     _providers,
     _resolve_provider_candidate,
+    MAX_BARS,
     create_market_data_provider_chain,
+    market_data_provider_for_user,
+    sync_history,
 )
 from app.broker_adapters import BrokerAdapterError
 from app.config import settings
@@ -34,12 +39,16 @@ from app.models import (
     MarketDataSync,
     NewsItem,
     NewsSourcePoll,
+    User,
 )
 from app.research_service import is_stale as is_source_stale
 from app.services import fundamentals as fundamentals_service
 from app.services.indicators import compute_indicators
 from app.services.news_sentiment import CLASSIFIER_VERSION, aggregate_instrument_sentiment
-from app.services.research_scoring import build_assessment, daily_bar_staleness
+from app.services.price_freshness import is_continuous_market, is_official_session_close
+from app.services import dhan_company_info, valuation_inputs
+from app.services import valuation as valuation_service
+from app.services.research_scoring import build_assessment, daily_bar_staleness, expected_last_completed_session
 from app.services.source_registry import FetchedSource, fetch_instrument_sources
 
 logger = logging.getLogger(__name__)
@@ -57,61 +66,8 @@ def _date_path(row: InstrumentFundamental) -> str:
 def _company_info_snapshot(
     data: dict[str, Any], security_id: str
 ) -> dict[str, Any] | None:
-    entry = data.get(security_id)
-    if isinstance(entry, list):
-        entry = entry[0] if entry else None
-    if not isinstance(entry, dict):
-        return None
-    overview = entry.get("CO") if isinstance(entry.get("CO"), dict) else {}
-    ratios = entry.get("RATIOS") if isinstance(entry.get("RATIOS"), dict) else {}
-
-    def decimal_field(value: Any, *, crore: bool = False, percentage: bool = False) -> str | None:
-        if value is None:
-            return None
-        try:
-            parsed = Decimal(str(value))
-        except (InvalidOperation, TypeError, ValueError):
-            return None
-        if not parsed.is_finite():
-            return None
-        if crore:
-            parsed *= Decimal("10000000")
-        if percentage:
-            parsed /= Decimal("100")
-        return str(parsed)
-
-    fetched_at = datetime.now(timezone.utc).isoformat()
-    fields = {
-        "market_cap": decimal_field(overview.get("MARKET_CAP"), crore=True),
-        "pe": decimal_field(ratios.get("PE_RATIO")),
-        "pb": decimal_field(ratios.get("PB_RATIO")),
-        "dividend_yield": decimal_field(overview.get("DIVIDEND_YIELD"), percentage=True),
-        "eps": decimal_field(overview.get("EPS")),
-        "ebitda": decimal_field(overview.get("EBITDA"), crore=True),
-        "book_value": decimal_field(overview.get("BOOK_VALUE")),
-        "fifty_two_week_high": decimal_field(overview.get("FIFTY_TWO_WEEK_HIGH")),
-        "fifty_two_week_low": decimal_field(overview.get("FIFTY_TWO_WEEK_LOW")),
-        "debt_to_equity": decimal_field(ratios.get("DEBT_TO_EQUITY")),
-        "roe": decimal_field(ratios.get("ROE"), percentage=True),
-        "roce": decimal_field(ratios.get("ROCE"), percentage=True),
-        "sector": overview.get("SECTOR") or None,
-        "industry": overview.get("INDUSTRY") or None,
-    }
-    return {
-        "status": "available" if any(value is not None for value in fields.values()) else "unavailable",
-        "values": {
-            name: {
-                "value": value,
-                "field_path": f"dhan.company_info.{name}",
-                "source": "dhan",
-                "fetched_at": fetched_at,
-            }
-            for name, value in fields.items()
-        },
-        "source": "dhan",
-        "fetched_at": fetched_at,
-        "stale": False,
-    }
+    """Verified Dhan fields only; see services/dhan_company_info.py for what is (and is deliberately not) read."""
+    return dhan_company_info.normalize(data, security_id)
 
 
 def _fetch_dhan_company_info(
@@ -132,12 +88,20 @@ def _fetch_dhan_company_info(
         _, provider, _ = _market_data_credentials(db, user_id, "dhan")
         if provider is None:
             return None, "No authenticated Dhan connection is available."
-        data = provider.adapter.get_company_info(
-            provider.tokens["access_token"], provider.tokens, security_id, segment
-        )
-        snapshot = _company_info_snapshot(data, security_id)
-        if snapshot is None or snapshot["status"] == "unavailable":
+        def request() -> dict[str, Any] | None:
+            data = provider.adapter.get_company_info(
+                provider.tokens["access_token"], provider.tokens, security_id, segment, metrics=("CO", "RATIOS", "SHP")
+            )
+            return _company_info_snapshot(data, security_id)
+
+        snapshot = dhan_company_info.fetch_once(security_id, request)  # concurrent runs share one request
+        if snapshot is None or (snapshot["status"] == "unavailable" and snapshot["shareholding"]["status"] == "unavailable"):
             return None, "Dhan Company Info returned no usable company-overview or ratio fields."
+        snapshot = dict(snapshot)
+        # Every usable Dhan field goes to the valuation input store (first source in the Dhan -> Yahoo -> Screener chain); the brief keeps JSON only.
+        inputs = snapshot.pop("valuation_inputs", None)
+        if inputs:
+            valuation_inputs.store(db, instrument.id, "dhan", inputs, datetime.fromisoformat(snapshot["fetched_at"]))
         return snapshot, None
     except HTTPException:
         return None, "Dhan Company Info is unavailable; verify the Dhan connection and its data access."
@@ -174,30 +138,40 @@ def _fundamentals_section(
     )
     if external_snapshot is not None:
         snapshot_section = dict(external_snapshot)
+        snapshot_section["values"] = {name: dict(item) for name, item in external_snapshot.get("values", {}).items()}
         alternate_fields: dict[str, dict[str, str]] = {}
         conflicts: list[dict[str, str]] = []
+        # Relative disagreement tolerated before two providers' numbers are called conflicting (providers price at different times).
+        tolerance = {"market_cap": Decimal("0.10"), "pb": Decimal("0.10"), "pe": Decimal("0.25")}
         if snapshot is not None and snapshot.source != external_snapshot.get("source"):
-            stored_values = external_snapshot.get("values", {})
+            values = snapshot_section["values"]
             for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry"):
                 stored_value = getattr(snapshot, field)
-                current_value = stored_values.get(field, {}).get("value") if isinstance(stored_values.get(field), dict) else None
+                entry = values.get(field) if isinstance(values.get(field), dict) else None
+                current_value = entry.get("value") if entry else None
                 if stored_value is None:
+                    continue
+                if current_value is None and field != "dividend_yield":
+                    # Dhan returned null / missing / "" for this field: keep the existing stored value, with ITS source and time.
+                    # (dividend_yield is excluded: providers use different units, so it is never moved between sources.)
+                    values[field] = {"value": str(stored_value) if isinstance(stored_value, Decimal) else stored_value,
+                                     "field_path": f"instrument_snapshots.{field}", "source": snapshot.source,
+                                     "fetched_at": snapshot.fetched_at.isoformat(), "filled_from_existing": True}
                     continue
                 alternate_fields[field] = {
                     "value": str(stored_value), "source": snapshot.source,
                     "fetched_at": snapshot.fetched_at.isoformat(),
                 }
-                if current_value is not None:
+                if current_value is not None and field != "dividend_yield":
                     try:
-                        if Decimal(str(current_value)) != Decimal(str(stored_value)):
-                            conflicts.append({"field": field, "source_a": str(external_snapshot.get("source")),
-                                              "value_a": str(current_value), "source_b": snapshot.source,
-                                              "value_b": str(stored_value)})
+                        a_val, b_val = Decimal(str(current_value)), Decimal(str(stored_value))
+                        differs = (abs(a_val - b_val) / abs(b_val) > tolerance.get(field, Decimal(0))) if b_val else a_val != b_val
                     except (InvalidOperation, ValueError):
-                        if str(current_value).casefold() != str(stored_value).casefold():
-                            conflicts.append({"field": field, "source_a": str(external_snapshot.get("source")),
-                                              "value_a": str(current_value), "source_b": snapshot.source,
-                                              "value_b": str(stored_value)})
+                        differs = str(current_value).casefold() != str(stored_value).casefold()
+                    if differs:
+                        conflicts.append({"field": field, "source_a": str(external_snapshot.get("source")),
+                                          "value_a": str(current_value), "source_b": snapshot.source,
+                                          "value_b": str(stored_value)})
         snapshot_section["alternate_sources"] = alternate_fields
         snapshot_section["conflicts"] = conflicts
         snapshot_section["comparison_status"] = "conflicting_values" if conflicts else "no_conflict_detected"
@@ -309,6 +283,11 @@ def _fundamentals_section(
             if field == "shares_outstanding" and value == Decimal("0"):
                 value = None
             values[field] = {"value": _number(value), "field_path": path}
+            provenance = (row.field_sources or {}).get(field)
+            if provenance and value is not None:
+                # A field filled by another provider (e.g. Screener) keeps its own source/time/basis.
+                values[field].update(source=provenance.get("source"), fetched_at=provenance.get("fetched_at"),
+                                     basis=provenance.get("basis"), derived=bool(provenance.get("derived")))
             if value is None:
                 quality.append({
                     "kind": "unavailable",
@@ -320,6 +299,17 @@ def _fundamentals_section(
                     ),
                 })
         stale = fundamentals_service.is_stale(row.fetched_at)
+        extras = dict(row.extra_metrics or {})
+        conflicts = extras.pop("screener_conflicts", None) or {}
+        for conflict_field, detail in conflicts.items():
+            quality.append({
+                "kind": "conflicting",
+                "field_path": f"{row_path}.{conflict_field}",
+                "reason": (
+                    f"{str(detail.get('source', 'screener')).capitalize()} reports {detail['screener']} but {detail['existing_source']} reports {detail['existing']} "
+                    f"({Decimal(detail['relative_diff']) * 100:.1f}% apart); the existing value was kept."
+                ),
+            })
         period_values.append({
             "period_type": row.period_type,
             "period_end": row.period_end.isoformat(),
@@ -328,6 +318,8 @@ def _fundamentals_section(
             "source": row.source,
             "fetched_at": row.fetched_at.isoformat(),
             "stale": stale,
+            "statement_basis": row.statement_basis,
+            "extra_metrics": extras,
         })
         if stale:
             quality.append({
@@ -347,6 +339,33 @@ def _fundamentals_section(
         "snapshot": snapshot_section,
         "periods": period_values,
     }, rows
+
+
+def classify_change(
+    current: Decimal | None, prior: Decimal | None
+) -> tuple[str, Decimal | None, Decimal | None]:
+    """(kind, percentage growth, absolute change) for a period-over-period comparison.
+
+    A percentage is only reported when both values are positive (or the current value is zero),
+    where it is unambiguous. Across a sign change, or from a non-positive base, a percentage
+    misleads (e.g. 37.12 -> -116.30 is "-413%"), so the kind and the absolute change are reported instead.
+    Raw values are never altered.
+    """
+    if current is None or prior is None:
+        return "unavailable", None, None
+    absolute = current - prior
+    if prior == 0:
+        return ("unchanged" if current == 0 else "from_zero"), None, absolute
+    if prior > 0:
+        if current >= 0:
+            return "growth", absolute / prior * Decimal("100"), absolute
+        return "turned_negative", None, absolute
+    if current > 0:
+        return "turned_positive", None, absolute
+    if current == 0:
+        return "turned_zero", None, absolute  # a loss/outflow that reached break-even
+    return ("both_negative_narrowed" if current > prior else "both_negative_widened" if current < prior
+            else "both_negative_unchanged"), None, absolute
 
 
 def _financial_trend_section(
@@ -386,13 +405,13 @@ def _financial_trend_section(
             current_value = getattr(row, metric)
             prior_value = getattr(previous, metric) if previous else None
             prior_path = f"{_date_path(previous)}.{metric}" if previous else None
-            growth = None
-            if current_value is not None and prior_value is not None and prior_value > 0:
-                growth = (current_value - prior_value) / abs(prior_value) * Decimal("100")
+            change_kind, growth, absolute_change = classify_change(current_value, prior_value)
             field_path = f"{current_path}.{metric}"
             values[metric] = {
                 "value": _number(current_value),
                 "year_on_year_growth_pct": _number(growth),
+                "change_kind": change_kind,
+                "absolute_change": _number(absolute_change),
                 "field_paths": [field_path] + ([prior_path] if prior_path else []),
             }
             if previous is None:
@@ -672,6 +691,34 @@ def _source_sections(
     }
 
 
+def _reconcile_dhan_snapshot(
+    fundamentals: dict[str, Any], technicals: dict[str, Any], periods: list[InstrumentFundamental], quality: list[dict[str, str]]
+) -> None:
+    """Flag (never overwrite) Dhan P/B and market cap that disagree with the current price. Needs a CURRENT verified close."""
+    snapshot = fundamentals.get("snapshot") or {}
+    if snapshot.get("source") != "dhan" or not isinstance(snapshot.get("values"), dict):
+        return
+    price = None
+    problem = (technicals.get("staleness") or {}).get("reason") or technicals.get("message") or f"technical data is {technicals.get('status')}"
+    if technicals.get("status") == "available":
+        try:
+            price = Decimal(str(technicals.get("latest_close")))
+            price = price if price > 0 else None
+        except (InvalidOperation, TypeError, ValueError):
+            price = None
+    shares_row = next((r for r in sorted(periods, key=lambda r: r.period_end, reverse=True) if r.shares_outstanding and r.shares_outstanding > 0), None)
+    result = dhan_company_info.reconcile(
+        snapshot["values"], price=price, price_problem=problem, shares=shares_row.shares_outstanding if shares_row else None,
+        shares_problem=None if shares_row else "no shares-outstanding figure is stored",
+    )
+    snapshot["reconciliation"] = result
+    for name, check in result.items():
+        if name in snapshot["values"]:
+            snapshot["values"][name]["reconciliation"] = check["status"]
+        if check["status"] == "discrepancy":
+            quality.append({"kind": "discrepancy", "field_path": f"dhan.company_info.{name}", "reason": check["reason"]})
+
+
 def render_brief(
     db: Session,
     instrument: Instrument,
@@ -695,6 +742,7 @@ def render_brief(
         db, instrument.id, quality, selected_source=selected_source
     )
     financial_trend = _financial_trend_section(periods, quality)
+    _reconcile_dhan_snapshot(fundamentals, technicals, periods, quality)
     news = _source_sections(fetched, quality)
     sentiment = sentiment_section or aggregate_instrument_sentiment(db, instrument.id, period_days=30)
     sentiment["validation_status"] = "provisional_unlabelled"
@@ -713,12 +761,22 @@ def render_brief(
         "financials_trend": financial_trend,
         "news": news,
         "news_sentiment": sentiment,
+        "shareholding": (fundamentals.get("snapshot") or {}).get("shareholding") or {
+            "status": "unavailable", "source": None, "retrieved_at": None, "reporting_period": None,
+            "reporting_period_note": "Not provided by source", "holdings": [],
+            "warnings": ["No shareholding data was retrieved (Dhan Company Info unavailable or not mapped)."]},
         "data_quality": {
             "status": "issues" if quality else "clear",
             "items": quality,
         },
         "disclaimer": DISCLAIMER,
     }
+    # One valuation evidence layer: computed first, then read by BOTH the production scoring engine and the AI Analyst.
+    try:
+        sections["valuation"] = valuation_service.build_valuation(db, instrument, sections)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("research_valuation_failed error_class=%s", type(exc).__name__)
+        sections["valuation"] = {"error": f"Valuation metrics failed ({type(exc).__name__}); other sections are unaffected."}
     # Scoring failure must never discard the evidence pack; it is reported, not swallowed.
     try:
         sections["assessment"] = build_assessment(sections, instrument_id=str(instrument.id))
@@ -843,6 +901,7 @@ def _refresh_yahoo_fundamentals(
         (InstrumentFundamental.eps.is_not(None)) | (InstrumentFundamental.total_assets.is_not(None)),
     )))
     if snapshot is not None and (snapshot_has_values or periods_have_values) and not fundamentals_service.is_stale(snapshot.fetched_at, now):
+        _refresh_yahoo_valuation_inputs(db, instrument, now)
         return "cached", None, snapshot.fetched_at.isoformat()
     try:
         providers = _providers(create_market_data_provider_chain(("yfinance",)))
@@ -860,6 +919,23 @@ def _refresh_yahoo_fundamentals(
         return "failed", str(category)[:120], None
 
 
+def _refresh_yahoo_valuation_inputs(db: Session, instrument: Instrument, now: datetime) -> None:
+    """Best effort: Yahoo's price-linked valuation inputs are usable for 3 days, so refresh them even when the statements are cached."""
+    stored = (valuation_inputs.load(db, instrument.id).get("yfinance") or {})
+    newest = max((datetime.fromisoformat(r["retrieved_at"]) for r in stored.values()), default=None)
+    if newest is not None and now - newest.astimezone(timezone.utc) < timedelta(hours=12):
+        return
+    try:
+        providers = _providers(create_market_data_provider_chain(("yfinance",)))
+        provider = next((item for item in providers if item.name == "yfinance"), None)
+        if provider is None:
+            return
+        candidate, _mapping = _resolve_provider_candidate(db, instrument, provider)
+        fundamentals_service.refresh_valuation_inputs(db, instrument, candidate.provider_symbol)
+    except (BrokerAdapterError, HTTPException, MarketDataProviderError, TimeoutError, ValueError):
+        logger.warning("yahoo_valuation_inputs_refresh_failed instrument_id=%s", instrument.id)
+
+
 def _cached_dhan_snapshot(
     db: Session, user_id: UUID, instrument_id: UUID
 ) -> dict[str, Any] | None:
@@ -868,8 +944,8 @@ def _cached_dhan_snapshot(
         return None
     section = (previous[1].sections or {}).get("fundamentals", {})
     snapshot = section.get("snapshot") if isinstance(section, dict) else None
-    if not isinstance(snapshot, dict) or snapshot.get("source") != "dhan":
-        return None
+    if not isinstance(snapshot, dict) or snapshot.get("source") != "dhan" or snapshot.get("schema_version") != dhan_company_info.SCHEMA_VERSION:
+        return None  # older cached snapshots lack shareholding and contain fields that are no longer integrated
     fetched = snapshot.get("fetched_at")
     if not fetched:
         return None
@@ -881,6 +957,122 @@ def _cached_dhan_snapshot(
     if datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc) <= timedelta(hours=24):
         return snapshot
     return None
+
+
+# ───────────── Automatic recovery of the latest completed daily candle ─────────────
+_SESSION_FETCH_LOCKS: dict[tuple[UUID, date], threading.Lock] = {}
+_SESSION_FETCH_GUARD = threading.Lock()
+_SESSION_FETCH_FAILURES: dict[tuple[UUID, date], tuple[float, dict[str, Any]]] = {}
+SESSION_FETCH_RETRY_SECONDS = 60  # do not hammer providers when a candle is not published yet
+
+
+def latest_session_candle_state(
+    db: Session, instrument: Instrument, session_date: date, source: str | None = None
+) -> str:
+    """present | incomplete | missing for the daily candle of ``session_date``.
+
+    ``present`` needs a real (non-synthetic), internally consistent OHLC row that was retrieved after that session's
+    official close. A row stored earlier is a partial candle and is NOT treated as completed.
+    """
+    start = datetime(session_date.year, session_date.month, session_date.day, tzinfo=timezone.utc)
+    query = select(MarketBar).where(
+        MarketBar.instrument_id == instrument.id, MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False),
+        MarketBar.timestamp >= start, MarketBar.timestamp < start + timedelta(days=1),
+    )
+    if source is not None:
+        query = query.where(MarketBar.source == source)
+    bars = list(db.scalars(query))
+    if not bars:
+        return "missing"
+    def consistent(bar: MarketBar) -> bool:
+        return (
+            min(bar.open, bar.high, bar.low, bar.close) > 0 and bar.high >= max(bar.open, bar.close, bar.low)
+            and bar.low <= min(bar.open, bar.close) and (bar.volume is None or bar.volume >= 0)
+        )
+    return "present" if any(consistent(b) and is_official_session_close(b, instrument, session_date) for b in bars) else "incomplete"
+
+
+def _attempt_reasons(attempts: list[Any]) -> list[dict[str, str]]:
+    return [
+        {"provider": str(getattr(a, "provider", "")), "outcome": str(getattr(a, "outcome", "")),
+         "reason": str(getattr(a, "reason", None) or getattr(a, "reason_category", None) or "")}
+        for a in attempts
+    ]
+
+
+def ensure_latest_daily_candle(
+    db: Session, instrument: Instrument, user_id: UUID, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Recover the latest completed NSE session's daily candle through the existing history-sync path.
+
+    Reuses ``sync_history`` (configured providers in their existing priority, validation, persistence, sync
+    records). Never fabricates a candle. Never raises: the caller scores with whatever is stored afterwards, so a
+    failure only leaves Technical Intelligence gated by its normal staleness rule, with the reason recorded.
+    """
+    now = now or datetime.now(timezone.utc)
+    result: dict[str, Any] = {"action": "none", "session": None, "state_before": None, "persisted": None,
+                              "provider": None, "attempts": [], "reason": None}
+    if instrument.is_synthetic or (instrument.country or "").upper() != "IN" or is_continuous_market(instrument):
+        result["reason"] = "not_applicable"
+        return result
+    session_date, basis = expected_last_completed_session(now)
+    if session_date is None:
+        result["reason"] = f"nse_calendar_unavailable:{basis}"
+        return result
+    result["session"] = session_date.isoformat()
+    source = _exclusive_selected_source(db, user_id)
+    state = latest_session_candle_state(db, instrument, session_date, source)
+    result["state_before"] = state
+    if state == "present":
+        return result  # already stored and valid: no provider request
+    key = (instrument.id, session_date)
+    with _SESSION_FETCH_GUARD:
+        lock = _SESSION_FETCH_LOCKS.setdefault(key, threading.Lock())
+    with lock:  # one fetch per instrument and session; concurrent runs wait, then re-check the store
+        if latest_session_candle_state(db, instrument, session_date, source) == "present":
+            result.update(action="none", persisted=True, reason="stored_by_concurrent_request")
+            return result
+        failed = _SESSION_FETCH_FAILURES.get(key)
+        if failed is not None and time.monotonic() - failed[0] < SESSION_FETCH_RETRY_SECONDS:
+            return {**failed[1], "reason": f"{failed[1]['reason']} (retry suppressed for {SESSION_FETCH_RETRY_SECONDS}s)"}
+        result["action"] = "fetch"
+        attempts: list[dict[str, str]] = []
+        try:
+            user = db.get(User, user_id)
+            provider = market_data_provider_for_user(db, user_id)
+            start = datetime.combine(session_date - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
+            response = sync_history(
+                instrument_id=instrument.id, start=start, end=now, background_tasks=None, interval="1d",
+                limit=MAX_BARS, provider=provider, _user=user, db=db,
+            )
+            attempts = _attempt_reasons(response.provider_attempts)
+            result["provider"] = next((a["provider"] for a in attempts if a["outcome"] == "used"), None)
+        except HTTPException as exc:
+            db.rollback()
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            attempts = [{"provider": str(p.get("provider")), "outcome": "unavailable", "reason": str(p.get("reason"))}
+                        for p in detail.get("providers", []) if isinstance(p, dict)]
+            result["reason"] = str(detail.get("message") or detail.get("stage") or f"HTTP {exc.status_code}")
+        except (MarketDataProviderError, BrokerAdapterError, TimeoutError, ValueError) as exc:
+            db.rollback()
+            result["reason"] = f"{type(exc).__name__}: {getattr(exc, 'code', None) or str(exc)}"[:200]
+        result["attempts"] = attempts
+        db.expire_all()  # re-read what the sync persisted
+        after = latest_session_candle_state(db, instrument, session_date, source)
+        result["persisted"] = after == "present"
+        if after == "present":
+            result["reason"] = None
+            _SESSION_FETCH_FAILURES.pop(key, None)
+            return result
+        problems = "; ".join(f"{a['provider']}: {a['reason'] or a['outcome']}" for a in attempts if a["outcome"] != "used") or "no provider returned the candle"
+        result["action"] = "failed"
+        result["reason"] = (
+            f"Latest completed NSE session {session_date.isoformat()} candle could not be stored "
+            f"({'only a partial candle exists' if after == 'incomplete' else 'no candle returned'}): "
+            f"{result['reason'] + ' - ' if result['reason'] else ''}{problems}"
+        )[:600]
+        _SESSION_FETCH_FAILURES[key] = (time.monotonic(), dict(result))
+        return result
 
 
 def _execute_instrument_research(
@@ -895,6 +1087,15 @@ def _execute_instrument_research(
         db.commit()
         return run, None
     if not _progress_event(db, run, "checking_existing_data", "running", "Inspecting stored market, financial, news and sentiment data."):
+        return run, None
+    # Recover a missing latest completed session candle BEFORE scoring; a failure never blocks the run.
+    recovery = ensure_latest_daily_candle(db, instrument, run.user_id)
+    if recovery["action"] != "none" and not _progress_event(
+        db, run, "market_data_recovery", "completed" if recovery["persisted"] else "failed",
+        (f"Latest completed session {recovery['session']} candle {'fetched and stored' if recovery['persisted'] else 'not recovered'}"
+         + (f" via {recovery['provider']}." if recovery["provider"] else ".")) if recovery["persisted"] else (recovery["reason"] or "Candle not recovered."),
+        source=recovery["provider"], validation_status="persisted" if recovery["persisted"] else "failed",
+    ):
         return run, None
     latest_sync = db.scalar(select(MarketDataSync).where(
         MarketDataSync.instrument_id == instrument.id, MarketDataSync.interval == "1d"
@@ -918,7 +1119,7 @@ def _execute_instrument_research(
     technical_state = "missing" if latest_bar is None else "stale" if bar_age > timedelta(days=7) else "cached"
     _progress_event(
         db, run, "technical_intelligence", technical_state,
-        "Using existing daily bars; the existing market-data history-sync endpoint handles missing bars before this run.",
+        "Using stored daily bars (the latest completed session is recovered through the existing history sync first).",
         source=latest_bar.source if latest_bar else None,
         retrieved_at=latest_bar.retrieved_at.isoformat() if latest_bar else None,
         validation_status="stored" if latest_bar else "missing",
@@ -990,6 +1191,13 @@ def _execute_instrument_research(
         external_snapshot=external_snapshot, external_reason=external_reason,
         sentiment_section=sentiment,
     )
+    sections["technicals"]["latest_session_recovery"] = recovery
+    if recovery["action"] == "failed":
+        quality.append({
+            "kind": "failed_fetch", "field_path": "market_bars[interval=1d].latest_session",
+            "reason": recovery["reason"], "stage": "latest_candle_recovery",
+        })
+        sections["data_quality"]["status"] = "issues"
     nse_filings_count = db.scalar(select(func.count()).select_from(NewsItem).where(
         NewsItem.instrument_id == instrument.id, NewsItem.source == "nse"
     )) or 0

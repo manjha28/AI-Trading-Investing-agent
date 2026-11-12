@@ -1,5 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 import json
 
 from fastapi.encoders import jsonable_encoder
@@ -267,14 +269,74 @@ def test_horizon_weights_sum_to_one_and_are_stored():
     assert assessment["validation"]["status"] == "provisional" and assessment["validation"]["backtested"] is False
 
 
-def test_horizon_calculation_and_intraday_blocker():
+def test_research_supports_only_swing_positional_and_long_term_with_the_0_2_0_weights():
+    assert rs.HORIZONS == ("swing", "positional", "long_term")
+    assert set(rs.HORIZON_WEIGHTS) == set(rs.HORIZON_LABELS) == set(rs.REQUIRED_COMPONENTS) == set(rs.HORIZONS)
+    assert rs.MODEL_VERSION == "research-score-0.2.0-provisional"
+    assert rs.HORIZON_WEIGHTS["swing"] == {"fundamental": 0.1425, "technical": 0.38, "financial_trends": 0.19, "news_sentiment": 0.2375, "valuation": 0.05}
+    assert rs.HORIZON_WEIGHTS["positional"] == {"fundamental": 0.2125, "technical": 0.2125, "financial_trends": 0.255, "news_sentiment": 0.17, "valuation": 0.15}
+    assert rs.HORIZON_WEIGHTS["long_term"] == {"fundamental": 0.32, "technical": 0.08, "financial_trends": 0.28, "news_sentiment": 0.12, "valuation": 0.20}
     a = rs.build_assessment(sections(sentiment=good_sentiment()), instrument_id="I1", now=NOW)
-    comps = a["components"]
-    swing = a["horizons"]["swing"]
-    expected = sum(rs.HORIZON_WEIGHTS["swing"][k] * comps[k]["score"] for k in comps)
-    assert abs(swing["score"] - expected) < 0.11
-    assert a["horizons"]["intraday"]["recommendation"] == "INSUFFICIENT_EVIDENCE"
-    assert "intraday" in a["horizons"]["intraday"]["blockers"][0].lower()
+    assert set(a["horizons"]) == {"swing", "positional", "long_term"} and set(a["weights"]) == {"swing", "positional", "long_term"}
+    assert "intraday" not in json.dumps(a).lower()
+    assert a["components"]["valuation"]["status"] == "blocked" and a["horizons"]["swing"]["excluded_optional"] == ["valuation"]
+
+
+def test_blocked_valuation_leaves_scores_confidence_and_recommendations_identical_to_model_0_1_0():
+    a = rs.build_assessment(sections(sentiment=good_sentiment()), instrument_id="I1", now=NOW)
+    scored = {k: c for k, c in a["components"].items() if c["status"] == "scored"}
+    assert "valuation" not in scored
+    for horizon, old in rs.HORIZON_WEIGHTS_V0_1_0.items():
+        total = sum(old[k] for k in scored)
+        expected_score = sum(old[k] * scored[k]["score"] for k in scored) / total
+        expected_conf = sum(old[k] * scored[k]["confidence"] for k in scored)
+        h = a["horizons"][horizon]
+        assert abs(h["score"] - expected_score) < 0.11 and abs(h["confidence"] - expected_conf) < 0.11, horizon
+
+
+def _scored_valuation(score_rank="20"):
+    def m(key, label):
+        return {"key": key, "label": label, "status": "calculated", "value": "10.00", "unit": "x", "origin": "calculated", "provider": None, "freshness": "current", "reason": None}
+    metrics = {"pe_ttm": m("pe_ttm", "P/E"), "pb": m("pb", "P/B"), "price_to_sales": m("price_to_sales", "P/S")}
+    peers = {k: {"status": "compared", "peer_count": 12, "percentile_rank": score_rank, "origin": "calculated"} for k in metrics}
+    return {"model_version": "v", "price": {"current": True}, "metrics": metrics, "peer_comparison": {"metrics": peers}, "sector": "Technology", "industry": "Software"}
+
+
+def test_valuation_contributes_to_horizon_scores_when_peer_evidence_is_sufficient():
+    base = rs.build_assessment(sections(sentiment=good_sentiment()), instrument_id="I1", now=NOW)
+    cheap = sections(sentiment=good_sentiment())
+    cheap["valuation"] = _scored_valuation("10")
+    dear = sections(sentiment=good_sentiment())
+    dear["valuation"] = _scored_valuation("95")
+    a_cheap = rs.build_assessment(cheap, instrument_id="I1", now=NOW)
+    a_dear = rs.build_assessment(dear, instrument_id="I1", now=NOW)
+    comp = a_cheap["components"]["valuation"]
+    assert comp["status"] == "scored" and comp["score"] > 85 and comp["confidence"] > 0 and comp["interpretation"] == "attractive"
+    assert a_dear["components"]["valuation"]["score"] < 15
+    for horizon in rs.HORIZONS:
+        assert a_cheap["horizons"][horizon]["excluded_optional"] == []
+        assert any(c["component"] == "valuation" for c in a_cheap["horizons"][horizon]["contributions"])
+        assert a_cheap["horizons"][horizon]["score"] > a_dear["horizons"][horizon]["score"]
+    # long-term carries the most valuation weight, swing the least
+    gap = {h: a_cheap["horizons"][h]["score"] - a_dear["horizons"][h]["score"] for h in rs.HORIZONS}
+    assert gap["long_term"] > gap["positional"] > gap["swing"] > 0
+    assert base["horizons"]["swing"]["excluded_optional"] == ["valuation"]
+
+
+def test_valuation_never_turns_a_blocked_or_gated_recommendation_into_buy():
+    secs = sections(sentiment=good_sentiment(), technicals=tech("stale", staleness={"reason": "stale"}))
+    secs["valuation"] = _scored_valuation("5")
+    a = rs.build_assessment(secs, instrument_id="I1", now=NOW)
+    assert a["horizons"]["swing"]["recommendation"] == "INSUFFICIENT_EVIDENCE"
+    assert a["horizons"]["long_term"]["recommendation"] != "BUY"  # price_not_current gate still applies
+
+
+def test_missing_negative_or_stale_valuation_is_blocked_not_zero_or_neutral():
+    secs = sections(sentiment=good_sentiment())
+    for bad in (None, {"error": "x"}, {**_scored_valuation(), "price": {"current": False}}):
+        secs["valuation"] = bad
+        comp = rs.build_assessment(secs, instrument_id="I1", now=NOW)["components"]["valuation"]
+        assert comp["status"] == "blocked" and comp["score"] is None and comp["blockers"]
 
 
 def test_stale_technicals_block_swing_and_downgrade_long_term_buy_to_wait():
@@ -331,3 +393,85 @@ def test_staleness_detects_missing_session_and_avoids_false_weekend_stale():
 def test_non_indian_or_continuous_market_uses_age_limit():
     result = rs.daily_bar_staleness(datetime(2026, 11, 1, tzinfo=timezone.utc), NOW, country="US", continuous=False, age_limit_seconds=172800)
     assert result["basis"] == "age_limit" and result["stale"]
+
+
+# ───────────── sign-crossing YoY presentation ─────────────
+from decimal import Decimal  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from app.services.research_pipeline import _financial_trend_section, classify_change  # noqa: E402
+
+D = Decimal
+
+
+@pytest.mark.parametrize("current,prior,kind,pct,absolute", [
+    # positive -> positive: ordinary percentage growth
+    ("150", "100", "growth", "50", "50"),
+    ("50", "100", "growth", "-50", "-50"),
+    ("0", "100", "growth", "-100", "-100"),
+    # Rama Steel Tubes FCF: 37.12 Cr -> -116.30 Cr must NOT be presented as -413.4%
+    ("-1163000000", "371200000", "turned_negative", None, "-1534200000"),
+    ("-5", "10", "turned_negative", None, "-15"),
+    # negative -> positive
+    ("40", "-10", "turned_positive", None, "50"),
+    # negative -> negative: no conventional percentage; direction + absolute change instead
+    ("-5", "-10", "both_negative_narrowed", None, "5"),
+    ("-20", "-10", "both_negative_widened", None, "-10"),
+    ("-10", "-10", "both_negative_unchanged", None, "0"),
+    ("0", "-10", "turned_zero", None, "10"),
+    # zero base
+    ("25", "0", "from_zero", None, "25"),
+    ("-25", "0", "from_zero", None, "-25"),
+    ("0", "0", "unchanged", None, "0"),
+])
+def test_classify_change_covers_every_sign_case(current, prior, kind, pct, absolute):
+    got_kind, got_pct, got_abs = classify_change(D(current), D(prior))
+    assert got_kind == kind
+    assert (got_pct is None) if pct is None else got_pct == D(pct)
+    assert got_abs == D(absolute)
+
+
+@pytest.mark.parametrize("current,prior", [(None, D("1")), (D("1"), None), (None, None)])
+def test_missing_values_are_unavailable_never_zero(current, prior):
+    assert classify_change(current, prior) == ("unavailable", None, None)
+
+
+def _fund(year, **values):
+    base = dict(revenue=None, net_income=None, eps=None, free_cash_flow=None)
+    base.update(values)
+    return SimpleNamespace(period_type="annual", period_end=date(year, 3, 31), currency="INR", **base)
+
+
+def test_trend_section_reports_kind_and_absolute_change_and_keeps_raw_values():
+    rows = [_fund(2025, revenue=D("1000"), net_income=D("50"), eps=D("-2"), free_cash_flow=D("371200000")),
+            _fund(2026, revenue=D("1200"), net_income=D("-30"), eps=D("3"), free_cash_flow=D("-1163000000"))]
+    quality: list = []
+    latest = next(p for p in _financial_trend_section(rows, quality)["periods"] if p["period_end"] == "2026-03-31")["values"]
+    assert latest["revenue"]["change_kind"] == "growth" and D(latest["revenue"]["year_on_year_growth_pct"]) == D("20")
+    assert latest["net_income"]["change_kind"] == "turned_negative" and latest["net_income"]["year_on_year_growth_pct"] is None
+    assert latest["net_income"]["absolute_change"] == "-80" and latest["net_income"]["value"] == "-30"
+    assert latest["eps"]["change_kind"] == "turned_positive" and latest["eps"]["absolute_change"] == "5"
+    fcf = latest["free_cash_flow"]
+    assert fcf["change_kind"] == "turned_negative" and fcf["year_on_year_growth_pct"] is None
+    assert fcf["value"] == "-1163000000" and fcf["absolute_change"] == "-1534200000"  # raw figures preserved
+    first = next(p for p in _financial_trend_section(rows, []) ["periods"] if p["period_end"] == "2025-03-31")["values"]
+    assert first["revenue"]["change_kind"] == "unavailable" and first["revenue"]["absolute_change"] is None  # no prior period
+
+
+def test_scoring_treats_turned_negative_exactly_like_the_old_large_negative_percentage():
+    def trend(item):
+        return {"status": "available", "periods": [{"period_type": "annual", "period_end": "2025-03-31", "currency": "INR",
+                "values": {k: item for k in ("revenue", "net_income", "eps", "free_cash_flow")}}]}
+
+    old = rs.score_financial_trends(trend({"value": "1", "year_on_year_growth_pct": "-413.4", "field_paths": []}), {"periods": []})
+    new = rs.score_financial_trends(trend({"value": "1", "year_on_year_growth_pct": None, "change_kind": "turned_negative",
+                                           "absolute_change": "-153", "field_paths": []}), {"periods": []})
+    assert [f["sub_score"] for f in new["factors"]] == [f["sub_score"] for f in old["factors"]] and new["score"] == old["score"]
+
+
+@pytest.mark.parametrize("kind", ["turned_positive", "both_negative_narrowed", "both_negative_widened", "from_zero", "unavailable"])
+def test_other_sign_cases_stay_out_of_the_percentage_score_as_before(kind):
+    item = {"value": "1", "year_on_year_growth_pct": None, "change_kind": kind, "absolute_change": "5", "field_paths": []}
+    trend = {"status": "available", "periods": [{"period_type": "annual", "period_end": "2025-03-31", "currency": "INR",
+                                                 "values": {"revenue": item, "net_income": item}}]}
+    assert rs.score_financial_trends(trend, {"periods": []})["status"] == "blocked"

@@ -15,6 +15,10 @@ from app.api.delta_research import router as delta_research_router
 from app.delta_research.collector import delta_research_manager
 from app.api.position_theses import router as position_theses_router
 from app.api.strategies import router as strategies_router
+from app.api.signals_lab import router as signals_lab_router
+from app.api.costs import router as costs_router
+from app.api.derivatives import router as derivatives_router
+from app.services import fundamentals_feed
 from app.api.market_stream import router as market_stream_router
 from app.api.research import router as research_router
 from app.api.health import router as health_router
@@ -77,6 +81,12 @@ async def lifespan(_app: FastAPI):
     delta_task = None
     dhan_capture_task = None
     sentiment_task = None
+    fundamentals_task = None
+    derivatives_tasks: list = []
+    jobs_task = None
+    if settings.job_worker_enabled and "pytest" not in sys.modules:
+        from app.jobs_worker import job_worker_loop
+        jobs_task = asyncio.create_task(job_worker_loop())
     if "pytest" not in sys.modules:
         snapshot_task = asyncio.create_task(portfolio_snapshot_loop())
         dhan_capture_task = asyncio.create_task(dhan_backend_capture_loop())
@@ -84,11 +94,22 @@ async def lifespan(_app: FastAPI):
         sentiment_task = asyncio.create_task(news_sentiment_processing_loop())
     if settings.market_data_scheduler_enabled and "pytest" not in sys.modules:
         scheduler_task = asyncio.create_task(market_data_refresh_loop())
+    if fundamentals_feed.feed_configured() and "pytest" not in sys.modules:
+        fundamentals_task = asyncio.create_task(fundamentals_feed.fundamentals_collection_loop())
+    if "pytest" not in sys.modules:
+        from app import derivatives_scheduler
+        if settings.derivatives_scheduler_enabled:
+            derivatives_tasks.append(asyncio.create_task(derivatives_scheduler.master_refresh_loop()))
+        if settings.derivatives_chain_poll_enabled:
+            derivatives_tasks.append(asyncio.create_task(derivatives_scheduler.chain_polling_loop()))
     if settings.delta_research_enabled and "pytest" not in sys.modules:
         delta_task = asyncio.create_task(delta_research_manager.start())
     try:
         yield
     finally:
+        # Correlates upstream socket closes in the logs: a close right after this line is our own
+        # shutdown (including uvicorn --reload), not an upstream failure.
+        logging.getLogger(__name__).info("Application shutdown: closing upstream market-data WebSockets (not an upstream failure)")
         if dhan_capture_task is not None:
             dhan_capture_task.cancel()
             try:
@@ -96,8 +117,20 @@ async def lifespan(_app: FastAPI):
             except asyncio.CancelledError:
                 pass
         await dhan_live_feed_hub.stop()
+        for task in derivatives_tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         if delta_task is not None:
             await delta_research_manager.stop()
+        if jobs_task is not None:
+            jobs_task.cancel()
+            try:
+                await jobs_task
+            except asyncio.CancelledError:
+                pass
         if scheduler_task is not None:
             scheduler_task.cancel()
             try:
@@ -114,6 +147,12 @@ async def lifespan(_app: FastAPI):
             alert_task.cancel()
             try:
                 await alert_task
+            except asyncio.CancelledError:
+                pass
+        if fundamentals_task is not None:
+            fundamentals_task.cancel()
+            try:
+                await fundamentals_task
             except asyncio.CancelledError:
                 pass
         if sentiment_task is not None:
@@ -153,6 +192,9 @@ app.include_router(research_router, prefix="/api/v1")
 app.include_router(position_theses_router, prefix="/api/v1")
 app.include_router(delta_research_router, prefix="/api/v1")
 app.include_router(strategies_router, prefix="/api/v1")
+app.include_router(signals_lab_router, prefix="/api/v1")
+app.include_router(costs_router, prefix="/api/v1")
+app.include_router(derivatives_router, prefix="/api/v1")
 app.include_router(market_stream_router, prefix="/api/v1")
 
 

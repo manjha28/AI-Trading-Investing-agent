@@ -106,7 +106,7 @@ type BrokerRow = {
   synced_at: string;
 };
 
-type DhanHolding = BrokerRow & { isin: string | null; live_valuation: RowValuation };
+type DhanHolding = BrokerRow & { isin: string | null; live_valuation: RowValuation; sold_today_quantity?: string; effective_quantity?: string };
 
 type DhanPosition = BrokerRow & {
   position_type: string | null;
@@ -190,6 +190,13 @@ type BrokerPortfolioSummary = {
     market_value: string | null;
     synced_at: string | null;
     unavailable_reasons: Partial<Record<PortfolioFigure, string>>;
+    coverage?: {
+      priced: number;
+      total: number;
+      partial: boolean;
+      note: string | null;
+      excluded: { symbol: string; kind: string | null; reason: string; broker_unrealized_profit: string | null }[];
+    } | null;
     provenance: Partial<Record<PortfolioFigure, FigureProvenance>>;
   }[];
   value_comparison?: {
@@ -298,11 +305,12 @@ function Skeleton({ width = '6rem' }: { width?: string }) {
   return <span className="skeleton" role="status" aria-busy="true" aria-label="Loading" style={{ width }} />;
 }
 
-function UnavailableValue({ reason }: { reason: string }) {
+function UnavailableValue({ reason, inline = false }: { reason: string; inline?: boolean }) {
   return (
     <span className="portfolio-unavailable" title={reason} aria-label={`Not available: ${reason}`}>
       <Info size={13} aria-hidden="true" />
       <span>Not available</span>
+      {inline && <small className="portfolio-unavailable-reason">{reason}</small>}
     </span>
   );
 }
@@ -798,6 +806,10 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     }
     return row.provider_timestamp ? ` · provider ${new Date(row.provider_timestamp).toLocaleString()}` : '';
   };
+  const priceCoverage = dhanBroker?.coverage ?? null;
+  const coverageNote = priceCoverage?.partial && priceCoverage.excluded.length > 0
+    ? `Excludes ${priceCoverage.excluded.length} ${priceCoverage.excluded.length === 1 ? 'row' : 'rows'}: ${priceCoverage.excluded.map((item) => `${item.symbol} (no usable price)`).join(', ')}`
+    : null;
   const reasonFor = (field: PortfolioFigure) =>
     dhanBroker?.unavailable_reasons[field] ?? `No broker snapshot is available for ${FIGURE_LABELS[field].toLowerCase()}.`;
 
@@ -883,6 +895,16 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     return resolvedPriceText(resolved, age, dhanPortfolio?.market_session?.venue);
   };
 
+  const quantityCell = (holding: DhanHolding) => {
+    const sold = Number(holding.sold_today_quantity ?? 0);
+    if (!sold) return formatQuantity(holding.quantity);
+    return (
+      <>
+        {formatQuantity(holding.quantity)} held · -{formatQuantity(holding.sold_today_quantity ?? '0')} sold today · <strong>{formatQuantity(holding.effective_quantity ?? '0')} effective</strong>
+        <small className="trade-subtext">The sale settles T+1; Dhan keeps reporting the full quantity until then. Value uses the effective quantity.</small>
+      </>
+    );
+  };
   const holdingsTable = (rows: DhanHolding[]) => (
     <div className="table-scroll"><table>
       <thead><tr>
@@ -895,7 +917,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
         return (
           <tr key={`${holding.security_id}-${holding.exchange}`}>
             <td className="instrument-cell">{holding.symbol}<small className="trade-subtext">{holding.exchange}{holding.exchange_resolution_reason ? ` · ${holding.exchange_resolution_reason}` : ''}</small></td>
-            <td>{formatQuantity(holding.quantity)}</td>
+            <td>{quantityCell(holding)}</td>
             <td>{holding.average_price !== null ? money(holding.average_price) : <UnavailableValue reason="The broker did not supply an average cost." />}</td>
             <td>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} />}{hasPrice && valued.as_of && <small className="trade-subtext">{istStamp(valued.as_of)}{valued.source ? ` · ${valued.source}` : ''}</small>}</td>
             <td>{valued.market_value !== null ? money(valued.market_value) : '—'}</td>
@@ -923,7 +945,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
             <td>{formatQuantity(position.quantity)}</td>
             <td>{position.average_price !== null ? money(position.average_price) : '—'}</td>
             <td className={tone(position.realized_profit)}>{position.realized_profit !== null ? signedMoney(position.realized_profit) : '—'}</td>
-            <td>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} />}</td>
+            <td>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} inline />}</td>
             <td>{valued.market_value !== null ? money(valued.market_value) : '—'}</td>
             <td className={tone(valued.unrealized_profit)}>{valued.unrealized_profit !== null ? signedMoney(valued.unrealized_profit) : '—'}</td>
             <td>{basisCell(valued)}</td>
@@ -986,7 +1008,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           value={totals?.market_value ?? null}
           loading={dhanLoading}
           reason={reasonFor('market_value')}
-          subline={totals?.invested_cost != null ? `Invested ${money(totals.invested_cost)}` : undefined}
+          subline={coverageNote ?? (totals?.invested_cost != null ? `Invested ${money(totals.invested_cost)}` : undefined)}
           basis={cardBasis(dhanBroker, 'market_value', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
         />
         <MetricCard
@@ -994,6 +1016,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           value={totals?.unrealized_pnl ?? null}
           loading={dhanLoading}
           reason={reasonFor('unrealized_pnl')}
+          subline={coverageNote ?? undefined}
           basis={cardBasis(dhanBroker, 'unrealized_pnl', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
           signed
         />
@@ -1002,7 +1025,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           value={totals?.day_change ?? null}
           loading={dhanLoading}
           reason={reasonFor('day_change')}
-          subline={dhanBroker?.unavailable_reasons.day_change ?? 'Complete across all holdings and positions'}
+          subline={coverageNote ?? dhanBroker?.unavailable_reasons.day_change ?? 'Complete across all holdings and positions'}
           basis={cardBasis(dhanBroker, 'day_change', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
           signed
         />

@@ -1,0 +1,52 @@
+{
+ "source": "Real Dhan Company Info response captured 2026-11-05 (audit)",
+ "request": {
+  "securityId": "2792",
+  "exchangeSegment": "NSE_EQ",
+  "instrument": "EQUITY",
+  "metrics": [
+   "CO",
+   "RATIOS",
+   "SHP"
+  ]
+ },
+ "response": {
+  "securityId": "2792",
+  "data": {
+   "CO": {
+    "MARKET_CAP": 2418.6836820549997,
+    "INDUSTRY": "Leisure Services",
+    "SECTOR": "Consumer Services",
+    "DIVIDEND_YIELD": 1.64,
+    "EPS": -0.11,
+    "EBITDA": 22.9,
+    "BOOK_VALUE": 2.81,
+    "FIFTY_TWO_WEEK_HIGH": 10.6,
+    "FIFTY_TWO_WEEK_LOW": 5.1
+   },
+   "RATIOS": {
+    "PE_RATIO": -40.8,
+    "PB_RATIO": 2.18,
+    "DEBT_TO_EQUITY": 0.05,
+    "PE_TO_SECTOR_PE": -2.833333333333333,
+    "ROE": null,
+    "ROCE": -4.91,
+    "INDUSTRY_EPS": 5.95,
+    "INDUSTRY_DEBT_TO_EQUITY": 0.27,
+    "INDUSTRY_PB_RATIO": 2.07,
+    "INDUSTRY_CURRENT_RATIO": 2.21,
+    "INDUSTRY_DIVIDEND_YIELD": 0.68,
+    "INDUSTRY_OPERATING_MARGIN": 15.82
+   },
+   "SHP": {
+    "REPORTING_PERIOD": null,
+    "PROMOTER_HOLDING": 43.56,
+    "DII_HOLDING": 1.89,
+    "CHANGE_IN_DII_HOLDING": -0.10000000000000009,
+    "FII_HOLDING": 5.39,
+    "CHANGE_IN_FII_HOLDING": -0.5700000000000003,
+    "PUBLIC_HOLDING": 41.33
+   }
+  }
+ }
+}

@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
-import { apiRequest } from '../api';
+import { ApiRequestError, apiRequest } from '../api';
+import { formatChange } from '../lib/formatChange';
 import { formatMoney } from '../lib/formatMoney';
 import { CandleChart, sessionCloseForVenue } from '../components/CandleChart';
 import type {
-  Assessment, Brief, ComponentKey, FundamentalPeriod, HorizonKey, Instrument, QualityItem, ScoreComponent,
+  AiAnalysis, AiStatus, AiValuationView, Assessment, Shareholding, PeerMetric, Valuation, ValuationMetric, Brief, ComponentKey, FundamentalPeriod, HorizonKey, Instrument, QualityItem, ScoreComponent,
   SentimentEvent, SentimentHistoryPoint,
 } from './researchTypes';
 
-const HORIZON_ORDER: HorizonKey[] = ['intraday', 'swing', 'positional', 'long_term'];
-const HORIZON_LABEL: Record<HorizonKey, string> = { intraday: 'Intraday', swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
-const COMPONENT_ORDER: ComponentKey[] = ['fundamental', 'financial_trends', 'technical', 'news_sentiment'];
-const TABS = ['Overview', 'Fundamentals', 'Financial Statements', 'Technical Analysis', 'News', 'Sentiment', 'Risks & Scenarios', 'Data Quality / Sources'] as const;
+const HORIZON_ORDER: HorizonKey[] = ['swing', 'positional', 'long_term'];
+const HORIZON_LABEL: Record<HorizonKey, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
+const COMPONENT_ORDER: ComponentKey[] = ['fundamental', 'financial_trends', 'technical', 'news_sentiment', 'valuation'];
+// Briefs made before model 0.2.0 have no valuation component: show only the components the stored assessment really has.
+const presentKeys = (assessment: Assessment) => COMPONENT_ORDER.filter((key) => assessment.components[key]);
+const TABS = ['Overview', 'Fundamentals', 'Valuation', 'Shareholding', 'Financial Statements', 'Technical Analysis', 'News', 'Sentiment', 'Risks & Scenarios', 'Data Quality / Sources'] as const;
 type Tab = (typeof TABS)[number];
 
 export function plainText(value: string | null | undefined): string {
@@ -36,7 +39,7 @@ const REC_TEXT: Record<string, string> = {
 
 function ScoreBar({ score }: { score: number | null }) {
   return <div className={`rt-bar rt-${tone(score)}`} role="img" aria-label={score === null ? 'No score' : `Score ${score} of 100`}>
-    <span style={{ width: `${score ?? 0}%` }} />
+    {score != null && <span style={{ width: `${score}%` }} />}
   </div>;
 }
 
@@ -55,7 +58,8 @@ function ComponentCard({ component, weight }: { component: ScoreComponent; weigh
       <dl className="rt-meta"><div><dt>Confidence</dt><dd>{num(component.confidence, 0)}%</dd></div><div><dt>Data coverage</dt><dd>{num(component.coverage_pct, 0)}%</dd></div></dl>
       <ul className="rt-factors">{component.factors.slice(0, 4).map((f) => <li key={f.key}><span>{f.label}</span><b>{num(f.value, 2)}{f.unit && f.unit !== '' && !f.unit.startsWith('(') && !f.unit.startsWith('of') ? ` ${f.unit}` : ''}</b></li>)}</ul>
     </> : <div className="rt-blocked"><strong>Not scored</strong><span>Coverage {component.coverage_pct === null ? 'unknown' : `${num(component.coverage_pct, 0)}%`}</span></div>}
-    <Reasons title="Blocked because" items={component.blockers} kind="block" />
+    {component.blockers.length > 0 && <details className="rt-blocked-why"><summary>Blocked: {component.blockers[0]}</summary>
+      {component.blockers.length > 1 && <ul>{component.blockers.slice(1).map((b) => <li key={b}>{b}</li>)}</ul>}</details>}
     <Reasons title="Conflicting evidence" items={component.conflicts} kind="warn" />
     <Reasons title="Missing evidence" items={component.missing.slice(0, 3)} kind="info" />
     {component.missing.length > 3 && <details className="rt-more"><summary>{component.missing.length - 3} more missing items</summary><ul>{component.missing.slice(3).map((m) => <li key={m}>{m}</li>)}</ul></details>}
@@ -129,10 +133,10 @@ function AssessmentPanel({ brief, instrument, horizon, onHorizon }: {
         <h3>How {HORIZON_LABEL[horizon]} is weighted</h3>
         <div className="rt-table-wrap"><table className="rt-table">
           <thead><tr><th>Dimension</th><th>Weight</th><th>Used</th><th>Score</th></tr></thead>
-          <tbody>{COMPONENT_ORDER.map((key) => {
+          <tbody>{presentKeys(assessment).map((key) => {
             const c = assessment.components[key];
             const used = h.contributions.find((x) => x.component === key);
-            return <tr key={key}><td>{c.label.replace(' Intelligence', '')}</td><td>{Math.round(h.weights[key] * 100)}%</td>
+            return <tr key={key}><td>{c.label.replace(' Intelligence', '')}</td><td>{h.weights[key] === undefined ? '—' : `${Math.round(h.weights[key] * 100)}%`}</td>
               <td>{used ? `${Math.round(used.effective_weight * 100)}%` : 'excluded'}</td><td>{c.score === null ? 'blocked' : num(c.score, 1)}</td></tr>;
           })}</tbody>
         </table></div>
@@ -141,7 +145,7 @@ function AssessmentPanel({ brief, instrument, horizon, onHorizon }: {
       </div>
     </div>
     <p className="rt-provisional"><b>Provisional model</b> ({assessment.model_version}). {assessment.validation.statement} Not backtested. Decision support, not investment advice.</p>
-    <div className="rt-component-grid">{COMPONENT_ORDER.map((key) => <ComponentCard key={key} component={assessment.components[key]} weight={h.weights[key]} />)}</div>
+    <div className="rt-component-grid">{presentKeys(assessment).map((key) => <ComponentCard key={key} component={assessment.components[key]} weight={h.weights[key]} />)}</div>
   </section>;
 }
 
@@ -180,12 +184,13 @@ function StatementsTable({ brief }: { brief: Brief }) {
         {STATEMENT_ROWS.map(([key, label, money]) => <tr key={key}><th scope="row">{label}</th>{periods.map((p) => {
           const raw = p.values[key]?.value ?? null;
           if (key === 'shares_outstanding' && raw !== null && Number(raw) === 0) return <td key={p.period_end}>—</td>;
-          return <td key={p.period_end} title={raw === null ? undefined : `Stored value: ${raw}`}>{money ? formatMoney(raw, p.currency) : num(raw, 2)}</td>;
+          return <td key={p.period_end} title={raw === null ? undefined : `Stored value: ${raw}${p.values[key]?.source ? ` · filled from ${p.values[key]?.source}${p.values[key]?.basis ? ` (${p.values[key]?.basis})` : ''}${p.values[key]?.derived ? ', derived' : ''}` : ''}`}>{money ? formatMoney(raw, p.currency) : num(raw, 2)}</td>;
         })}</tr>)}
         <tr className="rt-subhead"><th colSpan={periods.length + 1}>Year-on-year growth</th></tr>
         {(['revenue', 'net_income', 'eps', 'free_cash_flow'] as const).map((key) => <tr key={`g-${key}`}><th scope="row">{words(key)}</th>{periods.map((p) => {
-          const g = trend.get(p.period_end)?.values[key]?.year_on_year_growth_pct ?? null;
-          return <td key={p.period_end} className={g !== null ? (Number(g) >= 0 ? 'rt-pos' : 'rt-neg') : ''}>{g === null ? '—' : `${num(g, 1)}%`}</td>;
+          const view = formatChange(trend.get(p.period_end)?.values[key], { money: key !== 'eps', currency: p.currency });
+          return <td key={p.period_end} className={view.tone === 'pos' ? 'rt-pos' : view.tone === 'neg' ? 'rt-neg' : ''}>
+            {view.text}{view.detail && <small className="rt-change-detail">{view.detail}</small>}</td>;
         })}</tr>)}
       </tbody>
     </table></div>}
@@ -244,8 +249,244 @@ function EventRow({ event }: { event: SentimentEvent }) {
   </article>;
 }
 
-export function ResearchBriefView({ brief, instrument, horizon = 'positional', onHorizon, sentimentHistory = [] }: {
-  brief: Brief; instrument?: Instrument | null; horizon?: HorizonKey; onHorizon?: (h: HorizonKey) => void; sentimentHistory?: SentimentHistoryPoint[];
+
+const AI_REC: Record<string, string> = { ...REC_TEXT, SELL: 'Sell-leaning' };
+
+const AI_LIST_LIMIT = 3;
+function AiList({ title, items, limit = AI_LIST_LIMIT }: { title: string; items: string[]; limit?: number }) {
+  const [all, setAll] = useState(false);
+  if (!items.length) return null;
+  const shown = all ? items : items.slice(0, limit);
+  return <div className="rt-ai-list"><h5>{title}</h5><ul>{shown.map((item) => <li key={item}>{item}</li>)}</ul>
+    {items.length > limit && <button type="button" className="rt-toggle" aria-expanded={all} onClick={() => setAll((v) => !v)}>{all ? 'Show less' : `Show ${items.length - limit} more`}</button>}</div>;
+}
+
+const CLAMP_CHARS = 260;
+function AiText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > CLAMP_CHARS;
+  return <div><p className={`rt-note${long && !open ? ' rt-clamp' : ''}`}>{text}</p>
+    {long && <button type="button" className="rt-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? 'Show less' : 'Show more'}</button>}</div>;
+}
+
+const AI_VALUATION_LABEL: Record<string, string> = { expensive: 'Expensive', fairly_valued: 'Fairly valued', potentially_undervalued: 'Potentially undervalued', insufficient_evidence: 'Insufficient evidence' };
+
+function AiValuationBlock({ view }: { view: AiValuationView }) {
+  return <div className="rt-ai-list rt-ai-valuation">
+    <h5>Valuation view: {AI_VALUATION_LABEL[view.label] ?? view.label}</h5>
+    <p>{view.summary}{view.effect_on_assessment ? ` ${view.effect_on_assessment}` : ''}</p>
+    <AiList title="Supporting metrics" items={view.supporting_metrics} limit={2} />
+    <AiList title="Provider vs calculated" items={view.provider_vs_calculated} limit={2} />
+    <AiList title="Limitations" items={view.limitations} limit={2} />
+  </div>;
+}
+
+export function AiAnalysisPanel({ brief, horizon }: { brief: Brief; horizon: HorizonKey }) {
+  const [status, setStatus] = useState<AiStatus | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [fresh, setFresh] = useState<Partial<Record<HorizonKey, AiAnalysis>>>({});
+  useEffect(() => {
+    let active = true;
+    setStatus(null);
+    setLoadError('');
+    setFresh({});
+    apiRequest<AiStatus>(`/research/instruments/${brief.instrument_id}/ai-analysis`)
+      .then((value) => { if (active) setStatus(value); })
+      .catch((reason: Error) => { if (active) setLoadError(reason.message); });
+    return () => { active = false; };
+  }, [brief.instrument_id, brief.run_id]);
+  const analysis = fresh[horizon] ?? status?.analyses[horizon];
+  const algorithmic = brief.sections.assessment?.horizons?.[horizon];
+  async function run() {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await apiRequest<AiAnalysis>(`/research/instruments/${brief.instrument_id}/ai-analysis`, {
+        method: 'POST', body: JSON.stringify({ horizon }),
+      });
+      setFresh((current) => ({ ...current, [horizon]: result }));
+    } catch (reason) {
+      setError(reason instanceof ApiRequestError || reason instanceof Error ? reason.message : 'AI analysis failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const unavailable = status && (!status.enabled || !status.configured)
+    ? (!status.enabled ? 'AI analysis is disabled on this server (AI_ENABLED).' : 'No Gemini API key (GEMINI_API_KEY) or valid GEMINI_MODEL is configured on the server.')
+    : '';
+  const cmp = analysis?.comparison;
+  return <section className="rt-card rt-ai" aria-label="AI analyst">
+    <header className="rt-ai-head">
+      <div><h3>AI analyst · {HORIZON_LABEL[horizon]}</h3>
+        <p className="rt-note">Optional and independent of the algorithmic score. Reads this stored snapshot only, may disagree with the algorithm, and never changes its score.</p></div>
+      <button className="rt-btn rt-primary" type="button" onClick={() => void run()} disabled={busy || !!unavailable || !status || !!analysis}
+        title={analysis ? 'An analysis already exists for this snapshot, model and horizon.' : undefined}>
+        {busy ? 'Analysing…' : analysis ? 'Analysis stored' : 'Run AI Analysis'}
+      </button>
+    </header>
+    {loadError && <p className="rt-alert rt-alert-error" role="alert">Could not load AI status: {loadError}</p>}
+    {unavailable && <p className="rt-note" role="status">{unavailable} The algorithmic assessment above is unaffected.</p>}
+    {error && <p className="rt-alert rt-alert-error" role="alert">{error}</p>}
+    {busy && <p className="rt-note" aria-live="polite">Sending the stored snapshot to the AI provider…</p>}
+    {!analysis && !busy && !unavailable && status && <p className="rt-note">No AI analysis yet for {HORIZON_LABEL[horizon]} on this snapshot. Running it makes one Gemini ({status.model}) API call; results are cached.</p>}
+    {analysis && <div className="rt-ai-body">
+      <div className="rt-ai-scores">
+        <div className="rt-ai-score"><small>AI score</small>
+          <strong className={`rt-score rt-${tone(analysis.result.score)}`}>{analysis.result.score === null ? '—' : num(analysis.result.score, 0)}</strong>
+          <span className={`rt-rec-chip rec-${analysis.result.recommendation}`}>{AI_REC[analysis.result.recommendation] ?? analysis.result.recommendation}</span>
+          <small>AI confidence {analysis.result.confidence}%</small></div>
+        <div className="rt-ai-score"><small>Algorithmic score</small>
+          <strong className={`rt-score rt-${tone(algorithmic?.score ?? null)}`}>{algorithmic?.score == null ? '—' : num(algorithmic.score, 1)}</strong>
+          <span className={`rt-rec-chip rec-${algorithmic?.recommendation ?? 'INSUFFICIENT_EVIDENCE'}`}>{algorithmic ? REC_TEXT[algorithmic.recommendation] : 'Not available'}</span>
+          <small>Unchanged by the AI</small></div>
+      </div>
+      {cmp && <div className={`rt-reasons rt-reasons-${cmp.level === 'material' ? 'warn' : 'info'}`} role="note">
+        <strong>{cmp.level === 'not_comparable' ? 'Not comparable' : cmp.level === 'aligned' ? 'Broadly aligned' : cmp.level === 'moderate' ? 'Moderate disagreement' : 'Material disagreement'}</strong>
+        <ul>
+          {cmp.score_gap !== null && <li>AI score is {Math.abs(cmp.score_gap)} points {cmp.score_gap >= 0 ? 'above' : 'below'} the algorithmic score{cmp.recommendation_differs ? '; the recommendations also differ' : ''}.</li>}
+          {cmp.note && <li>{cmp.note}</li>}
+          {analysis.result.disagreement_explanation && <li>{analysis.result.disagreement_explanation}</li>}
+        </ul></div>}
+      <div><p className="rt-ai-summary"><strong>{analysis.result.summary}</strong></p><AiText text={analysis.result.reasoning} /></div>
+      {(analysis.result.data_gaps.length > 0 || analysis.result.guardrails_applied.length > 0) && <div className="rt-ai-notes">
+        <Reasons title="Missing, stale or thin data the AI acknowledged" items={analysis.result.data_gaps} kind="info" />
+        <Reasons title="Guardrails applied" items={analysis.result.guardrails_applied} kind="warn" />
+      </div>}
+      <div className="rt-ai-grid">
+        <AiList title="Strengths" items={analysis.result.strengths} />
+        <AiList title="Weaknesses" items={analysis.result.weaknesses} />
+        <AiList title="Risks" items={analysis.result.risks} />
+      </div>
+      <div className="rt-ai-grid">
+        {([['Bull case', analysis.result.bull_case], ['Bear case', analysis.result.bear_case]] as const).map(([label, scenario]) => <div className="rt-ai-list" key={label}>
+          <h5>{label}</h5><p>{scenario.thesis}</p>
+          <AiList title="Drivers" items={scenario.drivers} limit={2} /><AiList title="Would be invalidated by" items={scenario.invalidated_by} limit={2} />
+        </div>)}
+        {analysis.result.valuation_view && <AiValuationBlock view={analysis.result.valuation_view} />}
+      </div>
+      <p className="rt-ai-foot">{analysis.source === 'local_gate' ? 'No AI call was made: the snapshot had no usable evidence. ' : ''}
+        Gemini {analysis.model} · {analysis.prompt_version} · {ist(analysis.created_at)} · {HORIZON_LABEL[analysis.horizon]} · snapshot {analysis.snapshot_hash.slice(0, 10)}
+        {analysis.cached ? ' · stored result (no new API call)' : ''} · {analysis.disclaimer}</p>
+    </div>}
+  </section>;
+}
+
+const PEER_LABEL: Record<string, string> = { pe_ttm: 'P/E', pb: 'P/B', price_to_sales: 'Price / Sales' };
+const PRIMARY_KEYS = ['market_cap', 'enterprise_value', 'pe_ttm', 'pb', 'ev_ebitda', 'price_to_sales', 'peg', 'dividend_yield'];
+const QUALITY_KEYS = ['roe', 'roce', 'interest_coverage', 'book_value_per_share'];
+const PROVIDER_NAME: Record<string, string> = { dhan: 'Dhan', yfinance: 'Yahoo', screener: 'Screener', angel_one: 'Angel One', twelve_data: 'Twelve Data' };
+
+const fixed2 = (value: string) => Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const hasValue = (m: ValuationMetric | undefined): m is ValuationMetric => !!m && m.value !== null;
+const sourceLabel = (m: ValuationMetric) => m.origin === 'provider_reported' ? (PROVIDER_NAME[m.provider ?? ''] ?? m.provider ?? 'Provider') : m.origin === 'calculated' ? 'Calculated' : null;
+
+function valuationText(metric: ValuationMetric, currency: string): string {
+  if (metric.value === null) return 'Unavailable';
+  if (metric.unit === '%') return `${fixed2(metric.value)}%`;
+  if (metric.unit === 'x') return `${fixed2(metric.value)}x`;
+  if (metric.unit.endsWith('/share')) return formatMoney(metric.value, currency);
+  return formatMoney(metric.value, currency);
+}
+
+function ValuationCard({ metric, currency, compact = false }: { metric: ValuationMetric; currency: string; compact?: boolean }) {
+  const source = sourceLabel(metric);
+  const differs = metric.cross_check?.disagrees;
+  return <div className={`rt-vcard${compact ? ' rt-vcard-compact' : ''}`}>
+    <span className="rt-vlabel">{metric.label}</span>
+    <b className="rt-vvalue">{valuationText(metric, currency)}</b>
+    <span className="rt-vsource">{source}{differs ? <span className="rt-vflag" title={`The ${metric.cross_check?.origin} figure is ${metric.cross_check?.value}`}> · differs from calculated</span> : null}</span>
+  </div>;
+}
+
+function PeerRow({ label, peer, group }: { label: string; peer: PeerMetric; group?: string }) {
+  const parsed = peer.percentile_rank == null || peer.percentile_rank === '' ? NaN : Number(peer.percentile_rank);
+  const rank = Number.isFinite(parsed) ? parsed : null; // missing rank is unknown, never 0 (= "cheapest")
+  return <div className="rt-vpeer">
+    <div className="rt-vpeer-head"><b>{label}</b><span>{peer.subject}x <small>vs peer median {peer.peer_median}x</small></span></div>
+    {rank === null ? <small>{peer.peer_count} peers{group ? ` · ${group}` : ''} · percentile —</small> : <>
+      <div className="rt-vpeer-bar" role="img" aria-label={`${label} is cheaper than ${100 - rank}% of peers`}>
+        <span className="rt-vpeer-band" style={{ left: '25%', width: '50%' }} /><span className="rt-vpeer-dot" style={{ left: `${Math.min(97, Math.max(3, rank))}%` }} /></div>
+      <small>{peer.peer_count} peers{group ? ` · ${group}` : ''} · {ordinal(rank)} percentile (lower is cheaper)</small></>}
+  </div>;
+}
+const ordinal = (n: number) => `${Math.round(n)}${['th', 'st', 'nd', 'rd'][(Math.round(n) % 100 - 20) % 10] ?? ['th', 'st', 'nd', 'rd'][Math.round(n) % 100] ?? 'th'}`;
+
+function ValuationPanel({ valuation }: { valuation: Valuation | undefined }) {
+  if (!valuation || valuation.error) {
+    return <p className="rt-empty">{valuation?.error ?? 'This report was generated before Valuation Intelligence existed. Run research again.'}</p>;
+  }
+  const all = Object.values(valuation.metrics);
+  const primary = PRIMARY_KEYS.map((k) => valuation.metrics[k]).filter(hasValue);
+  const quality = QUALITY_KEYS.map((k) => valuation.metrics[k]).filter(hasValue);
+  const peers = valuation.peer_comparison;
+  const compared = peers ? Object.entries(peers.metrics).filter(([, p]) => p.status === 'compared') : [];
+  const thin = peers ? Object.entries(peers.metrics).filter(([, p]) => p.status !== 'compared') : [];
+  const scoring = valuation.scoring;
+  const shown = all.filter(hasValue);
+  const missing = all.filter((m) => m.value === null);
+  return <>
+    <header className="rt-vhead">
+      <h3>Valuation</h3>
+      {valuation.price.current && <span className="rt-vprice">{formatMoney(valuation.price.value, valuation.currency)} <small>close {valuation.price.as_of}</small></span>}
+      {scoring?.status === 'scored' && <span className="rt-pill rt-v-calculated">Score {num(scoring.score, 0)} · {scoring.label}</span>}
+    </header>
+    <p className="rt-vnote">Valuation contributes to Research scoring only where sufficient reliable evidence is available.</p>
+    {primary.length === 0 && quality.length === 0 && <p className="rt-empty">No valuation metrics can be shown yet: {valuation.price.current ? 'the required fundamentals are missing.' : (valuation.price.problem ?? 'there is no current share price.')}</p>}
+    {primary.length > 0 && <div className="rt-vgrid">{primary.map((m) => <ValuationCard key={m.key} metric={m} currency={valuation.currency} />)}</div>}
+    {quality.length > 0 && <section className="rt-vsection"><h4>Financial quality</h4>
+      <div className="rt-vgrid rt-vgrid-compact">{quality.map((m) => <ValuationCard key={m.key} metric={m} currency={valuation.currency} compact />)}</div></section>}
+    {(compared.length > 0 || thin.length > 0) && <section className="rt-vsection"><h4>Peer comparison</h4>
+      {compared.map(([key, p]) => <PeerRow key={key} label={PEER_LABEL[key] ?? key} peer={p} group={peers?.peer_group} />)}
+      {compared.length === 0 && <p className="rt-vmuted">Not enough comparable peers yet ({Math.max(...thin.map(([, p]) => p.peer_count))} of {MIN_PEERS_SHOWN} needed).</p>}
+      {compared.length > 0 && thin.length > 0 && <p className="rt-vmuted">{thin.map(([k]) => PEER_LABEL[k] ?? k).join(', ')}: not enough comparable peers.</p>}
+    </section>}
+    <details className="rt-more rt-vdetails"><summary>Sources, freshness and methodology</summary>
+      <ul>
+        {shown.map((m) => <li key={m.key}><b>{m.label}</b> — {sourceLabel(m) ?? 'n/a'}{m.reporting_period ? ` · period ${m.reporting_period}` : ''}{m.retrieved_at ? ` · retrieved ${m.retrieved_at.slice(0, 10)}` : ''}{m.statement_basis ? ` · ${m.statement_basis}` : ''}
+          {m.basis ? <small>{m.basis}</small> : null}
+          {m.cross_check ? <small>Cross-check ({m.cross_check.origin}): {m.cross_check.value}, {m.cross_check.difference_pct}% apart</small> : null}
+          {m.warnings.map((w) => <small key={w}>Note: {w}</small>)}</li>)}
+        {missing.length > 0 && <li><b>Not available</b>{missing.map((m) => <small key={m.key}>{m.label}: {m.reason ?? 'no data'}</small>)}</li>}
+        <li><b>Scoring</b>{scoring ? <small>{scoring.version} · {scoring.status === 'scored' ? 'scored' : 'not scored'}</small> : null}
+          {scoring?.status === 'blocked' && scoring.blockers.map((x) => <small key={x}>{x}</small>)}<small>{valuation.model_version} · Decision support, not investment advice.</small></li>
+      </ul></details>
+  </>;
+}
+const MIN_PEERS_SHOWN = 5;
+
+function ShareholdingPanel({ shareholding }: { shareholding: Shareholding | undefined }) {
+  if (!shareholding || shareholding.status === 'unavailable') {
+    return <>
+      <h3>Shareholding</h3>
+      <p className="rt-empty">{shareholding?.warnings?.[0] ?? 'This report was generated before shareholding data was collected. Run research again.'}</p>
+    </>;
+  }
+  return <>
+    <h3>Shareholding</h3>
+    <div className="rt-reasons rt-reasons-warn" role="note"><strong>Read with care</strong>
+      <ul>
+        <li>Reporting period: <b>{shareholding.reporting_period_note}</b>. These figures are an undated snapshot and must not be read as the latest quarter&apos;s shareholding pattern.</li>
+        {shareholding.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+      </ul>
+    </div>
+    <div className="rt-table-wrap"><table className="rt-table">
+      <thead><tr><th>Category</th><th>Holding</th><th>Source</th><th>Retrieved</th><th>Reporting period</th></tr></thead>
+      <tbody>{shareholding.holdings.map((h) => <tr key={h.key}>
+        <th scope="row">{h.label}</th>
+        <td><b>{h.percent === null ? 'Not provided' : `${num(h.percent, 2)}%`}</b></td>
+        <td>Dhan</td>
+        <td>{ist(shareholding.retrieved_at)}</td>
+        <td>Not provided by source</td>
+      </tr>)}</tbody>
+    </table></div>
+    <p className="rt-note">Itemised above: {shareholding.sum_percent === null || shareholding.sum_percent === undefined ? '—' : `${num(shareholding.sum_percent, 2)}%`}. Not itemised by the source: {shareholding.not_itemised_percent === null || shareholding.not_itemised_percent === undefined ? '—' : `${num(shareholding.not_itemised_percent, 2)}%`} (other categories such as government, trusts or depositary receipts are not returned).</p>
+  </>;
+}
+
+export function ResearchBriefView({ brief, instrument, horizon = 'positional', onHorizon, sentimentHistory = [], showAi = false }: {
+  brief: Brief; instrument?: Instrument | null; horizon?: HorizonKey; onHorizon?: (h: HorizonKey) => void; sentimentHistory?: SentimentHistoryPoint[]; showAi?: boolean;
 }) {
   const [localHorizon, setLocalHorizon] = useState<HorizonKey>(horizon);
   const active = onHorizon ? horizon : localHorizon;
@@ -271,10 +512,11 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
     document.getElementById(`rt-tab-${next}`)?.focus();
   };
   const snap = fundamentals.snapshot.values ?? {};
-  const allRisks = assessment ? COMPONENT_ORDER.flatMap((k) => assessment.components[k].risk_flags.map((f) => `${assessment.components[k].label}: ${f}`)) : [];
+  const allRisks = assessment ? presentKeys(assessment).flatMap((k) => assessment.components[k].risk_flags.map((f) => `${assessment.components[k].label}: ${f}`)) : [];
 
   return <div className="rt-report" id="research-report">
     <AssessmentPanel brief={brief} instrument={instrument} horizon={active} onHorizon={setActive} />
+    {showAi && <AiAnalysisPanel brief={brief} horizon={active} />}
     <div className="rt-tabs" role="tablist" aria-label="Research sections">
       {TABS.map((name, index) => <button key={name} id={`rt-tab-${name}`} role="tab" type="button" aria-selected={tab === name} aria-controls="rt-panel"
         tabIndex={tab === name ? 0 : -1} className={tab === name ? 'active' : ''} onClick={() => setTab(name)} onKeyDown={(e) => onTabKey(e, index)}>{name}</button>)}
@@ -283,11 +525,13 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
       {tab === 'Overview' && <>
         <h3>What the system knows, calculates and recommends</h3>
         {assessment ? <div className="rt-overview-grid">
-          {COMPONENT_ORDER.map((key) => {
+          {presentKeys(assessment).map((key) => {
             const c = assessment.components[key];
-            return <div key={key} className="rt-ov-row"><span>{c.label}</span>
+            return <div key={key} className="rt-ov-row"><span>{c.label.replace(' Intelligence', '')}</span>
               <b className={`rt-${tone(c.score)}`}>{c.score === null ? 'Not scored' : `${num(c.score, 1)} · ${c.interpretation}`}</b>
-              <small>{c.status === 'scored' ? `confidence ${num(c.confidence, 0)}% · coverage ${num(c.coverage_pct, 0)}%` : c.blockers[0]}</small></div>;
+              {c.status === 'scored' ? <small>confidence {num(c.confidence, 0)}% · coverage {num(c.coverage_pct, 0)}%</small>
+                : <details className="rt-ov-why"><summary>{c.blockers.length ? 'Insufficient evidence — details' : 'Not scored'}</summary>
+                  {c.blockers.length > 0 && <ul>{c.blockers.map((b) => <li key={b}>{b}</li>)}</ul>}</details>}</div>;
           })}
         </div> : <p className="rt-empty">Scores are not part of this older report. Run research again.</p>}
         <h4>Company snapshot</h4>
@@ -306,6 +550,8 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
         <p className="rt-note">{assessment.components.fundamental.notes.join(' ')}</p>
       </>}
       {tab === 'Fundamentals' && !assessment && <p className="rt-empty">No scoring in this older report. Run research again.</p>}
+      {tab === 'Valuation' && <ValuationPanel valuation={brief.sections.valuation} />}
+      {tab === 'Shareholding' && <ShareholdingPanel shareholding={brief.sections.shareholding} />}
       {tab === 'Financial Statements' && <>
         <h3>Financial statements</h3>
         <StatementsTable brief={brief} />

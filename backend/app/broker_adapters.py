@@ -24,12 +24,17 @@ import httpx
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import InvalidStatus, WebSocketException
 
+from app.ws_diagnostics import describe_ws_failure
+
 from app.config import settings
 from app.market_data import HistoricalBar
 
 logger = logging.getLogger(__name__)
 _DHAN_MAX_CONSECUTIVE_FAILURES = 5
 _DHAN_MAX_RETRY_DELAY_SECONDS = 60
+# Dhan pings every ~10 s; the client also pings. A peer that stops answering is detected within
+# ping_interval + this timeout (previously 40 s => up to 50 s of silent staleness).
+_DHAN_PING_TIMEOUT_SECONDS = 15
 _DHAN_FRAME_DIAGNOSTIC_CAPTURED = False
 _DHAN_LIVE_SOCKET_LOCK = threading.Lock()
 _DHAN_LIVE_CONNECTIONS = threading.BoundedSemaphore(5)
@@ -107,7 +112,9 @@ _SENSITIVE_PROVIDER_FIELD = re.compile(
 _OPAQUE_PROVIDER_VALUE = re.compile(r"\b[A-Za-z0-9_~+/=-]{24,}\b")
 _LONG_NUMBER = re.compile(r"\b\d{5,}\b")
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
-_DHAN_TICK_EXCHANGES = {"NSE_EQ": "NSE", "BSE_EQ": "BSE"}
+_DHAN_TICK_EXCHANGES = {"NSE_EQ": "NSE", "BSE_EQ": "BSE", "NSE_FNO": "NSE", "BSE_FNO": "BSE"}
+_DHAN_DERIVATIVE_NAME_MEMO: dict[tuple[int, str, str], str | None] = {}
+_DHAN_TICK_DERIVATIVE_INSTRUMENTS = ("OPTSTK", "OPTIDX", "FUTSTK", "FUTIDX")
 _DHAN_TICK_CACHE: dict[tuple[str, str], Decimal | None] = {}
 
 
@@ -1141,12 +1148,15 @@ class DhanAdapter(BrokerAdapter):
         tokens: Mapping[str, str],
         security_id: str,
         exchange_segment: str,
+        metrics: tuple[str, ...] = ("CO", "RATIOS"),
     ) -> dict[str, Any]:
         if (
             not security_id.isdigit()
             or exchange_segment not in {"NSE_EQ", "BSE_EQ"}
         ):
             raise BrokerAdapterError("Dhan company info requires a verified equity security")
+        if not metrics or not set(metrics) <= {"CO", "RATIOS", "SHP"}:
+            raise BrokerAdapterError("Dhan company info metrics must be a non-empty subset of CO, RATIOS, SHP")
         _wait_for_dhan_market_data()
         payload = _request(
             "POST",
@@ -1157,7 +1167,7 @@ class DhanAdapter(BrokerAdapter):
                 "securityId": security_id,
                 "exchangeSegment": exchange_segment,
                 "instrument": "EQUITY",
-                "metrics": ["CO", "RATIOS"],
+                "metrics": list(metrics),
             },
         )
         self._check_market_data_payload(payload)
@@ -1438,9 +1448,9 @@ class DhanAdapter(BrokerAdapter):
 
     @staticmethod
     def price_tick_for(exchange_segment: str, security_id: str) -> Decimal | None:
-        """Tick size from the Dhan scrip master for an NSE/BSE equity, or None (fail closed).
+        """Tick size from the Dhan scrip master for an NSE/BSE equity or an NSE/BSE F&O contract, or None (fail closed).
 
-        Only NSE_EQ and BSE_EQ are resolved. Other segments return None, so their price
+        Only NSE_EQ, BSE_EQ, NSE_FNO and BSE_FNO are resolved. Other segments return None, so their price
         packets are rejected rather than kept unquantised.
         """
         key = (exchange_segment, security_id)
@@ -1455,7 +1465,12 @@ class DhanAdapter(BrokerAdapter):
                 for row in DhanAdapter._scrip_master()
                 if (row.get("EXCH_ID") or "").strip().upper() == exchange
                 and (row.get("SECURITY_ID") or "").strip() == security_id
-                and (row.get("INSTRUMENT") or "").strip().upper() == "EQUITY"
+                and (
+                    (row.get("INSTRUMENT") or "").strip().upper() == "EQUITY"
+                    if exchange_segment.endswith("_EQ")
+                    else (row.get("SEGMENT") or "").strip().upper() == "D"
+                    and (row.get("INSTRUMENT") or "").strip().upper() in _DHAN_TICK_DERIVATIVE_INSTRUMENTS
+                )
             }
             ticks.discard("")
             if len(ticks) == 1:
@@ -1479,6 +1494,28 @@ class DhanAdapter(BrokerAdapter):
             )
         _DHAN_TICK_CACHE[key] = tick
         return tick
+
+    @staticmethod
+    def derivative_contract_name(exchange_segment: str, security_id: str) -> str | None:
+        """Contract name the current Dhan scrip master lists for an F&O security ID, or None when absent or ambiguous."""
+        exchange = _DHAN_TICK_EXCHANGES.get(exchange_segment)
+        if exchange is None or exchange_segment.endswith("_EQ"):
+            return None
+        master = DhanAdapter._scrip_master()
+        memo_key = (id(master), exchange_segment, security_id)
+        if memo_key in _DHAN_DERIVATIVE_NAME_MEMO:
+            return _DHAN_DERIVATIVE_NAME_MEMO[memo_key]
+        names = {
+            (row.get("SYMBOL_NAME") or "").strip()
+            for row in master
+            if (row.get("EXCH_ID") or "").strip().upper() == exchange
+            and (row.get("SEGMENT") or "").strip().upper() == "D"
+            and (row.get("SECURITY_ID") or "").strip() == security_id
+        }
+        names.discard("")
+        found = next(iter(names)) if len(names) == 1 else None
+        _DHAN_DERIVATIVE_NAME_MEMO[memo_key] = found
+        return found
 
     @staticmethod
     def decode_market_feed_packet(
@@ -1729,7 +1766,7 @@ class DhanAdapter(BrokerAdapter):
         logger.info("Dhan depth feed connect attempt url=%s", safe_url)
         try:
             async with _single_dhan_live_connection(
-                url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
+                url, open_timeout=10, ping_interval=10, ping_timeout=_DHAN_PING_TIMEOUT_SECONDS, close_timeout=5
             ) as connection:
                 response = connection.response
                 logger.info(
@@ -1869,7 +1906,7 @@ class DhanAdapter(BrokerAdapter):
             )
             raise BrokerAdapterError(
                 f"Dhan depth feed closed code={close_code or 'unavailable'} "
-                f"reason={close_reason or type(error).__name__}",
+                f"reason={close_reason or _safe_dhan_close_reason(describe_ws_failure(error, close_code), access_token, tokens.get('client_id', ''))}",
                 status_code=close_code,
             ) from error
         finally:
@@ -1899,7 +1936,7 @@ class DhanAdapter(BrokerAdapter):
         connection = None
         try:
             async with _single_dhan_live_connection(
-                url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
+                url, open_timeout=10, ping_interval=10, ping_timeout=_DHAN_PING_TIMEOUT_SECONDS, close_timeout=5
             ) as connection:
                 response = connection.response
                 logger.info(
@@ -2061,7 +2098,7 @@ class DhanAdapter(BrokerAdapter):
             try:
                 logger.info("dhan_upstream_connecting feed=ticker")
                 async with _single_dhan_live_connection(
-                    url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
+                    url, open_timeout=10, ping_interval=10, ping_timeout=_DHAN_PING_TIMEOUT_SECONDS, close_timeout=5
                 ) as connection:
                     response = connection.response
                     logger.info(
@@ -2278,7 +2315,7 @@ class DhanAdapter(BrokerAdapter):
             acknowledgement_complete = False
             try:
                 async with _single_dhan_live_connection(
-                    url, open_timeout=10, ping_interval=10, ping_timeout=40, close_timeout=5
+                    url, open_timeout=10, ping_interval=10, ping_timeout=_DHAN_PING_TIMEOUT_SECONDS, close_timeout=5
                 ) as connection:
                     response = connection.response
                     logger.info(
@@ -2459,9 +2496,9 @@ class DhanAdapter(BrokerAdapter):
                 record_error(failure_reason)
             except (OSError, TimeoutError, WebSocketException) as error:
                 if connection is None or connection.close_code is None or connection.close_code < 4000:
-                    failure_reason = (
-                        f"{type(error).__name__}: "
-                        f"{_safe_dhan_close_reason(str(error), access_token, tokens.get('client_id', ''))}"
+                    failure_reason = _safe_dhan_close_reason(
+                        describe_ws_failure(error, connection.close_code if connection is not None else None),
+                        access_token, tokens.get("client_id", ""),
                     )
                     record_error(failure_reason)
             finally:

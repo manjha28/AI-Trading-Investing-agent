@@ -117,3 +117,6 @@ desktop.ini
 *.bak
 *.orig
 *.rej
+
+# ---------- Owner-saved third-party pages (Screener terms: no mirroring/redistribution) ----------
+diagnostics/screener_pages/

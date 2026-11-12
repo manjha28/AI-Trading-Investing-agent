@@ -303,7 +303,7 @@ def test_idle_websocket_without_heartbeat_forces_a_reconnect(tmp_path, monkeypat
     monkeypatch.setattr(collector_module, "reconnect_delay", lambda _n: 0.0)
     monkeypatch.setattr(collector, "_save_health", lambda force=False: None)
     asyncio.run(collector._websocket_loop())
-    assert connects == 2 and collector._reconnects == 2
+    assert connects == 2 and collector._reconnects == 1  # the second idle timeout happened after stop was set: shutdown, not a failure
     assert collector.status()["connected"] is False
 
 

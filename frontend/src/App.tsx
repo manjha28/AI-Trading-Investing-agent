@@ -8,7 +8,7 @@ import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
 import { CorporateActions } from './pages/CorporateActions';
 import { JournalPage } from './pages/Journal';
-import { Strategies } from './pages/Strategies';
+import { SignalsWorkspace } from './signals/SignalsWorkspace';
 import { MarketDataPage } from './pages/MarketData';
 import { OverviewPage } from './pages/Overview';
 import { PortfolioSetupPage } from './pages/PortfolioSetup';
@@ -258,7 +258,7 @@ export default function App() {
         ) : activeView === 'alerts' ? (
           <Alerts portfolios={portfolios} portfolioId={portfolioId} />
         ) : activeView === 'signals' ? (
-          <Strategies />
+          <SignalsWorkspace />
         ) : activeView === 'brokers' ? (
           <>
             {user.email_verified && twoFactorStatus && !twoFactorStatus.session_verified && twoFactorPanel}

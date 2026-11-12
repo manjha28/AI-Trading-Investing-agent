@@ -91,8 +91,6 @@ type BacktestResult = {
 };
 type ParamForm = Record<string, string>;
 type CostForm = {
-  brokerage_bps: string;
-  exchange_charges_bps: string;
   slippage_bps: string;
   stop_atr_multiple: string;
   target_r_multiple: string;
@@ -179,7 +177,7 @@ export function Strategies() {
   const [versionForm, setVersionForm] = useState<ParamForm>({});
   const [dataAvailability, setDataAvailability] = useState<DataAvailability | null>(null);
   const [costForm, setCostForm] = useState<CostForm>({
-    brokerage_bps: '3', exchange_charges_bps: '3', slippage_bps: '5',
+    slippage_bps: '5',
     stop_atr_multiple: '1.5', target_r_multiple: '3',
   });
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
@@ -383,10 +381,8 @@ export function Strategies() {
             </div>
           </Panel>
 
-          <Panel title="Backtest assumptions" description="Costs and ATR exits are configurable assumptions, not broker-confirmed values. Every trade uses one analytical unit; no portfolio or live state is created.">
+          <Panel title="Backtest assumptions" description="Charges come from the central Dhan delivery schedule (daily positions are held across sessions); slippage and ATR exits are configurable assumptions, not broker-confirmed values. Every trade uses one analytical unit; no portfolio or live state is created.">
             <div className="alerts-form-grid">
-              <label>Brokerage (bps per side)<input type="number" min={0} max={1000} step="any" value={costForm.brokerage_bps} onChange={(event) => setCostForm({ ...costForm, brokerage_bps: event.target.value })} required /></label>
-              <label>Exchange charges (bps per side)<input type="number" min={0} max={1000} step="any" value={costForm.exchange_charges_bps} onChange={(event) => setCostForm({ ...costForm, exchange_charges_bps: event.target.value })} required /></label>
               <label>Slippage (bps per side)<input type="number" min={0} max={1000} step="any" value={costForm.slippage_bps} onChange={(event) => setCostForm({ ...costForm, slippage_bps: event.target.value })} required /></label>
               <label>Stop distance (ATR multiples)<input type="number" min={0.01} max={100} step="any" value={costForm.stop_atr_multiple} onChange={(event) => setCostForm({ ...costForm, stop_atr_multiple: event.target.value })} required /></label>
               <label>Target (R multiples)<input type="number" min={0.01} max={100} step="any" value={costForm.target_r_multiple} onChange={(event) => setCostForm({ ...costForm, target_r_multiple: event.target.value })} required /></label>

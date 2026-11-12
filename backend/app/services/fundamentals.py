@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.market_data import MarketDataProviderError
 from app.models import Instrument, InstrumentFundamental, InstrumentSnapshot
 from app.provider_adapters import YahooFinanceProvider
+from app.services import valuation_inputs
 
 MAX_PERIODS_PER_TYPE = 12
 COMPANY_PROFILE_CACHE_TTL = 6 * 60 * 60
@@ -173,7 +174,7 @@ def fetch_yfinance_fundamentals(provider_symbol: str) -> dict[str, Any]:
     }
     if not annual and not quarterly and not info:
         raise MarketDataProviderError("yfinance_fundamentals_unavailable")
-    return {"annual": annual, "quarterly": quarterly, "snapshot": snapshot}
+    return {"annual": annual, "quarterly": quarterly, "snapshot": snapshot, "valuation_inputs": valuation_inputs.yahoo_inputs(info)}
 
 
 def fetch_yfinance_company_profile(provider_symbol: str) -> dict[str, Any]:
@@ -247,6 +248,23 @@ def fetch_yfinance_company_profile(provider_symbol: str) -> dict[str, Any]:
     return profile
 
 
+def refresh_valuation_inputs(db: Session, instrument: Instrument, provider_symbol: str, *, fetched_at: datetime | None = None) -> int:
+    """Refresh ONLY the Yahoo Finance valuation inputs (one ``info`` call). Price-linked Yahoo values go stale after 3 days, far sooner than
+    the 95-day statement refresh, so they need their own light refresh. Returns the number of fields stored (0 if Yahoo returned none)."""
+    info = YahooFinanceProvider._thread_call(yf.Ticker(provider_symbol).get_info)
+    if not isinstance(info, dict) or not info:
+        return 0
+    currency = str(info.get("currency") or "")
+    if currency and currency.upper() != (instrument.currency or "").upper():
+        logger.warning("Yahoo valuation inputs skipped: info currency %s differs from instrument currency %s", currency, instrument.currency)
+        return 0
+    inputs = valuation_inputs.yahoo_inputs(info)
+    if inputs:
+        valuation_inputs.store(db, instrument.id, "yfinance", inputs, fetched_at or datetime.now(timezone.utc))
+        db.commit()
+    return len(inputs)
+
+
 def sync_instrument_fundamentals(
     db: Session,
     instrument: Instrument,
@@ -277,8 +295,14 @@ def sync_instrument_fundamentals(
                 )
                 db.add(existing)
             else:
+                sources = dict(existing.field_sources or {})
                 for key, value in values.items():
+                    if value is None and getattr(existing, key, None) is not None and sources.get(key, {}).get("source") not in (None, "yfinance"):
+                        continue  # a gap this refresh still cannot fill: keep the gap-filled value and its provenance
                     setattr(existing, key, value)
+                    if value is not None:
+                        sources.pop(key, None)  # the primary provider now supplies it; provenance reverts to the row source
+                existing.field_sources = sources or None
                 existing.source = "yfinance"
                 existing.fetched_at = observed_at
             rows.append(existing)
@@ -301,6 +325,8 @@ def sync_instrument_fundamentals(
             setattr(snapshot, key, value)
         snapshot.source = "yfinance"
         snapshot.fetched_at = observed_at
+    if data.get("valuation_inputs"):
+        valuation_inputs.store(db, instrument.id, "yfinance", data["valuation_inputs"], observed_at)
     db.commit()
     for row in rows:
         db.refresh(row)

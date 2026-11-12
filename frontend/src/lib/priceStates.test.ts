@@ -28,12 +28,18 @@ describe('deriveMarketDataStatus', () => {
     expect(deriveMarketDataStatus([{ freshness: 'live', basis: BASIS_LIVE }])).toBe('live');
   });
 
-  it('returns unavailable when any holding has no usable basis', () => {
+  it('returns partial, not unavailable, when only some rows lack a usable basis', () => {
     expect(
       deriveMarketDataStatus([
         { freshness: 'live', basis: BASIS_LIVE },
         { freshness: 'unavailable', basis: BASIS_UNAVAILABLE },
       ]),
+    ).toBe('partial');
+  });
+
+  it('returns unavailable when no row has a usable basis', () => {
+    expect(
+      deriveMarketDataStatus([{ freshness: 'unavailable', basis: BASIS_UNAVAILABLE }]),
     ).toBe('unavailable');
   });
 

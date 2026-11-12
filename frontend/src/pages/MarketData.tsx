@@ -18,6 +18,7 @@ import {
   formatMoney, formatQuantity, localDateTime, marketRangeParams,
   type WorkspaceState,
 } from '../components/useWorkspace';
+import { DhanCompanyInfo, type CompanyInfoDetails } from '../components/market/DhanCompanyInfo';
 import { DataFreshnessIndicator, type DataProvenance } from '../components/market/DataFreshnessIndicator';
 import { depthStatusView, type DepthStatus } from '../lib/depthStatus';
 import { useSnapshotFallback, selectFreshestSource } from '../hooks/useSnapshotFallback';
@@ -228,6 +229,7 @@ type CompanyProfile = {
   fetched_at: string | null;
   message: string;
   instrument_master: InstrumentMasterInfo;
+  company_info?: CompanyInfoDetails | null;
 };
 type DepthLevel = { quantity: number; orders: number; price: string };
 type DepthMessage =
@@ -1845,7 +1847,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                       <div className="watchlist-tab-placeholder">
                         <strong>{companyProfile?.name ?? activeWatchlistEntry?.display_name ?? activeWatchlistEntry?.symbol ?? 'Company profile'}</strong>
                         <span>
-                          Source: {companyProfile?.instrument_master.source ?? 'Instrument record'} · Profile: Yahoo Finance · Last updated: {companyProfile?.fetched_at
+                          Source: {companyProfile?.instrument_master.source ?? 'Instrument record'} · Profile: {companyProfile?.source ?? 'Yahoo Finance'} · Last updated: {companyProfile?.fetched_at
                               ? new Date(companyProfile.fetched_at).toLocaleString()
                               : 'Not available'}
                         </span>
@@ -1861,20 +1863,23 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         {companyProfile?.instrument_master.expiry && (
                           <span>Expiry: {companyProfile.instrument_master.expiry}</span>
                         )}
-                        {companyProfileLoading && <p className="loading-inline">Loading Yahoo Finance company profile…</p>}
+                        {companyProfileLoading && <p className="loading-inline">Loading company profile…</p>}
                         {companyProfileError && <p className="market-source-message error" role="alert">{companyProfileError}</p>}
                         <span>Decision support, not investment advice.</span>
                         {companyProfile?.status === 'unavailable' && (
-                          <p className="market-provenance" role="status">{companyProfile.message} Dhan v2 documentation checked; no company-info endpoint was found.</p>
+                          <p className="market-provenance" role="status">{companyProfile.message}</p>
                         )}
+                        {companyProfile?.company_info && <DhanCompanyInfo info={companyProfile.company_info} />}
                         {companyProfile?.status === 'available' && (
                           <>
-                            <span>Sector: {companyProfile.sector ?? 'Unavailable'}</span>
-                            <span>Industry: {companyProfile.industry ?? 'Unavailable'}</span>
-                            <span>Market cap: {companyProfile.market_cap === null
-                              ? 'Unavailable'
-                              : formatMoney(companyProfile.market_cap, companyProfile.currency ?? activeWatchlistEntry?.currency ?? 'INR')}</span>
-                            <p>{companyProfile.description ?? 'Description unavailable from Yahoo Finance.'}</p>
+                            {!companyProfile.company_info && <>
+                              <span>Sector: {companyProfile.sector ?? 'Unavailable'}</span>
+                              <span>Industry: {companyProfile.industry ?? 'Unavailable'}</span>
+                              <span>Market cap: {companyProfile.market_cap === null
+                                ? 'Unavailable'
+                                : formatMoney(companyProfile.market_cap, companyProfile.currency ?? activeWatchlistEntry?.currency ?? 'INR')}</span>
+                            </>}
+                            <p>{companyProfile.description ?? `Description unavailable from ${companyProfile.source}.`}</p>
                           </>
                         )}
                         {!companyProfileLoading && !companyProfile && !companyProfileError && (

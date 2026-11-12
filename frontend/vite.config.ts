@@ -16,6 +16,7 @@ export default defineConfig(() => {
 		plugins: [react],
 		test: {
 			environment: 'jsdom',
+			css: { include: [/signals\.css/] },
 			include: ['src/**/*.test.{ts,tsx}'],
 		},
 		server: {

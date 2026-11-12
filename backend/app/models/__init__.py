@@ -247,6 +247,12 @@ class InstrumentFundamental(Base):
     shares_outstanding: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Gap-fill support (additive). `source`/`fetched_at` describe the row's primary provider; a field filled by
+    # another provider is recorded per field in `field_sources`. `extra_metrics` holds sourced values with no
+    # canonical column yet (interest, ROCE, working-capital days, shareholding) plus recorded conflicts.
+    statement_basis: Mapped[str | None] = mapped_column(String(16))
+    field_sources: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    extra_metrics: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
 
 
 class InstrumentSnapshot(Base):
@@ -266,6 +272,31 @@ class InstrumentSnapshot(Base):
     sector: Mapped[str | None] = mapped_column(String(200))
     industry: Mapped[str | None] = mapped_column(String(200))
     source: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ValuationProviderInput(Base):
+    """One provider-reported valuation input per (instrument, provider, metric): the stored side of the Dhan -> Yahoo -> Screener chain.
+
+    Values are canonical (INR amounts, ratios as x, percentages as percent numbers); ``text_value`` holds sector/industry classifications.
+    """
+    __tablename__ = "valuation_provider_inputs"
+    __table_args__ = (
+        UniqueConstraint("instrument_id", "provider", "metric", name="uq_valuation_inputs_instrument_provider_metric"),
+        Index("ix_valuation_inputs_group", "provider", "metric", "text_value"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    metric: Mapped[str] = mapped_column(String(48), nullable=False)
+    value: Mapped[Decimal | None] = mapped_column(Numeric(30, 10))
+    text_value: Mapped[str | None] = mapped_column(String(200))
+    unit: Mapped[str | None] = mapped_column(String(40))
+    unit_assumed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    reporting_period: Mapped[str | None] = mapped_column(String(40))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -883,6 +914,40 @@ class DhanLedgerDataQualityException(Base):
 JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
 
 
+class AiStockAnalysis(Base):
+    """User-triggered AI (Gemini) assessment, stored apart from (and never merged into) the algorithmic score."""
+
+    __tablename__ = "ai_stock_analyses"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "brief_id", "horizon", "model", "prompt_version",
+            name="uq_ai_stock_analyses_cache_key",
+        ),
+        Index("ix_ai_stock_analyses_instrument_created", "instrument_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    brief_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("instrument_research_briefs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    instrument_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    horizon: Mapped[str] = mapped_column(String(16), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)  # "gemini" or "local_gate"
+    result: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
+    usage: Mapped[dict | None] = mapped_column(JSON_DOCUMENT)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ResearchSource(Base):
     __tablename__ = "research_sources"
     __table_args__ = (
@@ -1140,4 +1205,8 @@ class PortfolioValuationSnapshot(Base):
 
 
 from app.models.alerts import AlertEvent, AlertRule  # noqa: F401
-from app.models.strategies import Strategy, StrategySignal, StrategyVersion  # noqa: F401
+from app.models.derivatives import (DerivativeContract, DerivativeDataCoverage, DerivativeIngestionJob, DerivativeIngestionTask, DerivativeInstrument,  # noqa: F401
+                                    DerivativeMasterSnapshot, FuturesCandle1d, FuturesCandle1m, OptionCandle1m, OptionChainSnapshot, RollingOptionCandle1m)
+from app.models.jobs import Job, ScanRun, ScannerSchedule, ScannerSettings  # noqa: F401
+from app.models.provider_coverage import ProviderUnservedWindow  # noqa: F401
+from app.models.strategies import BacktestRun, IntradaySignal, IntradaySignalEvent, OptionContract, OptionQuote, ScanRejection, Strategy, StrategySignal, StrategyVersion  # noqa: F401

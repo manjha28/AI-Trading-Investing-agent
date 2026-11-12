@@ -3,60 +3,109 @@
 ## Product
 A private, portfolio-aware research analyst for one user. It reports daily, with checkable
 evidence: what to put on radar, what to trim or book profit in, what to hold and why, and what
-unintended risk is being carried. The approved product direction also includes a complete
-automated trading platform for Dhan and Delta Exchange India.
+unintended risk is being carried. It also provides a signals and strategy workbench (scanning,
+backtesting, forward monitoring) for Dhan (NSE/BSE) and Delta Exchange India. Live order
+placement is a future goal; see "Execution policy".
 
-## Authorized trading scope
-- Brokers are read-only by design. Order placement, order modification, order cancellation,
-  live execution, execution adapters, strategy-driven entries and exits, stop-losses, targets,
-  trailing stops, paper trading, and simulated fills are PERMANENTLY OUT OF SCOPE. They are
-  excluded by design, not deferred. Do not implement, scaffold, stub, or plan them.
-- Any request for execution must be refused and reported to the owner rather than built.
+## Spec of record
+The "Signals & Strategy Intelligence Workbench" blueprint is the governing product specification
+for signals, strategies, backtesting and monitoring. Where this file and the blueprint conflict,
+the blueprint wins and this file MUST be updated to match. Report the conflict; do not silently
+pick one.
 
-## Historical evaluation and indicator scope
-- Historical evaluation (backtesting) is IN SCOPE. A backtest replays strategy logic over stored historical bars to produce statistics: trades, win rate, profit factor, expectancy, drawdown. It must use completed bars only, must never look ahead, and must state the data window, bar count, source and any cost assumptions used. Paper trading remains OUT OF SCOPE: no simulated positions tracked against live markets, no simulated order book, no pretend portfolio, no live-fill emulation. A backtest produces statistics about the past. It never represents a current position, an order, or money at risk.
-- Indicator computation (moving averages, RSI, ATR, VWAP, volume profile) MAY use float and pandas internally. These are statistical transforms, not monetary values. Indicator outputs keep full precision for comparison and strategy logic. Quantise a price-like indicator value to the instrument tick ONLY when displaying it. Any price, stop, target, P&L or other displayed or stored monetary figure MUST be converted to Decimal at that boundary. Decimal(float) is forbidden - convert via string. No float may be written to a money column or rendered as a currency figure.
-- Indicator and strategy logic ported from the del_trading_bot repository lives HERE. The del_trading_bot copy is frozen reference only and must not be edited or re-synced. There is exactly one home for this code.
+## Signals, levels and strategies (in scope)
+- Signals carry an entry zone, invalidation, initial stop and a target ladder. Every level is
+  computed deterministically in Python from market data and shows its derivation (inputs,
+  rule, parameters). A model never emits a price or level.
+- Backtests replay completed historical bars only. Forward monitoring evaluates completed
+  candles only. Neither may look ahead.
+- A backtest states its data window, bar count, source, and cost assumptions. Results are stored
+  separately from real portfolio data, are labelled hypothetical, and MUST NEVER appear in the
+  same figure, total or table as real portfolio P&L.
+- Hypothetical results never represent a current position, an order, or money at risk.
+- Indicator computation (moving averages, RSI, ATR, VWAP, volume profile) MAY use float and
+  pandas internally; these are statistical transforms. Quantise a price-like indicator value to
+  the instrument tick only when displaying it. Any price, stop, target, P&L or other displayed
+  or stored monetary figure MUST be Decimal at that boundary. Decimal(float) is forbidden:
+  convert via string. No float may be written to a money column or rendered as a currency figure.
+- Indicator and strategy logic ported from del_trading_bot lives HERE. The del_trading_bot copy is
+  frozen reference and must not be edited or re-synced. There is exactly one home for this code.
+- Scanner and backtester consume the same compiled condition tree and indicator library.
 
-## Hard constraints
-- Live execution must be disabled by default and unavailable until an owner explicitly activates
-  it through a deliberate, auditable control. Do not infer activation from stored credentials,
-  broker connectivity, strategy signals, or application startup.
-- Development, automated tests, and CI must never submit real broker orders. Use isolated test
-  adapters/fixtures and fail closed if a live execution path is reached in those environments.
-- Every live order intent and lifecycle transition must be auditable, owner-scoped, and correlated
-  with its strategy decision and risk checks. Never log credentials, tokens, PINs, OTPs, or
-  signing material.
-- Live submissions must pass independent configured risk checks and fail closed on missing,
-  stale, synthetic, unverifiable, or currency-incompatible inputs. Never convert FX implicitly.
-- Preserve existing authentication and email-verification requirements; mutations require CSRF,
-  and every query or mutation must be owner-scoped. Execution controls must not weaken these
-  requirements or existing broker security controls.
-- Live trading is never implied by an advisory or strategy signal. No order may be submitted
-  without explicit owner activation and a successful, recorded risk decision.
+## Execution policy
+Current state: no live order placement exists and none may be built now. Brokers are read-only
+in practice.
+
+Agents MAY design and build the architecture that lets live execution be added later without
+rework:
+- a structured `OrderIntent` object (instrument, side, quantity, order type, limit, stop, TIF,
+  validity, strategy/signal/version reference);
+- an adapter seam between signal and fill, so a backtest fill model and a future broker adapter
+  are interchangeable behind one interface;
+- credential scoping that separates read-only from execution scope;
+- a system-wide mode flag (research / monitor / live) that defaults to research;
+- deterministic client order IDs;
+- guard-rail limits (risk checks, size and exposure caps) that fail closed;
+- an append-only audit trail recording intent, decision and fill identically for backtest and live.
+
+Agents MUST NOT build:
+- any code path that transmits an order (place, modify or cancel) to a broker;
+- any execution credential storage (read-only credentials only);
+- any live adapter, or any adapter method that can reach a broker's order endpoints.
+
+Requirements that apply to the permitted architecture, and bind any future activation:
+- Live mode is off by default. It is never inferred from stored credentials, broker
+  connectivity, a strategy signal, or application startup. Activation needs an explicit,
+  auditable owner action, and is a separate milestone approved by the owner.
+- Development, automated tests and CI must never reach a broker order endpoint; fail closed
+  if any live path is reached in those environments.
+- Every order intent and lifecycle transition is auditable, owner-scoped, and correlated with its
+  strategy decision and risk checks. Never log credentials, tokens, PINs, OTPs or signing material.
+- Risk checks fail closed on missing, stale, synthetic, unverifiable or currency-incompatible
+  inputs. Never convert FX implicitly.
+- A signal or advisory output never implies an order.
+- Existing authentication, email verification, CSRF and broker security controls must not be
+  weakened.
+
+## Hard constraints (binding)
+- No synthetic or mock market data, ever. Tests use fixtures clearly marked as test data and
+  never flow into runtime paths.
 - The LLM never computes numbers. All figures come from Python over the ledger, stored OHLCV,
-  corporate actions, and journal, serialized into an evidence pack. The model sees only that pack.
-- Action-implying output (trim/book profit/enter/exit) is suppressed or downgraded when the price
-  is synthetic, stale, unavailable, or in a currency different from the portfolio. Never convert FX.
-- Decimal for all money/quantity math, matching existing ledger rounding.
-- Migrations: additive only, single head, next sequential number. Never drop a populated column.
-- Alembic revision IDs must be <= 32 characters, format `NNNN_short_slug`.
-- Every model module must be imported in app/models/__init__.py so SQLAlchemy metadata is
-  complete. After any migration, `alembic check` must report no pending changes.
-- Every route: authenticated + email-verified; CSRF on mutations; owner-scoped queries.
-- Secrets are backend-only.
-- Everything works with AI_ENABLED=false. AI adds narration, never capability.
+  corporate actions and journal, serialized into a deterministic evidence pack. The model sees
+  only that pack.
+- Decimal for all money and quantity math, matching existing ledger rounding.
+- No silent FX: never convert currencies implicitly.
+- Missing data renders as unknown ("—" or an explicit unknown state), never as zero, "fresh", or
+  any favourable default. Age and staleness are derived from a stored as-of timestamp, by one
+  backend implementation.
+- Stale, synthetic, unavailable, incomplete or currency-mismatched data suppresses or downgrades
+  action-implying output (enter/exit/trim/book profit and signal levels) with a stated reason,
+  rather than manufacturing a result.
 - All user-facing output is labelled "decision support, not investment advice".
+- Every route: authenticated + email-verified; CSRF on mutations; every query and mutation
+  owner-scoped.
+- Secrets are backend-only. Never log credentials, tokens, PINs or OTPs.
+- Everything works with AI_ENABLED=false. AI adds narration, never capability.
+- Migrations: additive only, single head, next sequential number. Never drop a populated column.
+  Alembic revision IDs are <= 32 characters, format `NNNN_short_slug`.
+- Every model module is imported in app/models/__init__.py so SQLAlchemy metadata is complete.
+  After any migration, `alembic check` must report no pending changes.
 
 ## Efficiency rules (important)
-- Implement exactly what the prompt asks. No refactors, renames, new abstractions, or
+- Implement exactly what the prompt asks. No refactors, renames, new abstractions or
   "while I was here" fixes.
 - Touch only the files listed in the prompt. Ask before creating or moving a file not listed.
 - If the prompt references earlier work that does not exist in the repo, STOP and report it.
   Do not silently write a substitute implementation.
+- Never full-read a file over 50KB. In particular never full-read `backend/app/api/market_data.py`
+  (384KB) or `backend/app/api/brokers.py` (184KB). Grep with line numbers and read narrow ranges.
 - Do not read the whole repo. Follow imports only as far as needed.
+- Before any database work, confirm Postgres is reachable. Report a connection failure as a
+  connection failure, never as "no records found".
+- This Codespace's Docker CLI may lack Compose v2. Check which of `docker compose` or
+  `docker-compose` exists before using either (currently only `docker-compose` 1.29.2).
 - Run only the test file named in the prompt. Do not run the full suite unless asked.
-- Lint must pass before any task is reported complete, and include lint output in the report.
+- Lint must pass before any task is reported complete; include lint output in the report.
 - Run `npm run build` once, at the end of the milestone, not after each edit.
 - Do not update README.md unless the prompt says so. Append one line to CHANGELOG.md instead.
 - Do not paste full file contents or long diffs in your reply. Summarize in under 10 lines.
@@ -65,12 +114,15 @@ automated trading platform for Dhan and Delta Exchange India.
 ## Stack facts
 Backend: FastAPI + SQLAlchemy + Alembic + PostgreSQL, `backend/app/`, tests in `backend/tests/`.
 Frontend: React + TypeScript + Vite, `frontend/src/`.
-Current head: 0036_portfolio_valuation_history. Next migration: 0037.
-Migration 0035 has a non-additive key change, approved as a documented exception; its downgrade and pre-check are in place.
+Migrations: current head is the highest-numbered file in `backend/migrations/versions/`
+(0051_derivatives_platform at time of writing); the next migration is the following number.
+Migration 0035 has a non-additive key change, approved as a documented exception; its downgrade
+and pre-check are in place.
 
 ## Diagnostics artifacts
-Milestone diagnostics live in `diagnostics/`, which is gitignored. Each milestone REPLACES its artifact rather than adding a new numbered one. Do not commit diagnostics output.
-Run backend from `backend/` so `.env` loads. `/api/v1/ready` fails when migrations are pending.
+Milestone diagnostics live in `diagnostics/`, which is gitignored. Each milestone REPLACES its
+artifact rather than adding a new numbered one. Do not commit diagnostics output.
+Run the backend from `backend/` so `.env` loads. `/api/v1/ready` fails when migrations are pending.
 
 ## Definition of done
 Named tests pass, frontend builds, `alembic check` clean, CHANGELOG line added, reply under
