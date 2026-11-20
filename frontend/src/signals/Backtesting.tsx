@@ -9,6 +9,7 @@ import { Field, Notice, Pill, Scroll, Stat, StatusPill } from './shared';
 import { EngineParamsPanel, type GeometryState } from './EngineParamsPanel';
 import { ScalpHoldView, type ScalpHoldResult } from './ScalpHoldView';
 import { StyledSelect } from './StyledSelect';
+import { TradePlot } from './TradePlot';
 import type { Group2, InstrumentRow, Meta, OptionsReport, RunRow, SingleResult, StrategyRow, Trade } from './types';
 
 type Kind = 'single' | 'is_oos' | 'walk_forward' | 'sensitivity';
@@ -53,7 +54,7 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
   const [engineParams, setEngineParams] = useState<Record<string, string>>({});
   const [geo, setGeo] = useState<GeometryState>({ status: 'idle', inputs: null });
   const [qmap, setQmap] = useState<Record<string, Quality | undefined>>({});
-  const [view, setView] = useState<'summary' | 'equity' | 'monthly' | 'trades' | 'breakdown' | 'validation' | 'assumptions' | 'compare' | 'options'>('summary');
+  const [view, setView] = useState<'summary' | 'chart' | 'equity' | 'monthly' | 'trades' | 'breakdown' | 'validation' | 'assumptions' | 'compare' | 'options'>('summary');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { if (initialStrategyId) setSid(initialStrategyId); }, [initialStrategyId]);
@@ -174,7 +175,7 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
   const single = result && result.metrics ? (result as unknown as SingleResult) : null;
 
   if (!intraday.length) {
-    return <Notice tone="info">Create or import an intraday strategy first. Legacy daily strategies are backtested in the “Legacy daily &amp; crypto research” tab.</Notice>;
+    return <Notice tone="info">Create or import an intraday strategy first. Legacy daily strategies are backtested in the “Legacy daily research” tab.</Notice>;
   }
 
   return (
@@ -258,13 +259,14 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
           {run?.status === 'completed' && result && (result as { mode?: string }).mode !== 'scalp_hold' && (
             <>
               <nav className="sl-subtabs" aria-label="Result sections">
-                {(single ? ([...(single.options_report ? (['options'] as const) : []), 'summary', 'equity', 'monthly', 'trades', 'breakdown', 'assumptions', 'compare'] as const) : (['validation', 'assumptions', 'compare'] as const)).map((v) => (
+                {(single ? ([...(single.options_report ? (['options'] as const) : []), 'summary', 'chart', 'equity', 'monthly', 'trades', 'breakdown', 'assumptions', 'compare'] as const) : (['validation', 'assumptions', 'compare'] as const)).map((v) => (
                   <button key={v} type="button" className={(view === v || (!single && v === 'validation' && view === 'summary')) ? 'active' : ''} onClick={() => setView(v)}>{v}</button>
                 ))}
               </nav>
               <p className="sl-muted">{run.kind !== 'single' ? KIND_LABEL[run.kind as Kind] : 'Single run'} · strategy v{run.strategy_version} · engine {run.engine_version} · indicators {run.indicator_version} · definition <code>{run.definition_hash.slice(0, 10)}</code></p>
               {single && single.options_report && view === 'options' && <OptionsReportView r={single.options_report} />}
               {single && view === 'summary' && <Summary r={single} />}
+              {single && view === 'chart' && <TradePlot trades={single.trades} />}
               {single && view === 'equity' && (
                 <div className="sl-card"><h4>Equity curve</h4><LineChart points={single.equity_curve.map((p) => ({ t: p.t, v: p.equity }))} label="Equity (mark-to-market)" fill />
                   <h4>Drawdown</h4><LineChart points={single.equity_curve.map((p) => ({ t: p.t, v: p.drawdown_pct }))} label="Drawdown %" color="var(--sl-neg)" fill maxY={0} format={(v) => `${v.toFixed(2)}%`} /></div>

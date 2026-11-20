@@ -1,13 +1,14 @@
 import asyncio
 import logging
 from datetime import datetime, time, timedelta, timezone
+from typing import Any
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -92,19 +93,131 @@ def _tracked_instrument_ids(db: Session, user_id: UUID) -> set[UUID]:
 
 
 def _sync_corporate_actions_sync() -> int:
-    from app.corporate_action_service import sync_yfinance_corporate_actions
+    """Two passes, no manual confirmation needed:
+    1. instruments you hold/watch/alert on: full action history per instrument (also marks coverage);
+    2. the rest of the market universe: recent dividends/splits in a few bulk requests, so an ex-date on
+       any listed symbol (e.g. a dividend on ONGC) adjusts its day change without anyone entering it."""
+    from app.api.market_data import _universe_instrument_ids
+    from app.corporate_action_service import (
+        PrefetchedActionsProvider, _yfinance_ticker, fetch_recent_actions, sync_yfinance_corporate_actions,
+    )
 
     inserted = 0
     with Session(engine) as db:
-        for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
+        users = db.scalars(select(User.id).where(User.email_verified.is_(True))).all()
+        universe_ids = set(_universe_instrument_ids(db))
+        tickers: dict[str, UUID] = {}
+        for instrument in db.scalars(select(Instrument).where(Instrument.id.in_(list(universe_ids)))) if universe_ids else []:
+            try:
+                tickers[_yfinance_ticker(instrument)] = instrument.id
+            except ValueError:
+                continue
+        bulk_events, bulk_failed = fetch_recent_actions(list(tickers)) if tickers else ({}, set())
+        for user_id in users:
             try:
                 tracked = _tracked_instrument_ids(db, user_id)
-                report = sync_yfinance_corporate_actions(db, user_id, instrument_ids=tracked)
-                inserted += report["actions_inserted"]
+                inserted += sync_yfinance_corporate_actions(db, user_id, instrument_ids=tracked)["actions_inserted"]
+                rest = {iid for ticker, iid in tickers.items() if iid not in tracked}
+                if rest:
+                    inserted += sync_yfinance_corporate_actions(
+                        db, user_id, provider=PrefetchedActionsProvider(bulk_events, bulk_failed),
+                        instrument_ids=rest, record_coverage=False,
+                    )["actions_inserted"]
             except Exception as error:
                 db.rollback()
                 logger.warning("Corporate action sync failed user_id=%s error_class=%s", user_id, type(error).__name__)
     return inserted
+
+
+_UNIVERSE_RETRY_AFTER = timedelta(hours=3)
+_universe_last_attempt: dict[UUID, datetime] = {}  # symbols already asked recently (e.g. today's candle not published yet)
+
+
+def refresh_stale_universe_closes(
+    db: Session, user: User, provider: Any, *, limit: int = 60, now: datetime | None = None, sync: Any = None,
+) -> dict[str, int]:
+    """Fetch the real daily bars of universe symbols whose last stored close is older than the latest
+    completed session (or absent), a bounded batch per call. Nothing is estimated; a failed symbol is
+    simply retried on the next cycle."""
+    from fastapi import BackgroundTasks
+
+    from app.api import market_data as md
+
+    now = now or datetime.now(timezone.utc)
+    sync = sync or md.sync_history
+    ids = md._universe_instrument_ids(db)
+    if not ids:
+        return {"stale": 0, "attempted": 0, "failed": 0}
+    latest: dict[UUID, datetime] = {}
+    for instrument_id, stamp in db.execute(
+        select(MarketBar.instrument_id, func.max(MarketBar.timestamp)).where(
+            MarketBar.instrument_id.in_(list(ids)), MarketBar.interval == "1d", MarketBar.source == "dhan",
+            MarketBar.is_synthetic.is_(False),
+        ).group_by(MarketBar.instrument_id)
+    ):
+        latest[instrument_id] = stamp
+    stale: list[tuple[Instrument, datetime | None]] = []
+    for instrument in db.scalars(select(Instrument).where(Instrument.id.in_(list(ids)))):
+        expected = md._last_completed_session(instrument, now)
+        last = latest.get(instrument.id)
+        if last is None or md._daily_session_date(last) < expected:
+            stale.append((instrument, last))
+    stale.sort(key=lambda item: item[0].symbol)
+    due = [item for item in stale if now - _universe_last_attempt.get(item[0].id, now - _UNIVERSE_RETRY_AFTER * 2) >= _UNIVERSE_RETRY_AFTER]
+    attempted = failed = 0
+    for instrument, last in due[:limit]:
+        _universe_last_attempt[instrument.id] = now
+        start = (md._utc(last) - timedelta(days=4)) if last is not None else now - timedelta(days=12)
+        try:
+            result = sync(
+                instrument_id=instrument.id, start=start, end=now, background_tasks=BackgroundTasks(), interval="1d",
+                limit=100, provider=provider, _user=user, _csrf=None, db=db,
+            )
+            # sync_history reports a provider failure in its response instead of raising
+            if getattr(result, "sync_status", None) == "unavailable":
+                failed += 1
+                logger.warning("Universe close refresh unavailable symbol=%s", instrument.symbol)
+        except Exception as error:
+            db.rollback()
+            failed += 1
+            logger.warning("Universe close refresh failed symbol=%s error_class=%s", instrument.symbol, type(error).__name__)
+        attempted += 1
+    return {"stale": len(stale), "attempted": attempted, "failed": failed}
+
+
+def _refresh_universe_closes_sync() -> dict[str, int]:
+    with Session(engine) as db:
+        user = db.scalar(
+            select(User)
+            .join(UserMarketDataSettings, UserMarketDataSettings.user_id == User.id)
+            .join(BrokerCredential, BrokerCredential.user_id == User.id)
+            .where(
+                User.email_verified.is_(True), UserMarketDataSettings.selected_provider == "dhan",
+                BrokerCredential.broker == "dhan",
+            )
+            .order_by(User.created_at).limit(1)
+        )
+        if user is None:
+            return {"stale": 0, "attempted": 0, "failed": 0}
+        try:
+            provider = market_data_provider_for_user(db, user.id)
+        except HTTPException as error:
+            logger.warning("Universe close refresh skipped (HTTP %s)", error.status_code)
+            return {"stale": 0, "attempted": 0, "failed": 0}
+        return refresh_stale_universe_closes(db, user, provider)
+
+
+async def universe_close_refresh_loop() -> None:
+    """Keep the Market watch's daily closes current after every session, without a manual button."""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            report = await asyncio.to_thread(_refresh_universe_closes_sync)
+            if report["stale"]:
+                logger.info("Universe close refresh stale=%d attempted=%d failed=%d", report["stale"], report["attempted"], report["failed"])
+        except Exception as error:
+            logger.warning("Universe close refresh failed error_class=%s", type(error).__name__)
+        await asyncio.sleep(settings.universe_close_refresh_interval_seconds)
 
 
 async def corporate_action_sync_loop() -> None:

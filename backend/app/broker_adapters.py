@@ -112,9 +112,10 @@ _SENSITIVE_PROVIDER_FIELD = re.compile(
 _OPAQUE_PROVIDER_VALUE = re.compile(r"\b[A-Za-z0-9_~+/=-]{24,}\b")
 _LONG_NUMBER = re.compile(r"\b\d{5,}\b")
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
-_DHAN_TICK_EXCHANGES = {"NSE_EQ": "NSE", "BSE_EQ": "BSE", "NSE_FNO": "NSE", "BSE_FNO": "BSE"}
+_DHAN_TICK_EXCHANGES = {"NSE_EQ": "NSE", "BSE_EQ": "BSE", "NSE_FNO": "NSE", "BSE_FNO": "BSE", "MCX_COMM": "MCX"}
 _DHAN_DERIVATIVE_NAME_MEMO: dict[tuple[int, str, str], str | None] = {}
 _DHAN_TICK_DERIVATIVE_INSTRUMENTS = ("OPTSTK", "OPTIDX", "FUTSTK", "FUTIDX")
+_DHAN_TICK_MCX_INSTRUMENTS = ("FUTCOM", "FUTIDX")  # MCX commodity/index futures only (the Market watch commodity section)
 _DHAN_TICK_CACHE: dict[tuple[str, str], Decimal | None] = {}
 
 
@@ -895,10 +896,39 @@ class DhanAdapter(BrokerAdapter):
             allow_empty_holdings=True,
         )
 
+    # (master load time, the master list itself, {ISIN: [(position, row)]}, {security id: [(position, row)]}) for NSE/BSE cash-equity rows only.
+    # Built once per master load so a holding is found in O(1) instead of by scanning ~230,000 rows (which cost seconds per request).
+    _equity_lookup_cache: tuple[float, list[dict[str, str]], dict[str, list[tuple[int, dict[str, str]]]], dict[str, list[tuple[int, dict[str, str]]]]] | None = None
+
     @classmethod
-    def _scrip_master(cls) -> list[dict[str, str]]:
+    def _equity_lookup(cls, rows: list[dict[str, str]] | None = None) -> tuple[dict[str, list[tuple[int, dict[str, str]]]], dict[str, list[tuple[int, dict[str, str]]]]]:
+        rows = rows if rows is not None else cls._scrip_master()      # callers that already hold the master pass it in: no second fetch
+        stamp = cls._scrip_master_cache[0] if cls._scrip_master_cache else -1.0
+        cached = cls._equity_lookup_cache
+        if cached is not None and cached[0] == stamp and cached[1] is rows:
+            return cached[2], cached[3]
+        by_isin: dict[str, list[tuple[int, dict[str, str]]]] = {}
+        by_id: dict[str, list[tuple[int, dict[str, str]]]] = {}
+        for position, row in enumerate(rows):
+            if (
+                row.get("EXCH_ID", "").strip().upper() in {"NSE", "BSE"}
+                and row.get("SEGMENT", "").strip().upper() == "E"
+                and row.get("INSTRUMENT", "").strip().upper() == "EQUITY"
+                and row.get("SERIES", "").strip().upper() == "EQ"
+                and row.get("SECURITY_ID", "").strip().isdigit()
+            ):
+                by_id.setdefault(row["SECURITY_ID"].strip(), []).append((position, row))
+                isin = row.get("ISIN", "").strip().upper()
+                if isin:
+                    by_isin.setdefault(isin, []).append((position, row))
+        cls._equity_lookup_cache = (stamp, rows, by_isin, by_id)
+        return by_isin, by_id
+
+    @classmethod
+    def _scrip_master(cls, force: bool = False) -> list[dict[str, str]]:
+        """The Dhan instrument master, cached for 24h. ``force`` re-downloads while the old copy keeps serving until the new one is swapped in."""
         now = time.monotonic()
-        if cls._scrip_master_cache and now - cls._scrip_master_cache[0] < 86400:
+        if not force and cls._scrip_master_cache and now - cls._scrip_master_cache[0] < 86400:
             return cls._scrip_master_cache[1]
         try:
             with httpx.stream(
@@ -1090,19 +1120,14 @@ class DhanAdapter(BrokerAdapter):
         normalized_isin = isin.strip().upper() if isin else ""
         if not normalized_symbol or not normalized_isin:
             return None
+        by_isin, _by_id = cls._equity_lookup()
         candidates = [
             row
-            for row in cls._scrip_master()
-            if row.get("EXCH_ID", "").strip().upper() in {"NSE", "BSE"}
-            and row.get("SEGMENT", "").strip().upper() == "E"
-            and row.get("INSTRUMENT", "").strip().upper() == "EQUITY"
-            and row.get("SERIES", "").strip().upper() == "EQ"
-            and row.get("ISIN", "").strip().upper() == normalized_isin
-            and normalized_symbol in {
+            for _position, row in by_isin.get(normalized_isin, [])
+            if normalized_symbol in {
                 row.get("SYMBOL_NAME", "").strip().upper().removesuffix("-EQ"),
                 row.get("UNDERLYING_SYMBOL", "").strip().upper().removesuffix("-EQ"),
             }
-            and row.get("SECURITY_ID", "").strip().isdigit()
         ]
         if security_id and security_id.isdigit():
             candidates = [
@@ -1310,6 +1335,16 @@ class DhanAdapter(BrokerAdapter):
                         )
                         continue
                     try:
+                        untraded = any(
+                            Decimal(str(value)) == 0
+                            for value in (record.get("last_price"), ohlc.get("open"), ohlc.get("high"), ohlc.get("low"))
+                            if value is not None
+                        )
+                    except (ValueError, TypeError, InvalidOperation):
+                        untraded = False  # malformed values still fail below
+                    if untraded:
+                        continue  # no trade yet: unknown price, never a zero quote and never a failed batch
+                    try:
                         raw_timestamp = record["last_trade_time"]
                         timestamp = datetime.strptime(
                             str(raw_timestamp), "%d/%m/%Y %H:%M:%S"
@@ -1450,8 +1485,8 @@ class DhanAdapter(BrokerAdapter):
     def price_tick_for(exchange_segment: str, security_id: str) -> Decimal | None:
         """Tick size from the Dhan scrip master for an NSE/BSE equity or an NSE/BSE F&O contract, or None (fail closed).
 
-        Only NSE_EQ, BSE_EQ, NSE_FNO and BSE_FNO are resolved. Other segments return None, so their price
-        packets are rejected rather than kept unquantised.
+        NSE_EQ, BSE_EQ, NSE_FNO, BSE_FNO and MCX_COMM futures are resolved. Other segments return None, so
+        their price packets are rejected rather than kept unquantised.
         """
         key = (exchange_segment, security_id)
         if key in _DHAN_TICK_CACHE:
@@ -1468,6 +1503,9 @@ class DhanAdapter(BrokerAdapter):
                 and (
                     (row.get("INSTRUMENT") or "").strip().upper() == "EQUITY"
                     if exchange_segment.endswith("_EQ")
+                    else (row.get("SEGMENT") or "").strip().upper() == "M"
+                    and (row.get("INSTRUMENT") or "").strip().upper() in _DHAN_TICK_MCX_INSTRUMENTS
+                    if exchange_segment == "MCX_COMM"
                     else (row.get("SEGMENT") or "").strip().upper() == "D"
                     and (row.get("INSTRUMENT") or "").strip().upper() in _DHAN_TICK_DERIVATIVE_INSTRUMENTS
                 )
@@ -1577,6 +1615,10 @@ class DhanAdapter(BrokerAdapter):
             opening = struct.unpack_from("<f", packet, 34)[0]
             high = struct.unpack_from("<f", packet, 42)[0]
             low = struct.unpack_from("<f", packet, 46)[0]
+            if 0.0 in (last_price, opening, high, low):
+                # Exactly zero is Dhan's "not traded yet" (thin contracts, pre-open). It is no quote, not a
+                # corrupt packet: skipping it must not tear down the shared socket for every other symbol.
+                return None
             return HistoricalBar(
                 timestamp=_dhan_ist_epoch_to_utc(trade_timestamp),
                 open=_float32_wire_to_price(opening, price_tick),

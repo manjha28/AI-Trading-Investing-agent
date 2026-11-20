@@ -24,7 +24,7 @@ export function IndicatorLibrary({ meta, onUse }: { meta: Meta; onUse: (id: stri
               <Fragment key={i.id}>
                 <tr>
                   <td><button type="button" className="sl-link" aria-expanded={openId === i.id} onClick={() => setOpenId(openId === i.id ? null : i.id)}>{i.name}</button> <code>{i.id}</code></td>
-                  <td>{i.category.replace('_', ' ')}</td><td>{i.outputs.join(', ')}</td>
+                  <td>{i.category.replace('_', ' ')}</td><td title={i.outputs.join(', ')}>{i.outputs.length > 8 ? `${i.outputs.slice(0, 8).join(', ')} … +${i.outputs.length - 8} more` : i.outputs.join(', ')}</td>
                   <td>{Object.entries(i.params).map(([k, p]) => `${k}=${p.default}`).join(', ') || '—'}</td><td className="sl-r">{i.minimum_bars_default} bars</td>
                   <td><button type="button" onClick={() => onUse(i.id)}>Use in builder</button></td>
                 </tr>

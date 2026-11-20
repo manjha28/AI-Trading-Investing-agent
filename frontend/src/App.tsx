@@ -1,16 +1,16 @@
-import { Activity, ArrowDownLeft, BarChart3, Bitcoin, BellRing, BookOpen, CalendarDays, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
+import { Activity, ArrowDownLeft, Bitcoin, TrendingUp, BookOpen, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { apiRequest } from './api';
 import { marketStatusLabel } from './lib/priceStates';
 import { useWorkspace } from './components/useWorkspace';
-import { Alerts } from './pages/Alerts';
+import { AlertsBell } from './components/AlertsBell';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
-import { CorporateActions } from './pages/CorporateActions';
 import { CryptoDeltaPage } from './pages/CryptoDelta';
 import { JournalPage } from './pages/Journal';
 import { SignalsWorkspace } from './signals/SignalsWorkspace';
 import { MarketDataPage } from './pages/MarketData';
+import { MarketWatch, type WatchFocus } from './pages/MarketWatch';
 import { OverviewPage } from './pages/Overview';
 import { PortfolioSetupPage } from './pages/PortfolioSetup';
 import { Research } from './pages/Research';
@@ -53,19 +53,13 @@ export default function App() {
     signOut,
   } = workspace;
 
-  // Unread alert count for the nav badge (events still in "new" status).
-  const [unreadAlerts, setUnreadAlerts] = useState(0);
-  const signedInUserId = user?.id;
-  useEffect(() => {
-    if (!signedInUserId) { setUnreadAlerts(0); return undefined; }
-    let cancelled = false;
-    const load = () => apiRequest<{ id: string }[]>('/alerts/events?status=new&limit=100')
-      .then((events) => { if (!cancelled) setUnreadAlerts(events.length); })
-      .catch(() => undefined);
-    void load();
-    const timer = window.setInterval(() => void load(), 60_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [signedInUserId, activeView]);
+  // Alerts live in the header bell and on each stock in Market watch. Clicking one opens that stock there.
+  const [watchFocus, setWatchFocus] = useState<WatchFocus | undefined>(undefined);
+  const [bellKey, setBellKey] = useState(0);
+  const openStock = (instrumentId: string, tab: WatchFocus['tab'] = 'alerts') => { setWatchFocus((cur) => ({ instrumentId, tab, nonce: (cur?.nonce ?? 0) + 1 })); setActiveView('market-watch'); };
+
+  // The header search opens the Market watch with that term (n makes repeating a search re-run it).
+  const [watchSearch, setWatchSearch] = useState({ q: '', n: 0 });
 
   // Success notices are transient; errors stay until dismissed.
   useEffect(() => {
@@ -195,20 +189,18 @@ export default function App() {
     : activeView === 'journal'
       ? 'Trade journal'
       : activeView === 'market-data'
-        ? 'Market data'
+        ? 'Instrument details'
         : activeView === 'brokers'
-          ? 'Connect Broker'
-          : activeView === 'alerts'
-            ? 'Alerts'
-              : activeView === 'corporate-actions'
-                ? 'Corporate actions'
-                : activeView === 'research'
+          ? 'Dhan connection'
+          : activeView === 'research'
                   ? 'Research'
                   : activeView === 'signals'
                     ? 'Signals'
                     : activeView === 'crypto-delta'
                       ? 'Crypto · Delta'
-                      : 'Overview';
+                      : activeView === 'market-watch'
+                        ? 'Market watch'
+                        : 'Overview';
 
   return (
     <div className={sidebarCollapsed ? 'app-frame sidebar-collapsed' : 'app-frame'}>
@@ -229,10 +221,7 @@ export default function App() {
         <nav className="primary-nav" id="primary-navigation" aria-label="Workspace">
           <button className={activeView === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('overview')}><Wallet size={17} /><span>Overview</span></button>
           <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={17} /><span>Trade journal</span></button>
-          <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={17} /><span>Market data</span></button>
-          <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={17} /><span>Brokers</span></button>
-          <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={17} /><span>Alerts</span>{unreadAlerts > 0 && <em className="nav-badge" aria-label={`${unreadAlerts} unread alerts`}>{unreadAlerts > 99 ? '99+' : unreadAlerts}</em>}</button>
-          <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={17} /><span>Corporate actions</span></button>
+          <button className={activeView === 'market-watch' || activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-watch')}><TrendingUp size={17} /><span>Market watch</span></button>
           <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={17} /><span>Research</span></button>
           <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={17} /><span>Signals</span></button>
           <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={17} /><span>Crypto · Delta</span></button>
@@ -244,14 +233,16 @@ export default function App() {
 
       <main className="workspace">
         <header className="workspace-header">
-          <form className="header-search" role="search" onSubmit={(event) => { void searchMarketInstruments(event); setActiveView('market-data'); }}>
+          <form className="header-search" role="search" onSubmit={(event) => { event.preventDefault(); setWatchSearch((current) => ({ q: marketQuery.trim(), n: current.n + 1 })); setActiveView('market-watch'); }}>
             <Search size={15} aria-hidden="true" />
             <input type="search" aria-label="Search instruments" placeholder="Search instruments" value={marketQuery} onChange={(event) => setMarketQuery(event.target.value)} />
           </form>
           <div className="header-actions">
             {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
+            <AlertsBell refreshKey={bellKey} onOpenStock={(id) => openStock(id)} />
             <button className="secondary-button" type="button" disabled={!hasConnectedBroker || headerSyncing} onClick={() => void syncBroker()}>{headerSyncing ? 'Syncing Dhan…' : 'Sync Dhan account'}</button>
             <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketStatusLabel(marketDataStatus)}</span>
+            <button className="text-button" type="button" onClick={() => setActiveView('brokers')} title="Connect or reconnect your Dhan account">Dhan connection</button>
           </div>
         </header>
         {activeView !== 'overview' && <h1 className="page-title">{pageTitle}</h1>}
@@ -276,23 +267,36 @@ export default function App() {
           </section>
         )}
 
-        {activeView === 'corporate-actions' ? (
-          <CorporateActions portfolioId={portfolioId} watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
-        ) : activeView === 'research' ? (
+        {activeView === 'research' ? (
           <Research watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
-        ) : activeView === 'alerts' ? (
-          <Alerts portfolios={portfolios} portfolioId={portfolioId} />
         ) : activeView === 'signals' ? (
           <SignalsWorkspace />
         ) : activeView === 'crypto-delta' ? (
           <CryptoDeltaPage />
+        ) : activeView === 'market-watch' ? (
+          <MarketWatch
+            initialQuery={watchSearch.q}
+            searchNonce={watchSearch.n}
+            focus={watchFocus}
+            onAlertsChanged={() => setBellKey((k) => k + 1)}
+            workspace={{
+              watchlist: workspace.watchlist,
+              addInstrumentToWatchlist: workspace.addInstrumentToWatchlist,
+              removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist,
+              setActiveView: workspace.setActiveView,
+              setOpenMarketInstrumentId: workspace.setOpenMarketInstrumentId,
+            }}
+          />
         ) : activeView === 'brokers' ? (
           <>
             {user.email_verified && twoFactorStatus && !twoFactorStatus.session_verified && twoFactorPanel}
+            <button className="secondary-button" type="button" onClick={() => setActiveView('overview')} style={{ marginBottom: 12 }}>← Back to Overview</button>
             <BrokersPage portfolioId={portfolioId} />
           </>
         ) : activeView === 'market-data' ? (
-          <MarketDataPage userId={user.id} workspace={{
+          <>
+          <button className="secondary-button" type="button" onClick={() => setActiveView('market-watch')} style={{ marginBottom: 12 }}>← Market watch</button>
+          <MarketDataPage userId={user.id} detailsOnly workspace={{
             attachSelectedInstrument: workspace.attachSelectedInstrument,
             currency: workspace.currency,
             hasOlderMarketHistory: workspace.hasOlderMarketHistory,
@@ -325,6 +329,7 @@ export default function App() {
             summary: workspace.summary,
             valuation: workspace.valuation,
           }} />
+          </>
         ) : activeView === 'journal' ? (
           <JournalPage workspace={{cancelEditingTrade: workspace.cancelEditingTrade, currency: workspace.currency, editingTrade: workspace.editingTrade, journalAnalytics: workspace.journalAnalytics, journalAssetClass: workspace.journalAssetClass, journalBreakdown: workspace.journalBreakdown, journalCurrency: workspace.journalCurrency, journalHasExit: workspace.journalHasExit, journalTrades: workspace.journalTrades, journalLoadState: workspace.journalLoadState, journalLoadError: workspace.journalLoadError, removeJournalTrade: workspace.removeJournalTrade, refreshJournalTrades: workspace.refreshJournalTrades, saveJournalNotes: workspace.saveJournalNotes, setJournalAssetClass: workspace.setJournalAssetClass, setJournalCurrency: workspace.setJournalCurrency, setJournalHasExit: workspace.setJournalHasExit, startEditingTrade: workspace.startEditingTrade, submitJournalTrade: workspace.submitJournalTrade, valuation: workspace.valuation}} />
         ) : portfolios.length === 0 ? (
@@ -337,12 +342,9 @@ export default function App() {
       <nav className="mobile-nav" aria-label="Workspace">
         <button className={activeView === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('overview')}><Wallet size={18} /><span>Overview</span></button>
         <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={18} /><span>Journal</span></button>
-        <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={18} /><span>Markets</span></button>
-        <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={18} /><span>Brokers</span></button>
-        <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={18} /><span>Alerts</span>{unreadAlerts > 0 && <em className="nav-badge" aria-label={`${unreadAlerts} unread alerts`}>{unreadAlerts > 99 ? '99+' : unreadAlerts}</em>}</button>
+        <button className={activeView === 'market-watch' || activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-watch')}><TrendingUp size={18} /><span>Watch</span></button>
         <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={18} /><span>Signals</span></button>
         <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={18} /><span>Delta</span></button>
-        <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={18} /><span>Actions</span></button>
         <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={18} /><span>Research</span></button>
       </nav>
     </div>

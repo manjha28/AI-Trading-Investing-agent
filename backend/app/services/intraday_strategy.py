@@ -108,9 +108,12 @@ class IndicatorDecl(_Base):
 
 
 class StopRule(_Base):
-    mode: Literal["none", "percent", "atr"] = "none"
-    value: float = Field(default=0, ge=0, le=1000)
+    mode: Literal["none", "percent", "atr", "level"] = "none"
+    value: float = Field(default=0, ge=0, le=1000)     # percent / ATR multiple; for "level": a buffer (in percent of the level) placed beyond it
     atr_length: int = Field(default=14, ge=1, le=200)
+    # mode "level": the stop is an indicator output evaluated on the signal candle (e.g. the alert candle's high), one per direction
+    long_level: IndOperand | None = None
+    short_level: IndOperand | None = None
 
 
 class TargetRule(_Base):
@@ -384,6 +387,16 @@ def validate_definition(defn: StrategyDefinition) -> tuple[list[dict[str, str]],
     for key, value in (("no_entry_after", defn.session.no_entry_after), ("square_off", defn.session.square_off)):
         if value is not None and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
             err("time must be HH:MM", f"session.{key}")
+    if defn.stop.mode == "level":
+        for side, enabled, operand in (("long", defn.long_entry is not None, defn.stop.long_level), ("short", defn.short_entry is not None, defn.stop.short_level)):
+            if not enabled:
+                continue
+            if operand is None:
+                err(f"a level stop needs a {side}_level indicator output for the {side} entry", "stop")
+            elif operand.ref not in {d.alias for d in defn.indicators}:
+                err(f"stop {side}_level refers to an indicator alias that is not declared: {operand.ref}", "stop")
+            elif operand.offset:
+                err(f"stop {side}_level must read the signal candle (offset 0)", "stop")
     if defn.sizing.method == "risk_percent" and defn.stop.mode == "none":
         err("risk_percent sizing needs a stop-loss rule to measure risk", "sizing")
     if defn.target.mode == "rr" and defn.stop.mode == "none":
@@ -472,6 +485,7 @@ class EvalResult:
     atr: dict[int, np.ndarray]              # atr_length -> 1m ATR over the base index (for stop/target/trail distances)
     frames: dict[str, pd.DataFrame]
     warnings: list[str]
+    stop_levels: dict[str, np.ndarray] = field(default_factory=dict)   # "long"/"short" -> stop price over the base index (stop.mode == "level")
 
 
 def describe_operand(op: Any, decls: dict[str, IndicatorDecl]) -> str:
@@ -588,7 +602,12 @@ def evaluate(defn: StrategyDefinition, base: pd.DataFrame, profile: MarketProfil
     lengths = {defn.stop.atr_length, defn.target.atr_length, defn.trail.atr_length}
     atr = {n: ti.compute("atr", ev.base, {"length": n}, ti.Ctx(profile, "1m"))["value"] for n in lengths
            if defn.stop.mode == "atr" or defn.target.mode == "atr" or defn.trail.mode == "atr"}
-    return EvalResult(ev.base["time"], ev.dec, signals, trees, atr, ev.frames, [])
+    levels: dict[str, np.ndarray] = {}
+    if defn.stop.mode == "level":
+        for side, operand in (("long", defn.stop.long_level), ("short", defn.stop.short_level)):
+            if operand is not None:
+                levels[side] = ev.indicator(operand)       # aligned to the base index, as of the last completed decision candle (no look-ahead)
+    return EvalResult(ev.base["time"], ev.dec, signals, trees, atr, ev.frames, [], levels)
 
 
 def explain(result: EvalResult, rule: str, base_index: int) -> list[dict[str, Any]]:

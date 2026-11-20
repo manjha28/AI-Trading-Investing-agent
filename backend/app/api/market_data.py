@@ -79,6 +79,7 @@ from app.models import (
     Watchlist,
     WatchlistInstrument,
 )
+from app.models.market_watch import MarketWatchExtra
 from app.services.indicators import IndicatorValue, atr, compute_indicators, ema, rsi, sma
 from app.services.options_signal_engine import (
     ActiveOptionPosition,
@@ -103,14 +104,11 @@ from app.services.price_freshness import (
 )
 from app.services.price_states import FRESHNESS_PRIOR_CLOSE
 from app.provider_adapters import (
-    BinanceProvider,
-    DeltaExchangeProvider,
     FinnhubProvider,
     AngelOneProvider,
     DhanV2Adapter,
     UpstoxProvider,
     YahooFinanceProvider,
-    binance_provider_symbol,
     candidate_for_instrument,
     canonical_provider_symbol,
     dhan_provider_id_variants,
@@ -1389,10 +1387,7 @@ def create_market_data_provider_chain(
                 providers.append(FinnhubProvider(key))
         elif name == "yfinance":
             providers.append(YahooFinanceProvider())
-        elif name == "delta_exchange":
-            providers.append(DeltaExchangeProvider())
-        elif name == "binance":
-            providers.append(BinanceProvider())
+        # "delta_exchange" and "binance" are intentionally NOT built here: crypto has its own system (/crypto-delta).
         elif name == "upstox":
             if upstox_access_token and upstox_access_token.strip():
                 providers.append(UpstoxProvider(upstox_access_token))
@@ -2052,8 +2047,6 @@ def _resolve_provider_candidate(
             provider_symbol = canonical_provider_symbol(
                 instrument.symbol, instrument.venue, instrument.country
             )
-        elif provider.name == "binance":
-            provider_symbol = binance_provider_symbol(instrument.symbol)
         else:
             provider_symbol = instrument.symbol.upper()
         provider_id = f"{provider_symbol}|{instrument.venue.upper()}"
@@ -7269,12 +7262,433 @@ def _fresh_dhan_tokens_worker(user_id: UUID, adapter: DhanAdapter) -> dict[str, 
         return _fresh_tokens(worker_db, adapter, credential)
 
 
+UNIVERSE_MAX_INSTRUMENTS = 1500
+
+
+def _sessions_behind(instrument: Instrument, last_session: date, expected: date, *, cap: int = 30) -> int:
+    """How many trading sessions ``last_session`` is behind ``expected`` (0 = current)."""
+    zone = ZoneInfo(instrument.timezone)
+    behind, current = 0, expected
+    while current > last_session and behind < cap:
+        current = _expected_market_session_date(
+            instrument, datetime.combine(current, datetime_time.min, tzinfo=zone).astimezone(timezone.utc))
+        behind += 1
+    return behind
+
+
+def _last_completed_session(instrument: Instrument, now: datetime) -> date:
+    """The latest session whose daily bar is complete: today once the market has closed (15:45 IST for NSE),
+    otherwise the previous trading day. Unlike ``_expected_market_session_date`` this never names a session
+    that is still in progress."""
+    zone = ZoneInfo(instrument.timezone)
+    local = _utc(now).astimezone(zone)
+    settled = local.time() >= datetime_time(15, 45)
+    reference = _utc(now) if settled else datetime.combine(local.date(), datetime_time.min, tzinfo=zone).astimezone(timezone.utc)
+    return _expected_market_session_date(instrument, reference)
+
+
+def _universe_instrument_ids(db: Session) -> set[UUID]:
+    """Indian listed instruments the Dhan feed can serve: NSE equities/ETFs with a verified Dhan mapping."""
+    return set(db.scalars(
+        select(Instrument.id)
+        .join(InstrumentProviderIdentifier, InstrumentProviderIdentifier.instrument_id == Instrument.id)
+        .where(
+            InstrumentProviderIdentifier.provider == "dhan",
+            InstrumentProviderIdentifier.is_verified.is_(True),
+            Instrument.is_synthetic.is_(False),
+            Instrument.country == "IN",
+            Instrument.venue.in_(("NSE", "XNSE")),
+            Instrument.asset_class.in_(("equity", "etf")),
+        )
+        .order_by(Instrument.symbol)
+        .limit(UNIVERSE_MAX_INSTRUMENTS)
+    ))
+
+
+MCX_HOURS_IST = (datetime_time(9, 0), datetime_time(23, 30))
+
+
+def _mcx_session_open(now: datetime) -> bool:
+    """MCX trades Mon-Fri 09:00-23:30 IST (display hint only; the feed itself is the source of truth)."""
+    local = _utc(now).astimezone(ZoneInfo("Asia/Kolkata"))
+    return local.weekday() < 5 and MCX_HOURS_IST[0] <= local.time() < MCX_HOURS_IST[1]
+
+
+def _mcx_front_contracts(db: Session, today: date) -> list[Any]:
+    """The nearest unexpired futures contract per MCX underlying, from the stored Dhan derivatives master."""
+    from app.models.derivatives import DerivativeContract
+
+    rows = db.scalars(
+        select(DerivativeContract)
+        .where(
+            DerivativeContract.exchange == "MCX", DerivativeContract.segment == "MCX_COMM",
+            DerivativeContract.instrument_type == "FUTCOM", DerivativeContract.expiry >= today,
+            DerivativeContract.status == "active",
+        )
+        .order_by(DerivativeContract.underlying_symbol, DerivativeContract.expiry)
+    ).all()
+    front: dict[str, Any] = {}
+    for row in rows:
+        front.setdefault(row.underlying_symbol, row)  # ordered by expiry: the first is the nearest
+    return sorted(front.values(), key=lambda row: row.underlying_symbol)
+
+
+@router.get("/commodities")
+def get_commodities(
+    response: Response,
+    _: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Front-month MCX commodity futures (the Market watch commodity section). Reference data only: prices
+    arrive on the live stream, and a contract without a tick shows no price."""
+    response.headers["Cache-Control"] = "no-store"
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
+    contracts = _mcx_front_contracts(db, today)
+    return {
+        "count": len(contracts),
+        "exchange": "MCX",
+        "hours_ist": f"{MCX_HOURS_IST[0].strftime('%H:%M')}–{MCX_HOURS_IST[1].strftime('%H:%M')} Mon–Fri",
+        "session_open": _mcx_session_open(now),
+        "instruments": [
+            {
+                "key": f"mcx:{row.security_id}", "security_id": row.security_id, "symbol": row.underlying_symbol,
+                "name": row.display_name, "contract": row.trading_symbol, "expiry": row.expiry.isoformat(),
+                "days_to_expiry": (row.expiry - today).days,
+                "lot_size": str(row.lot_size) if row.lot_size is not None else None,
+                "tick_size": str(row.tick_size) if row.tick_size is not None else None,
+            }
+            for row in contracts
+        ],
+        "disclaimer": "Decision support, not investment advice.",
+    }
+
+
+@router.get("/universe")
+def get_market_universe(
+    response: Response,
+    active_session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Every Dhan-mapped NSE instrument with its last stored close, previous close and day change.
+
+    Figures come from stored real daily bars (same source, adjacent sessions, corporate-action
+    adjusted); anything that cannot be derived is null with a reason. The live stream then updates
+    prices in the browser. Decision support, not investment advice.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    feed_ids = _universe_instrument_ids(db)
+    # The caller's own watchlist is always part of the table, even for symbols the Dhan feed does not serve
+    # (their prices then come from whatever real stored source exists, and they are marked as having no live feed).
+    watch_ids = set(db.scalars(
+        select(WatchlistInstrument.instrument_id).join(Instrument, Instrument.id == WatchlistInstrument.instrument_id)
+        .where(WatchlistInstrument.user_id == active_session.user_id, Instrument.is_synthetic.is_(False))
+    ))
+    master_extra_ids = set(db.scalars(
+        select(MarketWatchExtra.instrument_id).join(Instrument, Instrument.id == MarketWatchExtra.instrument_id)
+        .where(MarketWatchExtra.user_id == active_session.user_id, Instrument.is_synthetic.is_(False))
+    ))
+    extra_ids = (watch_ids | master_extra_ids) - feed_ids
+    ids = feed_ids | extra_ids
+    if not ids:
+        return {"count": 0, "instruments": [], "disclaimer": "Decision support, not investment advice."}
+    instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(list(ids))))}
+    horizon = datetime.now(timezone.utc) - timedelta(days=21)
+    bars: dict[UUID, list[MarketBar]] = {}
+    for bar in db.scalars(
+        select(MarketBar)
+        .where(
+            MarketBar.instrument_id.in_(list(ids)), MarketBar.interval == "1d",
+            or_(MarketBar.source == "dhan", MarketBar.instrument_id.in_(list(extra_ids)) if extra_ids else False),
+            MarketBar.is_synthetic.is_(False), MarketBar.timestamp >= horizon,
+        )
+        .order_by(MarketBar.timestamp.desc())
+    ):
+        series = bars.setdefault(bar.instrument_id, [])
+        # change is only ever measured between bars of ONE source: an extra symbol follows its newest bar's source
+        if not series or series[0].source == bar.source:
+            series.append(bar)
+    sectors = {
+        row.instrument_id: row.text_value
+        for row in db.scalars(select(ValuationProviderInput).where(
+            ValuationProviderInput.instrument_id.in_(list(ids)),
+            ValuationProviderInput.provider == "dhan", ValuationProviderInput.metric == "sector",
+            ValuationProviderInput.text_value.is_not(None),
+        ))
+    }
+    with_actions = set(db.scalars(
+        select(CorporateAction.instrument_id).where(
+            CorporateAction.user_id == active_session.user_id, CorporateAction.instrument_id.in_(list(ids)),
+            CorporateAction.ex_date >= (horizon.date()),
+        )
+    ))
+    rows: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    expected_session: date | None = None
+    for instrument_id, instrument in instruments.items():
+        series = bars.get(instrument_id, [])
+        last = series[0] if series else None
+        previous = reason = None
+        change = change_pct = None
+        expected_session = _last_completed_session(instrument, now)
+        stale = False
+        behind = None
+        if last is None:
+            reason = "no stored daily close"
+        else:
+            session = _daily_session_date(last.timestamp)
+            stale = session < expected_session
+            behind = _sessions_behind(instrument, session, expected_session) if stale else 0
+            reference = datetime.combine(session, datetime_time.min, tzinfo=ZoneInfo(instrument.timezone)).astimezone(timezone.utc)
+            expected = _expected_market_session_date(instrument, reference)
+            previous = next((b for b in series[1:] if _daily_session_date(b.timestamp) == expected), None)
+            if previous is None:
+                reason = f"previous-session close for {expected.isoformat()} is not stored"
+            else:
+                base = previous.close
+                if instrument_id in with_actions:
+                    base, _note = _adjust_previous_daily_close(db, active_session.user_id, instrument, previous.close, session)
+                if base is None or base == 0:
+                    reason = "previous close adjustment is unavailable"
+                else:
+                    change = last.close - base
+                    change_pct = (change / base * Decimal("100")).quantize(Decimal("0.01"))
+            if stale:  # stored data is true for its own date but is not today's: never present it as current
+                reason = (f"last stored close is {session.isoformat()}; {expected_session.isoformat()} is the latest "
+                          f"completed session" + (f" ({reason})" if reason else ""))
+        rows.append({
+            "instrument_id": str(instrument_id), "symbol": instrument.symbol, "name": instrument.display_name,
+            "venue": instrument.venue, "sector": sectors.get(instrument_id),
+            "live_feed": instrument_id in feed_ids,  # False: not served by the Dhan feed, so no live ticks
+            "master_extra": instrument_id in master_extra_ids,  # added by the user with "Add to market watch"
+            "day_low": str(last.low) if last else None, "day_high": str(last.high) if last else None,  # of last_close_date
+            "last_close": str(last.close) if last else None,
+            "last_close_date": _daily_session_date(last.timestamp).isoformat() if last else None,
+            "volume": str(last.volume) if last else None,
+            "previous_close": str(previous.close) if previous else None,
+            "change": str(change) if change is not None else None,
+            "change_pct": str(change_pct) if change_pct is not None else None,
+            "stale": stale or last is None,
+            "sessions_behind": behind,  # 0 current, 1 = prior close (today's bar not published yet), >=2 = genuinely stale
+            "reason": reason,
+        })
+    rows.sort(key=lambda row: row["symbol"])
+    return {
+        "count": len(rows), "instruments": rows,
+        "expected_session": expected_session.isoformat() if expected_session else None,
+        "disclaimer": "Decision support, not investment advice.",
+    }
+
+
+@router.post("/universe/extras/{instrument_id}", status_code=204)
+def add_market_watch_extra(
+    instrument_id: UUID,
+    active_session: UserSession = Depends(require_verified_market_session),
+    _csrf: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Add an instrument to the caller's Market watch master list (idempotent). It is separate from the watchlist:
+    a symbol in the master list is only on the watchlist once starred."""
+    instrument = _get_instrument(db, instrument_id)
+    if instrument.is_synthetic:
+        raise HTTPException(status_code=422, detail="Synthetic instruments cannot be added to the market watch.")
+    exists = db.scalar(select(MarketWatchExtra).where(
+        MarketWatchExtra.user_id == active_session.user_id, MarketWatchExtra.instrument_id == instrument_id))
+    if exists is None:
+        db.add(MarketWatchExtra(user_id=active_session.user_id, instrument_id=instrument_id, created_at=datetime.now(timezone.utc)))
+        db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/universe/extras/{instrument_id}", status_code=204)
+def remove_market_watch_extra(
+    instrument_id: UUID,
+    active_session: UserSession = Depends(require_verified_market_session),
+    _csrf: UserSession = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> Response:
+    db.execute(delete(MarketWatchExtra).where(
+        MarketWatchExtra.user_id == active_session.user_id, MarketWatchExtra.instrument_id == instrument_id))
+    db.commit()
+    return Response(status_code=204)
+
+
 @router.websocket("/watchlists/{watchlist_id}/stream")
 async def dhan_watchlist_quote_stream(
     websocket: WebSocket,
     watchlist_id: UUID,
     db: Session = Depends(get_db),
 ) -> None:
+    await _dhan_quote_stream(websocket, watchlist_id, db)
+
+
+@router.websocket("/commodities/stream")
+async def dhan_commodity_quote_stream(
+    websocket: WebSocket,
+    db: Session = Depends(get_db),
+) -> None:
+    """Live MCX commodity ticks over a dedicated Dhan connection. Display only: nothing is written to the
+    database, and the change is computed from the feed's own previous close (Decimal, in Python)."""
+    await websocket.accept()
+    if not _websocket_origin_allowed("commodity_stream", websocket):
+        await websocket.close(code=4403, reason="Commodity WebSocket origin rejected")
+        return
+    raw_token = websocket.cookies.get("session_token")
+    active_session = db.scalar(
+        select(UserSession)
+        .where(UserSession.token_hash == hash_token(raw_token), UserSession.revoked_at.is_(None))
+        .options(selectinload(UserSession.user))
+    ) if raw_token else None
+    expires_at = active_session.expires_at if active_session is not None else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if active_session is None or expires_at <= datetime.now(timezone.utc):
+        await websocket.send_json({"type": "status", "status": "unavailable", "message": "Sign in again to use the live feed."})
+        await websocket.close(code=4401)
+        return
+    user = active_session.user
+    if not user.email_verified or not user.two_factor_enabled or not active_session.two_factor_verified:
+        await websocket.send_json({"type": "status", "status": "unavailable", "message": "Verify this session before using broker market data."})
+        await websocket.close(code=4403, reason="Commodity stream session verification required")
+        return
+    if _default_market_data_source(db, active_session.user_id) != "dhan":
+        await websocket.send_json({"type": "status", "status": "unavailable", "message": "Select Dhan as the market-data source to use this feed."})
+        await websocket.close(code=4403, reason="Dhan is not the selected market-data source")
+        return
+
+    now = datetime.now(timezone.utc)
+    contracts = _mcx_front_contracts(db, now.astimezone(ZoneInfo("Asia/Kolkata")).date())
+    subscriptions = {f"mcx:{row.security_id}": ("MCX_COMM", str(row.security_id)) for row in contracts if str(row.security_id).isdigit()}
+    symbols = {f"mcx:{row.security_id}": row.underlying_symbol for row in contracts}
+    if not subscriptions:
+        await websocket.send_json({"type": "status", "status": "unavailable", "message": "No MCX contracts are available in the stored derivatives master."})
+        await websocket.close(code=1000, reason="No subscriptions")
+        return
+    adapter = DhanAdapter()
+    try:
+        tokens = await asyncio.to_thread(_fresh_dhan_tokens_worker, active_session.user_id, adapter)
+    except HTTPException:
+        await websocket.send_json({"type": "status", "status": "unavailable", "message": "Reconnect Dhan on the Brokers page to renew its session."})
+        await websocket.close(code=4401)
+        return
+    # One REST snapshot at connect time: the day's reference close (for change) and the current prices, so the
+    # table is populated immediately and the live ticks below only have to update it.
+    previous_closes: dict[str, Decimal] = {}
+    snapshot: dict[str, Any] = {}
+    try:
+        quotes = await asyncio.to_thread(
+            adapter.get_market_quotes_batch, tokens["access_token"], tokens, {"MCX_COMM": [sid for _seg, sid in subscriptions.values()]},
+        )
+        for security_id, bar in quotes.get("MCX_COMM", {}).items():
+            key = f"mcx:{security_id}"
+            if key in symbols:
+                snapshot[key] = bar
+                if bar.session_close is not None and bar.session_close > 0:
+                    previous_closes[key] = bar.session_close
+    except Exception:  # change simply stays unknown; the live ticks still flow
+        logger.warning("commodity_snapshot_unavailable")
+
+    events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    updates: asyncio.Queue[Any] = asyncio.Queue()  # subscription changes: none needed, the contract set is fixed
+    status_map = {"packet_received": "active", "active": "active", "connecting": "connecting", "reconnecting": "reconnecting",
+                  "idle": "idle", "failed": "unavailable", "connection_failure": "unavailable"}
+
+    async def on_status(status: str, message: str | None = None, *_rest: Any) -> None:
+        mapped = status_map.get(status)
+        if mapped is not None:
+            await events.put({"type": "status", "status": mapped, "message": message})
+
+    async def pump() -> None:
+        """Dedicated Dhan connection for commodities: display-only, so no database rows or gap tracking."""
+        try:
+            async for item in adapter.stream_watchlist_market_quotes(tokens["access_token"], tokens, subscriptions, updates, on_status):
+                if len(item) == 3:
+                    key, kind, value = item
+                    if kind == "previous_close":
+                        await events.put({"type": "previous_close", "instrument_id": key, "previous_close": value})
+                else:
+                    key, bar = item
+                    await events.put({"type": "tick", "instrument_id": key, "bar": bar})
+        except (BrokerAdapterError, BrokerReconnectRequired) as error:
+            await events.put({"type": "error", "message": str(error), "status_code": getattr(error, "status_code", None)})
+
+    last_sent: dict[str, float] = {}
+    task = asyncio.current_task()
+
+    def tick_message(key: str, bar: Any) -> dict[str, Any]:
+        previous = previous_closes.get(key)
+        change = bar.close - previous if previous else None
+        return {
+            "type": "tick", "key": key, "symbol": symbols[key], "ltp": str(bar.close),
+            "previous_close": str(previous) if previous else None,
+            "change": str(change) if change is not None else None,
+            "change_pct": str((change / previous * Decimal("100")).quantize(Decimal("0.01"))) if change is not None else None,
+            "open": str(bar.open), "high": str(bar.high), "low": str(bar.low), "volume": str(bar.volume),
+            "received_at": datetime.now(timezone.utc).isoformat(),  # server clock; the feed's own tick time is not relied on
+        }
+
+    async def watch_client() -> None:
+        try:
+            while True:
+                await websocket.receive_text()  # pings keep the socket alive; a disconnect raises
+        except WebSocketDisconnect:
+            if task is not None:
+                task.cancel()
+
+    monitor = asyncio.create_task(watch_client())
+    pump_task = asyncio.create_task(pump())
+    try:
+        await websocket.send_json({
+            "type": "status", "status": "active" if _mcx_session_open(now) else "market_closed",
+            "message": None if _mcx_session_open(now) else "MCX is closed (09:00–23:30 IST, Mon–Fri); showing the last feed values.",
+        })
+        for key, bar in snapshot.items():
+            await websocket.send_json(tick_message(key, bar))
+        while True:
+            event = await events.get()
+            kind = event["type"]
+            if kind == "status":
+                await websocket.send_json({"type": "status", "status": event["status"], "message": event.get("message")})
+            elif kind == "previous_close":
+                value = event.get("previous_close")
+                if isinstance(value, Decimal) and value > 0:
+                    previous_closes[event["instrument_id"]] = value
+            elif kind == "error":
+                await websocket.send_json({"type": "status", "status": "unavailable", "message": event["message"]})
+                await websocket.close(code=_dhan_feed_close_code(event.get("status_code"), "commodity_upstream_rejected"))
+                return
+            elif kind == "tick":
+                key, bar = event["instrument_id"], event["bar"]
+                if key not in symbols:
+                    continue
+                moment = time.monotonic()
+                if moment - last_sent.get(key, 0.0) < 0.4:  # at most ~2.5 updates/second per contract
+                    continue
+                last_sent[key] = moment
+                await websocket.send_json(tick_message(key, bar))
+    except (asyncio.CancelledError, WebSocketDisconnect):
+        pass
+    finally:
+        monitor.cancel()
+        pump_task.cancel()
+
+
+@router.websocket("/universe/stream")
+async def dhan_universe_quote_stream(
+    websocket: WebSocket,
+    db: Session = Depends(get_db),
+) -> None:
+    """Live ticks for every Dhan-mapped NSE instrument (the Market watch terminal). Same hub, session
+    checks, throttling and message format as a watchlist stream."""
+    await _dhan_quote_stream(websocket, None, db)
+
+
+async def _dhan_quote_stream(
+    websocket: WebSocket,
+    watchlist_id: UUID | None,
+    db: Session,
+) -> None:
+    """``watchlist_id=None`` streams the whole Indian universe instead of one watchlist."""
     await websocket.accept()
     logger.info("ws_client_accepted route=watchlist_stream watchlist_id=%s", watchlist_id)
     allowed_origin = _websocket_origin_allowed("watchlist_stream", websocket)
@@ -7339,11 +7753,15 @@ async def dhan_watchlist_quote_stream(
         await websocket.close(code=4404)
         return
 
-    watchlist = db.scalar(
-        select(Watchlist).where(
-            Watchlist.id == watchlist_id,
-            Watchlist.user_id == active_session.user_id,
+    watchlist = (
+        db.scalar(
+            select(Watchlist).where(
+                Watchlist.id == watchlist_id,
+                Watchlist.user_id == active_session.user_id,
+            )
         )
+        if watchlist_id is not None
+        else "universe"
     )
     if watchlist is None:
         await websocket.send_json({
@@ -7380,13 +7798,17 @@ async def dhan_watchlist_quote_stream(
         from sqlalchemy.orm import Session as WorkerSession
 
         with WorkerSession(engine) as worker_db:
-            entry_ids = set(
-                worker_db.scalars(
-                    select(WatchlistInstrument.instrument_id).where(
-                        WatchlistInstrument.watchlist_id == watchlist_id,
-                        WatchlistInstrument.user_id == active_user_id,
-                    )
-                ).all()
+            entry_ids = (
+                _universe_instrument_ids(worker_db)
+                if watchlist_id is None
+                else set(
+                    worker_db.scalars(
+                        select(WatchlistInstrument.instrument_id).where(
+                            WatchlistInstrument.watchlist_id == watchlist_id,
+                            WatchlistInstrument.user_id == active_user_id,
+                        )
+                    ).all()
+                )
             )
             broker_rows = worker_db.scalars(
                 select(BrokerMirror).where(
@@ -7687,12 +8109,16 @@ async def dhan_watchlist_quote_stream(
         from sqlalchemy.orm import Session as WorkerSession
 
         with WorkerSession(engine) as worker_db:
-            instrument_ids = worker_db.scalars(
-                select(WatchlistInstrument.instrument_id).where(
-                    WatchlistInstrument.watchlist_id == watchlist_id,
-                    WatchlistInstrument.user_id == active_user_id,
-                )
-            ).all()
+            instrument_ids = (
+                list(_universe_instrument_ids(worker_db))
+                if watchlist_id is None
+                else worker_db.scalars(
+                    select(WatchlistInstrument.instrument_id).where(
+                        WatchlistInstrument.watchlist_id == watchlist_id,
+                        WatchlistInstrument.user_id == active_user_id,
+                    )
+                ).all()
+            )
             if not instrument_ids:
                 return None
             return worker_db.scalar(

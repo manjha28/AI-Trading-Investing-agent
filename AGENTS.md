@@ -5,7 +5,7 @@ A private, portfolio-aware research analyst for one user. It reports daily, with
 evidence: what to put on radar, what to trim or book profit in, what to hold and why, and what
 unintended risk is being carried. It also provides a signals and strategy workbench (scanning,
 backtesting, forward monitoring) for Dhan (NSE/BSE) and Delta Exchange India. Live order
-placement is a future goal; see "Execution policy".
+placement exists only as the owner-approved, tightly scoped Dhan exception in "Execution policy".
 
 ## Spec of record
 The "Signals & Strategy Intelligence Workbench" blueprint is the governing product specification
@@ -33,8 +33,29 @@ pick one.
 - Scanner and backtester consume the same compiled condition tree and indicator library.
 
 ## Execution policy
-Current state: no live order placement exists and none may be built now. Brokers are read-only
-in practice.
+Current state: Delta Exchange is research-only: no order path to it exists and none may be built.
+Dhan has ONE owner-approved exception (below); every other broker, segment and strategy stays
+read-only.
+
+### Owner-approved exception: Dhan live execution (approved by the owner, 2026-11-21)
+The owner runs this system on their own account and approved building live order execution for
+Dhan only, within hard limits. Agents MAY build and maintain exactly this, and nothing wider:
+- NSE equity, INTRADAY product only. No options, futures, currency or commodity orders, no CNC.
+- Maximum order quantity 1 share. The cap is enforced in the intent, the guard-rails and the
+  adapter, and cannot be raised by configuration; raising it needs a new owner approval here.
+- Only strategies on a code-level allowlist (currently `five_ema_alert` and `mfi_dip_30m`).
+- The Dhan access token already stored for read-only use is reused; no new credential storage.
+  Execution scope is a separate, explicit owner arming step, never implied by the token.
+- Off by default in three independent layers, all required: deployment flag
+  (`DHAN_LIVE_EXECUTION_ENABLED`), per-user arming by the owner (verified email, 2FA-verified
+  session, CSRF, typed confirmation, auditable), and per-test `execute_live` on that forward test.
+- Guard-rails fail closed: stale/missing price, outside market hours, no stop or target, daily
+  loss cap, daily trade cap, open-position cap, notional cap, duplicate signal, kill switch.
+- A kill switch disarms instantly and cancels this app's open orders.
+- Tests, CI and development NEVER reach a Dhan order endpoint (the adapter refuses under pytest/CI
+  and is exercised only against a mocked transport). Agents must not place a real order.
+- Every intent, decision, order request, broker response and fill is written to the append-only
+  audit trail with the real broker reply; tokens are never logged.
 
 Agents MAY design and build the architecture that lets live execution be added later without
 rework:
@@ -48,7 +69,7 @@ rework:
 - guard-rail limits (risk checks, size and exposure caps) that fail closed;
 - an append-only audit trail recording intent, decision and fill identically for backtest and live.
 
-Agents MUST NOT build:
+Agents MUST NOT build (outside the Dhan exception above):
 - any code path that transmits an order (place, modify or cancel) to a broker;
 - any execution credential storage (read-only credentials only);
 - any live adapter, or any adapter method that can reach a broker's order endpoints.
@@ -56,7 +77,7 @@ Agents MUST NOT build:
 Requirements that apply to the permitted architecture, and bind any future activation:
 - Live mode is off by default. It is never inferred from stored credentials, broker
   connectivity, a strategy signal, or application startup. Activation needs an explicit,
-  auditable owner action, and is a separate milestone approved by the owner.
+  auditable owner action. (The Dhan milestone is approved above; anything else is not.)
 - Development, automated tests and CI must never reach a broker order endpoint; fail closed
   if any live path is reached in those environments.
 - Every order intent and lifecycle transition is auditable, owner-scoped, and correlated with its

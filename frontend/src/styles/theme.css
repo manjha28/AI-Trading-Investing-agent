@@ -245,3 +245,121 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .crypto-checks li span { color: var(--tc-muted); }
 .crypto-check-pass strong { color: var(--tc-green); } .crypto-check-fail strong { color: var(--tc-red); }
 @media (max-width: 700px) { .crypto-checks li { grid-template-columns: 1fr; gap: 2px; } .crypto-intro { flex-direction: column; } }
+
+/* ---------- Crypto workspace: tabs, watch list, chart, lab ---------- */
+.crypto-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--tc-line); overflow-x: auto; }
+.crypto-tabs button { padding: 10px 16px; font-size: 13px; color: var(--tc-muted); background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; white-space: nowrap; }
+.crypto-tabs button:hover { color: var(--tc-text); background: var(--tc-raised); }
+.crypto-tabs button.active { color: var(--tc-text); border-bottom-color: var(--tc-green); background: var(--tc-raised); font-weight: 600; }
+.crypto-split { display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 980px) { .crypto-split { grid-template-columns: 1fr; } }
+.crypto-watch-list { margin: 10px 0 8px; padding: 0; list-style: none; display: grid; gap: 2px; max-height: 560px; overflow-y: auto; }
+.crypto-watch-list button { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; width: 100%; padding: 8px 10px; text-align: left; color: var(--tc-text); background: transparent; border: 1px solid transparent; border-radius: 4px; }
+.crypto-watch-list button:hover { background: var(--tc-raised); }
+.crypto-watch-list button.active { background: var(--tc-green-soft); border-color: #11694b; }
+.crypto-watch-list strong { font-size: 13px; }
+.crypto-watch-price { font-family: var(--tc-mono); font-size: 12.5px; text-align: right; }
+.crypto-watch-list small { grid-column: 1 / -1; color: var(--tc-dim); font-size: 11px; }
+.crypto-mark { font-family: var(--tc-mono); font-size: 12px; font-weight: 400; color: var(--tc-muted); }
+.crypto-resolutions { display: flex; gap: 2px; }
+.crypto-resolutions button { padding: 5px 10px; font-family: var(--tc-mono); font-size: 12px; color: var(--tc-muted); background: transparent; border: 1px solid var(--tc-line-strong); border-radius: 0; }
+.crypto-resolutions button:first-child { border-radius: 4px 0 0 4px; } .crypto-resolutions button:last-child { border-radius: 0 4px 4px 0; }
+.crypto-resolutions button.active { color: #04140d; background: var(--tc-green); border-color: var(--tc-green); font-weight: 700; }
+.crypto-chart { width: 100%; border: 1px solid var(--tc-line); border-radius: 4px; overflow: hidden; }
+.crypto-chart-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 0 4px; }
+.crypto-chart-actions .crypto-sub { margin: 0; }
+.crypto-contract { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--tc-line); }
+.crypto-contract span { display: block; color: var(--tc-muted); font-family: var(--tc-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; }
+.crypto-contract strong { font-family: var(--tc-mono); font-weight: 500; }
+.crypto-lab { display: grid; gap: 16px; }
+.crypto-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; margin: 12px 0; border: 1px solid var(--tc-line); background: var(--tc-line); border-radius: 4px; overflow: hidden; }
+.crypto-kpis > div { display: grid; gap: 4px; padding: 11px 13px; background: var(--tc-surface); }
+.crypto-kpis span { color: var(--tc-muted); font-family: var(--tc-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; }
+.crypto-kpis strong { font-family: var(--tc-mono); font-size: 15px; font-weight: 500; }
+.crypto-verdict-hypo { border-left-color: var(--tc-amber); background: var(--tc-amber-soft); color: #f7d49a; font-weight: 500; }
+.crypto-h4 { margin: 14px 0 6px; font-size: 12px; color: var(--tc-muted); text-transform: uppercase; letter-spacing: .4px; }
+.crypto-details { margin: 12px 0; color: var(--tc-muted); font-size: 12.5px; }
+.crypto-details summary { cursor: pointer; color: var(--tc-amber); }
+.crypto-details ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.crypto-trades { max-height: 420px; overflow-y: auto; }
+.crypto-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; font-size: 11.5px; color: var(--tc-muted); }
+.crypto-legend-long { color: var(--tc-green); } .crypto-legend-short, .crypto-legend-stop { color: var(--tc-red); }
+.crypto-legend-target { color: #3de3ff; } .crypto-legend-signal { color: var(--tc-amber); }
+
+/* ---------- Terminal chart + legend (Indian pages) ---------- */
+.terminal-chart { width: 100%; border: 1px solid var(--tc-line); border-radius: 4px; overflow: hidden; }
+.terminal-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; font-size: 11.5px; color: var(--tc-muted); }
+.terminal-legend-long { color: var(--tc-green); } .terminal-legend-short, .terminal-legend-stop { color: var(--tc-red); }
+.terminal-legend-target { color: #3de3ff; } .terminal-legend-signal { color: var(--tc-amber); }
+
+/* ---------- Market watch terminal ---------- */
+.watch-page { display: grid; gap: 12px; }
+.watch-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 9px 14px; font-family: var(--tc-mono); font-size: 12px; color: var(--tc-muted); border: 1px solid var(--tc-line); border-radius: 4px; background: var(--tc-surface); }
+.watch-strip b { color: var(--tc-text); font-weight: 600; }
+.watch-status { font-weight: 700; letter-spacing: .5px; }
+.watch-status-active { color: var(--tc-green); } .watch-status-market_closed, .watch-status-stale { color: var(--tc-amber); }
+.watch-status-unavailable, .watch-status-reconnecting, .watch-status-connecting { color: var(--tc-red); }
+.watch-missing { color: var(--tc-amber); } .watch-note { margin-left: auto; color: var(--tc-dim); font-family: var(--tc-ui, inherit); font-size: 11px; }
+.watch-split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .watch-split { grid-template-columns: 1fr; } }
+.watch-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.watch-toolbar input[type=search] { flex: 1 1 160px; min-width: 140px; }
+.watch-modes { display: flex; }
+.watch-modes button { padding: 6px 11px; font-size: 12px; color: var(--tc-muted); background: transparent; border: 1px solid var(--tc-line-strong); border-radius: 0; }
+.watch-modes button:first-child { border-radius: 4px 0 0 4px; } .watch-modes button:last-child { border-radius: 0 4px 4px 0; }
+.watch-modes button.active { color: #04140d; background: var(--tc-green); border-color: var(--tc-green); font-weight: 700; }
+.watch-scroll { max-height: calc(100vh - 290px); min-height: 420px; overflow: auto; border: 1px solid var(--tc-line); border-radius: 4px; }
+.watch-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.watch-table thead th { position: sticky; top: 0; z-index: 1; padding: 8px 10px; background: var(--tc-surface); border-bottom: 1px solid var(--tc-line-strong); font-family: var(--tc-mono); font-size: 10.5px; font-weight: 500; letter-spacing: .4px; text-transform: uppercase; color: var(--tc-muted); text-align: left; white-space: nowrap; }
+.watch-table thead th button { all: unset; cursor: pointer; } .watch-table thead th button:hover { color: var(--tc-text); }
+.watch-table td { padding: 5px 9px; border-bottom: 1px solid var(--tc-line); white-space: nowrap; }
+.watch-table tbody tr { cursor: pointer; } .watch-table tbody tr:hover { background: var(--tc-raised); }
+.watch-table tbody tr.watch-selected { background: var(--tc-green-soft); box-shadow: inset 2px 0 var(--tc-green); }
+.watch-num { text-align: right !important; font-family: var(--tc-mono); font-variant-numeric: tabular-nums; }
+.watch-symbol { display: grid; grid-template-columns: 10px 1fr; column-gap: 8px; align-items: center; }
+.watch-symbol small { grid-column: 2; color: var(--tc-dim); font-size: 10.5px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+.watch-sector { color: var(--tc-muted); font-size: 11.5px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1500px) { .watch-sector, .watch-table:not(.commodity-table) thead th:nth-child(3) { display: none; } }
+.watch-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tc-line-strong); } .watch-dot.live { background: var(--tc-green); box-shadow: 0 0 6px rgba(25, 211, 138, .7); }
+.watch-age { color: var(--tc-dim); font-size: 11.5px; }
+.watch-ltp { font-weight: 600; transition: background .5s ease-out; }
+.watch-ltp.flash-up { background: rgba(25, 211, 138, .28); transition: none; } .watch-ltp.flash-down { background: rgba(255, 81, 96, .28); transition: none; }
+.watch-quote { margin: 4px 0 10px; font-family: var(--tc-mono); } .watch-big { font-size: 24px; font-weight: 600; margin-right: 8px; }
+.trade-plot-controls { align-items: flex-end; gap: 12px; margin-bottom: 10px; }
+.trade-plot-nav { display: flex; gap: 6px; } .trade-plot-empty { padding: 28px 0; text-align: center; }
+.watch-range { min-width: 190px; font-family: var(--tc-mono); font-size: 11px; color: var(--tc-muted); white-space: nowrap; }
+.watch-range span { display: inline-block; min-width: 58px; } .watch-range span:last-child { text-align: right; }
+.watch-range-bar { display: inline-block; position: relative; width: 70px; height: 4px; margin: 0 6px; border-radius: 2px; background: var(--tc-line-strong); vertical-align: middle; }
+.watch-range-bar i { position: absolute; top: -3px; width: 3px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--tc-green); }
+.watch-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin: 10px 0 12px; }
+.watch-stats div { display: grid; gap: 2px; } .watch-stats dt { color: var(--tc-muted); font-family: var(--tc-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; }
+.watch-stats dd { margin: 0; font-family: var(--tc-mono); font-size: 13px; }
+.watch-star { all: unset; cursor: pointer; font-size: 15px; line-height: 1; color: var(--tc-dim); padding: 2px 4px; } .watch-star:hover { color: var(--tc-amber); } .watch-star.on { color: var(--tc-amber); }
+.watch-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--tc-line); }
+.watch-tabs button { padding: 9px 16px; font-size: 13px; color: var(--tc-muted); background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; }
+.watch-tabs button:hover { color: var(--tc-text); background: var(--tc-raised); } .watch-tabs button.active { color: var(--tc-text); border-bottom-color: var(--tc-green); background: var(--tc-raised); font-weight: 600; }
+.watch-find-results { margin: 0; padding: 4px; list-style: none; background: var(--tc-surface); border: 1px solid var(--tc-line-strong); border-radius: 4px; box-shadow: 0 12px 30px rgba(0,0,0,.5); max-height: 280px; overflow: auto; }
+.watch-find-results li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 3px; font-size: 12.5px; } .watch-find-results li:hover { background: var(--tc-raised); }
+.watch-find-results small { color: var(--tc-dim); display: block; }
+.watch-source { display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 11.5px; color: var(--tc-muted); } .watch-source select { min-height: 28px; font-size: 12px; }
+.watch-shell { display: grid; gap: 12px; } .watch-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.watch-starcell { width: 28px; padding-right: 0 !important; } .watch-stale { color: var(--tc-amber); } .watch-age small { display: block; font-size: 10px; color: var(--tc-dim); } .watch-stale small { color: var(--tc-amber); }
+.watch-nodata { opacity: .55; }
+.market-details-only .watchlist-master-detail { grid-template-columns: minmax(0, 1fr); }
+.market-details-only .watchlist-master-detail { grid-template-columns: minmax(0, 1fr); }
+.watch-find-head { color: var(--tc-muted); font-family: var(--tc-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; }
+.watch-fuzzy { margin: 0; padding: 7px 10px; font-size: 12px; color: var(--tc-amber); border: 1px solid var(--tc-line); border-radius: 4px; }
+.crypto-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px 18px; margin: 8px 0 0; } .crypto-settings div { display: grid; gap: 2px; }
+.crypto-settings dt { color: var(--tc-muted); font-family: var(--tc-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; } .crypto-settings dd { margin: 0; font-size: 13px; }
+.stock-panel { display: grid; gap: 8px; margin-top: 4px; } .stock-add { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; align-items: end; }
+.stock-add label { display: grid; gap: 3px; font-size: 11px; color: var(--tc-muted); } .stock-h { margin: 8px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--tc-muted); font-family: var(--tc-mono); }
+.stock-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; } .stock-list li { display: flex; justify-content: space-between; gap: 10px; padding: 6px 8px; border: 1px solid var(--tc-line); border-radius: 4px; font-size: 12.5px; }
+.stock-list small { color: var(--tc-muted); } .stock-upcoming { color: var(--tc-amber); font-style: normal; } .stock-row { display: flex; justify-content: space-between; align-items: center; } .stock-reason { max-width: 160px; display: inline-block; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-tabs { display: flex; gap: 2px; margin: 8px 0 4px; border-bottom: 1px solid var(--tc-line); } .panel-tabs button { padding: 6px 12px; background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--tc-muted); font-size: 12px; }
+.panel-tabs button.active { color: var(--tc-text); border-bottom-color: var(--tc-green); font-weight: 600; } .watch-alert-dot { color: var(--tc-amber); margin-left: 5px; }
+.alerts-bell { position: relative; } .bell-button { position: relative; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--tc-line-strong); border-radius: 4px; background: var(--tc-surface); color: var(--tc-text); cursor: pointer; }
+.bell-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--tc-red); color: #fff; font-size: 10px; line-height: 16px; font-weight: 700; text-align: center; }
+.bell-menu { position: absolute; z-index: 30; right: 0; top: 40px; width: 340px; max-height: 420px; overflow: auto; padding: 10px; background: var(--tc-surface); border: 1px solid var(--tc-line-strong); border-radius: 6px; box-shadow: 0 16px 40px rgba(0,0,0,.55); }
+.bell-menu ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; } .bell-head { display: flex; justify-content: space-between; align-items: center; }
+.bell-item { width: 100%; text-align: left; display: grid; gap: 2px; padding: 8px; border: 1px solid var(--tc-line); border-radius: 4px; background: none; color: var(--tc-text); cursor: pointer; } .bell-item:hover { background: var(--tc-raised); } .bell-item small { color: var(--tc-muted); }
+.watch-alert-dot { vertical-align: -1px; } .secondary-button svg { vertical-align: -2px; }

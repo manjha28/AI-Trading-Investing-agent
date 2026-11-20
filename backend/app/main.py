@@ -13,6 +13,11 @@ from app.api.corporate_actions import router as corporate_actions_router
 from app.api.news import router as news_router
 from app.api.delta_research import router as delta_research_router
 from app.api.execution import router as execution_router
+from app.api.forward_tests import live_router as dhan_live_router, router as forward_tests_router
+from app.dhan_master_warm import dhan_master_warm_loop
+from app.master_bar_refresh import master_bar_refresh_loop
+from app.forward_test_scheduler import forward_test_loop
+from app.api.crypto_delta import router as crypto_delta_router
 from app.delta_research.collector import delta_research_manager
 from app.api.position_theses import router as position_theses_router
 from app.api.strategies import router as strategies_router
@@ -42,6 +47,7 @@ from app.market_data_scheduler import (
     alert_evaluation_loop,
     dhan_backend_capture_loop,
     corporate_action_sync_loop,
+    universe_close_refresh_loop,
     market_data_refresh_loop,
     portfolio_snapshot_loop,
 )
@@ -98,6 +104,10 @@ async def lifespan(_app: FastAPI):
     sentiment_task = None
     fundamentals_task = None
     corporate_task = None
+    universe_task = None
+    forward_task = None
+    master_warm_task = None
+    master_bars_task = None
     derivatives_tasks: list = []
     jobs_task = None
     if settings.job_worker_enabled and "pytest" not in sys.modules:
@@ -112,6 +122,14 @@ async def lifespan(_app: FastAPI):
         scheduler_task = _leader(market_data_refresh_loop, 'market_data_refresh')
     if settings.corporate_action_sync_enabled and "pytest" not in sys.modules:
         corporate_task = _leader(corporate_action_sync_loop, 'corporate_actions')
+    if settings.universe_close_refresh_enabled and "pytest" not in sys.modules:
+        universe_task = _leader(universe_close_refresh_loop, 'universe_closes')
+    if "pytest" not in sys.modules:
+        master_warm_task = asyncio.create_task(dhan_master_warm_loop())      # every process warms its own in-memory copy
+    if settings.master_bar_refresh_enabled and "pytest" not in sys.modules:
+        master_bars_task = _leader(master_bar_refresh_loop, 'master_bars')
+    if settings.forward_test_enabled and "pytest" not in sys.modules:
+        forward_task = _leader(forward_test_loop, 'forward_tests')
     if fundamentals_feed.feed_configured() and "pytest" not in sys.modules:
         fundamentals_task = _leader(fundamentals_feed.fundamentals_collection_loop, 'fundamentals')
     if "pytest" not in sys.modules:
@@ -167,6 +185,30 @@ async def lifespan(_app: FastAPI):
                 await alert_task
             except asyncio.CancelledError:
                 pass
+        if master_bars_task is not None:
+            master_bars_task.cancel()
+            try:
+                await master_bars_task
+            except asyncio.CancelledError:
+                pass
+        if master_warm_task is not None:
+            master_warm_task.cancel()
+            try:
+                await master_warm_task
+            except asyncio.CancelledError:
+                pass
+        if forward_task is not None:
+            forward_task.cancel()
+            try:
+                await forward_task
+            except asyncio.CancelledError:
+                pass
+        if universe_task is not None:
+            universe_task.cancel()
+            try:
+                await universe_task
+            except asyncio.CancelledError:
+                pass
         if corporate_task is not None:
             corporate_task.cancel()
             try:
@@ -217,6 +259,9 @@ app.include_router(research_router, prefix="/api/v1")
 app.include_router(position_theses_router, prefix="/api/v1")
 app.include_router(delta_research_router, prefix="/api/v1")
 app.include_router(execution_router, prefix="/api/v1")
+app.include_router(forward_tests_router, prefix="/api/v1")
+app.include_router(dhan_live_router, prefix="/api/v1")
+app.include_router(crypto_delta_router, prefix="/api/v1")
 app.include_router(strategies_router, prefix="/api/v1")
 app.include_router(signals_lab_router, prefix="/api/v1")
 app.include_router(var_strategy_router, prefix="/api/v1")

@@ -55,14 +55,91 @@ def _yfinance_ticker(instrument: Instrument) -> str:
     raise ValueError(f"yfinance corporate actions are unsupported for venue {instrument.venue}")
 
 
+class PrefetchedActionsProvider:
+    """Serves ``get_corporate_actions(ticker)`` from a bulk download, so a whole-universe sweep needs a
+    handful of requests instead of one per symbol. A ticker the download failed for raises, so it is
+    reported as unverified rather than silently treated as "no actions"."""
+
+    def __init__(self, actions: dict[str, list[dict[str, Any]]], failed: set[str] | None = None) -> None:
+        self._actions = actions
+        self._failed = failed or set()
+
+    def get_corporate_actions(self, ticker: str) -> list[dict[str, Any]]:
+        if ticker in self._failed or ticker not in self._actions:
+            raise LookupError(f"no bulk result for {ticker}")
+        return self._actions[ticker]
+
+
+def _yahoo_bulk_download(tickers: list[str], period: str):
+    import yfinance as yf
+
+    return yf.download(
+        tickers, period=period, interval="1d", actions=True, group_by="ticker",
+        auto_adjust=False, progress=False, threads=True,
+    )
+
+
+def fetch_recent_actions(
+    tickers: list[str], *, period: str = "1mo", chunk_size: int = 40, pause_seconds: float = 1.0,
+    downloader: Any = None,
+) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+    """Dividends and splits from the last ``period`` for many tickers, in a few bulk requests.
+
+    Returns (events by ticker, tickers that could not be fetched). Events have the same shape as
+    ``YahooFinanceProvider.get_corporate_actions``.
+    """
+    import time
+
+    downloader = downloader or _yahoo_bulk_download
+    events: dict[str, list[dict[str, Any]]] = {}
+    failed: set[str] = set()
+    for start in range(0, len(tickers), chunk_size):
+        chunk = tickers[start:start + chunk_size]
+        try:
+            frame = downloader(chunk, period)
+        except Exception:
+            failed.update(chunk)
+            continue
+        multi = hasattr(frame, "columns") and getattr(frame.columns, "nlevels", 1) > 1
+        for ticker in chunk:
+            try:
+                sub = frame[ticker] if multi else frame
+                if sub.empty or sub["Close"].dropna().empty:
+                    failed.add(ticker)
+                    continue
+                found: list[dict[str, Any]] = []
+                for stamp, row in sub.iterrows():
+                    ex_date = stamp.date() if hasattr(stamp, "date") else date.fromisoformat(str(stamp)[:10])
+                    for column, action_type in (("Stock Splits", "split"), ("Dividends", "dividend")):
+                        raw = row.get(column)
+                        if raw is None or str(raw).casefold() in {"nan", "none", "<na>"}:
+                            continue
+                        value = Decimal(str(raw))
+                        if not value.is_finite() or value <= 0:
+                            continue
+                        found.append({
+                            "ex_date": ex_date, "action_type": action_type,
+                            "ratio": value if action_type == "split" else None,
+                            "amount": value if action_type == "dividend" else None,
+                        })
+                events[ticker] = found
+            except Exception:
+                failed.add(ticker)
+        if start + chunk_size < len(tickers) and pause_seconds:
+            time.sleep(pause_seconds)
+    return events, failed
+
+
 def sync_yfinance_corporate_actions(
     db: Session, user_id: UUID, *, provider: YahooFinanceProvider | None = None,
-    instrument_ids: set[UUID] | None = None,
+    instrument_ids: set[UUID] | None = None, record_coverage: bool = True,
 ) -> dict[str, Any]:
     """Fetch action events for every instrument with stored daily or 1m bars.
 
     ``instrument_ids`` restricts the sweep (the scheduler passes only what the user holds or
     watches); ``None`` keeps the original behaviour of checking every instrument with bars.
+    ``record_coverage=False`` is for recent-window sweeps: events are stored, but the instrument's
+    full-history coverage is NOT marked verified (a one-month look-back says nothing about history).
     """
     provider = provider or YahooFinanceProvider()
     statement = (
@@ -89,7 +166,7 @@ def sync_yfinance_corporate_actions(
             CorporateActionCoverage.user_id == user_id,
             CorporateActionCoverage.instrument_id == instrument.id,
             CorporateActionCoverage.source == "yfinance",
-        ))
+        )) if record_coverage else None
         if coverage is None:
             coverage = CorporateActionCoverage(
                 user_id=user_id,
@@ -99,7 +176,8 @@ def sync_yfinance_corporate_actions(
                 checked_at=checked_at,
                 source_reference=instrument.symbol,
             )
-            db.add(coverage)
+            if record_coverage:
+                db.add(coverage)  # a transient object otherwise: attribute updates below are discarded
         try:
             ticker = _yfinance_ticker(instrument)
             events = provider.get_corporate_actions(ticker)

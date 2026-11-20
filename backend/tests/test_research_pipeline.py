@@ -115,12 +115,18 @@ def csrf(client: TestClient) -> dict[str, str]:
 
 
 def get_instrument_id(client: TestClient) -> str:
-    response = client.get("/api/v1/market-data/instruments?query=ALPHA")
-    assert response.status_code == 200
-    instrument_id = response.json()[0]["id"]
+    # A real-style equity row created directly (no provider search, no network, no demo/synthetic data).
     with Session(client.app.state.test_engine) as db:
-        instrument = db.get(Instrument, UUID(instrument_id))
-        assert instrument is not None
+        instrument = db.scalar(select(Instrument).where(Instrument.symbol == "ALPHA"))
+        if instrument is None:
+            instrument = Instrument(
+                symbol="ALPHA", display_name="Alpha Test Corp", asset_class="equity", venue="NSE", currency="INR",
+                country="IN", timezone="Asia/Kolkata", is_synthetic=False, relink_required=False,
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(instrument)
+            db.flush()
+        instrument_id = str(instrument.id)
         instrument.venue = "NSE"
         instrument.country = "IN"
         instrument.currency = "INR"

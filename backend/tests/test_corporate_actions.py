@@ -509,3 +509,87 @@ def test_scheduler_tracks_watchlist_alert_rules_and_dhan_holdings(client: TestCl
         db.commit()
         tracked = market_data_scheduler._tracked_instrument_ids(db, UUID(user_id))
         assert tracked == {UUID(watched_id), ruled.id, held.id}  # not UNRELATED
+
+
+# ---- whole-universe sweep (bulk download; TEST DATA frames only) -------------------------------
+
+def _bulk_frame(rows: dict[str, list[tuple[str, str, str, str]]]):
+    """TEST DATA: a yfinance-shaped frame, columns (ticker, field), one row per (date, close, dividend, split)."""
+    import pandas as pd
+
+    frames = {}
+    for ticker, entries in rows.items():
+        frames[ticker] = pd.DataFrame(
+            {"Close": [float(c) for _, c, _, _ in entries], "Dividends": [float(d) for _, _, d, _ in entries],
+             "Stock Splits": [float(sp) for _, _, _, sp in entries]},
+            index=pd.to_datetime([d for d, *_ in entries]),
+        )
+    return pd.concat(frames, axis=1)
+
+
+def test_fetch_recent_actions_parses_dividends_and_splits_and_reports_failed_tickers():
+    from app.corporate_action_service import fetch_recent_actions
+
+    frame = _bulk_frame({
+        "ONGC.NS": [("2026-11-11", "234.8", "0", "0"), ("2026-11-12", "224.5", "8", "0")],
+        "SPLIT.NS": [("2026-11-10", "100", "0", "2")],
+        "QUIET.NS": [("2026-11-11", "50", "0", "0")],
+    })
+    calls = []
+
+    def downloader(chunk, period):
+        calls.append(list(chunk))
+        if "BROKEN.NS" in chunk:
+            raise RuntimeError("rate limited")
+        return frame[[t for t in chunk if t in frame.columns.get_level_values(0)]] if any(
+            t in frame.columns.get_level_values(0) for t in chunk) else frame.iloc[0:0]
+
+    events, failed = fetch_recent_actions(
+        ["ONGC.NS", "SPLIT.NS", "QUIET.NS", "BROKEN.NS", "GONE.NS"], chunk_size=3, pause_seconds=0, downloader=downloader,
+    )
+    assert calls == [["ONGC.NS", "SPLIT.NS", "QUIET.NS"], ["BROKEN.NS", "GONE.NS"]]  # chunked requests
+    assert events["ONGC.NS"] == [{"ex_date": date(2026, 11, 12), "action_type": "dividend", "ratio": None, "amount": Decimal("8.0")}]
+    assert events["SPLIT.NS"][0]["action_type"] == "split" and events["SPLIT.NS"][0]["ratio"] == Decimal("2.0")
+    assert events["QUIET.NS"] == []  # fetched, genuinely no actions
+    assert failed == {"BROKEN.NS", "GONE.NS"}  # a failed chunk / empty result is "unknown", never "no actions"
+
+
+def test_universe_sweep_stores_new_ex_dates_without_marking_history_verified(client, test_engine, monkeypatch):
+    from app import market_data_scheduler
+    from app.models import InstrumentProviderIdentifier
+
+    user_id, _ = seed_adjustment_instrument(client, test_engine)  # ALPHA: a watched/held instrument elsewhere
+    now = datetime(2026, 11, 20, tzinfo=timezone.utc)
+    with Session(test_engine) as db:
+        made = {}
+        for symbol in ("ONGC", "QUIETCO", "FAILCO"):
+            inst = Instrument(symbol=symbol, display_name=symbol, asset_class="equity", venue="NSE", currency="INR", country="IN",
+                              timezone="Asia/Kolkata", is_synthetic=False, relink_required=False, created_at=now)
+            db.add(inst)
+            db.flush()
+            db.add(InstrumentProviderIdentifier(instrument_id=inst.id, provider="dhan", provider_instrument_id=f"{len(made)}|NSE_EQ",
+                                                provider_symbol=symbol, is_verified=True, last_seen_at=now))
+            db.add(MarketBar(instrument_id=inst.id, interval="1d", timestamp=now, open=Decimal("1"), high=Decimal("1"), low=Decimal("1"),
+                             close=Decimal("1"), volume=Decimal("1"), source="dhan", retrieved_at=now, is_synthetic=False))
+            made[symbol] = inst.id
+        db.commit()
+
+    def fake_fetch(tickers, **kwargs):
+        assert set(tickers) >= {"ONGC.NS", "QUIETCO.NS", "FAILCO.NS"}
+        return ({"ONGC.NS": [{"ex_date": date(2026, 11, 12), "action_type": "dividend", "ratio": None, "amount": Decimal("8")}],
+                 "QUIETCO.NS": []}, {"FAILCO.NS"})
+
+    monkeypatch.setattr(market_data_scheduler, "engine", test_engine)
+    monkeypatch.setattr("app.corporate_action_service.fetch_recent_actions", fake_fetch)
+    monkeypatch.setattr(market_data_scheduler, "_tracked_instrument_ids", lambda db, uid: set())  # nothing held: no per-symbol network
+
+    assert market_data_scheduler._sync_corporate_actions_sync() == 1
+    with Session(test_engine) as db:
+        actions = db.scalars(select(CorporateAction).where(CorporateAction.instrument_id == made["ONGC"])).all()
+        assert [(a.action_type, a.ex_date, a.amount, a.source) for a in actions] == [("dividend", date(2026, 11, 12), Decimal("8"), "yfinance")]
+        assert actions[0].verified_at is not None
+        assert db.scalar(select(func.count(CorporateAction.id)).where(CorporateAction.instrument_id == made["QUIETCO"])) == 0
+        # a one-month look-back must not claim full-history coverage (backtests rely on that flag)
+        assert db.scalar(select(func.count(CorporateActionCoverage.id)).where(
+            CorporateActionCoverage.instrument_id.in_(list(made.values())))) == 0
+    assert market_data_scheduler._sync_corporate_actions_sync() == 0  # idempotent: nothing new the second time

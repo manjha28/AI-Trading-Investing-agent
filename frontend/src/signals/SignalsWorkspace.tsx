@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Strategies } from '../pages/Strategies';
 import { Backtesting } from './Backtesting';
+import { BacktestLab } from './BacktestLab';
 import { Builder, type Draft } from './Builder';
 import { Dashboard } from './Dashboard';
 import { ImportPanel } from './ImportPanel';
@@ -9,16 +9,18 @@ import { Library } from './Library';
 import { JobsPanel, ScanHistoryPanel, ScannerSchedulePanel } from './JobsScanner';
 import { LiveSignals } from './LiveSignals';
 import { RejectionsPanel } from './RejectionsPanel';
-import { DerivativesData } from './DerivativesData';
-import { VarIntraday } from './VarIntraday';
+import { ForwardTest } from './ForwardTest';
+import { StrategyRegistry } from './StrategyRegistry';
 import { defaultParams, emptyDefinition, lab, messageOf, nextAlias } from './lab';
 import { Notice } from './shared';
 import type { Definition, Health, InstrumentRow, Meta, Readiness, StrategyRow } from './types';
 import './signals.css';
 
+// The workbench: build strategies from every indicator, keep a library of code-defined ones, and backtest many strategies over many symbols.
+// (VAR research, derivatives data and the legacy daily page are no longer part of this page; their code is untouched.)
 const TABS = [
-  ['dashboard', 'Strategy Dashboard'], ['builder', 'Strategy Builder'], ['library', 'Strategy Library'], ['backtesting', 'Backtesting'],
-  ['live', 'Live Signals'], ['jobs', 'Jobs & scanner'], ['indicators', 'Indicator Library'], ['import', 'Import & Validation'], ['derivatives', 'Derivatives Data'], ['var', 'Intraday research (VAR)'], ['legacy', 'Legacy daily & crypto research'],
+  ['dashboard', 'Strategy Dashboard'], ['library', 'Strategy Library'], ['registry', 'Strategy Registry'], ['builder', 'Strategy Builder'], ['lab', 'Backtest Lab'],
+  ['backtesting', 'Backtesting'], ['forward', 'Forward Test'], ['live', 'Live Signals'], ['jobs', 'Jobs & scanner'], ['indicators', 'Indicator Library'], ['import', 'Import & Validation'],
 ] as const;
 type Tab = (typeof TABS)[number][0];
 
@@ -106,14 +108,14 @@ export function SignalsWorkspace() {
     <section className="sl-root" aria-label="Signals workspace">
       <header className="sl-head">
         <div><p className="eyebrow">INTRADAY · 1-MINUTE BASE DATA</p><h1>Signals</h1></div>
-        <p className="sl-muted">Strategy research, backtesting and signal monitoring for Indian equities and crypto. Decision support only: nothing here places orders.</p>
+        <p className="sl-muted">Strategy research, backtesting and signal monitoring for Indian equities. Decision support only: nothing here places orders.</p>
       </header>
       <nav className="sl-tabs" aria-label="Signals sections">
         {TABS.map(([key, label]) => <button key={key} type="button" className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); if (key !== 'builder') setNotice(null); }}>{label}</button>)}
       </nav>
       {notice && tab === 'builder' && <Notice tone="info">{notice}</Notice>}
       {error && !meta && <Notice tone="bad">{error}</Notice>}
-      {tab === 'legacy' ? <Strategies /> : !meta ? <p className="sl-muted">{loading ? 'Loading Signals workspace…' : 'The Signals workspace could not be loaded.'}</p> : (
+      {!meta ? <p className="sl-muted">{loading ? 'Loading Signals workspace…' : 'The Signals workspace could not be loaded.'}</p> : (
         <>
           {tab === 'dashboard' && <Dashboard health={health} loading={loading} error={error} goto={(t) => setTab(t as Tab)} reload={() => void reloadHealth()} />}
           {tab === 'builder' && <Builder meta={meta} draft={draft} setDraft={setDraft} onReset={() => { setDraft(blankDraft()); setNotice(null); }}
@@ -125,6 +127,9 @@ export function SignalsWorkspace() {
             </>
           )}
           {tab === 'backtesting' && <Backtesting meta={meta} strategies={strategies} instruments={instruments} initialStrategyId={btStrategy} onUsed={refreshAll} onStoredChanged={refreshAll} />}
+          {tab === 'registry' && <StrategyRegistry strategies={strategies} onInstalled={refreshAll} onOpen={openStarter} goLab={() => setTab('lab')} />}
+          {tab === 'forward' && <ForwardTest />}
+          {tab === 'lab' && <BacktestLab meta={meta} strategies={strategies} />}
           {tab === 'jobs' && (
             <div className="sl-stack">
               <ScannerSchedulePanel strategies={strategies} />
@@ -136,8 +141,6 @@ export function SignalsWorkspace() {
           {tab === 'live' && <LiveSignals strategies={strategies} instruments={instruments} onChanged={refreshAll} />}
           {tab === 'indicators' && <IndicatorLibrary meta={meta} onUse={useIndicator} />}
           {tab === 'import' && <ImportPanel meta={meta} onDraft={openDraft} />}
-          {tab === 'derivatives' && <DerivativesData />}
-          {tab === 'var' && <VarIntraday />}
         </>
       )}
     </section>

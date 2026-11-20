@@ -51,7 +51,7 @@ export function ImportPanel({ meta, onDraft }: { meta: Meta; onDraft: (d: Defini
             : 'The file is screened statically and run in an isolated worker with time, memory and CPU limits. It sees only OHLCV and indicator series you declare.'}</p>
           <div className="sl-row">
             <Field label={`File (${accept.join(', ')})`}><input type="file" accept={accept.join(',')} aria-label="Strategy file" onChange={(e) => onFile(e.target.files?.[0])} /></Field>
-            <Field label="Market"><select value={market} onChange={(e) => setMarket(e.target.value)}><option value="equity_in">Indian equity</option><option value="crypto">Crypto</option></select></Field>
+            <Field label="Market"><select value={market} onChange={(e) => setMarket(e.target.value)}><option value="equity_in">Indian equity</option></select></Field>
             {kind === 'pine' && <Field label="Chart timeframe" hint="Pine series use this timeframe"><select value={tf} onChange={(e) => setTf(e.target.value)}>{meta.timeframes.map((t) => <option key={t}>{t}</option>)}</select></Field>}
           </div>
           {fileError && <Notice tone="bad">{fileError}</Notice>}

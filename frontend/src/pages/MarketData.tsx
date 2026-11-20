@@ -305,7 +305,7 @@ type OptionsSignalData = {
   disclaimer: string;
 };
 
-export function MarketDataPage({ workspace, userId }: { userId: string; workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'openMarketInstrumentId' | 'setOpenMarketInstrumentId' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
+export function MarketDataPage({ workspace, userId, detailsOnly = false }: { userId: string; detailsOnly?: boolean; workspace: Pick<WorkspaceState, 'attachSelectedInstrument' | 'currency' | 'hasOlderMarketHistory' | 'loadInstrumentIndicators' | 'loadMarketHistory' | 'loadMarketQuote' | 'loadOlderMarketHistory' | 'loadingMarketHistory' | 'loadingOlderMarketHistory' | 'loadingMarketQuote' | 'marketEnd' | 'marketHistory' | 'marketIndicators' | 'marketInstruments' | 'marketInterval' | 'marketQuery' | 'marketQuote' | 'marketStart' | 'openMarketInstrumentId' | 'setOpenMarketInstrumentId' | 'searchMarketInstruments' | 'searchingMarket' | 'selectMarketInstrument' | 'selectedInstrument' | 'setMarketEnd' | 'setMarketHistory' | 'setMarketInterval' | 'setMarketQuery' | 'setMarketStart' | 'summary' | 'valuation'> }) {
   const {
   attachSelectedInstrument,
   currency,
@@ -434,7 +434,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   const [renameWatchlistName, setRenameWatchlistName] = useState('');
   const [activeWatchlistInstrument, setActiveWatchlistInstrument] = useState('');
   const [legacyInstrumentSelected, setLegacyInstrumentSelected] = useState(false);
-  const [activeDetailTab, setActiveDetailTab] = useState<WatchlistTab>('Chart');
+  const [activeDetailTab, setActiveDetailTab] = useState<WatchlistTab>(detailsOnly ? 'Financials' : 'Chart');
   const [watchlistInstrumentLoading, setWatchlistInstrumentLoading] = useState(false);
   const [watchlistFilter, setWatchlistFilter] = useState('');
   const selectedProvider = marketDataSettings?.selected_provider;
@@ -549,7 +549,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
   ) => {
     if (!watchlistId) {
       setWatchlistEntries([]);
-      setActiveWatchlistInstrument('');
+      if (!detailsOnly) setActiveWatchlistInstrument('');
       setWatchlistLoading(false);
       return;
     }
@@ -564,8 +564,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
         `/market-data/watchlist?watchlist_id=${encodeURIComponent(watchlistId)}`,
       );
       setWatchlistEntries(entries);
+      // Details mode opens instruments that need not be on any watchlist, so the selection must survive a refresh.
       setActiveWatchlistInstrument((current) =>
-        entries.some((entry) => entry.instrument_id === current) ? current : '',
+        detailsOnly || entries.some((entry) => entry.instrument_id === current) ? current : '',
       );
     } catch (error) {
       setWatchlistError(error instanceof Error ? error.message : 'Watchlist could not be loaded.');
@@ -658,7 +659,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     recentWatchlistInstrumentOpens.current.set(instrumentId, now);
     setActiveWatchlistInstrument(instrumentId);
     setLegacyInstrumentSelected(false);
-    setActiveDetailTab('Chart');
+    setActiveDetailTab(detailsOnly ? 'Financials' : 'Chart');
     setWatchlistInstrumentLoading(true);
     setWatchlistError('');
     try {
@@ -1475,7 +1476,8 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
     }).format(new Date(marketHistory.freshness.latest_bar_timestamp))
     : null;
   return (
-              <section className="market-page">
+              <section className={detailsOnly ? 'market-page market-details-only' : 'market-page'}>
+{!detailsOnly && (<>
                 <section className="data-section">
                   <label>
                     Data source
@@ -1491,7 +1493,9 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                   </label>
                   {marketDataSettingsError && <p className="market-source-message error" role="alert">{marketDataSettingsError}</p>}
                 </section>
+</>)}
                 <section className="watchlist-master-detail" aria-label="Watchlists and instrument details">
+{!detailsOnly && (<>
                   <aside className="watchlist-rail data-section">
                     <div className="section-heading">
                       <div><p className="eyebrow">LOCAL WATCHLISTS</p><h2>Markets to watch</h2></div>
@@ -1669,12 +1673,13 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                       </div>
                     )}
                   </aside>
+</>)}
                   <section className="watchlist-detail data-section">
                     <header className="watchlist-detail-header">
                       <div>
                         <p className="eyebrow">INSTRUMENT DETAIL</p>
-                        <h2>{activeWatchlistEntry?.symbol ?? 'Select an instrument'}</h2>
-                        <span>{activeWatchlistEntry?.venue ?? ''}</span>
+                        <h2>{activeWatchlistEntry?.symbol ?? (activeWatchlistInstrument ? selectedInstrument?.symbol : null) ?? 'Select an instrument'}</h2>
+                        <span>{activeWatchlistEntry?.venue ?? (activeWatchlistInstrument ? selectedInstrument?.venue : null) ?? ''}</span>
                       </div>
                       <div className="watchlist-detail-price">
                         <strong>
@@ -1732,7 +1737,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                       </div>
                     </header>
                     <nav className="watchlist-detail-tabs" aria-label="Instrument detail">
-                      {(['Chart', 'Info', 'Financials', 'Depth', 'Options'] as const).map((tab) => (
+                      {(detailsOnly ? (['Financials', 'Depth', 'Options'] as const) : (['Chart', 'Info', 'Financials', 'Depth', 'Options'] as const)).map((tab) => (
                         <button
                           key={tab}
                           type="button"
@@ -2153,6 +2158,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                     )}
                   </section>
                 </section>
+{!detailsOnly && (<>
                 <Panel
                   title="Market data coverage"
                   description="Stored real daily and 1m bars for linked holdings and watchlist instruments."
@@ -2205,7 +2211,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                       <label>Symbol, name, or venue<input value={marketQuery} onChange={(event) => setMarketQuery(event.target.value)} minLength={1} maxLength={80} placeholder="AAPL, RELIANCE, BTCUSD" required /></label>
                       <button className="primary-button" type="submit" disabled={searchingMarket}><Search size={15} />{searchingMarket ? 'Searching…' : 'Search'}</button>
                     </form>
-                    {marketInstruments.length === 0 ? <div className="table-empty">{searchingMarket ? 'Searching instrument master…' : 'Search available equities and crypto markets.'}</div> : (
+                    {marketInstruments.length === 0 ? <div className="table-empty">{searchingMarket ? 'Searching instrument master…' : 'Search available equities.'}</div> : (
                       <div className="market-instrument-list" aria-label="Instrument search results">
                         {marketInstruments.map((instrument) => {
                           const isWatchlisted = watchlistEntries.some((item) => item.instrument_id === instrument.id);
@@ -2252,6 +2258,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                     </> : <p className="table-empty">Choose a search result to inspect instrument details and available bars.</p>}
                   </section>
                 </div>
+</>)}
                 {selectedInstrument && legacyInstrumentSelected && <section className="data-section instrument-detail-panel">
                   <div className="fundamentals-panel">
                     <div className="section-heading">

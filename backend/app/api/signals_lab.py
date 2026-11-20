@@ -26,7 +26,7 @@ from app.services import transaction_costs as costs
 from app.services import intraday_indicators as ti
 from app.services import intraday_python as ipy
 from app.services import intraday_runner as runner
-from app.services import job_queue, scan_scheduler
+from app.services import job_queue, lab, scan_scheduler
 from app.services import signal_lifecycle as lifecycle
 from app.services.options_data import coverage_report
 from app.services.options_strategy import build_underlying_rules
@@ -57,7 +57,7 @@ class ImportBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     filename: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=MAX_SOURCE_CHARS)
-    market: str = Field(default="equity_in", pattern="^(equity_in|crypto)$")
+    market: str = Field(default="equity_in", pattern="^equity_in$")  # crypto lives in the separate /crypto-delta system
     decision_timeframe: str = "5m"
 
 
@@ -112,11 +112,11 @@ def _version(db: Session, strategy: Strategy, version: int | None = None) -> Str
     return v
 
 
-def _anchor_instrument(db: Session, defn: StrategyDefinition) -> Instrument:
+def _anchor_instrument(db: Session, defn: StrategyDefinition, user_id: UUID | None = None) -> Instrument:
     if not defn.universe:
         raise HTTPException(422, detail={"code": "invalid_definition", "errors": [{"level": "error", "where": "universe", "message": "choose at least one instrument"}]})
     try:
-        insts = runner.resolve_instruments(db, defn, None)
+        insts = runner.resolve_instruments(db, defn, None, user_id)
     except runner.RunnerError as e:
         raise HTTPException(422, detail={"code": "invalid_universe", "message": str(e)}) from None
     return insts[0]
@@ -162,7 +162,7 @@ def meta(_: UserSession = Depends(require_verified_session)) -> dict[str, Any]:
     from app.services.intraday_strategy import COMPARE_OPS, PRICE_FIELDS
     return {
         "schema_version": SCHEMA_VERSION, "engine_version": ENGINE_VERSION, "indicator_library_version": ti.INDICATOR_LIBRARY_VERSION,
-        "timeframes": list(TIMEFRAME_MINUTES), "markets": ["equity_in", "crypto"], "price_fields": list(PRICE_FIELDS), "compare_ops": list(COMPARE_OPS),
+        "timeframes": list(TIMEFRAME_MINUTES), "markets": ["equity_in"], "price_fields": list(PRICE_FIELDS), "compare_ops": list(COMPARE_OPS),
         "indicators": ti.catalog(), "cost_profiles": [p.describe() for p in costs.SCHEDULES.values()],
         "pine": SUPPORT_MATRIX, "python": {"template": ipy.TEMPLATE, "allowed_imports": list(ipy.ALLOWED_IMPORTS), "timeout_seconds": ipy.DEFAULT_TIMEOUT,
                                            "memory_mb": ipy.DEFAULT_MEMORY // (1024 * 1024),
@@ -172,7 +172,7 @@ def meta(_: UserSession = Depends(require_verified_session)) -> dict[str, Any]:
 
 
 @router.get("/instruments")
-def instruments(market: str | None = Query(default=None, pattern="^(equity_in|crypto)$"), query: str = Query(default="", max_length=40),
+def instruments(market: str | None = Query(default=None, pattern="^equity_in$"), query: str = Query(default="", max_length=40),
                 _: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     """Instruments eligible for intraday signals, with how much stored 1-minute history each has."""
     stats = {r[0]: r for r in db.execute(select(MarketBar.instrument_id, func.count(), func.min(MarketBar.timestamp), func.max(MarketBar.timestamp))
@@ -324,7 +324,7 @@ def create_strategy(body: DefinitionBody, active_session: UserSession = Depends(
                     db: Session = Depends(get_db)) -> dict[str, Any]:
     defn = _parse_definition(body.definition)
     _check(defn)
-    anchor = _anchor_instrument(db, defn)
+    anchor = _anchor_instrument(db, defn, active_session.user_id)
     now = _now()
     s = Strategy(user_id=active_session.user_id, instrument_id=anchor.id, name=defn.name, description=defn.description, status="suspended", current_version=1, created_at=now, updated_at=now)
     db.add(s)
@@ -399,7 +399,7 @@ def create_version(strategy_id: UUID, body: DefinitionBody, active_session: User
         raise HTTPException(409, "Legacy daily strategies are versioned from the legacy panel; use 'Convert to intraday draft' to create an intraday copy")
     defn = _parse_definition(body.definition)
     _check(defn)
-    anchor = _anchor_instrument(db, defn)
+    anchor = _anchor_instrument(db, defn, active_session.user_id)
     now = _now()
     nxt = s.current_version + 1
     db.add(_new_version_row(defn, s.id, nxt, body.source_text if body.source_text is not None else (cur.source_artifact or {}).get("text"), now))
@@ -507,7 +507,7 @@ def _run_in_background(bind: Any, run_id: UUID, instrument_ids: list[UUID]) -> N
             version = _version(db, strategy, run.strategy_version)
             defn = StrategyDefinition.model_validate(run.definition_snapshot)
             cfg = BacktestConfig.model_validate({k: v for k, v in run.config.items() if k != "_options"})
-            insts = runner.resolve_instruments(db, defn, [str(i) for i in instrument_ids])
+            insts = runner.resolve_instruments(db, defn, [str(i) for i in instrument_ids], run.user_id)
             options = (run.config or {}).get("_options", {})
             created = run.created_at if run.created_at.tzinfo else run.created_at.replace(tzinfo=timezone.utc)
             result = runner.execute(db, defn, (version.source_artifact or {}).get("text"), run.kind, insts, cfg, options, created)
@@ -532,7 +532,7 @@ def start_backtest(body: BacktestBody, active_session: UserSession = Depends(req
         raise HTTPException(422, detail={"code": "invalid_config", "errors": [{"where": ".".join(map(str, x["loc"])), "message": x["msg"]} for x in e.errors()]}) from None
     defn = StrategyDefinition.model_validate(v.definition)
     try:
-        insts = runner.resolve_instruments(db, defn, [str(i) for i in body.instruments])
+        insts = runner.resolve_instruments(db, defn, [str(i) for i in body.instruments], active_session.user_id)
         runner.window(cfg, _now())
         costs.schedule_for_market(defn.market, cfg.cost_profile)
     except (runner.RunnerError, ValueError) as e:
@@ -940,11 +940,13 @@ def put_scanner_schedule(strategy_id: UUID, body: ScheduleBody, active_session: 
 
 # ───────────────────────── built-in starter strategies ─────────────────────────
 def _readiness(db: Session) -> dict[str, Any]:
-    stats: dict[str, int] = {"equity_in": 0, "crypto": 0}
+    stats: dict[str, int] = {"equity_in": 0}  # crypto is a separate system (/crypto-delta)
     have = {r[0] for r in db.execute(select(MarketBar.instrument_id).where(MarketBar.interval == "1m", MarketBar.is_synthetic.is_(False)).distinct())}
     for inst in db.scalars(select(Instrument).where(Instrument.id.in_(have))) if have else []:
         try:
-            stats[profile_for(inst).key] += 1
+            key = profile_for(inst).key
+            if key in stats:
+                stats[key] += 1
         except UnsupportedMarket:
             continue
     return {k: {"instruments_with_1m_data": n, "backtest_ready": n > 0} for k, n in stats.items()}
@@ -960,6 +962,150 @@ def starters(active_session: UserSession = Depends(require_verified_session), db
     return {"label": STARTER_LABEL, "catalog": [{"key": d["source"]["provenance"]["starter_key"], "name": d["name"], "description": d["description"], "indicators": _summary(d),
                                                  "installed_strategy_id": owned.get(d["source"]["provenance"]["starter_key"])} for d in STARTERS],
             "readiness": _readiness(db), "disclaimer": DISCLAIMER}
+
+
+# ───────────────────────── backtest lab ─────────────────────────
+class LabBatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(default="", max_length=80)
+    strategy_ids: list[UUID] = Field(min_length=1, max_length=lab.MAX_LAB_STRATEGIES)
+    instruments: list[UUID] = Field(default_factory=list, max_length=lab.MAX_LAB_INSTRUMENTS)
+    universe: str | None = Field(default=None, pattern="^(watchlist|nifty50|has_1m)$")
+    kind: str = Field(default="single", pattern="^(single|is_oos|walk_forward|sensitivity)$")
+    config: dict[str, Any] = Field(default_factory=dict)
+    split_ratio: float = Field(default=0.7, gt=0.2, lt=0.9)
+    train_days: int = Field(default=20, ge=5, le=250)       # walk-forward
+    test_days: int = Field(default=5, ge=1, le=60)
+    parameters: list[str] = Field(default_factory=list, max_length=3)   # sweep / walk-forward grid (up to 3 tunable parameters)
+    steps: int = Field(default=1, ge=1, le=2)
+
+
+@router.get("/lab/universes")
+def lab_universes(active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Symbol sets for the lab, with exactly which names were left out for lack of stored 1-minute data."""
+    return {"presets": lab.describe_presets(db, active_session.user_id), "min_bars_1m": lab.MIN_BARS_1M,
+            "max_instruments": lab.MAX_LAB_INSTRUMENTS, "max_strategies": lab.MAX_LAB_STRATEGIES,
+            "note": "Intraday timeframes are built from stored 1-minute bars. Names without enough 1-minute history are excluded, never filled in.",
+            "disclaimer": DISCLAIMER}
+
+
+@router.post("/lab/batches", status_code=202)
+def lab_start_batch(body: LabBatchBody, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf),
+                    db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Queue one backtest per strategy over the SAME symbol set (same window, same costs) so the results are comparable."""
+    picked: dict[UUID, Any] = {}
+    skipped: list[dict[str, str]] = []
+    if body.universe:
+        u = lab.resolve_universe(db, active_session.user_id, body.universe)
+        picked.update({i.id: i for i in u["instruments"]})
+        skipped = u["excluded"]
+    for iid in body.instruments:
+        inst = db.get(Instrument, iid)
+        if inst is None:
+            raise HTTPException(404, f"instrument {iid} not found")
+        picked[inst.id] = inst
+    if not picked:
+        raise HTTPException(422, detail={"code": "no_instruments", "message": "Choose a symbol set or at least one instrument with stored 1-minute data.", "excluded": skipped})
+    if len(picked) > lab.MAX_LAB_INSTRUMENTS:
+        raise HTTPException(422, f"at most {lab.MAX_LAB_INSTRUMENTS} instruments per batch")
+    batch_id = str(uuid4())
+    options = {"batch_id": batch_id, "batch_name": body.name.strip() or None, "split_ratio": body.split_ratio, "train_days": body.train_days,
+               "test_days": body.test_days, "steps": body.steps, **({"parameters": body.parameters} if body.parameters else {})}
+    started, rejected = [], []
+    for strategy_id in dict.fromkeys(body.strategy_ids):
+        try:
+            summary = start_backtest(BacktestBody(strategy_id=strategy_id, kind=body.kind, instruments=list(picked), config=body.config, options=options),
+                                     active_session, active_session, db)
+            started.append({"strategy_id": str(strategy_id), "run_id": summary["id"], "job_id": summary["job_id"]})
+        except HTTPException as error:
+            if error.status_code == 404:
+                raise
+            rejected.append({"strategy_id": str(strategy_id), "reason": error.detail})
+    if not started:
+        raise HTTPException(422, detail={"code": "batch_rejected", "message": "No strategy could be queued.", "rejected": rejected})
+    return {"batch_id": batch_id, "name": options["batch_name"], "kind": body.kind, "runs": started, "rejected": rejected,
+            "instruments": [{"id": str(i.id), "symbol": i.symbol} for i in picked.values()], "excluded": skipped, "disclaimer": DISCLAIMER}
+
+
+def _batch_runs(db: Session, user_id: UUID, batch_id: str) -> list[BacktestRun]:
+    recent = db.scalars(select(BacktestRun).where(BacktestRun.user_id == user_id).order_by(BacktestRun.created_at.desc()).limit(600))
+    return [r for r in recent if ((r.config or {}).get("_options") or {}).get("batch_id") == batch_id]
+
+
+@router.get("/lab/batches")
+def lab_batches(active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
+    recent = list(db.scalars(select(BacktestRun).where(BacktestRun.user_id == active_session.user_id).order_by(BacktestRun.created_at.desc()).limit(600)))
+    batches: dict[str, dict[str, Any]] = {}
+    for run in recent:
+        opts = (run.config or {}).get("_options") or {}
+        bid = opts.get("batch_id")
+        if not bid:
+            continue
+        b = batches.setdefault(bid, {"batch_id": bid, "name": opts.get("batch_name"), "kind": run.kind, "created_at": run.created_at.isoformat(), "runs": 0, "completed": 0, "failed": 0})
+        b["runs"] += 1
+        b["completed"] += run.status == "completed"
+        b["failed"] += run.status == "failed"
+    return {"batches": list(batches.values())[:30], "disclaimer": DISCLAIMER}
+
+
+@router.get("/lab/batches/{batch_id}")
+def lab_batch(batch_id: str, min_trades: int = Query(default=30, ge=1, le=100000), active_session: UserSession = Depends(require_verified_session),
+              db: Session = Depends(get_db)) -> dict[str, Any]:
+    runs = _batch_runs(db, active_session.user_id, batch_id)
+    if not runs:
+        raise HTTPException(404, "batch not found")
+    names = {s.id: s.name for s in db.scalars(select(Strategy).where(Strategy.user_id == active_session.user_id, Strategy.id.in_({r.strategy_id for r in runs})))}
+    rows = lab.rank([lab.summarise_run(r, names.get(r.strategy_id, "(deleted strategy)")) for r in runs], min_trades=min_trades)
+    opts = (runs[0].config or {}).get("_options") or {}
+    done = sum(r.status in ("completed", "failed") for r in runs)
+    return {"batch_id": batch_id, "name": opts.get("batch_name"), "kind": runs[0].kind, "created_at": min(r.created_at for r in runs).isoformat(),
+            "window": {k: (runs[0].config or {}).get(k) for k in ("start", "end")}, "min_trades": min_trades,
+            "finished": done == len(runs), "progress": {"done": done, "total": len(runs)}, "rows": rows,
+            "label": "Hypothetical backtest results after charges and slippage. Never real P&L, never an order or a position.", "disclaimer": DISCLAIMER}
+
+
+@router.get("/lab/compare")
+def lab_compare(runs: str = Query(min_length=36, max_length=300), active_session: UserSession = Depends(require_verified_session),
+                db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Side-by-side comparison of 2-6 of the caller's completed single runs."""
+    try:
+        ids = list(dict.fromkeys(UUID(x) for x in runs.split(",") if x.strip()))
+    except ValueError:
+        raise HTTPException(422, "runs must be a comma-separated list of run ids") from None
+    if not 2 <= len(ids) <= 6:
+        raise HTTPException(422, "choose between 2 and 6 runs to compare")
+    found = [r for r in db.scalars(select(BacktestRun).where(BacktestRun.user_id == active_session.user_id, BacktestRun.id.in_(ids)))]
+    if len(found) != len(ids):
+        raise HTTPException(404, "one or more runs were not found")
+    if any(r.status != "completed" or r.kind != "single" for r in found):
+        raise HTTPException(409, "only completed single runs can be compared")
+    names = {s.id: s.name for s in db.scalars(select(Strategy).where(Strategy.user_id == active_session.user_id, Strategy.id.in_({r.strategy_id for r in found})))}
+    order = {rid: n for n, rid in enumerate(ids)}
+    return {**lab.comparison(sorted(found, key=lambda r: order[r.id]), names), "disclaimer": DISCLAIMER}
+
+
+@router.get("/lab/batches/{batch_id}/export.csv")
+def lab_batch_csv(batch_id: str, active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> Response:
+    runs = _batch_runs(db, active_session.user_id, batch_id)
+    if not runs:
+        raise HTTPException(404, "batch not found")
+    names = {s.id: s.name for s in db.scalars(select(Strategy).where(Strategy.user_id == active_session.user_id, Strategy.id.in_({r.strategy_id for r in runs})))}
+    rows = lab.rank([lab.summarise_run(r, names.get(r.strategy_id, "(deleted strategy)")) for r in runs])
+    return Response(lab.batch_csv(rows), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="lab-batch-{batch_id[:8]}.csv"'})
+
+
+@router.get("/registry")
+def registry(active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Code-defined strategies with their parameters, rationale and recorded research evidence (hypothetical backtests)."""
+    from app.strategies import all_specs
+    owned: dict[str, str] = {}
+    for s in db.scalars(select(Strategy).where(Strategy.user_id == active_session.user_id)):
+        v = _version(db, s)
+        key = (((v.definition or {}).get("source") or {}).get("provenance") or {}).get("starter_key")
+        if key and v.source_type == "starter":
+            owned[key] = str(s.id)
+    return {"strategies": [{**spec.describe(), "installed_strategy_id": owned.get(f"reg_{spec.key}")} for spec in all_specs()],
+            "disclaimer": DISCLAIMER + " Recorded results are hypothetical backtests, never real P&L."}
 
 
 @router.post("/starters/install")

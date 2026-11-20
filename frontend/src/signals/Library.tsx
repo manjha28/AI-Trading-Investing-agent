@@ -63,14 +63,14 @@ export function Library({ strategies, loading, error, readiness, onReload, onEdi
       <div className="sl-filters" role="search" aria-label="Strategy filters">
         <input aria-label="Search strategies" placeholder="Search name…" value={q} onChange={(e) => setQ(e.target.value)} />
         <select aria-label="Type" value={kind} onChange={(e) => setKind(e.target.value)}><option value="all">All types</option><option value="intraday">Intraday</option><option value="legacy_daily">Legacy daily</option></select>
-        <select aria-label="Market" value={market} onChange={(e) => setMarket(e.target.value)}><option value="all">All markets</option><option value="equity_in">Indian equity</option><option value="crypto">Crypto</option></select>
+        <select aria-label="Market" value={market} onChange={(e) => setMarket(e.target.value)}><option value="all">All markets</option><option value="equity_in">Indian equity</option></select>
         <select aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">All statuses</option><option value="active">Active</option><option value="suspended">Suspended</option><option value="retired">Retired</option></select>
         <select aria-label="Source" value={source} onChange={(e) => setSource(e.target.value)}><option value="all">All sources</option><option value="visual">Visual</option><option value="pine">Pine</option><option value="python">Python</option><option value="legacy">Legacy</option><option value="starter">Built-in starter</option></select>
         <span className="sl-muted">{rows.length} of {strategies.length}</span>
       </div>
       {strategies.some((x) => x.origin === 'starter') && (
         <Notice tone="info">Built-in starter strategies are ordinary, fully editable strategies with sensible defaults. They have <strong>not been tested</strong>: no performance is shown until you run a real backtest.
-          {readiness && <> Data: {Object.entries(readiness).map(([m, r]) => `${m === 'crypto' ? 'crypto' : 'Indian equity'} ${r.backtest_ready ? `${r.instruments_with_1m_data} instrument(s) with 1m data` : 'no 1-minute data stored (not backtest-ready)'}`).join(' · ')}.</>}</Notice>
+          {readiness && <> Data: {Object.entries(readiness).map(([m, r]) => `${m === 'equity_in' ? 'Indian equity' : m} ${r.backtest_ready ? `${r.instruments_with_1m_data} instrument(s) with 1m data` : 'no 1-minute data stored (not backtest-ready)'}`).join(' · ')}.</>}</Notice>
       )}
       {error && <Notice tone="bad">{error}</Notice>}
       {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
@@ -92,7 +92,7 @@ export function Library({ strategies, loading, error, readiness, onReload, onEdi
                       </div>)}
                     {s.derived_from && <div className="sl-sub">derived from {s.derived_from.name} v{s.derived_from.version}</div>}</td>
                   <td>{s.origin === 'starter' ? <Pill tone="info" title="Ships with the app; fully editable via Open in Builder">{s.origin_label ?? 'Built-in Starter Strategy'}</Pill> : s.origin === 'customized' ? <Pill tone="info">customized</Pill> : s.kind === 'intraday' ? <Pill tone="info">{s.source_type}</Pill> : <Pill tone="neutral" title="Daily-bar strategy from the original Signals page">legacy daily</Pill>}</td>
-                  <td className="sl-hide-sm">{s.market === 'crypto' ? 'Crypto' : 'India eq.'}</td><td className="sl-hide-sm">{s.decision_timeframe}</td>
+                  <td className="sl-hide-sm">India eq.</td><td className="sl-hide-sm">{s.decision_timeframe}</td>
                   <td><StatusPill status={s.status} /></td><td className="sl-r">v{s.current_version}</td>
                   <td className="sl-hide-sm" title={`Created ${fmtTime(s.created_at)}`}>{fmtTime(s.updated_at)}</td>
                   <td className="sl-hide-sm">{s.last_backtest ? <span title={`v${s.last_backtest.version}`}>{s.last_backtest.trades ?? 0} trades · {fmtPct(s.last_backtest.return_pct)}</span> : s.kind === 'intraday' ? <Pill tone="neutral" title={s.options_summary && !s.data_coverage?.ready ? 'Cannot be backtested: options data is not available' : 'No real backtest has been run for this strategy'}>{s.options_summary && !s.data_coverage?.ready ? 'not tested · data unavailable' : 'not tested'}</Pill> : <span className="sl-muted">—</span>}</td>
@@ -121,7 +121,7 @@ export function Library({ strategies, loading, error, readiness, onReload, onEdi
         <section className="sl-card" aria-label={`${sel.name} history`}>
           <header className="sl-card-head"><h3>{sel.name} <StatusPill status={sel.status} /></h3><button type="button" onClick={() => setSel(null)}>Close</button></header>
           <p className="sl-muted">{sel.description || 'No description.'}</p>
-          {sel.kind === 'intraday' && <p className="sl-muted">Market: {sel.market === 'crypto' ? 'Crypto (24/7)' : 'Indian equity (NSE)'} · evaluation timeframe {sel.decision_timeframe} (change it in the Builder) · {sel.tested ? 'has real backtest results' : 'not tested'}{readiness && !readiness[sel.market]?.backtest_ready ? ' · no stored 1-minute data for this market: not backtest-ready' : ''}</p>}
+          {sel.kind === 'intraday' && <p className="sl-muted">Market: Indian equity (NSE) · evaluation timeframe {sel.decision_timeframe} (change it in the Builder) · {sel.tested ? 'has real backtest results' : 'not tested'}{readiness && !readiness[sel.market]?.backtest_ready ? ' · no stored 1-minute data for this market: not backtest-ready' : ''}</p>}
           {sel.options_summary && sel.data_coverage && (
             <Notice tone={sel.data_coverage.ready ? 'info' : 'warn'}>{sel.data_coverage.ready ? `Options data available (${sel.data_coverage.mode.replace('_', ' ')}).` : `Options backtesting unavailable: ${sel.data_coverage.blockers.join(' ')}`}</Notice>
           )}

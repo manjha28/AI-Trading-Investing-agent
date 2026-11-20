@@ -140,11 +140,31 @@ def window(cfg: BacktestConfig, now: datetime) -> tuple[datetime, datetime]:
     return start, end
 
 
-def resolve_instruments(db: Session, defn: StrategyDefinition, ids: list[str] | None) -> list[Instrument]:
+MASTER_SCAN_MIN_BARS = 1000      # ~2.7 sessions of 1-minute bars: enough for a scanner to compute indicators
+
+
+def _registry_default_master(defn: StrategyDefinition) -> bool:
+    return str((defn.source.provenance or {}).get("starter_key", "")).startswith("reg_")
+
+
+def resolve_instruments(db: Session, defn: StrategyDefinition, ids: list[str] | None, user_id: UUID | None = None) -> list[Instrument]:
+    """The instruments a strategy runs on. ``@master`` (and, for registry strategies, an empty list) means the user's whole Market watch list."""
+    from app.services import lab
+
     wanted = ids or defn.universe
+    if not wanted and _registry_default_master(defn):
+        wanted = [lab.MASTER_TOKEN]
     if not wanted:
         raise RunnerError("choose at least one instrument")
-    out = []
+    out: list[Instrument] = []
+    if lab.MASTER_TOKEN in wanted:
+        if user_id is None:
+            raise RunnerError("the Market watch list needs an owner to resolve")
+        listed = lab.master_instruments(db, user_id, min_bars=MASTER_SCAN_MIN_BARS)
+        if not listed:
+            raise RunnerError("no instrument on the Market watch list has enough stored 1-minute data yet (data is filled in while the market is open)")
+        out.extend(i for i in listed if profile_for(i).key == defn.market)
+        wanted = [w for w in wanted if w != lab.MASTER_TOKEN]
     for raw in wanted:
         inst = db.get(Instrument, UUID(str(raw)))
         if inst is None:

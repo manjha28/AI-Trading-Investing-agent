@@ -380,6 +380,30 @@ def test_tick_size_resolves_from_scrip_master_and_fails_closed_when_absent(
     assert DhanAdapter.price_tick_for("NSE_FNO", SBIN_SECURITY_ID) is None
 
 
+def test_mcx_futures_tick_resolves_from_the_master_and_other_mcx_rows_stay_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TEST DATA master rows. MCX commodity/index futures resolve (Market watch commodity section); options on
+    futures, equity-segment rows with an MCX security id, and ambiguous ticks do not."""
+    master = [
+        {"EXCH_ID": "MCX", "SEGMENT": "M", "SECURITY_ID": "578634", "INSTRUMENT": "FUTCOM", "TICK_SIZE": "5.0000"},
+        {"EXCH_ID": "MCX", "SEGMENT": "M", "SECURITY_ID": "7001", "INSTRUMENT": "FUTIDX", "TICK_SIZE": "100.0000"},
+        {"EXCH_ID": "MCX", "SEGMENT": "M", "SECURITY_ID": "8001", "INSTRUMENT": "OPTFUT", "TICK_SIZE": "1.0000"},      # an option: not streamed
+        {"EXCH_ID": "MCX", "SEGMENT": "M", "SECURITY_ID": "9001", "INSTRUMENT": "FUTCOM", "TICK_SIZE": "5.0000"},
+        {"EXCH_ID": "MCX", "SEGMENT": "M", "SECURITY_ID": "9001", "INSTRUMENT": "FUTCOM", "TICK_SIZE": "10.0000"},     # ambiguous
+        {"EXCH_ID": "NSE", "SEGMENT": "D", "SECURITY_ID": "5555", "INSTRUMENT": "FUTCOM", "TICK_SIZE": "5.0000"},      # wrong exchange
+    ]
+    monkeypatch.setattr(DhanAdapter, "_scrip_master", classmethod(lambda cls: master))
+    monkeypatch.setattr("app.broker_adapters._DHAN_TICK_CACHE", {})
+    assert DhanAdapter.price_tick_for("MCX_COMM", "578634") == Decimal("5.0000")
+    assert DhanAdapter.price_tick_for("MCX_COMM", "7001") == Decimal("100.0000")
+    assert DhanAdapter.price_tick_for("MCX_COMM", "8001") is None
+    assert DhanAdapter.price_tick_for("MCX_COMM", "9001") is None
+    assert DhanAdapter.price_tick_for("MCX_COMM", "5555") is None
+    assert DhanAdapter.price_tick_for("MCX_COMM", "not-a-number") is None
+    assert DhanAdapter.price_tick_for("NSE_CURRENCY", "578634") is None  # still unresolved segments stay closed
+
+
 def test_yahoo_float32_frame_bar_is_artefact_free_through_text_frame() -> None:
     import numpy as np
     import pandas as pd
@@ -401,3 +425,63 @@ def test_yahoo_float32_frame_bar_is_artefact_free_through_text_frame() -> None:
     assert all(isinstance(value, str) for value in values[:4])
     bar = _HttpProvider._bar(frame.index[0].to_pydatetime(), *values)
     assert bar.open == bar.high == bar.low == bar.close == Decimal("1431.30000000")
+
+
+# --- untraded contracts: Dhan sends 0 for price/OHLC and 1980-01-01 as the trade time -------------------------
+# (test data: synthetic wire packets/payloads built in this file; never used at runtime)
+
+def _untraded_quote_packet(security_id: int) -> bytes:
+    packet = _header(4, 50, 5, security_id)  # segment code 5 = MCX_COMM
+    struct.pack_into("<i", packet, 14, 315532800)  # Dhan's "no trade" timestamp
+    return bytes(packet)
+
+
+def test_untraded_quote_packet_is_no_quote_not_a_failure() -> None:
+    assert DhanAdapter.decode_market_feed_packet(
+        _untraded_quote_packet(571294), "MCX_COMM", "571294", price_tick=Decimal("100")
+    ) is None
+
+
+def test_negative_or_nonfinite_quote_price_still_fails_closed() -> None:
+    for bad in (-5.0, float("nan"), float("inf")):
+        with pytest.raises(BrokerAdapterError):
+            DhanAdapter.decode_market_feed_packet(
+                _quote_packet(ltp=bad), SBIN_SEGMENT, SBIN_SECURITY_ID, price_tick=Decimal("0.05")
+            )
+
+
+def test_frame_with_an_untraded_contract_still_delivers_the_traded_ones() -> None:
+    # One socket carries every contract: a never-traded one must not discard its neighbours or the connection.
+    traded = bytearray(_quote_packet(security_id=111))
+    traded[3] = 5
+    frame = _untraded_quote_packet(222) + bytes(traded)
+    subscriptions = {("MCX_COMM", "111"): "mcx:111", ("MCX_COMM", "222"): "mcx:222"}
+    with patch.object(DhanAdapter, "price_tick_for", staticmethod(lambda segment, security_id: Decimal("0.05"))):
+        quotes, _retained, unknown = DhanAdapter.decode_market_feed_frame(frame, subscriptions)
+    assert [key for key, _bar in quotes] == ["mcx:111"]
+    assert unknown == 0
+
+
+def test_market_quote_snapshot_skips_untraded_records_but_rejects_malformed_ones() -> None:
+    def record(price: object, high: object = "10.5") -> dict[str, object]:
+        return {"last_price": price, "volume": 5, "last_trade_time": "20/11/2026 20:00:00",
+                "ohlc": {"open": "10.0", "high": high, "low": "9.5", "close": "10.2"}}
+
+    adapter = DhanAdapter()
+    tokens = {"client_id": "c"}
+    untraded = {"last_price": 0, "volume": 0, "last_trade_time": "01/01/1980 00:00:00",
+                "ohlc": {"open": 0, "high": 0, "low": 0, "close": 0}}
+    payload = {"status": "success", "data": {"MCX_COMM": {"1": record("10.1"), "2": untraded}}}
+    with patch("app.broker_adapters._request", return_value=payload), \
+            patch("app.broker_adapters._wait_for_dhan_market_data", lambda: None), \
+            patch.object(DhanAdapter, "price_tick_for", staticmethod(lambda segment, security_id: Decimal("0.05"))):
+        result = adapter.get_market_quotes_batch("t", tokens, {"MCX_COMM": ["1", "2"]})
+    assert set(result["MCX_COMM"]) == {"1"}  # the untraded one is unknown, not a zero price and not a failed batch
+    assert result["MCX_COMM"]["1"].close == Decimal("10.10")
+
+    malformed = {"status": "success", "data": {"MCX_COMM": {"3": record("not-a-number")}}}
+    with patch("app.broker_adapters._request", return_value=malformed), \
+            patch("app.broker_adapters._wait_for_dhan_market_data", lambda: None), \
+            patch.object(DhanAdapter, "price_tick_for", staticmethod(lambda segment, security_id: Decimal("0.05"))):
+        with pytest.raises(BrokerAdapterError):
+            DhanAdapter().get_market_quotes_batch("t", tokens, {"MCX_COMM": ["3"]})

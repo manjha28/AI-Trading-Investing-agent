@@ -100,6 +100,13 @@ def _dhan_master_matches(
 ) -> list[dict[str, str]]:
     normalized_id = (security_id or "").strip()
     normalized_isin = (isin or "").strip().upper()
+    cache = DhanAdapter._scrip_master_cache
+    if cache is not None and master_rows is cache[1]:
+        # The live master: use the per-load index instead of scanning every row (same result, same order).
+        by_isin, by_id = DhanAdapter._equity_lookup(master_rows)
+        found = {pos: row for pos, row in [*(by_id.get(normalized_id, []) if normalized_id else []), *(by_isin.get(normalized_isin, []) if normalized_isin else [])]}
+        unique = {(row.get("SECURITY_ID", "").strip(), row.get("EXCH_ID", "").strip().upper()): row for _pos, row in sorted(found.items())}
+        return list(unique.values())
     matches = {
         (
             row.get("SECURITY_ID", "").strip(),

@@ -81,6 +81,8 @@ def register(client: TestClient, email: str = "m1-market@example.com") -> None:
         json={"email": email, "password": "correct-horse-battery"},
     )
     assert login_response.status_code == 200, login_response.text
+    # Mutating routes (e.g. history/sync) require the CSRF header; the browser client sends it too.
+    client.headers["X-CSRF-Token"] = client.cookies.get("csrf_token", "")
 
 
 def csrf_headers(client: TestClient) -> dict[str, str]:
@@ -254,11 +256,8 @@ def test_default_chain_is_free_first_and_does_not_read_paid_keys(monkeypatch) ->
 
     chain = create_market_data_provider_chain()
 
-    assert [provider.name for provider in chain.providers] == [
-        "delta_exchange",
-        "binance",
-        "yfinance",
-    ]
+    # crypto providers are never part of the Indian-market chain, even when named in the setting
+    assert [provider.name for provider in chain.providers] == ["yfinance"]
 
 
 def test_default_chain_skips_optional_paid_providers_without_credentials(monkeypatch) -> None:
@@ -269,11 +268,7 @@ def test_default_chain_skips_optional_paid_providers_without_credentials(monkeyp
         ("twelve_data", "finnhub", "delta_exchange", "binance", "yfinance", "mock")
     )
 
-    assert [provider.name for provider in chain.providers] == [
-        "delta_exchange",
-        "binance",
-        "yfinance",
-    ]
+    assert [provider.name for provider in chain.providers] == ["yfinance"]
 
 
 def test_optional_paid_providers_are_enabled_only_when_named_and_credentialed(monkeypatch) -> None:

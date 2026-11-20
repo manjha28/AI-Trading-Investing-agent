@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app import research_service
 from app.db import Base, get_db
 from app.main import app
-from app.models import ResearchNote, ResearchSource, User
+from app.models import Instrument, ResearchNote, ResearchSource, User
 
 
 @pytest.fixture
@@ -75,7 +75,22 @@ def csrf(client: TestClient) -> dict[str, str]:
 
 
 def instrument_id(client: TestClient) -> str:
-    return client.get("/api/v1/market-data/instruments?query=ALPHA").json()[0]["id"]
+    # A real-style equity row created directly (no provider search, no network, no demo/synthetic data).
+    session_factory = app.dependency_overrides[get_db]()
+    db = next(session_factory)
+    try:
+        row = db.scalar(select(Instrument).where(Instrument.symbol == "ALPHA"))
+        if row is None:
+            row = Instrument(
+                symbol="ALPHA", display_name="Alpha Test Corp", asset_class="equity", venue="NASDAQ", currency="USD",
+                country="US", timezone="America/New_York", is_synthetic=False, relink_required=False,
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(row)
+            db.commit()
+        return str(row.id)
+    finally:
+        session_factory.close()
 
 
 def add_source(client: TestClient, url: str = "https://example.com/report") -> dict:

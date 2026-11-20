@@ -1,4 +1,4 @@
-export type Market = 'equity_in' | 'crypto';
+export type Market = 'equity_in';
 export type CompareOp = '>' | '>=' | '<' | '<=' | '==' | '!=' | 'crosses_above' | 'crosses_below';
 
 export type IndOperand = { kind: 'indicator'; ref: string; output?: string | null; offset?: number };

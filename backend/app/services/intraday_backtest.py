@@ -160,7 +160,7 @@ class _Engine:
                 dt = np.diff(t_ns) // (60 * 10**9)
                 gap_ok[1:] = (dt <= self.cfg.max_fill_delay_minutes) & ((dayi[1:] == dayi[:-1]) if self.market == "equity_in" else True)
             arr.append(dict(t=t_ns, o=f["open"].to_numpy(float), h=f["high"].to_numpy(float), l=f["low"].to_numpy(float), c=f["close"].to_numpy(float),
-                            day=dayi, mod=rel, ok=gap_ok, sig=r.result.signals, atr=r.result.atr, times=f["time"], n=len(f)))
+                            day=dayi, mod=rel, ok=gap_ok, sig=r.result.signals, atr=r.result.atr, lvl=getattr(r.result, "stop_levels", None) or {}, times=f["time"], n=len(f)))
         if not arr:
             return self.finish([], [], [])
         timeline = np.unique(np.concatenate([a["t"] for a in arr]))
@@ -259,7 +259,18 @@ class _Engine:
         d = self.defn
         raw = _d(a["o"][i])
         entry = self.fill(raw, "buy" if side == "long" else "sell", slip=True)
-        sd = self.stop_distance(d.stop, entry, a, i)
+        if d.stop.mode == "level":
+            levels = a["lvl"].get(side)
+            raw_level = None if levels is None or i - 1 < 0 else levels[i - 1]       # the signal candle's level, known at its close
+            if raw_level is None or math.isnan(raw_level):
+                return self.skip("stop_level_unavailable")
+            buffer = D(str(d.stop.value)) / 100
+            level = D(repr(float(raw_level))) * (1 - buffer if side == "long" else 1 + buffer)
+            if (side == "long" and level >= entry) or (side == "short" and level <= entry):
+                return self.skip("stop_level_beyond_entry")                           # price already through the level: no valid stop
+            sd = abs(entry - level)
+        else:
+            sd = self.stop_distance(d.stop, entry, a, i)
         if d.stop.mode != "none" and sd is None:
             return self.skip("stop_distance_unavailable")
         sz = d.sizing

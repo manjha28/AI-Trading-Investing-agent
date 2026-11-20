@@ -70,6 +70,8 @@ type WatchlistStreamMessage = {
 export type WatchlistStreamOptions = {
   /** Watchlist to stream. undefined uses the default watchlist; null disables the stream. */
   watchlistId?: string | null;
+  /** Stream every Dhan-mapped NSE instrument (the Market watch terminal) instead of one watchlist. */
+  universe?: boolean;
   enabled?: boolean;
   /** Reconnect if no tick arrives within this many ms of opening the socket. */
   firstTickTimeoutMs?: number;
@@ -124,6 +126,7 @@ export function nextNseOpenDelayMs(): number {
  */
 export function useWatchlistStream({
   watchlistId,
+  universe = false,
   enabled = true,
   firstTickTimeoutMs,
   marketClosedRetryMs,
@@ -236,7 +239,7 @@ export function useWatchlistStream({
       if (cancelled) return;
       try {
         let resolvedId = requestedWatchlistId;
-        if (resolvedId === undefined) {
+        if (resolvedId === undefined && !universe) {
           const watchlists = await apiRequest<{ id: string; is_default: boolean }[]>('/market-data/watchlists');
           if (cancelled) return;
           const watchlist = watchlists.find((item) => item.is_default) ?? watchlists[0];
@@ -247,7 +250,10 @@ export function useWatchlistStream({
           }
           resolvedId = watchlist.id;
         }
-        const url = new URL(`/api/v1/market-data/watchlists/${resolvedId}/stream`, window.location.href);
+        const url = new URL(
+          universe ? '/api/v1/market-data/universe/stream' : `/api/v1/market-data/watchlists/${resolvedId}/stream`,
+          window.location.href,
+        );
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(url);
         socket = ws;
@@ -436,7 +442,7 @@ export function useWatchlistStream({
       socket?.close();
       socket = null;
     };
-  }, [active, watchlistId, firstTickTimeoutMs]);
+  }, [active, watchlistId, universe, firstTickTimeoutMs]);
 
   return { status, message, quotes, feedHealth, portfolioValues, instrumentErrors, lastSnapshotAt, setStatus };
 }

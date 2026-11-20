@@ -19,7 +19,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 from app.services.timeframes import MarketProfile, minutes_of, session_keys
 
-INDICATOR_LIBRARY_VERSION = "1.0.0"
+INDICATOR_LIBRARY_VERSION = "1.2.0"
 SOURCES = ("close", "open", "high", "low", "volume", "hl2", "hlc3", "ohlc4")
 NAN = float("nan")
 
@@ -661,3 +661,7 @@ def catalog() -> list[dict[str, Any]]:
     return [{"id": i.id, "name": i.name, "category": i.category, "outputs": list(i.outputs), "formula": i.formula, "notes": i.notes, "uses_source": i.uses_source,
              "params": {k: {"default": p.default, "min": p.low, "max": p.high, "kind": p.kind, "choices": list(p.choices)} for k, p in i.params.items()},
              "minimum_bars_default": warmup_bars(i.id, {})} for i in REGISTRY.values()]
+
+
+# Additional indicators register into REGISTRY through the same API (kept in their own module for size).
+from app.services import indicators_extra, indicators_more  # noqa: E402,F401

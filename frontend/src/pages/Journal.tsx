@@ -368,7 +368,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
         <label>Strategy<select value={strategyFilter} onChange={(event) => setStrategyFilter(event.target.value)}><option value="">All strategies</option>{strategies.map((strategy) => <option value={strategy} key={strategy}>{strategy}</option>)}</select></label>
         <label>Setup<select value={setupFilter} onChange={(event) => setSetupFilter(event.target.value)}><option value="">All setups</option>{setups.map((setup) => <option value={setup} key={setup}>{setup}</option>)}</select></label>
         <label>Side<select value={sideFilter} onChange={(event) => setSideFilter(event.target.value)}><option value="">All sides</option><option value="long">Long</option><option value="short">Short</option></select></label>
-        <label>Market<select value={assetFilter} onChange={(event) => setAssetFilter(event.target.value)}><option value="">All markets</option><option value="equity">Equity</option><option value="future">Future</option><option value="option">Option</option><option value="crypto">Crypto</option></select></label>
+        <label>Market<select value={assetFilter} onChange={(event) => setAssetFilter(event.target.value)}><option value="">All markets</option><option value="equity">Equity</option><option value="future">Future</option><option value="option">Option</option></select></label>
         {(dateFrom || dateTo || selectedDate || strategyFilter || setupFilter || sideFilter || assetFilter || search) && <button className="journal-clear-filters" type="button" onClick={clearFilters}><X size={13} /> Clear filters</button>}
       </div>
 
@@ -517,7 +517,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
             }}><X size={16} /></button>
           </div>
           <form key={editingTrade?.id ?? 'new-trade'} className="form-stack journal-form" onSubmit={submitJournalTrade}>
-            <label>Market<select name="asset_class" value={journalAssetClass} onChange={(event) => setJournalAssetClass(event.target.value)}><option value="equity">Equity</option><option value="future">Future</option><option value="option">Option</option><option value="crypto">Crypto</option></select></label>
+            <label>Market<select name="asset_class" value={journalAssetClass} onChange={(event) => setJournalAssetClass(event.target.value)}><option value="equity">Equity</option><option value="future">Future</option><option value="option">Option</option></select></label>
             <label>Currency<select name="currency" defaultValue={editingTrade?.currency ?? 'INR'}><option value="INR">INR</option><option value="USD">USD</option></select></label>
             <label>Instrument<input name="instrument" placeholder="Symbol or contract" maxLength={64} defaultValue={editingTrade?.instrument ?? ''} required /></label>
             <label>Side<select name="side" defaultValue={editingTrade?.side ?? 'long'}><option value="long">Long</option><option value="short">Short</option></select></label>

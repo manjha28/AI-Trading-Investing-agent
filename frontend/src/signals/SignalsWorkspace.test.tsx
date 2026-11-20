@@ -20,7 +20,7 @@ const indicator = (id: string, name: string, category: string, outputs = ['value
 });
 const META = {
   schema_version: 'intraday-strategy/1', engine_version: 'intraday-engine/1.0.0', indicator_library_version: '1.0.0',
-  timeframes: ['1m', '3m', '5m', '10m', '15m', '30m', '60m'], markets: ['equity_in', 'crypto'], price_fields: ['open', 'high', 'low', 'close', 'volume'],
+  timeframes: ['1m', '3m', '5m', '10m', '15m', '30m', '60m'], markets: ['equity_in'], price_fields: ['open', 'high', 'low', 'close', 'volume'],
   compare_ops: ['>', '>=', '<', '<=', '==', '!=', 'crosses_above', 'crosses_below'],
   indicators: [indicator('ema', 'Exponential Moving Average', 'trend'), indicator('rsi', 'Relative Strength Index', 'momentum'), indicator('macd', 'MACD', 'momentum', ['macd', 'signal', 'hist'])],
   cost_profiles: [{ id: 'in_equity_intraday_2024_10', label: 'India equity intraday', market: 'equity_in', effective_from: '2024-10-01', assumed: true, source_note: 'assumed', params: { brokerage_flat: '20' } }],
@@ -110,7 +110,7 @@ function install(extra: Record<string, (body: unknown) => unknown> = {}) {
     if (key === 'GET /signals-lab/strategies/op1') return { ...OPT, versions: [{ version: 1, created_at: '2025-01-01T00:00:00Z', source_type: 'starter', definition: OPT_DEF, params: {}, definition_hash: 'beef', locked: false, has_source: false, source_filename: null }] };
     if (key.startsWith('GET /signals-lab/options/coverage')) return COVERAGE;
     if (key === 'GET /signals-lab/strategies/st1') return { ...STARTER, versions: [{ version: 1, created_at: '2025-01-01T00:00:00Z', source_type: 'starter', definition: STARTER_DEF, params: {}, definition_hash: 'cafe', locked: false, has_source: false, source_filename: null }] };
-    if (key === 'GET /signals-lab/starters') return { readiness: { equity_in: { instruments_with_1m_data: 9, backtest_ready: true }, crypto: { instruments_with_1m_data: 0, backtest_ready: false } } };
+    if (key === 'GET /signals-lab/starters') return { readiness: { equity_in: { instruments_with_1m_data: 9, backtest_ready: true } } };
     if (key === 'POST /signals-lab/starters/install') return { installed: 0, skipped: [], total: 8 };
     if (key === 'GET /signals-lab/strategies/s1') return DETAIL;
     if (key.startsWith('GET /signals-lab/instruments')) return INSTRUMENTS;
@@ -136,7 +136,7 @@ describe('Signals workspace', () => {
 
   it('shows every section and the dashboard with strategy counts and data-quality warnings', async () => {
     await mount();
-    for (const name of ['Strategy Dashboard', 'Strategy Builder', 'Strategy Library', 'Backtesting', 'Live Signals', 'Indicator Library', 'Import & Validation', 'Legacy daily & crypto research']) {
+    for (const name of ['Strategy Dashboard', 'Strategy Library', 'Strategy Registry', 'Strategy Builder', 'Backtest Lab', 'Backtesting', 'Forward Test', 'Live Signals', 'Jobs & scanner', 'Indicator Library', 'Import & Validation']) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
     }
     const counts = within(screen.getByLabelText('Strategy counts'));
@@ -145,10 +145,11 @@ describe('Signals workspace', () => {
     expect(screen.getByText('22 missing 1-minute candle(s)')).toBeInTheDocument();
   });
 
-  it('keeps the original page reachable as a tab', async () => {
+  it('is a strategy workbench: the VAR research, derivatives data and legacy daily pages are no longer in the navigation', async () => {
     await mount();
-    tab('Legacy daily & crypto research');
-    expect(await screen.findByText('legacy page')).toBeInTheDocument();
+    const nav = within(screen.getByRole('navigation', { name: 'Signals sections' })).getAllByRole('button').map((b) => b.textContent);
+    expect(nav).toEqual(['Strategy Dashboard', 'Strategy Library', 'Strategy Registry', 'Strategy Builder', 'Backtest Lab', 'Backtesting', 'Forward Test', 'Live Signals', 'Jobs & scanner', 'Indicator Library', 'Import & Validation']);
+    for (const gone of ['Legacy daily research', 'Derivatives Data', 'Intraday research (VAR)']) expect(screen.queryByRole('button', { name: gone })).toBeNull();
   });
 
   it('library lists intraday and legacy strategies with all actions and filters', async () => {
@@ -305,7 +306,8 @@ describe('Built-in starter strategies', () => {
     expect(within(row).getByRole('button', { name: 'Customize' })).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: 'Edit as new version' })).not.toBeInTheDocument();
     expect(screen.getByText(/have not been tested|not been tested/)).toBeInTheDocument();
-    expect(screen.getByText(/crypto no 1-minute data stored \(not backtest-ready\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Indian equity 9 instrument\(s\) with 1m data/)).toBeInTheDocument();
+    expect(screen.queryByText(/crypto/i)).not.toBeInTheDocument(); // crypto lives on its own page
     fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'starter' } });
     expect(screen.queryByText('EMA cross')).not.toBeInTheDocument();
     fireEvent.click(within(row).getByRole('button', { name: 'Open' }));

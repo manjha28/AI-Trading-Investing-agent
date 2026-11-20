@@ -163,7 +163,7 @@ def test_install_is_idempotent_preserves_existing_strategies_and_reports_unteste
     assert all(r["indicator_summary"] and r["source_type"] == "starter" and r["current_version"] == 1 for r in starter)
     assert next(r for r in rows if r["id"] == mine["id"])["status"] == "suspended" and next(r for r in rows if r["id"] == mine["id"])["current_version"] == 1
     cat = client.get(f"{API}/starters").json()
-    assert len(cat["catalog"]) == 14 and all(c["installed_strategy_id"] for c in cat["catalog"]) and cat["readiness"]["crypto"]["backtest_ready"] is False
+    assert len(cat["catalog"]) == 14 and all(c["installed_strategy_id"] for c in cat["catalog"]) and "crypto" not in cat["readiness"]  # crypto has its own system (/crypto-delta)
 
 
 def test_install_never_overwrites_a_same_named_user_strategy(client, engine):
@@ -225,4 +225,4 @@ def test_starter_backtests_on_real_stored_data_and_refuses_unavailable_crypto(cl
     cs = post(client, "/strategies", {"definition": d}, 201).json()
     failed = client.get(f"{API}/backtests/{post(client, '/backtests', {'strategy_id': cs['id'], 'instruments': [crypto]}, 202).json()['id']}").json()
     assert failed["status"] == "failed" and "1-minute" in failed["error"]                                              # no fabricated crypto data
-    assert client.get(f"{API}/starters").json()["readiness"]["crypto"]["backtest_ready"] is False
+    assert "crypto" not in client.get(f"{API}/starters").json()["readiness"]  # not offered by the Indian system

@@ -50,7 +50,7 @@ def run_strategy_scan(db: Session, *, user_id: UUID, strategy_id: UUID, scan_run
     scanned: list[Instrument] = []
     created = 0
     try:
-        instruments = runner.resolve_instruments(db, defn, None)
+        instruments = runner.resolve_instruments(db, defn, None, strategy.user_id)
     except runner.RunnerError as error:
         instruments = []
         errors.append({"strategy": strategy.name, "error": str(error)})

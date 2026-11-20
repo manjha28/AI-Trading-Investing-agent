@@ -1376,7 +1376,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
               : watchlistLoadState === 'failed'
                 ? <ErrorState title="Watchlist unavailable" message={watchlistLoadError} onRetry={() => void refreshWatchlist(true).catch(() => undefined)} />
                 : watchlist.length === 0
-                  ? <div className="table-empty">No instruments on your watchlist. Add one from Markets.</div>
+                  ? <div className="table-empty">No instruments on your watchlist. Add one from Market watch.</div>
                   : <ul className="rail-watchlist">{watchlist.map(watchlistRow)}</ul>)}
             {railTab !== 'watchlist' && (!railInstrumentIds
               ? <div className="table-empty">Add holdings or watchlist instruments to see {railTab}.</div>

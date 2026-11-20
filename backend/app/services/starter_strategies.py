@@ -130,3 +130,12 @@ def _with_options() -> None:
 
 
 _with_options()
+
+
+def _with_registry() -> None:
+    from app.strategies import all_specs   # late import: the registry builds on rule_dsl helpers
+    for spec in all_specs():
+        STARTERS.append(spec.definition())
+
+
+_with_registry()

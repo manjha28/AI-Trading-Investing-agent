@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
 import { Panel } from '../components/ui';
-import { DeltaResearchPage } from './DeltaResearch';
 
 type Instrument = { id: string; symbol: string; display_name: string; currency: string };
 type ParameterSchema = {
@@ -160,7 +159,6 @@ function SchemaFields({
 }
 
 export function Strategies() {
-  const [tab, setTab] = useState<'equity' | 'crypto'>('equity');
   const [catalog, setCatalog] = useState<Registration[]>([]);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -358,13 +356,7 @@ export function Strategies() {
       <p className="coverage-message">Decision support, not investment advice. Signals never place orders.</p>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {message && <div className="success-banner" role="status">{message}</div>}
-      <nav className="instrument-detail-tabs" aria-label="Signals asset class">
-        <button type="button" className={tab === 'equity' ? 'active' : ''} aria-pressed={tab === 'equity'} onClick={() => setTab('equity')}>Equity</button>
-        <button type="button" className={tab === 'crypto' ? 'active' : ''} aria-pressed={tab === 'crypto'} onClick={() => setTab('crypto')}>Crypto</button>
-      </nav>
-
-      {tab === 'equity' ? (
-        <>
+      <>
           <Panel title="Registered equity strategies" description="Availability is based on the stored daily data this workspace currently supports.">
             <div className="strategy-catalog">
               {catalog.filter((item) => item.asset_class === 'equity').map((item) => (
@@ -507,13 +499,7 @@ export function Strategies() {
               </table></div>
             </Panel>
           </>}
-        </>
-      ) : (
-        <>
-          <div className="data-note"><div><strong>Delta Exchange research is disabled.</strong><span>No crypto strategies are registered. Public-feed data is shown only when available; unavailable values are not filled or simulated.</span></div></div>
-          <DeltaResearchPage />
-        </>
-      )}
+      </>
     </section>
   );
 }

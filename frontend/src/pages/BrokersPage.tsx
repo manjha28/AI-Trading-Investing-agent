@@ -424,7 +424,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
               </p>
             )}
             {syncErrors[broker.slug] && <p className="broker-sync-time" role="alert">Account sync failed: {syncErrors[broker.slug]} Authentication status is shown separately above. Retry with Sync.</p>}
-            <p className="broker-sync-time">Market data is separate from account sync; check the Markets page for quote freshness and feed status.</p>
+            <p className="broker-sync-time">Market data is separate from account sync; check the Market watch page for quote freshness and feed status.</p>
             {broker.expires_at && <p className="broker-sync-time">Session expiry: {new Date(broker.expires_at).toLocaleString()}</p>}
             {broker.last_synced_at && (
               <p className="broker-sync-time">

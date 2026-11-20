@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr | None = None
     resend_from_email: str = ""
     email_verification_url: str = "http://localhost:5173/"
-    market_data_providers: str = "angel_one,dhan,twelve_data,finnhub,delta_exchange,binance,yfinance,upstox"
+    market_data_providers: str = "angel_one,dhan,twelve_data,finnhub,yfinance,upstox"
     twelve_data_api_key: SecretStr | None = None
     finnhub_api_key: SecretStr | None = None
     market_data_quote_freshness_seconds: int = 60
@@ -108,7 +108,9 @@ class Settings(BaseSettings):
     job_worker_enabled: bool = True                                # durable job queue worker + scan scheduler (per-owner scan switch is off by default)
     scheduler_leader_election_enabled: bool = True                 # only one replica (Postgres advisory lock) runs the in-process periodic loops
     corporate_action_sync_enabled: bool = True                     # periodically ingest Yahoo dividends/splits for held and watched instruments
-    corporate_action_sync_interval_seconds: int = 21600
+    corporate_action_sync_interval_seconds: int = 7200   # an ex-date is picked up within ~2 hours, no manual step
+    universe_close_refresh_enabled: bool = True                    # keep Market watch daily closes current (Dhan history, bounded batches)
+    universe_close_refresh_interval_seconds: int = Field(default=1200, ge=60, le=86400)
     derivatives_scheduler_enabled: bool = False                    # daily instrument-master refresh
     derivatives_master_refresh_hour_ist: int = Field(default=8, ge=0, le=23)
     derivatives_chain_poll_enabled: bool = False                   # live option-chain snapshot polling (rate-limited)
@@ -140,6 +142,13 @@ class Settings(BaseSettings):
     delta_research_refresh_seconds: int = Field(default=60, ge=30, le=3600)
     # Execution groundwork (no order transmission exists). "live" is never honoured: see app/execution/mode.py.
     execution_mode: Literal["research", "monitor", "live"] = "research"
+    # Dhan live order execution: the owner-approved exception in AGENTS.md. OFF unless this is set deliberately on the deployment; arming
+    # (per user) and execute_live (per forward test) are separate, additional requirements.
+    dhan_live_execution_enabled: bool = False
+    forward_test_enabled: bool = True
+    master_bar_refresh_enabled: bool = True
+    master_bar_refresh_budget_seconds: int = Field(default=50, ge=5, le=300)
+    forward_test_interval_seconds: int = Field(default=60, ge=20, le=600)
     execution_max_order_notional_usd: Decimal = Decimal("1000")
     execution_max_total_exposure_usd: Decimal = Decimal("5000")
     execution_price_max_age_seconds: int = Field(default=120, ge=5, le=3600)

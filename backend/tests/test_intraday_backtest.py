@@ -344,3 +344,71 @@ def test_in_out_of_sample_walk_forward_and_sensitivity_structure():
     wf = walk_forward(d, runs, cfg, bt, train_days=8, test_days=4, keys=["f.length"])
     assert wf["folds"] and all(pd.Timestamp(x["test"][0]) >= pd.Timestamp(x["train"][1]) for x in wf["folds"])
     assert all("chosen_params" in x and "test_result" in x for x in wf["folds"]) and "train windows only" in wf["optimised_on"]
+
+
+# ───────────── stop at an indicator level (e.g. the 5-EMA alert candle's high) ─────────────
+def level_result(f: pd.DataFrame, *, short_at=None, long_at=None, short_level=None, long_level=None) -> EvalResult:
+    r = result(f, **{k: v for k, v in (("short_entry", short_at), ("long_entry", long_at)) if v is not None})
+    n = len(f)
+    r.stop_levels = {side: np.full(n, lvl) for side, lvl in (("short", short_level), ("long", long_level)) if lvl is not None}
+    return r
+
+
+def level_defn(**over):
+    d = dict(indicators=[{"alias": "al", "indicator": "ema_alert_candle", "params": {"length": 5}, "timeframe": "5m"}],
+             short_entry={"type": "compare", "left": {"kind": "price"}, "op": ">", "right": {"kind": "const", "value": 0}},
+             stop={"mode": "level", "short_level": {"kind": "indicator", "ref": "al", "output": "short_stop"}, "long_level": {"kind": "indicator", "ref": "al", "output": "long_stop"}},
+             target={"mode": "rr", "value": 3})
+    d.update(over)
+    return defn(**d)
+
+
+def test_level_stop_uses_the_signal_candles_level_not_an_atr_and_sizes_the_rr_target_from_it():
+    f = bars(NSE, 60)
+    setbar(f, 9, high=104.0)                                   # price trades up to 104 after the short entry at 100 (level 103): stopped at 103? no - through it
+    t = run(f, level_defn(), level_result(f, short_at=5, short_level=103.0))["trades"][0]
+    assert t["side"] == "short" and t["exit_reason"] == "stop_loss" and t["exit_fill"] == "103.00"
+    g = bars(NSE, 60)
+    setbar(g, 12, low=90.0)                                    # target = 100 - 3 x (103 - 100) = 91
+    t2 = run(g, level_defn(), level_result(g, short_at=5, short_level=103.0))["trades"][0]
+    assert t2["exit_reason"] == "target" and t2["exit_fill"] == "91.00"
+
+
+def test_long_level_stop_mirrors_it_and_a_buffer_moves_the_stop_beyond_the_level():
+    f = bars(NSE, 60)
+    setbar(f, 9, low=96.0)
+    d = level_defn(long_entry={"type": "compare", "left": {"kind": "price"}, "op": ">", "right": {"kind": "const", "value": 0}}, short_entry=None,
+                   stop={"mode": "level", "value": 1.0, "long_level": {"kind": "indicator", "ref": "al", "output": "long_stop"}})
+    t = run(f, d, level_result(f, long_at=5, long_level=98.0))["trades"][0]
+    assert t["side"] == "long" and t["exit_reason"] == "stop_loss" and t["exit_fill"] == "97.00"     # 98 less a 1% buffer = 97.02, rounded to the 0.05 tick
+
+
+def test_a_level_the_price_has_already_passed_or_a_missing_level_opens_no_trade_and_says_why():
+    f = bars(NSE, 40)
+    through = run(f, level_defn(), level_result(f, short_at=5, short_level=99.0))               # short stop BELOW the entry price: invalid
+    assert through["trades"] == [] and through["skipped_signals"].get("stop_level_beyond_entry") == 1
+    unknown = level_result(f, short_at=5, short_level=103.0)
+    unknown.stop_levels["short"][:] = np.nan
+    res = run(f, level_defn(), unknown)
+    assert res["trades"] == [] and res["skipped_signals"].get("stop_level_unavailable") == 1
+
+
+def test_the_level_is_read_on_the_signal_candle_so_a_later_level_cannot_leak_in():
+    f = bars(NSE, 40)
+    r = level_result(f, short_at=5, short_level=103.0)
+    r.stop_levels["short"][6:] = 150.0                          # changes only AFTER the signal candle (bar 5)
+    setbar(f, 9, high=104.0)
+    t = run(f, level_defn(), r)["trades"][0]
+    assert t["exit_fill"] == "103.00"                           # still the level known at bar 5
+
+
+def test_validation_requires_a_declared_level_operand_for_each_enabled_direction():
+    from app.services.intraday_strategy import validate_definition
+    good = level_defn()
+    assert not [i for i in validate_definition(good)[0] if i["level"] == "error"]
+    missing = level_defn(stop={"mode": "level", "long_level": None, "short_level": None})
+    assert any("short_level" in i["message"] for i in validate_definition(missing)[0] if i["level"] == "error")
+    undeclared = level_defn(stop={"mode": "level", "short_level": {"kind": "indicator", "ref": "nope", "output": "short_stop"}})
+    assert any("not declared" in i["message"] for i in validate_definition(undeclared)[0] if i["level"] == "error")
+    shifted = level_defn(stop={"mode": "level", "short_level": {"kind": "indicator", "ref": "al", "output": "short_stop", "offset": 1}})
+    assert any("offset 0" in i["message"] for i in validate_definition(shifted)[0] if i["level"] == "error")

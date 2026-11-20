@@ -135,11 +135,6 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
           <Field label="Name"><input value={d.name} maxLength={120} onChange={(e) => patch({ name: e.target.value })} placeholder="e.g. EMA 20/50 cross with VWAP filter" /></Field>
           <Field label="Description"><input value={d.description} maxLength={500} onChange={(e) => patch({ description: e.target.value })} /></Field>
           <div className="sl-row">
-            <Field label="Market">
-              <select value={d.market} onChange={(e) => patch({ market: e.target.value as Definition['market'], universe: [] })}>
-                <option value="equity_in">Indian equity (NSE/BSE)</option><option value="crypto">Crypto (24/7)</option>
-              </select>
-            </Field>
             <Field label="Decision timeframe" hint="Conditions are evaluated when a candle of this size completes">
               <select aria-label="Decision timeframe" disabled={isOptions} title={isOptions ? 'Options strategies decide on the entry timeframe set in the Options tab' : undefined} value={d.decision_timeframe} onChange={(e) => {
                 const from = d.decision_timeframe; const to = e.target.value;
@@ -243,12 +238,10 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
               <label className="sl-check"><input type="checkbox" checked={d.constraints.allow_short} onChange={(e) => patch({ constraints: { ...d.constraints, allow_short: e.target.checked } })} /> Allow short</label>
               <Field label="Max trades / day"><input type="number" min={1} value={d.constraints.max_trades_per_day ?? ''} onChange={(e) => patch({ constraints: { ...d.constraints, max_trades_per_day: e.target.value ? Number(e.target.value) : null } })} /></Field>
             </div>
-            {d.market === 'equity_in' ? (
               <div className="sl-row">
                 <Field label="No new entries after" hint="Default 15:00 IST"><input type="time" value={d.session.no_entry_after ?? ''} onChange={(e) => patch({ session: { ...d.session, no_entry_after: e.target.value || null } })} /></Field>
                 <Field label="Square-off at" hint="Default 15:15 IST; positions never run overnight"><input type="time" value={d.session.square_off ?? ''} onChange={(e) => patch({ session: { ...d.session, square_off: e.target.value || null } })} /></Field>
               </div>
-            ) : <p className="sl-muted">Crypto trades continuously: no session square-off or entry cutoff is applied.</p>}
           </fieldset>
           <fieldset className="sl-card"><legend>Stop / target / trailing (historical simulation only)</legend>
             {(['stop', 'target', 'trail'] as const).map((k) => (
