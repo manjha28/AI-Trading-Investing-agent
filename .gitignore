@@ -120,3 +120,12 @@ desktop.ini
 
 # ---------- Owner-saved third-party pages (Screener terms: no mirroring/redistribution) ----------
 diagnostics/screener_pages/
+
+# ---------- Screenshots, build info, agent-local files ----------
+test-screenshots/
+screenshots/
+*.tsbuildinfo
+.claude/settings.local.json
+.playwright-mcp/
+playwright-report/
+test-results/
