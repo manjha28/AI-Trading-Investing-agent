@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { downloadCsv } from '../api';
 import { BarChart, LineChart } from './charts';
 import { DISCLAIMER, fmtMoney, fmtPct, fmtTime, lab, messageOf } from './lab';
 import { OptionsCoveragePanel } from './OptionsPanel';
@@ -42,6 +43,8 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
   const [run, setRun] = useState<RunRow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [history, setHistory] = useState<RunRow[]>([]);
   const [compare, setCompare] = useState<string[]>([]);
   const [compareRows, setCompareRows] = useState<RunRow[]>([]);
@@ -149,6 +152,19 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
     } catch (e) { setError(messageOf(e)); }
   };
 
+  const exportReports = async () => {
+    if (!sid) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      await downloadCsv(`/signals-lab/backtests/export.csv?strategy_id=${encodeURIComponent(sid)}`, `backtests-${sid}.csv`);
+    } catch (e) {
+      setExportError(messageOf(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const loadCompare = async (ids: string[]) => {
     setCompare(ids);
     setCompareRows(await Promise.all(ids.map((id) => lab<RunRow>(`/backtests/${id}`))));
@@ -169,6 +185,10 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
           <section className="sl-form-section" aria-label="Strategy">
             <h4>Strategy</h4>
             <Field label="Strategy"><StyledSelect ariaLabel="Strategy" value={sid} onChange={setSid} options={intraday.map((s) => ({ value: s.id, label: `${s.name} (v${s.current_version})` }))} /></Field>
+            <button type="button" disabled={!sid || exporting} onClick={exportReports}>{exporting ? 'Preparing CSV…' : 'Download completed reports (CSV)'}</button>
+            <p className="sl-muted">All completed reports with results for this strategy, including warnings. CSV contains hypothetical backtest data.</p>
+            <p className="sl-muted">Import the value column as text to preserve exact decimals. Formula-like values are prefixed with an apostrophe.</p>
+            {exportError && <Notice tone="bad">{exportError}</Notice>}
             <div className="sl-row">
               <Field label="Version"><StyledSelect ariaLabel="Version" value={String(version ?? '')} onChange={(v) => setVersion(Number(v))} options={(detail?.versions ?? []).map((v) => ({ value: String(v.version), label: `v${v.version}` }))} /></Field>
               <Field label="Analysis"><StyledSelect ariaLabel="Analysis type" value={kind} onChange={(v) => setKind(v as Kind)} options={(Object.keys(KIND_LABEL) as Kind[]).filter((k) => !isEngine || k === 'single' || k === 'walk_forward').map((k) => ({ value: k, label: isEngine && k === 'walk_forward' ? 'Walk-forward (phases 0-2 + controls)' : KIND_LABEL[k] }))} /></Field>

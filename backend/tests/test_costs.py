@@ -57,10 +57,12 @@ def index_fills(split=False):
 def test_index_future_components_and_total():
     v = nse_index_fut()
     b = v.breakdown_fn(index_fills(), CostCtx())
-    for key, expected in {"stt": "848.25", "exchange": "61.97", "stamp": "33.80", "sebi": "3.39", "brokerage": "40.00", "gst": "18.96"}.items():
+    # hand-computed against the verified Nov-2026 schedule (see tests/test_indian_charges.py): STT 848 (rounded to the rupee), stamp 34 (rupee),
+    # exchange 30.93+31.04, SEBI 1.69+1.70, brokerage 20x2, GST on brokerage+exchange+IPFT+SEBI = 18.96, IPFT 0.0034 -> 0.00
+    for key, expected in {"stt": "848", "exchange": "61.97", "stamp": "34", "sebi": "3.39", "brokerage": "40.00", "gst": "18.96"}.items():
         approx(b[key], expected)
     total = v.costs(index_fills(), CostCtx())
-    approx(total, "1006.37")
+    approx(total, "1006.32")
     approx(total / D(26000 * 65) * 100, "0.0595", "0.0001")
 
 
@@ -75,9 +77,9 @@ def test_equity_mis_components_and_total():
     v = nse_equity_mis()
     fills = [make_fill("buy", 500, 1000, False, TS, 0), make_fill("sell", 505, 1000, False, TS, 1)]
     b = v.breakdown_fn(fills, CostCtx())
-    for key, expected in {"stt": "126.25", "exchange": "30.85", "stamp": "15.00", "sebi": "1.01", "brokerage": "40.00", "gst": "12.93"}.items():
+    for key, expected in {"stt": "126", "exchange": "30.85", "stamp": "15", "sebi": "1.01", "brokerage": "40.00", "gst": "12.93"}.items():
         approx(b[key], expected)
-    approx(v.costs(fills, CostCtx()), "226.04")
+    approx(v.costs(fills, CostCtx()), "225.79")
     approx(v.costs(fills, CostCtx()) / D(500000) * 100, "0.0452", "0.0001")
 
 

@@ -1,12 +1,16 @@
 """Signals workspace API: intraday strategy definitions, imports, backtests and live signals. Decision support only: no orders, no execution."""
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
+import json
 from datetime import date, datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -358,7 +362,7 @@ def scalp_hold_geometry(instrument_id: UUID, start: date, end: date, bar_minutes
 
     from scalp_hold.app_adapter import DEFAULT_PARAMS, prepare_frame, venue_for
     from scalp_hold.features import FeatureCfg, Seasonal, atr, sigma_bar, sigma_h
-    from scalp_hold.venues import round_trip_pct
+    from scalp_hold.venues import index_end_date, round_trip_pct
 
     inst = db.get(Instrument, instrument_id)
     if inst is None:
@@ -375,7 +379,7 @@ def scalp_hold_geometry(instrument_id: UUID, start: date, end: date, bar_minutes
     if frame is None:
         return {**out, "available": False, "reason": info.get("refused", "not enough data")}
     ref_notional = equity * min(leverage, 2.0)
-    cost_rt = round_trip_pct(venue, inst.symbol, float(np.nanmedian(frame["close"])), ref_notional)
+    cost_rt = round_trip_pct(venue, inst.symbol, float(np.nanmedian(frame["close"])), ref_notional, on=index_end_date(frame.index) if venue.is_india else None)
     bar_pct = (atr(frame, FeatureCfg().atr_n) / frame["close"]).dropna()
     sh = sigma_h(sigma_bar(frame, FeatureCfg()), frame.index, venue, H_minutes, Seasonal()).dropna()
     return {**out, "available": True, "venue": venue.id, "bars_used": int(len(frame)), "reference_notional": ref_notional, "cost_rt_pct": cost_rt * 100,
@@ -562,6 +566,81 @@ def list_backtests(strategy_id: UUID | None = None, limit: int = Query(default=3
     if strategy_id:
         q = q.where(BacktestRun.strategy_id == strategy_id)
     return [_summary_of(r) for r in db.scalars(q.order_by(BacktestRun.created_at.desc()).limit(limit))]
+
+
+def _csv_safe(value: str) -> str:
+    if value.startswith(("\t", "\r", "\n")) or value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def _csv_fields(value: Any, path: str = ""):
+    if isinstance(value, dict) and value:
+        for key, child in value.items():
+            escaped = str(key).replace("~", "~0").replace("/", "~1")
+            yield from _csv_fields(child, f"{path}/{escaped}")
+    elif isinstance(value, list) and value:
+        for index, child in enumerate(value):
+            yield from _csv_fields(child, f"{path}/{index}")
+    else:
+        if value is None:
+            kind, text = "null", ""
+        elif isinstance(value, bool):
+            kind, text = "boolean", str(value).lower()
+        elif isinstance(value, str):
+            kind, text = "string", value
+        elif isinstance(value, (dict, list)):
+            kind, text = ("object" if isinstance(value, dict) else "array"), json.dumps(value)
+        else:
+            kind, text = "number", str(value)
+        yield path, kind, text
+
+
+@router.get("/backtests/export.csv")
+def export_backtests(strategy_id: UUID, active_session: UserSession = Depends(require_verified_session),
+                     db: Session = Depends(get_db)) -> Response:
+    strategy = _owned(db, active_session.user_id, strategy_id)
+    runs = db.scalars(
+        select(BacktestRun)
+        .where(BacktestRun.user_id == active_session.user_id, BacktestRun.strategy_id == strategy_id,
+               BacktestRun.status == "completed", BacktestRun.result.is_not(None))
+        .order_by(BacktestRun.created_at.desc(), BacktestRun.id)
+    )
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["run_id", "field", "type", "value"])
+    count = 0
+    for run in runs:
+        if run.result is None:
+            continue
+        count += 1
+        report = {
+            "report_type": "Hypothetical backtest; not a current position or money at risk",
+            "disclaimer": DISCLAIMER,
+            "strategy_name": strategy.name,
+            "strategy_id": str(run.strategy_id),
+            "strategy_version": run.strategy_version,
+            "kind": run.kind,
+            "status": run.status,
+            "progress": run.progress,
+            "error": run.error,
+            "created_at": run.created_at.isoformat(),
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "engine_version": run.engine_version,
+            "indicator_version": run.indicator_version,
+            "definition_hash": run.definition_hash,
+            "config": run.config,
+            "definition_snapshot": run.definition_snapshot,
+            "provenance": run.provenance,
+            "result": run.result,
+        }
+        for path, kind, value in _csv_fields(report):
+            writer.writerow([str(run.id), _csv_safe(path), kind, _csv_safe(value)])
+    if count == 0:
+        raise HTTPException(404, "No completed backtest reports with results for this strategy")
+    return Response(content="\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="backtests-{strategy_id}.csv"',
+                             "Cache-Control": "no-store"})
 
 
 @router.get("/backtests/{run_id}")

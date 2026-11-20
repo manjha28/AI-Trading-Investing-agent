@@ -23,7 +23,7 @@ from scalp_hold.barriers import BarrierCfg, cap_target_with_level, h_effective, 
 from scalp_hold.data import bar_minutes
 from scalp_hold.features import Seasonal, sigma_h, tod_bucket
 from scalp_hold.signals import SignalCfg, regime_flip, thesis_dead
-from scalp_hold.venues import CostCtx, VenueProfile, make_fill, round_trip_pct
+from scalp_hold.venues import CostCtx, VenueProfile, index_end_date, make_fill, round_trip_pct
 
 D = Decimal
 SIGNAL_ORDER = ("T", "R", "B")
@@ -41,6 +41,7 @@ class SimCfg:
     partial_pct: float = 0.0            # grid [0, 30, 60]
     entry_mode: str = "market"          # market | limit
     limit_ttl: int = 2
+    must_work_enabled: bool = False        # OFF by default: it pre-empted the barrier geometry on 50-100% of exits; now a swept parameter
     must_work_frac: float = 0.3
     must_work_at_frac: float = 1.0 / 3.0   # check the must-work rule after this fraction of H (spec: H/3)
     no_entry_hours_ist: frozenset[int] = frozenset()   # IST clock hours in which no NEW entry is taken (e.g. {11, 12, 13}); exits unaffected
@@ -53,6 +54,7 @@ class SimCfg:
     tds_pct: Decimal = D("0")
     cost_ref_notional: float | None = None
     early_exits: bool = True
+    entry_cutoff_minutes: int | None = None   # local-clock minutes after midnight; None = the venue's no_new_entry_after (NSE 15:00)
 
 
 @dataclass
@@ -97,9 +99,11 @@ def simulate(df: pd.DataFrame, f: pd.DataFrame, sig: pd.DataFrame, venue: VenueP
     slip = slip_bps * cfg.slip_mult * 1e-4
     sig_h = sigma_h(f["sigma_bar"], idx, venue, cfg.H, seasonal).to_numpy()
     ref_price = float(np.nanmedian(a["close"]))
-    cost_rt = round_trip_pct(venue, symbol, ref_price, cfg.cost_ref_notional or cfg.equity * min(cfg.max_lev, 2.0))
+    cost_rt = round_trip_pct(venue, symbol, ref_price, cfg.cost_ref_notional or cfg.equity * min(cfg.max_lev, 2.0),
+                              on=index_end_date(idx) if venue.is_india else None)
     local = idx.tz_convert(venue.tz)
-    ist_hour = idx.tz_convert("Asia/Kolkata").hour.to_numpy()          # the no-entry filter is specified in IST whatever the venue
+    ist_hour = idx.tz_convert("Asia/Kolkata").hour.to_numpy()
+    ist_min = idx.tz_convert("Asia/Kolkata").minute.to_numpy()          # the no-entry filter is specified in IST whatever the venue
     local_min = (local.hour * 60 + local.minute).to_numpy()
     day_key = local.strftime("%Y-%m-%d").to_numpy()
     waiver_window = venue.waiver.window_for(symbol) if venue.waiver and venue.waiver.enabled else None
@@ -130,18 +134,21 @@ def simulate(df: pd.DataFrame, f: pd.DataFrame, sig: pd.DataFrame, venue: VenueP
         end = min(n, i + 1 + cfg.forward_window_bars)
         e = a["open"][i + 1]
         mfe, mfe_b, mae, mae_b = _excursions(d, e, a["high"][i + 1:end], a["low"][i + 1:end])
-        filtered.append({"ts_signal": idx[i], "signal_type": stype, "side": "long" if d == 1 else "short", "reason": reason, "MFE_pct": mfe * 100, "MFE_bar": mfe_b,
+        filtered.append({"ts_signal": idx[i], "signal_type": stype, "side": "long" if d == 1 else "short", "reason": reason, "ist_hour": int(ist_hour[i]), "ist_minute": int(ist_min[i]),
+                         "price": float(a["close"][i]), "session": str(day_key[i]), "MFE_pct": mfe * 100, "MFE_bar": mfe_b,
                          "MAE_pct": mae * 100, "MAE_bar": mae_b, "window_bars": end - i - 1})
 
     for i, stype, d0 in candidates:
-        if i + 1 >= n:
-            continue
         d = -d0 if flip else d0
+        if i + 1 >= n:
+            skips["no_next_bar"] += 1                                 # counted so the funnel reconciles: candidates = skips + trades
+            continue
         if i < next_free:
-            continue                                                  # one position per instrument
+            skips["position_open"] += 1                               # one position per instrument (previously uncounted)
+            continue
         if venue.is_india:
             t_next = local_min[i + 1]
-            cutoff = venue.no_new_entry_after.hour * 60 + venue.no_new_entry_after.minute                  # type: ignore[union-attr]
+            cutoff = cfg.entry_cutoff_minutes if cfg.entry_cutoff_minutes is not None else venue.no_new_entry_after.hour * 60 + venue.no_new_entry_after.minute  # type: ignore[union-attr]
             if t_next >= cutoff or local.dayofweek[i + 1] >= 5:
                 record_filtered(i, stype, d, "after_entry_cutoff")
                 continue
@@ -240,7 +247,7 @@ def simulate(df: pd.DataFrame, f: pd.DataFrame, sig: pd.DataFrame, venue: VenueP
             if cfg.early_exits and k + 1 <= n - 1:
                 elapsed = (k - e + 1) * bm
                 dead = None
-                if elapsed >= cfg.H * cfg.must_work_at_frac and mfe_so_far < cfg.must_work_frac * tgt_pct:
+                if cfg.must_work_enabled and elapsed >= cfg.H * cfg.must_work_at_frac and mfe_so_far < cfg.must_work_frac * tgt_pct:
                     dead = "must_work"
                 elif stype in SIGNAL_ORDER and thesis_dead(stype, d, k, a, entry_ctx, signal_cfg):
                     dead = "thesis_dead"
@@ -290,11 +297,13 @@ def simulate(df: pd.DataFrame, f: pd.DataFrame, sig: pd.DataFrame, venue: VenueP
             "R": R, "MFE_pct": mfe * 100, "MFE_bar": mfe_b, "MAE_pct": mae * 100, "MAE_bar": mae_b, "exit_reason": reason, "hold_minutes": held,
             "tod_bucket": int(tod_bucket(idx[i:i + 1], venue)[0]), "fee_R": float(cost / risk_amount) if risk_amount else float("nan"), "is_surrogate": is_surrogate,
             "H_bars": H_bars, "partial_pct": cfg.partial_pct,
+            "cost_total": float(cost), "cost_pct_notional": float(cost / D(repr(float(qty * entry_px)))) * 100 if qty * entry_px else float("nan"),
+            "ist_hour": int(ist_hour[i]), "ist_minute": int(ist_min[i]), "session": str(day_key[i]),
         })
     t = pd.DataFrame(trades)
     flt = pd.DataFrame(filtered)
     f_median = cost_rt / t["s"].median() if len(t) else float("nan")
-    report = {"cost_rt_pct": cost_rt * 100, "f_median": f_median, "p_star": (1 + f_median) / (cfg.r + 1)}
+    report = {"cost_rt_pct": cost_rt * 100, "f_median": f_median, "p_star": (1 + f_median) / (cfg.r + 1), "cost_schedule_date": str(index_end_date(idx)) if venue.is_india else None}
     return SimResult(t, flt, skips, n_signals, report, {"final_equity": equity, "is_surrogate": is_surrogate, "slip_bps": slip_bps * cfg.slip_mult})
 
 

@@ -11,7 +11,7 @@ export function Pill({ tone = 'neutral', children, title }: { tone?: 'ok' | 'war
 export function statusTone(status: string): 'ok' | 'warn' | 'bad' | 'info' | 'neutral' {
   if (['active', 'ok', 'completed', 'new', 'full', 'supported'].includes(status)) return 'ok';
   if (['warn', 'partial', 'suppressed', 'running', 'queued', 'suspended'].includes(status)) return 'warn';
-  if (['refuse', 'failed', 'unsupported', 'no_data', 'retired', 'invalidated'].includes(status)) return 'bad';
+  if (['refuse', 'failed', 'unsupported', 'no_data', 'retired', 'invalidated', 'no_usable_data', 'order_flow_unavailable', 'unavailable'].includes(status)) return 'bad';
   return 'neutral';
 }
 

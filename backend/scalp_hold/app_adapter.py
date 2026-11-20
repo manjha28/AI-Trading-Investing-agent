@@ -22,9 +22,11 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "r": 2.0, "H_minutes": 30, "k_vol": 1.0, "theta_feeR": 0.25, "s_cap_mult": 2.0, "min_tick_mult": 5, "r_min": 1.5, "waiver_buffer": 2,
     # sizing and risk (spec section 7)
     "risk_pct": 0.005, "max_lev": 10.0, "leverage": 10.0, "maintenance_margin": 0.005, "daily_loss_R": -3.0, "max_trades_day": 8, "lockout_bars": 12,
-    "lockout_atr": 0.5, "partial_pct": 0, "entry_mode": "market", "limit_ttl": 2, "must_work_frac": 0.3, "must_work_at_frac": 0.3333,
+    "lockout_atr": 0.5, "partial_pct": 0, "entry_mode": "market", "limit_ttl": 2, "must_work_enabled": False, "must_work_frac": 0.3, "must_work_at_frac": 0.3333,
     # session filter: IST clock hours with no new entries, comma-separated (e.g. "11,12,13"); empty = none
     "no_entry_hours_ist": "",
+    # NSE entry cutoff as HH:MM local clock (default 15:00; try 15:10 with the existing 15:20 flatten). "" = venue default
+    "entry_cutoff": "",
     # unverified config (spec hard rule 5): off / zero unless you change it
     "scalper_offer_enabled": False, "tds_pct": 0.0,
 }
@@ -77,6 +79,16 @@ def prepare_frame(frame_1m: pd.DataFrame, venue: VenueProfile, bar_minutes: int,
     return df, info
 
 
+def _hhmm(v: Any) -> int | None:
+    v = str(v).strip()
+    if not v:
+        return None
+    h, m = v.split(":")
+    if not (0 <= int(h) < 24 and 0 <= int(m) < 60):
+        raise ValueError(f"entry_cutoff {v!r} is not HH:MM")
+    return int(h) * 60 + int(m)
+
+
 def coerce_params(raw: dict[str, Any]) -> dict[str, Any]:
     """Validate per-run parameter overrides: known keys only, numbers parsed from strings, bad values reported together."""
     out: dict[str, Any] = {}
@@ -118,7 +130,7 @@ def run_scalp_hold(frames: dict[str, tuple[pd.DataFrame, str]], market: str, kin
                       r_min=float(p["r_min"]), waiver_buffer=float(p["waiver_buffer"]))
     base = SimCfg(equity=equity, risk_pct=float(p["risk_pct"]), max_lev=float(max_lev or p["max_lev"]), leverage=float(p["leverage"]), maintenance_margin=float(p["maintenance_margin"]),
                   r=float(p["r"]), H=float(p["H_minutes"]), partial_pct=float(p["partial_pct"]), entry_mode=str(p["entry_mode"]), limit_ttl=int(p["limit_ttl"]),
-                  must_work_frac=float(p["must_work_frac"]), daily_loss_R=float(p["daily_loss_R"]), max_trades_day=int(p["max_trades_day"]), lockout_bars=int(p["lockout_bars"]),
+                  must_work_enabled=bool(p["must_work_enabled"]), must_work_frac=float(p["must_work_frac"]), entry_cutoff_minutes=_hhmm(p["entry_cutoff"]), daily_loss_R=float(p["daily_loss_R"]), max_trades_day=int(p["max_trades_day"]), lockout_bars=int(p["lockout_bars"]),
                   lockout_atr=float(p["lockout_atr"]), tds_pct=Decimal(repr(float(p["tds_pct"]))), must_work_at_frac=float(p["must_work_at_frac"]),
                   no_entry_hours_ist=frozenset(int(h) for h in str(p["no_entry_hours_ist"]).replace(" ", "").split(",") if h.strip().isdigit()))
     warnings = warn_unverified(scalper_offer_enabled=bool(p["scalper_offer_enabled"]), tds_pct=Decimal(repr(float(p["tds_pct"]))), slip_bps={s: slip_bps for s in frames})

@@ -58,7 +58,43 @@ def handle_scan(ctx: JobContext) -> dict[str, Any]:
             raise PermanentJobError(str(error)) from None
 
 
-HANDLERS: dict[str, Callable[[JobContext], dict[str, Any]]] = {"backtest": handle_backtest, "scan": handle_scan}
+def handle_var_backtest(ctx: JobContext) -> dict[str, Any]:
+    """Run a stored VAR (hypothetical) backtest from stored candles. Deterministic; a finished run is not repeated."""
+    from datetime import datetime, timezone
+
+    from app.db import Session as SessionFactory, engine
+    from app.models.var_strategy import VarBacktestRun
+    from app.services.var import service
+
+    run_id = UUID(ctx.payload["run_id"])
+    with SessionFactory(engine) as db:
+        run = db.get(VarBacktestRun, run_id)
+        if run is None:
+            raise PermanentJobError("VAR backtest run no longer exists")
+        if run.status in ("completed", "unavailable", "no_usable_data", "order_flow_unavailable"):
+            return {"run_id": str(run_id), "status": run.status, "note": "already finished"}
+        run.status = "running"
+        db.commit()
+        request, config = dict(run.request), dict(run.config_snapshot)
+    ctx.progress(pct=10, stage="running_var_backtest", run_id=str(run_id))
+    try:
+        with SessionFactory(engine) as db:
+            result = service.jsonable(service.run_stored_backtest(db, request, config))
+    except Exception as error:   # recorded on the run, then surfaced; never swallowed
+        with SessionFactory(engine) as db:
+            run = db.get(VarBacktestRun, run_id)
+            run.status, run.error, run.finished_at = "failed", f"{type(error).__name__}: {error}"[:2000], datetime.now(timezone.utc)
+            db.commit()
+        raise PermanentJobError(f"{type(error).__name__}: {error}") from None
+    with SessionFactory(engine) as db:
+        run = db.get(VarBacktestRun, run_id)
+        run.status = result.get("status") if result.get("status") in ("unavailable", "no_usable_data", "order_flow_unavailable") else "completed"
+        run.result, run.finished_at = result, datetime.now(timezone.utc)
+        db.commit()
+    return {"run_id": str(run_id), "status": run.status}
+
+
+HANDLERS: dict[str, Callable[[JobContext], dict[str, Any]]] = {"backtest": handle_backtest, "scan": handle_scan, "var_backtest": handle_var_backtest}
 
 
 def mark_scan_failed(db: Session, job: Job) -> None:

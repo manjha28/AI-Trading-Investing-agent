@@ -120,7 +120,29 @@ def test_must_work_fires_at_the_configured_fraction_of_h():
     f = compute(df, CRYPTO_DELTA, with_profile=False)
     sig = pd.DataFrame(False, index=df.index, columns=["T_long", "T_short", "R_long", "R_short", "B_long", "B_short"])
     forced = [{"i": 5, "d": 1, "s": 0.01, "target_pct": 0.02, "H_bars": 12, "stype": "X"}]       # X: no thesis/regime exits, isolating must_work
-    early = simulate(df, f, sig, CRYPTO_DELTA, "BTCUSD", SimCfg(equity=100_000, H=60.0, must_work_at_frac=1 / 3), slip_bps=0.0, forced=forced).trades.iloc[0]
-    late = simulate(df, f, sig, CRYPTO_DELTA, "BTCUSD", SimCfg(equity=100_000, H=60.0, must_work_at_frac=2 / 3), slip_bps=0.0, forced=forced).trades.iloc[0]
+    early = simulate(df, f, sig, CRYPTO_DELTA, "BTCUSD", SimCfg(equity=100_000, H=60.0, must_work_enabled=True, must_work_at_frac=1 / 3), slip_bps=0.0, forced=forced).trades.iloc[0]
+    late = simulate(df, f, sig, CRYPTO_DELTA, "BTCUSD", SimCfg(equity=100_000, H=60.0, must_work_enabled=True, must_work_at_frac=2 / 3), slip_bps=0.0, forced=forced).trades.iloc[0]
     assert early["exit_reason"] == "must_work" and late["exit_reason"] == "must_work"
     assert early["hold_minutes"] == 20 and late["hold_minutes"] == 40                     # H/3 vs 2H/3 of a 60-minute horizon
+    default = simulate(df, f, sig, CRYPTO_DELTA, "BTCUSD", SimCfg(equity=100_000, H=60.0), slip_bps=0.0, forced=forced).trades.iloc[0]
+    assert SimCfg().must_work_enabled is False and default["exit_reason"] != "must_work"   # OFF by default: the barrier geometry is allowed to resolve
+
+
+def test_funnel_reconciles_and_counts_position_open_skips():
+    from scalp_hold.features import compute
+    from scalp_hold.funnel import scalp_funnel
+    df = path({})
+    f = compute(df, CRYPTO_DELTA, with_profile=False)
+    sig = pd.DataFrame(False, index=df.index, columns=["T_long", "T_short", "R_long", "R_short", "B_long", "B_short"])
+    forced = [{"i": 5, "d": 1, "s": 0.01, "target_pct": 0.02, "H_bars": 12, "stype": "X"}, {"i": 7, "d": 1, "s": 0.01, "target_pct": 0.02, "H_bars": 12, "stype": "X"}]
+    res = simulate(df, f, sig, CRYPTO_DELTA, "BTCUSD", SimCfg(equity=100_000, H=60.0), slip_bps=0.0, forced=forced)
+    fn = scalp_funnel(res, "BTCUSD")
+    assert fn["candidates_generated"] == 2 and fn["trades_executed"] == 1 and fn["reconciles"]
+    assert {r["reason"]: r["n"] for r in fn["reasons"]} == {"position_open": 1}        # previously this skip was uncounted and the funnel could not add up
+
+
+def test_entry_cutoff_is_configurable():
+    assert SimCfg().entry_cutoff_minutes is None
+    from scalp_hold.app_adapter import DEFAULT_PARAMS, _hhmm, coerce_params
+    assert _hhmm("15:10") == 15 * 60 + 10 and _hhmm("") is None and DEFAULT_PARAMS["must_work_enabled"] is False
+    assert coerce_params({"entry_cutoff": "15:10", "must_work_enabled": "true"}) == {"entry_cutoff": "15:10", "must_work_enabled": True}

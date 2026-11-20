@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Literal
+from zoneinfo import ZoneInfo
 
 D = Decimal
 CENT = D("0.01")
@@ -49,6 +50,7 @@ class CostCtx:
     symbol: str = ""
     hold_minutes: float = 0.0
     tds_pct: Decimal = D("0")           # UNVERIFIED config; applied to gross notional per leg
+    trading_date: date | None = None    # NSE venues: execution date for the dated fee schedule (None -> taken from the fills)
 
 
 @dataclass(frozen=True)
@@ -110,55 +112,46 @@ def crypto_delta(waiver_enabled: bool = False, lot_size: str = "0.001", tick_siz
 
 
 # ───────────────────────── NSE (index futures and equity MIS) ─────────────────────────
-@dataclass(frozen=True)
-class _NseRates:
-    stt_sell: Decimal
-    exchange: Decimal
-    stamp_buy: Decimal
-    sebi: Decimal
-    brokerage_flat: Decimal
-    brokerage_pct_cap: Decimal | None      # equity: min(flat, pct x notional) per order
+# Charges are NOT calculated here: both NSE venues delegate to the single authoritative calculator
+# (app.services.indian_charges), which is effective-dated and per-order. The execution date is taken from the fills.
+def _nse_trade_date(fills: list[Fill]) -> date:
+    ts = fills[0].ts
+    return (ts.astimezone(ZoneInfo("Asia/Kolkata")) if ts.tzinfo else ts).date()
 
 
-def _nse_breakdown(rates: _NseRates, fills: list[Fill]) -> dict[str, Decimal]:
-    pct = D("0.01")
-    buy = sum((f.notional for f in fills if f.side == "buy"), D("0"))
-    sell = sum((f.notional for f in fills if f.side == "sell"), D("0"))
-    # brokerage is per DISTINCT order: partial exits are separate orders and are NOT free in India
-    per_order: dict[int, Decimal] = {}
+def _nse_breakdown(segment: str, instrument_type: str, fills: list[Fill], on: date | None = None) -> dict[str, Decimal]:
+    from app.services import indian_charges as ic
+    if not fills:
+        return {k: D("0") for k in ("brokerage", "stt", "exchange", "ipft", "sebi", "stamp", "gst")}
+    day = on or _nse_trade_date(fills)
+    orders: dict[int, list[Fill]] = {}
     for f in fills:
-        per_order[f.order_seq] = per_order.get(f.order_seq, D("0")) + f.notional
-    brokerage = D("0")
-    for notional in per_order.values():
-        fee = rates.brokerage_flat if rates.brokerage_pct_cap is None else min(rates.brokerage_flat, rates.brokerage_pct_cap * notional / D(100))
-        brokerage += fee
-    stt = sell * rates.stt_sell / D(100)
-    exchange = (buy + sell) * rates.exchange / D(100)
-    stamp = buy * rates.stamp_buy / D(100)
-    sebi = (buy + sell) * rates.sebi / D(100)
-    gst = (brokerage + exchange + sebi) * D("0.18")
-    del pct
-    return {"stt": stt, "exchange": exchange, "stamp": stamp, "sebi": sebi, "brokerage": brokerage, "gst": gst}
+        orders.setdefault(f.order_seq, []).append(f)
+    charges = [ic.calculate_trade_charges(exchange="NSE", segment=segment, instrument_type=instrument_type, broker_profile="dhan", trading_date=day,
+                                          order_id=str(seq), side=fs[0].side, fills=[(f.notional, D(1)) for f in fs]) for seq, fs in sorted(orders.items())]
+    agg = ic.sum_charges(charges)
+    return {k: v for k, v in agg["rounded"].items() if k != "dp"}
 
 
-def _nse_profile(venue_id: str, rates: _NseRates, lot_size: str, tick_size: str) -> VenueProfile:
+def _nse_profile(venue_id: str, segment: str, instrument_type: str, lot_size: str, tick_size: str) -> VenueProfile:
     return VenueProfile(
         id=venue_id, tz="Asia/Kolkata", session_open=time(9, 15), session_close=time(15, 30), flatten_time=time(15, 20), no_new_entry_after=time(15, 0),
         anchor_rule="SESSION_OPEN", profile_window="SESSION", profile_rolling_bars=None, lot_size=D(lot_size), tick_size=D(tick_size), has_funding=False, waiver=None,
-        cost_fn=lambda fills, ctx: q2(sum(_nse_breakdown(rates, fills).values(), D("0"))),
-        breakdown_fn=lambda fills, ctx: {k: q2(v) for k, v in _nse_breakdown(rates, fills).items()}, is_india=True)
-
-
-_INDEX_RATES = _NseRates(D("0.05"), D("0.00183"), D("0.002"), D("0.0001"), D("20"), None)
-_EQUITY_RATES = _NseRates(D("0.025"), D("0.00307"), D("0.003"), D("0.0001"), D("20"), D("0.03"))
+        cost_fn=lambda fills, ctx: sum(_nse_breakdown(segment, instrument_type, fills, ctx.trading_date).values(), D("0")),
+        breakdown_fn=lambda fills, ctx: _nse_breakdown(segment, instrument_type, fills, ctx.trading_date), is_india=True)
 
 
 def nse_index_fut(lot_size: str = "65", tick_size: str = "0.05") -> VenueProfile:
-    return _nse_profile("NSE_INDEX_FUT", _INDEX_RATES, lot_size, tick_size)
+    return _nse_profile("NSE_INDEX_FUT", "futures", "index_future", lot_size, tick_size)
+
+
+def nse_stock_fut(lot_size: str, tick_size: str) -> VenueProfile:
+    """Individual-stock futures: its own instrument type, lot size and tick (never the NIFTY defaults)."""
+    return _nse_profile("NSE_STOCK_FUT", "futures", "stock_future", lot_size, tick_size)
 
 
 def nse_equity_mis(tick_size: str = "0.05") -> VenueProfile:
-    return _nse_profile("NSE_EQUITY_MIS", _EQUITY_RATES, "1", tick_size)
+    return _nse_profile("NSE_EQUITY_MIS", "equity_cash", "cash", "1", tick_size)
 
 
 CRYPTO_DELTA = crypto_delta()
@@ -185,10 +178,20 @@ def warn_unverified(*, scalper_offer_enabled: bool, tds_pct: Decimal | float, sl
     return msgs
 
 
-def round_trip_pct(venue: VenueProfile, symbol: str, price: float, notional: float, *, maker_exit: bool = False, hold_minutes: float = 60.0) -> float:
-    """Round-trip cost as a fraction of notional (entry taker; exit taker unless ``maker_exit``). Decimal stays inside this module."""
+def index_end_date(index) -> date:
+    """IST date of the last bar: the fee schedule a run is costed at (one schedule per run; a run spanning a rate change is an approximation)."""
+    last = index[-1]
+    return (last.tz_convert("Asia/Kolkata") if getattr(last, "tzinfo", None) else last).date()
+
+
+def round_trip_pct(venue: VenueProfile, symbol: str, price: float, notional: float, *, maker_exit: bool = False, hold_minutes: float = 60.0,
+                   on: date | None = None) -> float:
+    """Round-trip cost as a fraction of notional (entry taker; exit taker unless ``maker_exit``). Decimal stays inside this module.
+    ``on`` is the date whose fee schedule applies; it is REQUIRED for NSE venues (a hard-coded date previously priced every run at 2026-01-01 rates)."""
+    if venue.is_india and on is None:
+        raise ValueError("round_trip_pct needs the execution date (on=) for NSE venues so the dated fee schedule can be selected")
     qty = notional / price
-    ts = datetime(2026, 1, 1)
+    ts = datetime(on.year, on.month, on.day) if on else datetime(2026, 1, 1)
     fills = [make_fill("buy", price, qty, False, ts, 0), make_fill("sell", price, qty, maker_exit, ts, 1)]
-    cost = venue.costs(fills, CostCtx(symbol, hold_minutes))
+    cost = venue.costs(fills, CostCtx(symbol, hold_minutes, trading_date=on))
     return float(cost / D(repr(float(notional))))

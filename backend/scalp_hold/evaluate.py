@@ -16,7 +16,7 @@ from scalp_hold.data import bar_minutes
 from scalp_hold.features import FeatureCfg, Seasonal, compute, fit_seasonal, sigma_h, tod_bucket
 from scalp_hold.sim import SIGNAL_ORDER, SimCfg, SimResult, simulate
 from scalp_hold.signals import SignalCfg, compute_signals
-from scalp_hold.venues import VenueProfile, round_trip_pct
+from scalp_hold.venues import VenueProfile, index_end_date, round_trip_pct
 
 R_GRID = (1.5, 2.0, 2.6, 3.0)
 H_GRID = (15, 30, 45, 60, 120)
@@ -65,15 +65,19 @@ def phase0(p: Prepared, grid: Grid = Grid(), equity: float = 10_000.0, bcfg: Bar
     """Unconditional triple-barrier sweep over (s, r, H, k_vol) on ALL bars, long and short pooled, with per-cell cost arithmetic."""
     seasonal = seasonal or fit_seasonal(p.df, p.venue)           # descriptive baseline only: this phase makes no out-of-sample claim
     a = {c: p.df[c].to_numpy(float) for c in ("open", "high", "low", "close")}
-    cost_rt = round_trip_pct(p.venue, p.symbol, float(np.nanmedian(a["close"])), equity * 2)
+    cost_rt = round_trip_pct(p.venue, p.symbol, float(np.nanmedian(a["close"])), equity * 2, on=index_end_date(p.df.index) if p.venue.is_india else None)
     tick = float(p.venue.tick_size)
     buckets = tod_bucket(p.df.index, p.venue)
     rows = []
     for k_vol, r, H in itertools.product(grid.k_vol, grid.r, grid.H):
         b = replace(bcfg, k_vol=k_vol)
         sh = sigma_h(p.f["sigma_bar"], p.df.index, p.venue, H, seasonal).to_numpy()
-        s, skip = stop_fraction(sh, r, cost_rt, tick, a["close"], b)
-        s_use = np.where(skip, np.nan, s)
+        # Phase 0 measures what the market offers UNCONDITIONALLY: raw volatility-implied stop only. No cost floor, tick floor or s_cap here;
+        # tradeability (would the fee floor / s_cap have admitted the bar?) is reported as a separate overlay column.
+        s_use = np.where(np.isfinite(b.k_vol * sh / r), b.k_vol * sh / r, np.nan)
+        _s_floored, skip = stop_fraction(sh, r, cost_rt, tick, a["close"], b)
+        fin = np.isfinite(s_use)
+        tradeable_frac = float((~skip[fin]).mean()) if fin.any() else float("nan")
         H_bars = max(1, H // p.bm)
         lab = np.concatenate([label_triple_barrier(a["open"], a["high"], a["low"], s_use, r, H_bars, d, tick, p.slip_bps)[:, None] for d in (1, -1)], axis=1)
         wins, stops, tmo = np.nansum(lab == 1), np.nansum(lab == -1), np.nansum(lab == 0)
@@ -84,7 +88,8 @@ def phase0(p: Prepared, grid: Grid = Grid(), equity: float = 10_000.0, bcfg: Bar
         f_ = cost_rt / s_med
         p_base = wins / n
         row = {"instrument": p.symbol, "k_vol": k_vol, "r": r, "H": H, "n": int(n), "p_baseline": p_base, "timeout_rate": tmo / n, "theory_1_over_r1": 1 / (r + 1), "f": f_,
-               "p_star": (1 + f_) / (r + 1), "p_star_over_base": ((1 + f_) / (r + 1)) / p_base if p_base > 0 else float("inf"), "s_median": s_med}
+               "p_star": (1 + f_) / (r + 1), "p_star_over_base": ((1 + f_) / (r + 1)) / p_base if p_base > 0 else float("inf"), "s_median": s_med,
+               "tradeable_frac": tradeable_frac}
         for bucket in np.unique(buckets):
             m = (buckets == bucket)[:, None] & np.isfinite(lab)
             nb = m.sum()
@@ -104,7 +109,7 @@ def phase1(p: Prepared, grid: Grid = Grid(), equity: float = 10_000.0, bcfg: Bar
     """edge = p(win | signal) - p_baseline at the same (s, r, H), using NON-OVERLAPPING samples only (a sample blocks the next H bars)."""
     seasonal = seasonal or fit_seasonal(p.df, p.venue)
     a = {c: p.df[c].to_numpy(float) for c in ("open", "high", "low", "close")}
-    cost_rt = round_trip_pct(p.venue, p.symbol, float(np.nanmedian(a["close"])), equity * 2)
+    cost_rt = round_trip_pct(p.venue, p.symbol, float(np.nanmedian(a["close"])), equity * 2, on=index_end_date(p.df.index) if p.venue.is_india else None)
     tick = float(p.venue.tick_size)
     rows = []
     for k_vol, r, H in itertools.product(grid.k_vol, grid.r, grid.H):

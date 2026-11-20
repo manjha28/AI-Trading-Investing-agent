@@ -10,6 +10,7 @@ import { JobsPanel, ScanHistoryPanel, ScannerSchedulePanel } from './JobsScanner
 import { LiveSignals } from './LiveSignals';
 import { RejectionsPanel } from './RejectionsPanel';
 import { DerivativesData } from './DerivativesData';
+import { VarIntraday } from './VarIntraday';
 import { defaultParams, emptyDefinition, lab, messageOf, nextAlias } from './lab';
 import { Notice } from './shared';
 import type { Definition, Health, InstrumentRow, Meta, Readiness, StrategyRow } from './types';
@@ -17,7 +18,7 @@ import './signals.css';
 
 const TABS = [
   ['dashboard', 'Strategy Dashboard'], ['builder', 'Strategy Builder'], ['library', 'Strategy Library'], ['backtesting', 'Backtesting'],
-  ['live', 'Live Signals'], ['jobs', 'Jobs & scanner'], ['indicators', 'Indicator Library'], ['import', 'Import & Validation'], ['derivatives', 'Derivatives Data'], ['legacy', 'Legacy daily & crypto research'],
+  ['live', 'Live Signals'], ['jobs', 'Jobs & scanner'], ['indicators', 'Indicator Library'], ['import', 'Import & Validation'], ['derivatives', 'Derivatives Data'], ['var', 'Intraday research (VAR)'], ['legacy', 'Legacy daily & crypto research'],
 ] as const;
 type Tab = (typeof TABS)[number][0];
 
@@ -136,6 +137,7 @@ export function SignalsWorkspace() {
           {tab === 'indicators' && <IndicatorLibrary meta={meta} onUse={useIndicator} />}
           {tab === 'import' && <ImportPanel meta={meta} onDraft={openDraft} />}
           {tab === 'derivatives' && <DerivativesData />}
+          {tab === 'var' && <VarIntraday />}
         </>
       )}
     </section>
