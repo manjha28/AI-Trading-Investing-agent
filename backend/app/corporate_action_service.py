@@ -57,10 +57,15 @@ def _yfinance_ticker(instrument: Instrument) -> str:
 
 def sync_yfinance_corporate_actions(
     db: Session, user_id: UUID, *, provider: YahooFinanceProvider | None = None,
+    instrument_ids: set[UUID] | None = None,
 ) -> dict[str, Any]:
-    """Fetch action events for every instrument with stored daily or 1m bars."""
+    """Fetch action events for every instrument with stored daily or 1m bars.
+
+    ``instrument_ids`` restricts the sweep (the scheduler passes only what the user holds or
+    watches); ``None`` keeps the original behaviour of checking every instrument with bars.
+    """
     provider = provider or YahooFinanceProvider()
-    instruments = db.scalars(
+    statement = (
         select(Instrument)
         .join(MarketBar, MarketBar.instrument_id == Instrument.id)
         .where(
@@ -70,7 +75,12 @@ def sync_yfinance_corporate_actions(
         .options(selectinload(Instrument.provider_identifiers))
         .distinct()
         .order_by(Instrument.venue, Instrument.symbol)
-    ).all()
+    )
+    if instrument_ids is not None:
+        if not instrument_ids:
+            return {"instruments_checked": 0, "actions_inserted": 0, "instruments_unverified": 0, "instruments": []}
+        statement = statement.where(Instrument.id.in_(list(instrument_ids)))
+    instruments = db.scalars(statement).all()
     report: list[dict[str, Any]] = []
     total_inserted = 0
     for instrument in instruments:

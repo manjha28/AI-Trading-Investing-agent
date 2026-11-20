@@ -3285,6 +3285,9 @@ def _calculate_broker_values(
         if row.id in quote_by_row_id and row.id not in adjusted_previous_closes
     ]
     previous_close_exclusion_reasons: dict[UUID, str] = {}
+    # Holdings whose previous-session daily close has never been requested from the provider.
+    # The client may ask the history-sync endpoint for exactly these (real data only).
+    previous_close_backfill: list[dict[str, str]] = []
     if missing_day_previous_close:
         listing_date_by_row_id: dict[UUID, date] = {}
         try:
@@ -3368,6 +3371,15 @@ def _calculate_broker_values(
                     f"{row.symbol}: previous-session history for "
                     f"{expected_previous_date.isoformat()} has not been fetched."
                 )
+                if not any(
+                    item["instrument_id"] == str(instrument.id)
+                    for item in previous_close_backfill
+                ):
+                    previous_close_backfill.append({
+                        "instrument_id": str(instrument.id),
+                        "symbol": row.symbol,
+                        "expected_previous_date": expected_previous_date.isoformat(),
+                    })
             else:
                 previous_close_exclusion_reasons[row.id] = (
                     f"{row.symbol}: provider history for "
@@ -3592,6 +3604,7 @@ def _calculate_broker_values(
         "positions_unrealized_pnl": position_pnl,
         "unrealized_pnl": unrealized_pnl,
         "day_change": day_change,
+        "previous_close_backfill": previous_close_backfill,
         "unavailable_reasons": {
             "invested_cost": invested_cost_reason,
             "positions_exposure": (
@@ -4605,6 +4618,9 @@ def get_broker_portfolio_summary(
                 str(broker_day_change) if broker_day_change is not None else None
             ),
             "unavailable_reasons": unavailable_reasons,
+            "previous_close_backfill": (
+                broker_values.get("previous_close_backfill", []) if is_dhan else []
+            ),
             "coverage": broker_values.get("coverage") if is_dhan else None,
             "provenance": broker_provenance,
             "stream_rows": (

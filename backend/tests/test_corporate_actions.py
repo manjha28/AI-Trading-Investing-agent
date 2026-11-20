@@ -443,3 +443,69 @@ def test_unavailable_action_source_marks_instrument_unverified(
         instrument = db.get(Instrument, UUID(instrument_id))
         with pytest.raises(CorporateActionCoverageError, match="unverified"):
             adjusted_bars_for_backtest(db, UUID(user_id), instrument, raw)
+
+
+def test_sync_can_be_limited_to_tracked_instruments(client: TestClient, test_engine) -> None:
+    user_id, instrument_id = seed_adjustment_instrument(client, test_engine)
+    asked: list[str] = []
+
+    class Provider:
+        def get_corporate_actions(self, ticker):
+            asked.append(ticker)
+            return [{"ex_date": date(2026, 11, 20), "action_type": "dividend", "ratio": None, "amount": Decimal("1")}]
+
+    with Session(test_engine) as db:
+        none = sync_yfinance_corporate_actions(db, UUID(user_id), provider=Provider(), instrument_ids=set())
+        other = sync_yfinance_corporate_actions(db, UUID(user_id), provider=Provider(), instrument_ids={uuid4()})
+        assert none["instruments_checked"] == 0 and other["instruments_checked"] == 0 and asked == []
+        mine = sync_yfinance_corporate_actions(
+            db, UUID(user_id), provider=Provider(), instrument_ids={UUID(instrument_id)}
+        )
+        assert mine["instruments_checked"] == 1 and mine["actions_inserted"] == 1 and asked == ["ALPHA.NS"]
+        action = db.scalar(select(CorporateAction).where(CorporateAction.ex_date == date(2026, 11, 20)))
+        assert action.amount == Decimal("1") and action.source == "yfinance" and action.verified_at is not None
+
+
+def test_scheduler_tracks_watchlist_alert_rules_and_dhan_holdings(client: TestClient, test_engine) -> None:
+    from app import market_data_scheduler
+    from app.models import BrokerMirror, InstrumentProviderIdentifier, Watchlist, WatchlistInstrument
+    from app.models.alerts import AlertRule
+
+    user_id, watched_id = seed_adjustment_instrument(client, test_engine)
+    now = datetime(2026, 11, 20, tzinfo=timezone.utc)
+
+    def stock(symbol: str) -> Instrument:
+        return Instrument(
+            symbol=symbol, display_name=symbol, asset_class="equity", venue="NSE", currency="INR",
+            country="IN", timezone="Asia/Kolkata", is_synthetic=False, relink_required=False, created_at=now,
+        )
+
+    with Session(test_engine) as db:
+        ruled, held, unrelated = stock("RULED"), stock("HELD"), stock("UNRELATED")
+        db.add_all([ruled, held, unrelated])
+        db.flush()
+        watchlist = Watchlist(user_id=UUID(user_id), name="Default", created_at=now)
+        db.add(watchlist)
+        db.flush()
+        db.add(WatchlistInstrument(
+            user_id=UUID(user_id), watchlist_id=watchlist.id, instrument_id=UUID(watched_id), created_at=now,
+        ))
+        db.add(AlertRule(
+            user_id=UUID(user_id), scope="instrument", instrument_id=ruled.id, rule_type="price_above",
+            params={"price": "1"}, severity="info", cooldown_seconds=0, enabled=True, created_at=now, updated_at=now,
+        ))
+        db.add(InstrumentProviderIdentifier(
+            instrument_id=held.id, provider="dhan", provider_instrument_id="20778|NSE_EQ",
+            provider_symbol="HELD", is_verified=True, last_seen_at=now,
+        ))
+        db.add(InstrumentProviderIdentifier(
+            instrument_id=unrelated.id, provider="dhan", provider_instrument_id="999|NSE_EQ",
+            provider_symbol="UNRELATED", is_verified=True, last_seen_at=now,
+        ))
+        db.add(BrokerMirror(
+            user_id=UUID(user_id), broker="dhan", kind="holding", symbol="HELD", exchange="NSE", product="",
+            security_id="20778", quantity=Decimal("7"), average_price=Decimal("151.6"), synced_at=now,
+        ))
+        db.commit()
+        tracked = market_data_scheduler._tracked_instrument_ids(db, UUID(user_id))
+        assert tracked == {UUID(watched_id), ruled.id, held.id}  # not UNRELATED

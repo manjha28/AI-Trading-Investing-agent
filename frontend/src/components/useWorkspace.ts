@@ -493,7 +493,7 @@ export function useWorkspace() {
   const [csvContent, setCsvContent] = useState('');
   const [csvPreview, setCsvPreview] = useState<CsvImportPreview | null>(null);
   const [importingCsv, setImportingCsv] = useState(false);
-  const [activeView, setActiveView] = useState<'overview' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'signals'>(
+  const [activeView, setActiveView] = useState<'overview' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'signals' | 'crypto-delta'>(
     () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
   );
   const [openMarketInstrumentId, setOpenMarketInstrumentId] = useState<string | null>(null);

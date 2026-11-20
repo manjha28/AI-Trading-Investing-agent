@@ -1,4 +1,4 @@
-import { Activity, ArrowDownLeft, BarChart3, BellRing, BookOpen, CalendarDays, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
+import { Activity, ArrowDownLeft, BarChart3, Bitcoin, BellRing, BookOpen, CalendarDays, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { apiRequest } from './api';
 import { marketStatusLabel } from './lib/priceStates';
@@ -7,6 +7,7 @@ import { Alerts } from './pages/Alerts';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
 import { CorporateActions } from './pages/CorporateActions';
+import { CryptoDeltaPage } from './pages/CryptoDelta';
 import { JournalPage } from './pages/Journal';
 import { SignalsWorkspace } from './signals/SignalsWorkspace';
 import { MarketDataPage } from './pages/MarketData';
@@ -51,6 +52,27 @@ export default function App() {
     resendVerificationEmail,
     signOut,
   } = workspace;
+
+  // Unread alert count for the nav badge (events still in "new" status).
+  const [unreadAlerts, setUnreadAlerts] = useState(0);
+  const signedInUserId = user?.id;
+  useEffect(() => {
+    if (!signedInUserId) { setUnreadAlerts(0); return undefined; }
+    let cancelled = false;
+    const load = () => apiRequest<{ id: string }[]>('/alerts/events?status=new&limit=100')
+      .then((events) => { if (!cancelled) setUnreadAlerts(events.length); })
+      .catch(() => undefined);
+    void load();
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [signedInUserId, activeView]);
+
+  // Success notices are transient; errors stay until dismissed.
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = window.setTimeout(() => setNotice(''), 8000);
+    return () => window.clearTimeout(timer);
+  }, [notice, setNotice]);
 
   useEffect(() => {
     const userId = user?.id;
@@ -184,7 +206,9 @@ export default function App() {
                   ? 'Research'
                   : activeView === 'signals'
                     ? 'Signals'
-                    : 'Overview';
+                    : activeView === 'crypto-delta'
+                      ? 'Crypto · Delta'
+                      : 'Overview';
 
   return (
     <div className={sidebarCollapsed ? 'app-frame sidebar-collapsed' : 'app-frame'}>
@@ -207,10 +231,11 @@ export default function App() {
           <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={17} /><span>Trade journal</span></button>
           <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={17} /><span>Market data</span></button>
           <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={17} /><span>Brokers</span></button>
-          <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={17} /><span>Alerts</span></button>
+          <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={17} /><span>Alerts</span>{unreadAlerts > 0 && <em className="nav-badge" aria-label={`${unreadAlerts} unread alerts`}>{unreadAlerts > 99 ? '99+' : unreadAlerts}</em>}</button>
           <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={17} /><span>Corporate actions</span></button>
           <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={17} /><span>Research</span></button>
           <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={17} /><span>Signals</span></button>
+          <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={17} /><span>Crypto · Delta</span></button>
         </nav>
         <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span>Read-only · decision support</span><span>Market data: {marketStatusLabel(marketDataStatus)}</span></div>
         <p className="sidebar-user">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</p>
@@ -234,7 +259,7 @@ export default function App() {
         {error && <p className="error-banner" role="alert"><CircleAlert size={17} />{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error">×</button></p>}
         {notice && <p className="success-banner" role="status"><ShieldCheck size={17} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss notice">×</button></p>}
 
-        {activeView !== 'market-data' && !onboardingDismissed && brokerStatusChecked && !hasConnectedBroker && (
+        {(activeView === 'overview' || activeView === 'brokers') && !onboardingDismissed && brokerStatusChecked && !hasConnectedBroker && (
           <section className="data-note" aria-label="Broker onboarding">
             <div>
               <strong>Connect your broker account.</strong>
@@ -259,6 +284,8 @@ export default function App() {
           <Alerts portfolios={portfolios} portfolioId={portfolioId} />
         ) : activeView === 'signals' ? (
           <SignalsWorkspace />
+        ) : activeView === 'crypto-delta' ? (
+          <CryptoDeltaPage />
         ) : activeView === 'brokers' ? (
           <>
             {user.email_verified && twoFactorStatus && !twoFactorStatus.session_verified && twoFactorPanel}
@@ -312,8 +339,9 @@ export default function App() {
         <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={18} /><span>Journal</span></button>
         <button className={activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-data')}><BarChart3 size={18} /><span>Markets</span></button>
         <button className={activeView === 'brokers' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('brokers')}><Landmark size={18} /><span>Brokers</span></button>
-        <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={18} /><span>Alerts</span></button>
+        <button className={activeView === 'alerts' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('alerts')}><BellRing size={18} /><span>Alerts</span>{unreadAlerts > 0 && <em className="nav-badge" aria-label={`${unreadAlerts} unread alerts`}>{unreadAlerts > 99 ? '99+' : unreadAlerts}</em>}</button>
         <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={18} /><span>Signals</span></button>
+        <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={18} /><span>Delta</span></button>
         <button className={activeView === 'corporate-actions' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('corporate-actions')}><CalendarDays size={18} /><span>Actions</span></button>
         <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={18} /><span>Research</span></button>
       </nav>

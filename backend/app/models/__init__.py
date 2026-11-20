@@ -1205,8 +1205,10 @@ class PortfolioValuationSnapshot(Base):
 
 
 from app.models.alerts import AlertEvent, AlertRule  # noqa: F401
+from app.models.execution import ExecutionAuditEvent  # noqa: F401
 from app.models.derivatives import (DerivativeContract, DerivativeDataCoverage, DerivativeIngestionJob, DerivativeIngestionTask, DerivativeInstrument,  # noqa: F401
                                     DerivativeMasterSnapshot, FuturesCandle1d, FuturesCandle1m, OptionCandle1m, OptionChainSnapshot, RollingOptionCandle1m)
 from app.models.jobs import Job, ScanRun, ScannerSchedule, ScannerSettings  # noqa: F401
 from app.models.provider_coverage import ProviderUnservedWindow  # noqa: F401
+from app.models.var_strategy import VarBacktestRun, VarConfigVersion  # noqa: F401
 from app.models.strategies import BacktestRun, IntradaySignal, IntradaySignalEvent, OptionContract, OptionQuote, ScanRejection, Strategy, StrategySignal, StrategyVersion  # noqa: F401

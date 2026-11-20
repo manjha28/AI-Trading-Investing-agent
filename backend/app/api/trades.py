@@ -499,19 +499,12 @@ def list_trades(
     return [_response(trade) for trade in trades]
 
 
-@router.get("/journal")
-def journal_trade_history(
-    currency: Literal["USD", "INR"] = Query(default="INR"),
-    view: Literal["trades", "fills"] = Query(default="trades"),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    rows, matching = _journal_trade_rows(db, user.id, currency)
-    if view == "fills":
-        return [row for row in rows if row["source"] in {"dhan", "dhan_csv"}]
-
+def _journal_trade_view_rows(
+    db: Session, user_id: UUID, currency: str, rows: list[dict[str, Any]], matching: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """The "trades" view: manual rows plus one row per FIFO-matched broker slice."""
     manual_rows = [row for row in rows if row["source"] == "manual"]
-    dhan_rows = _dhan_trade_rows(db, user.id) if currency == "INR" else []
+    dhan_rows = _dhan_trade_rows(db, user_id) if currency == "INR" else []
     fill_by_id = {str(row.id): row for row in dhan_rows}
     trade_rows: list[dict[str, Any]] = list(manual_rows)
     for index, match in enumerate(matching["matches"]):
@@ -559,13 +552,38 @@ def journal_trade_history(
     return trade_rows
 
 
+@router.get("/journal")
+def journal_trade_history(
+    currency: Literal["USD", "INR"] = Query(default="INR"),
+    view: Literal["trades", "fills"] = Query(default="trades"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows, matching = _journal_trade_rows(db, user.id, currency)
+    if view == "fills":
+        return [row for row in rows if row["source"] in {"dhan", "dhan_csv"}]
+
+    return _journal_trade_view_rows(db, user.id, currency, rows, matching)
+
+
 @router.get("/analytics/journal")
 def journal_trade_analytics(
     currency: Literal["USD", "INR"] = Query(default="INR"),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    strategy: str | None = Query(default=None, max_length=64),
+    setup: str | None = Query(default=None, max_length=64),
+    side: Literal["long", "short"] | None = Query(default=None),
+    asset_class: Literal["equity", "future", "option", "crypto"] | None = Query(default=None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    """Closed-trade performance. The optional filters narrow the closed trades that feed net P&L,
+    win rate, profit factor, expectancy, max drawdown and the daily series, using the same rules
+    as the trade table (calendar date, strategy, setup, side, market). Counts about fills and
+    reconciliation always describe the whole journal."""
     rows, matching = _journal_trade_rows(db, user.id, currency)
+    filtered = any(item is not None for item in (date_from, date_to, strategy, setup, side, asset_class))
     realized_broker = matching["realized_by_fill"]
     closed_events: list[tuple[datetime, str, Decimal | None]] = []
     open_manual_count = 0
@@ -598,6 +616,28 @@ def journal_trade_analytics(
             match["exit_time"].astimezone(ZoneInfo("Asia/Kolkata")).date().isoformat(),
             match["net_pnl"],
         ))
+    if filtered:
+        def keeps(row: dict[str, Any]) -> bool:
+            day = row["calendar_date"]
+            return (
+                (date_from is None or day >= date_from.isoformat())
+                and (date_to is None or day <= date_to.isoformat())
+                and (not strategy or (row.get("strategy") or "").casefold() == strategy.casefold())
+                and (not setup or (row.get("setup") or "").casefold() == setup.casefold())
+                and (side is None or row.get("side") == side)
+                and (asset_class is None or row.get("asset_class") == asset_class)
+            )
+
+        closed_events = [
+            (row["exit_time"], row["calendar_date"], row["net_pnl"])
+            for row in _journal_trade_view_rows(db, user.id, currency, rows, matching)
+            if row["exit_time"] is not None and keeps(row)
+        ]
+        daily = {
+            day: item for day, item in daily.items()
+            if (date_from is None or day >= date_from.isoformat())
+            and (date_to is None or day <= date_to.isoformat())
+        }
     closed_events.sort(key=lambda item: item[0])
     known_results = [result for _, _, result in closed_events if result is not None]
     unknown_count = len(closed_events) - len(known_results)

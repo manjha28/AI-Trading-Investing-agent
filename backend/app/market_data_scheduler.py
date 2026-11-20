@@ -56,12 +56,139 @@ IST = ZoneInfo("Asia/Kolkata")
 _BACKEND_DHAN_FEED_GROUP = "backend:market-hours-capture"
 
 
+def _tracked_instrument_ids(db: Session, user_id: UUID) -> set[UUID]:
+    """Instruments the user holds (ledger and Dhan mirror), watches, or has alert rules on."""
+    from app.api.market_data import _user_market_data_instrument_ids
+    from app.models.alerts import AlertRule
+
+    ids = set(_user_market_data_instrument_ids(db, user_id))  # watchlist + ledger holdings
+    ids.update(db.scalars(
+        select(AlertRule.instrument_id).where(
+            AlertRule.user_id == user_id, AlertRule.instrument_id.is_not(None)
+        )
+    ).all())
+    security_ids = {
+        (row.security_id or "").strip()
+        for row in db.scalars(select(BrokerMirror).where(
+            BrokerMirror.user_id == user_id,
+            BrokerMirror.broker == "dhan",
+            BrokerMirror.kind == "holding",
+            BrokerMirror.quantity > 0,
+        ))
+    } - {""}
+    if security_ids:
+        for instrument_id, provider_instrument_id in db.execute(
+            select(
+                InstrumentProviderIdentifier.instrument_id,
+                InstrumentProviderIdentifier.provider_instrument_id,
+            ).where(
+                InstrumentProviderIdentifier.provider == "dhan",
+                InstrumentProviderIdentifier.is_verified.is_(True),
+            )
+        ).all():
+            if provider_instrument_id.partition("|")[0] in security_ids:
+                ids.add(instrument_id)
+    return ids
+
+
+def _sync_corporate_actions_sync() -> int:
+    from app.corporate_action_service import sync_yfinance_corporate_actions
+
+    inserted = 0
+    with Session(engine) as db:
+        for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
+            try:
+                tracked = _tracked_instrument_ids(db, user_id)
+                report = sync_yfinance_corporate_actions(db, user_id, instrument_ids=tracked)
+                inserted += report["actions_inserted"]
+            except Exception as error:
+                db.rollback()
+                logger.warning("Corporate action sync failed user_id=%s error_class=%s", user_id, type(error).__name__)
+    return inserted
+
+
+async def corporate_action_sync_loop() -> None:
+    """Keep dividends/splits current so day-change and returns adjust for ex-dates automatically."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            inserted = await asyncio.to_thread(_sync_corporate_actions_sync)
+            logger.info("Corporate action sync completed new_actions=%d", inserted)
+        except Exception as error:
+            logger.warning("Corporate action sync failed error_class=%s", type(error).__name__)
+        await asyncio.sleep(settings.corporate_action_sync_interval_seconds)
+
+
+ALERT_QUOTE_REFRESH_SECONDS = 300
+
+
+def _refresh_alert_rule_quotes(db: Session, user_id: UUID, now: datetime | None = None) -> int:
+    """Refresh the latest real quote of every instrument an enabled alert rule watches.
+
+    Rules on instruments outside the watchlist and holdings otherwise never receive fresh
+    quotes and stay suppressed as stale forever. A quote is requested at most once per
+    ALERT_QUOTE_REFRESH_SECONDS per instrument; provider failures are logged and skipped
+    (the rule then reports why it could not be evaluated).
+    """
+    from app.models.alerts import AlertRule
+    from app.models import MarketQuote
+
+    now = now or datetime.now(timezone.utc)
+    instrument_ids = set(db.scalars(
+        select(AlertRule.instrument_id).where(
+            AlertRule.user_id == user_id,
+            AlertRule.enabled.is_(True),
+            AlertRule.instrument_id.is_not(None),
+        )
+    ).all())
+    if not instrument_ids:
+        return 0
+    try:
+        provider = market_data_provider_for_user(db, user_id)
+    except HTTPException as error:
+        logger.warning("Alert quote refresh skipped user_id=%s (HTTP %s)", user_id, error.status_code)
+        return 0
+    user = db.get(User, user_id)
+    refreshed = 0
+    for instrument_id in sorted(instrument_ids, key=str):
+        newest = db.scalar(
+            select(MarketQuote.retrieved_at)
+            .where(MarketQuote.instrument_id == instrument_id)
+            .order_by(MarketQuote.retrieved_at.desc())
+            .limit(1)
+        )
+        if newest is not None:
+            newest = newest if newest.tzinfo else newest.replace(tzinfo=timezone.utc)
+            if (now - newest).total_seconds() < ALERT_QUOTE_REFRESH_SECONDS:
+                continue
+        try:
+            latest_quote(
+                instrument_id=UUID(str(instrument_id)),
+                refresh=True,
+                provider=provider,
+                _user=user,
+                db=db,
+            )
+            refreshed += 1
+        except HTTPException as error:
+            logger.warning("Alert quote refresh failed instrument_id=%s (HTTP %s)", instrument_id, error.status_code)
+        except Exception as error:
+            db.rollback()
+            logger.warning("Alert quote refresh failed instrument_id=%s error_class=%s", instrument_id, type(error).__name__)
+    return refreshed
+
+
 def _evaluate_all_alert_rules_sync() -> int:
     evaluated = 0
     with Session(engine) as db:
         user_ids = db.scalars(select(User.id).where(User.email_verified.is_(True))).all()
         for user_id in user_ids:
             try:
+                try:
+                    _refresh_alert_rule_quotes(db, user_id)
+                except Exception as error:  # never block evaluation on a refresh problem
+                    db.rollback()
+                    logger.warning("Alert quote refresh failed user_id=%s error_class=%s", user_id, type(error).__name__)
                 evaluate_rules(db, user_id)
                 evaluated += 1
             except Exception as error:

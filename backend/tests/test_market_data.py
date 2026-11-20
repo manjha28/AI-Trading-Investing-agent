@@ -44,6 +44,8 @@ from app.market_data import (
     MarketDataProviderError,
 )
 from app.models import (
+    CorporateAction,
+    ValuationProviderInput,
     BrokerMirror,
     BrokerCredential,
     InstrumentProviderIdentifier,
@@ -239,6 +241,8 @@ def register(client: TestClient, email: str = "market@example.com") -> None:
         json={"email": email, "password": "correct-horse-battery"},
     )
     assert login_response.status_code == 200, login_response.text
+    # Mutating routes (e.g. history/sync) require the CSRF header; the browser client sends it too.
+    client.headers["X-CSRF-Token"] = client.cookies.get("csrf_token", "")
 
 
 def test_market_data_endpoints_require_authentication(client: TestClient) -> None:
@@ -3239,3 +3243,68 @@ def test_nse_session_has_no_pre_close_gap_in_either_classifier(hour, minute, exp
         is_official_close=False,
     )
     assert resolved["session_state"] == expected
+
+
+def test_rail_summary_groups_sectors_and_counts_breadth_from_stored_closes_only(
+    client: TestClient, test_engine
+) -> None:
+    register(client, "rail@example.com")
+    today, yesterday = date(2026, 10, 27), date(2026, 10, 26)  # Tue / Mon
+    stamp = lambda d: datetime(d.year, d.month, d.day, tzinfo=timezone.utc)  # noqa: E731
+    now = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
+    with Session(test_engine) as db:
+        user_id = db.scalar(select(UserSession.user_id))
+        made = {}
+        for symbol in ("UPCO", "DOWNCO", "DIVCO", "GAPCO", "NOBARS"):
+            made[symbol] = Instrument(
+                symbol=symbol, display_name=symbol, asset_class="equity", venue="NSE", currency="INR",
+                country="IN", timezone="Asia/Kolkata", is_synthetic=False, relink_required=False,
+                created_at=now,
+            )
+            db.add(made[symbol])
+        db.flush()
+
+        def bars(symbol, closes: dict[date, str], source="dhan"):
+            for session, close in closes.items():
+                db.add(MarketBar(
+                    instrument_id=made[symbol].id, interval="1d", timestamp=stamp(session), open=Decimal(close),
+                    high=Decimal(close), low=Decimal(close), close=Decimal(close), volume=Decimal("1"),
+                    source=source, retrieved_at=now, is_synthetic=False,
+                ))
+
+        bars("UPCO", {today: "110", yesterday: "100"})
+        bars("DOWNCO", {today: "90", yesterday: "100"})
+        bars("DIVCO", {today: "99", yesterday: "100"})            # -1% unadjusted, flat once the 1.00 dividend is applied
+        bars("GAPCO", {today: "50", date(2026, 10, 22): "48"})     # previous session not stored
+        db.add(CorporateAction(
+            user_id=user_id, instrument_id=made["DIVCO"].id, action_type="dividend",
+            ex_date=today, amount=Decimal("1"), source="manual", created_at=now,
+        ))
+        db.add(ValuationProviderInput(
+            instrument_id=made["UPCO"].id, provider="dhan", metric="sector", text_value="Energy", fetched_at=now,
+        ))
+        db.add(ValuationProviderInput(
+            instrument_id=made["DOWNCO"].id, provider="yfinance", metric="sector", text_value="Utilities", fetched_at=now,
+        ))
+        db.commit()
+        ids = ",".join(str(item.id) for item in made.values())
+
+    response = client.get("/api/v1/market-data/rail-summary", params={"instrument_ids": ids})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    by_symbol = {row["symbol"]: row for row in body["instruments"]}
+    assert body["as_of_session"] == "2026-10-27"
+    assert (by_symbol["UPCO"]["status"], by_symbol["UPCO"]["change_percent"]) == ("advancing", "10.00")
+    assert (by_symbol["DOWNCO"]["status"], by_symbol["DOWNCO"]["change_percent"]) == ("declining", "-10.00")
+    assert (by_symbol["DIVCO"]["status"], by_symbol["DIVCO"]["change_percent"]) == ("unchanged", "0.00")
+    assert by_symbol["GAPCO"]["status"] == "unknown" and "2026-10-26" in by_symbol["GAPCO"]["reason"]
+    assert by_symbol["GAPCO"]["missing_previous_date"] == "2026-10-26"  # the client may request this real bar
+    assert by_symbol["UPCO"]["missing_previous_date"] is None
+    assert by_symbol["NOBARS"]["status"] == "unknown" and by_symbol["NOBARS"]["reason"] == "no stored daily close"
+    assert body["breadth"] == {"advancing": 1, "declining": 1, "unchanged": 1, "unknown": 2, "total": 5}
+    assert (by_symbol["UPCO"]["sector"], by_symbol["UPCO"]["sector_source"]) == ("Energy", "dhan")
+    assert (by_symbol["DOWNCO"]["sector"], by_symbol["DOWNCO"]["sector_source"]) == ("Utilities", "yfinance")
+    assert by_symbol["GAPCO"]["sector"] is None  # unclassified stays unknown, never guessed
+    assert "not the whole market" in body["scope"]
+    assert client.get("/api/v1/market-data/rail-summary", params={"instrument_ids": "nope"}).status_code == 422
+

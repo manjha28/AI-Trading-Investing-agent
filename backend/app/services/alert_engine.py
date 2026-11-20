@@ -378,6 +378,16 @@ def _rule_match(
     return result, market_inputs, None
 
 
+def _suppression_text(code: str, evidence: dict[str, Any]) -> str:
+    text = code.replace("_", " ")
+    quote_at = evidence.get("quote_timestamp")
+    if quote_at and any(word in code for word in ("stale", "not_current", "unavailable")):
+        text += f" (latest quote {str(quote_at)[:10]})"
+    elif code == "insufficient_history" and evidence.get("required_bars"):
+        text += f" ({evidence.get('bars_used', 0)} of {evidence['required_bars']} daily bars)"
+    return text[:200]
+
+
 def evaluate_rules(
     db: Session, user_id: UUID, *, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -417,8 +427,12 @@ def evaluate_rules(
         return portfolios[portfolio_id]
 
     for rule in rules:
+        rule_reasons: list[str] = []
+        rule_evaluated = False
         portfolio_ctx = portfolio_context(rule.portfolio_id) if rule.portfolio_id else None
         if rule.portfolio_id and portfolio_ctx is None:
+            rule.last_evaluated_at, rule.last_status = evaluated_at, "suppressed"
+            rule.last_reason = "portfolio unavailable"
             continue
         portfolio, ledger, linked = portfolio_ctx if portfolio_ctx else (None, None, {})
         if rule.instrument_id is not None:
@@ -441,6 +455,7 @@ def evaluate_rules(
         for instrument in instruments:
             symbol = holdings_by_instrument.get(instrument.id, instrument.symbol)
             if rule.scope == "position" and instrument.id not in holdings_by_instrument:
+                rule_reasons.append("position is not currently held in this portfolio")
                 continue
             quote = quotes_by_instrument.get(instrument.id)
             if instrument.id not in quotes_by_instrument:
@@ -522,11 +537,13 @@ def evaluate_rules(
             )
             if suppressed:
                 evidence["suppression_reason"] = suppressed
+                rule_reasons.append(_suppression_text(suppressed, evidence))
                 result["suppressed"].append({
                     "rule_id": str(rule.id), "instrument_id": str(instrument.id),
                     "reason": suppressed, "evidence": evidence,
                 })
                 continue
+            rule_evaluated = True
             if not matched:
                 continue
             if rule.rule_type == "holding_period_crosses_365d":
@@ -585,5 +602,12 @@ def evaluate_rules(
                 result["deduplicated"].append(str(rule.id))
                 continue
             result["fired"].append(event)
+        rule.last_evaluated_at = evaluated_at
+        if rule_evaluated:
+            rule.last_status, rule.last_reason = "evaluated", None
+        elif rule_reasons:
+            rule.last_status, rule.last_reason = "suppressed", rule_reasons[0][:200]
+        else:
+            rule.last_status, rule.last_reason = "suppressed", "no instrument to evaluate"
     db.commit()
     return result

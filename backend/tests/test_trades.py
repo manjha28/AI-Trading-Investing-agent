@@ -308,3 +308,49 @@ def test_trade_analytics_breakdown_groups_by_strategy(client: TestClient) -> Non
             "profit_factor": None,
         },
     ]
+
+def test_journal_analytics_follow_date_and_trade_filters(client: TestClient) -> None:
+    from decimal import Decimal
+
+    register(client, "filters@example.com")
+    base = {"multiplier": "1", "fees": "0"}
+    for payload in (
+        {"instrument": "AAA", "side": "long", "asset_class": "equity", "strategy": "alpha", "quantity": "10",
+         "entry_price": "10", "exit_price": "15", "entry_time": "2024-03-05T14:00:00Z", "exit_time": "2024-03-05T15:00:00Z"},   # +50
+        {"instrument": "BBB", "side": "short", "asset_class": "equity", "strategy": "beta", "quantity": "10",
+         "entry_price": "10", "exit_price": "8", "entry_time": "2024-09-10T14:00:00Z", "exit_time": "2024-09-10T15:00:00Z"},    # +20
+        {"instrument": "CCC", "side": "long", "asset_class": "equity", "strategy": "alpha", "quantity": "10",
+         "entry_price": "10", "exit_price": "7", "entry_time": "2025-02-12T14:00:00Z", "exit_time": "2025-02-12T15:00:00Z"},    # -30
+        {"instrument": "DDD", "side": "long", "asset_class": "crypto", "strategy": "alpha", "quantity": "1",
+         "entry_price": "100", "exit_price": "110", "entry_time": "2025-06-20T14:00:00Z", "exit_time": "2025-06-20T15:00:00Z"},  # +10
+    ):
+        assert create_trade(client, **base, **payload).status_code == 201
+
+    def analytics(**params):
+        response = client.get("/api/v1/trades/analytics/journal", params={"currency": "INR", **params})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    everything = analytics()
+    assert Decimal(everything["net_pnl"]) == Decimal("50") and everything["closed_trades"] == 4
+    assert len(everything["daily"]) == 4
+
+    since_2024 = analytics(date_from="2024-01-01")  # the "cumulative P&L from 2024" case
+    assert Decimal(since_2024["net_pnl"]) == Decimal("50") and since_2024["closed_trades"] == 4
+
+    only_2025 = analytics(date_from="2025-01-01")
+    assert Decimal(only_2025["net_pnl"]) == Decimal("-20") and only_2025["closed_trades"] == 2
+    assert [item["date"] for item in only_2025["daily"]] == ["2025-02-12", "2025-06-20"]
+
+    year_2024 = analytics(date_from="2024-01-01", date_to="2024-12-31")
+    assert Decimal(year_2024["net_pnl"]) == Decimal("70") and year_2024["wins"] == 2 and year_2024["losses"] == 0
+
+    assert Decimal(analytics(strategy="ALPHA")["net_pnl"]) == Decimal("30")  # case-insensitive, like the table
+    assert Decimal(analytics(side="short")["net_pnl"]) == Decimal("20")
+    assert Decimal(analytics(asset_class="crypto")["net_pnl"]) == Decimal("10")
+    assert Decimal(analytics(date_from="2025-01-01", strategy="alpha")["net_pnl"]) == Decimal("-20")
+
+    nothing = analytics(date_from="2030-01-01")  # no closed trades in range: unknown, never zero
+    assert nothing["closed_trades"] == 0 and nothing["net_pnl"] is None
+    assert nothing["trades_logged"] == 4  # journal-wide counts are unaffected by filters
+    assert client.get("/api/v1/trades/analytics/journal", params={"side": "sideways"}).status_code == 422

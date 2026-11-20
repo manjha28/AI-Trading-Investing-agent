@@ -13,6 +13,7 @@ from app.db import Base, get_db
 from app.main import app
 from app.models import (
     Instrument,
+    InstrumentProviderIdentifier,
     MarketBar,
     MarketQuote,
     PositionThesis,
@@ -65,7 +66,7 @@ def csrf(client: TestClient) -> dict[str, str]:
     return {"X-CSRF-Token": client.cookies.get("csrf_token", "")}
 
 
-def portfolio_and_instrument(client: TestClient) -> tuple[dict, dict]:
+def portfolio_and_instrument(client: TestClient, test_engine) -> tuple[dict, dict]:
     portfolio = client.post(
         "/api/v1/portfolios", headers=csrf(client),
         json={"name": "Main", "base_currency": "USD"},
@@ -81,8 +82,21 @@ def portfolio_and_instrument(client: TestClient) -> tuple[dict, dict]:
         json={"transaction_type": "buy", "symbol": "ALPHA", "quantity": "10",
               "unit_price": "100", "occurred_at": "2026-01-02T00:00:00Z"},
     ).status_code == 201
-    instruments = client.get("/api/v1/market-data/instruments?query=ALPHA").json()
-    instrument = next(item for item in instruments if item["venue"] == "DEMO_US")
+    # A real-style US equity row with a verified "test" provider mapping (no demo/synthetic data).
+    with Session(test_engine) as db:
+        row = Instrument(
+            symbol="ALPHA", display_name="Alpha Test Corp", asset_class="equity", venue="NASDAQ",
+            currency="USD", country="US", timezone="America/New_York", is_synthetic=False,
+            relink_required=False, created_at=datetime.now(timezone.utc),
+        )
+        db.add(row)
+        db.flush()
+        db.add(InstrumentProviderIdentifier(
+            instrument_id=row.id, provider="test", provider_instrument_id="ALPHA",
+            provider_symbol="ALPHA", is_verified=True, last_seen_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        instrument = {"id": str(row.id), "symbol": "ALPHA", "venue": "NASDAQ"}
     assert client.post(
         f"/api/v1/portfolios/{portfolio['id']}/positions/ALPHA/instrument",
         headers=csrf(client), json={"instrument_id": instrument["id"]},
@@ -146,7 +160,7 @@ def create_rule(client: TestClient, portfolio: dict, instrument: dict, **changes
 
 def test_repeat_fire_is_deduplicated_and_evidence_is_self_contained(client, test_engine):
     register(client, test_engine, "a@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     add_quote(test_engine, instrument["id"])
     create_rule(client, portfolio, instrument)
     first = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
@@ -165,7 +179,7 @@ def test_repeat_fire_is_deduplicated_and_evidence_is_self_contained(client, test
 
 def test_cooldown_blocks_another_fire_even_on_a_later_day(client, test_engine):
     register(client, test_engine, "a@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     add_quote(test_engine, instrument["id"])
     rule = create_rule(
         client, portfolio, instrument, cooldown_seconds=3600,
@@ -182,7 +196,7 @@ def test_cooldown_blocks_another_fire_even_on_a_later_day(client, test_engine):
 
 def test_stale_quote_suppresses_thesis_target_with_reason(client, test_engine):
     register(client, test_engine, "a@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     add_quote(test_engine, instrument["id"], age=timedelta(days=2))
     with Session(test_engine) as db:
         user = db.scalar(select(User).where(User.email == "a@example.com"))
@@ -222,7 +236,7 @@ def test_stale_quote_suppresses_thesis_target_with_reason(client, test_engine):
 
 def test_cross_user_rule_and_event_isolation(client, test_engine):
     register(client, test_engine, "a@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     add_quote(test_engine, instrument["id"])
     rule = create_rule(client, portfolio, instrument)
     client.post("/api/v1/alerts/evaluate", headers=csrf(client))
@@ -250,7 +264,7 @@ def test_cross_user_rule_and_event_isolation(client, test_engine):
 
 def test_rule_crud_and_event_status(client, test_engine):
     register(client, test_engine, "a@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     rule = create_rule(client, portfolio, instrument)
     assert len(client.get("/api/v1/alerts/rules").json()) == 1
     updated = client.patch(
@@ -265,7 +279,7 @@ def test_rule_crud_and_event_status(client, test_engine):
 
 def test_rule_validation_and_email_verification(client, test_engine):
     register(client, test_engine, "a@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     invalid = client.post(
         "/api/v1/alerts/rules", headers=csrf(client),
         json={
@@ -292,7 +306,7 @@ def test_rule_validation_and_email_verification(client, test_engine):
 
 def test_quote_freshness_uses_retrieved_at_and_alert_age_limit(client, test_engine):
     register(client, test_engine, "freshness@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     add_quote(test_engine, instrument["id"], age=timedelta(minutes=10))
     with Session(test_engine) as db:
         quote = db.scalar(select(MarketQuote).where(
@@ -326,7 +340,7 @@ def test_quote_freshness_uses_retrieved_at_and_alert_age_limit(client, test_engi
 
 def test_portfolio_rule_cooldown_is_scoped_per_instrument(client, test_engine):
     register(client, test_engine, "portfolio-cooldown@example.com")
-    portfolio, first_instrument = portfolio_and_instrument(client)
+    portfolio, first_instrument = portfolio_and_instrument(client, test_engine)
     now = datetime.now(timezone.utc)
     more_instruments: list[tuple[str, UUID]] = []
     with Session(test_engine) as db:
@@ -387,7 +401,7 @@ def test_portfolio_rule_cooldown_is_scoped_per_instrument(client, test_engine):
 
 def test_alert_rsi_matches_instrument_indicators_endpoint(client, test_engine):
     register(client, test_engine, "rsi-match@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     closes = [Decimal("100") + Decimal(index) / Decimal("10") for index in range(250)]
     add_daily_bars(test_engine, instrument["id"], closes)
     add_quote(test_engine, instrument["id"])
@@ -414,7 +428,7 @@ def test_alert_rsi_matches_instrument_indicators_endpoint(client, test_engine):
 
 def test_ltcg_crossing_five_days_ago_fires_once(client, test_engine):
     register(client, test_engine, "ltcg-crossing@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     now = datetime.now(timezone.utc)
     create_rule(
         client,
@@ -456,7 +470,7 @@ def test_ltcg_crossing_five_days_ago_fires_once(client, test_engine):
 
 def test_drawdown_sign_matches_indicators_and_alert_evidence(client, test_engine):
     register(client, test_engine, "drawdown-match@example.com")
-    portfolio, instrument = portfolio_and_instrument(client)
+    portfolio, instrument = portfolio_and_instrument(client, test_engine)
     closes = [Decimal("100")] * 249 + [Decimal("90")]
     add_daily_bars(test_engine, instrument["id"], closes)
     add_quote(test_engine, instrument["id"])
@@ -483,3 +497,92 @@ def test_drawdown_sign_matches_indicators_and_alert_evidence(client, test_engine
     )
     assert alert_drawdown > 0
     assert alert_drawdown == indicator_drawdown == Decimal("10")
+
+
+
+def _plain_instrument(test_engine, symbol: str = "RULECO") -> dict:
+    with Session(test_engine) as db:
+        instrument = Instrument(
+            symbol=symbol, display_name=symbol, asset_class="equity", venue="NASDAQ", currency="USD",
+            country="US", timezone="America/New_York", is_synthetic=False, relink_required=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(instrument)
+        db.flush()
+        db.add(InstrumentProviderIdentifier(  # quotes only count when the provider mapping is verified
+            instrument_id=instrument.id, provider="test", provider_instrument_id=symbol,
+            provider_symbol=symbol, is_verified=True, last_seen_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        return {"id": str(instrument.id)}
+
+
+def _renew_quote(test_engine, instrument_id: str, *, age: timedelta = timedelta(0)) -> None:
+    stamp = datetime.now(timezone.utc) - age
+    with Session(test_engine) as db:
+        quote = db.scalar(select(MarketQuote).where(MarketQuote.instrument_id == UUID(instrument_id)))
+        quote.timestamp = quote.retrieved_at = stamp
+        db.commit()
+
+
+def _instrument_rule(client, instrument: dict) -> dict:
+    response = client.post("/api/v1/alerts/rules", headers=csrf(client), json={
+        "scope": "instrument", "instrument_id": instrument["id"], "rule_type": "price_above",
+        "params": {"price": "90"}, "severity": "info", "cooldown_seconds": 0, "enabled": True,
+    })
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_rule_reports_why_it_could_not_run_and_recovers_when_data_is_fresh(client, test_engine):
+    register(client, test_engine, "a@example.com")
+    instrument = _plain_instrument(test_engine)
+    add_quote(test_engine, instrument["id"], age=timedelta(days=18))
+    rule = _instrument_rule(client, instrument)
+    assert rule["last_status"] is None and rule["last_evaluated_at"] is None  # never evaluated yet
+
+    assert client.post("/api/v1/alerts/evaluate", headers=csrf(client)).json()["fired"] == []
+    shown = client.get("/api/v1/alerts/rules").json()[0]
+    assert shown["last_status"] == "suppressed"
+    assert shown["last_reason"]  # the silent-failure case: the user can now see why
+    assert shown["last_evaluated_at"]
+
+    _renew_quote(test_engine, instrument["id"])  # a fresh real quote arrives
+    second = client.post("/api/v1/alerts/evaluate", headers=csrf(client)).json()
+    assert len(second["fired"]) == 1, [item["reason"] for item in second["suppressed"]]
+    shown = client.get("/api/v1/alerts/rules").json()[0]
+    assert shown["last_status"] == "evaluated" and shown["last_reason"] is None
+
+
+def test_alert_quote_refresh_runs_only_for_stale_rule_instruments(client, test_engine, monkeypatch):
+    from app import market_data_scheduler
+
+    register(client, test_engine, "a@example.com")
+    instrument = _plain_instrument(test_engine)
+    add_quote(test_engine, instrument["id"], age=timedelta(days=1))
+    _instrument_rule(client, instrument)
+    requested: list[UUID] = []
+    monkeypatch.setattr(market_data_scheduler, "market_data_provider_for_user", lambda *_a: object())
+    monkeypatch.setattr(
+        market_data_scheduler, "latest_quote",
+        lambda **kwargs: requested.append(kwargs["instrument_id"]) or None,
+    )
+    with Session(test_engine) as db:
+        user = db.scalar(select(User).where(User.email == "a@example.com"))
+        assert market_data_scheduler._refresh_alert_rule_quotes(db, user.id) == 1
+        assert requested == [UUID(instrument["id"])]
+    _renew_quote(test_engine, instrument["id"])  # now fresh: no provider call
+    with Session(test_engine) as db:
+        user = db.scalar(select(User).where(User.email == "a@example.com"))
+        assert market_data_scheduler._refresh_alert_rule_quotes(db, user.id) == 0
+    assert len(requested) == 1
+
+    def boom(**_kwargs):  # a failing provider must not raise or block evaluation
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(market_data_scheduler, "latest_quote", boom)
+    with Session(test_engine) as db:
+        user = db.scalar(select(User).where(User.email == "a@example.com"))
+        later = datetime.now(timezone.utc) + timedelta(days=2)
+        assert market_data_scheduler._refresh_alert_rule_quotes(db, user.id, now=later) == 0
+

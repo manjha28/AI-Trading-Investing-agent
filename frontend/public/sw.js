@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trading-copilot-shell-v1';
+const CACHE_NAME = 'trading-copilot-shell-v2';
 const SHELL_FILES = ['/', '/manifest.webmanifest', '/icons/app-icon.svg'];
 
 self.addEventListener('install', (event) => {

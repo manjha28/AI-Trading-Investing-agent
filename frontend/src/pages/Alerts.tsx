@@ -18,6 +18,9 @@ type Rule = {
   severity: 'info' | 'attention' | 'urgent';
   cooldown_seconds: number;
   enabled: boolean;
+  last_evaluated_at: string | null;
+  last_status: 'evaluated' | 'suppressed' | null;
+  last_reason: string | null;
 };
 type Event = {
   id: string;
@@ -288,6 +291,16 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
                 <div className="alerts-rule-copy">
                   <div><span className={`severity-badge severity-${rule.severity}`}>{rule.severity}</span><strong>{ruleLabels[rule.rule_type]}</strong></div>
                   <p>{preview(rule.rule_type, Object.fromEntries(Object.entries(rule.params).map(([key, value]) => [key, String(value)])))}</p>
+                  <small className={`alerts-rule-status alerts-rule-status-${!rule.enabled ? 'off' : rule.last_status ?? 'pending'}`}>
+                    {!rule.enabled
+                      ? 'Disabled — not being evaluated'
+                      : rule.last_status === null
+                        ? 'Not evaluated yet'
+                        : rule.last_status === 'suppressed'
+                          ? `Not evaluating: ${rule.last_reason ?? 'inputs unavailable'}`
+                          : 'Watching'}
+                    {rule.enabled && rule.last_evaluated_at ? ` · checked ${new Date(rule.last_evaluated_at).toLocaleString()}` : ''}
+                  </small>
                   <small>{rule.scope}{rule.portfolio_id ? ` · ${portfolios.find((item) => item.id === rule.portfolio_id)?.name ?? 'Portfolio'}` : ''}</small>
                 </div>
                 <div className="alerts-actions">

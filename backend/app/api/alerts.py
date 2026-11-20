@@ -142,6 +142,9 @@ class RuleResponse(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
+    last_evaluated_at: datetime | None = None
+    last_status: str | None = None
+    last_reason: str | None = None
 
 
 class EventStatusUpdate(BaseModel):

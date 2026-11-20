@@ -523,6 +523,10 @@ def test_broker_summary_uses_one_batched_quote_and_keeps_value_provenance(
         in item
         for item in dhan["provenance"]["day_change"]["exclusions"]
     )
+    # The never-requested previous session is offered for a real provider fetch, never invented.
+    backfill = dhan["previous_close_backfill"]
+    assert [item["symbol"] for item in backfill] == ["XYZ"]
+    assert backfill[0]["instrument_id"] and backfill[0]["expected_previous_date"]
     assert dhan["provenance"]["market_value"]["quote_observations"][0]["timestamp"]
     portfolio = first.get("/api/v1/brokers/dhan/portfolio").json()
     assert portfolio["positions"][0]["product"] == "INTRADAY"
@@ -1171,6 +1175,52 @@ def test_broker_summary_uses_last_completed_session_close(
     assert {
         item["basis_date"] for item in day_evidence["previous_close_observations"]
     } == {previous_session.isoformat()}
+
+
+def test_day_change_offers_a_real_previous_close_fetch_once_then_stops(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    """After close, holdings with a stored last-session close but no stored previous-session
+    close get no day change (never invented). The summary lists exactly those holdings so the
+    client can request real Dhan daily history; once a sync has covered that date it stops asking."""
+    first, _ = clients
+    current_time = datetime(2026, 10, 27, 16, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    real_session_state = market_data._market_session_state
+    seed_dhan_portfolio_summary(first, test_engine, encryption_key, monkeypatch)
+    monkeypatch.setattr(brokers, "_now", lambda: current_time)
+    monkeypatch.setattr(market_data, "_market_session_state", real_session_state)
+    _add_portfolio_close_bars(test_engine, (date(2026, 10, 27), date(2026, 10, 26)))
+    zone = ZoneInfo("Asia/Kolkata")
+    previous_start = datetime.combine(date(2026, 10, 26), time(0, 0), tzinfo=zone).astimezone(timezone.utc)
+    with Session(test_engine) as db:
+        for bar in db.scalars(select(MarketBar).where(MarketBar.interval == "1d")):
+            if bar.timestamp.astimezone(zone).date() == date(2026, 10, 26):
+                db.delete(bar)
+        db.commit()
+    monkeypatch.setattr(DhanAdapter, "get_market_quotes_batch", lambda *_args: {})
+    monkeypatch.setattr(
+        brokers, "_dhan_instrument_master",
+        lambda *_args, **_kw: (_ for _ in ()).throw(BrokerAdapterError("unavailable")),
+    )
+
+    dhan = first.get("/api/v1/brokers/portfolio-summary").json()["brokers"][0]
+    assert dhan["day_change"] is None  # unknown, not zero and not estimated
+    offered = {item["symbol"]: item for item in dhan["previous_close_backfill"]}
+    assert set(offered) == {"SBIN", "XYZ"}
+    assert {item["expected_previous_date"] for item in offered.values()} == {"2026-10-26"}
+
+    with Session(test_engine) as db:  # a sync covering the date was attempted (and returned nothing)
+        for item in offered.values():
+            db.add(MarketDataSync(
+                instrument_id=UUID(item["instrument_id"]), interval="1d", source="dhan",
+                attempted_at=current_time, status="success", rows_received=0,
+                requested_start=previous_start,
+                requested_end=previous_start + timedelta(days=1), rows_written=0,
+            ))
+        db.commit()
+    dhan = first.get("/api/v1/brokers/portfolio-summary").json()["brokers"][0]
+    assert dhan["previous_close_backfill"] == []  # no endless re-fetching
+    assert dhan["day_change"] is None
 
 
 def test_broker_summary_values_priceable_rows_and_discloses_the_rest(

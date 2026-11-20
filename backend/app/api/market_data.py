@@ -57,6 +57,7 @@ from app.models import (
     InstrumentFundamental,
     InstrumentProviderIdentifier,
     InstrumentSnapshot,
+    ValuationProviderInput,
     MarketBar,
     MarketQuote,
     DhanMarketTick,
@@ -8751,6 +8752,7 @@ def sync_history(
     limit: int = Query(default=MAX_BARS, ge=1, le=MAX_BARS),
     provider: MarketDataProvider = Depends(get_market_data_provider),
     _user: User = Depends(get_current_user),
+    _csrf: UserSession = Depends(require_csrf),
     db: Session = Depends(get_db),
 ):
     instrument = _get_instrument(db, instrument_id)
@@ -10298,3 +10300,140 @@ def get_history(
         provider=provider,
         db=db,
     )
+
+
+@router.get("/rail-summary")
+def get_rail_summary(
+    instrument_ids: str = Query(default="", description="Comma-separated instrument ids (max 200)."),
+    active_session: UserSession = Depends(require_verified_market_session),
+    db: Session = Depends(get_db),
+):
+    """Sector grouping and day-move breadth for the caller's own instruments.
+
+    Everything is derived from stored data: sector labels from stored provider classifications
+    and moves from stored real daily closes (same provider, adjacent sessions, corporate-action
+    adjusted). Anything that cannot be derived is reported as unknown with the reason. This is
+    breadth of the supplied instruments only, never the whole market.
+    """
+    try:
+        requested = list(dict.fromkeys(UUID(item) for item in instrument_ids.split(",") if item.strip()))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="instrument_ids must be comma-separated UUIDs.")
+    if len(requested) > 200:
+        raise HTTPException(status_code=422, detail="At most 200 instruments per request.")
+    instruments = {
+        instrument.id: instrument
+        for instrument in db.scalars(select(Instrument).where(Instrument.id.in_(requested)))
+    } if requested else {}
+
+    sector_inputs = db.scalars(
+        select(ValuationProviderInput).where(
+            ValuationProviderInput.instrument_id.in_(list(instruments)),
+            ValuationProviderInput.metric.in_(("sector", "industry")),
+            ValuationProviderInput.text_value.is_not(None),
+        )
+    ).all() if instruments else []
+    classification: dict[UUID, dict[str, dict[str, str]]] = {}
+    for item in sector_inputs:
+        if item.text_value and item.text_value.strip():
+            classification.setdefault(item.instrument_id, {}).setdefault(item.provider, {})[item.metric] = item.text_value.strip()
+    snapshots = {
+        snapshot.instrument_id: snapshot
+        for snapshot in db.scalars(
+            select(InstrumentSnapshot).where(InstrumentSnapshot.instrument_id.in_(list(instruments)))
+        )
+    } if instruments else {}
+    bars_by_instrument: dict[UUID, list[MarketBar]] = {}
+    if instruments:
+        for bar in db.scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.instrument_id.in_(list(instruments)),
+                MarketBar.interval == "1d",
+                MarketBar.is_synthetic.is_(False),
+            )
+            .order_by(MarketBar.timestamp.desc())
+        ):
+            bars_by_instrument.setdefault(bar.instrument_id, []).append(bar)
+
+    rows: list[dict] = []
+    for instrument_id in requested:
+        instrument = instruments.get(instrument_id)
+        if instrument is None:
+            continue
+        sector = sector_source = industry = None
+        by_provider = classification.get(instrument_id, {})
+        for provider_name in ("dhan", "yfinance"):  # Dhan's taxonomy first; sources are never mixed silently
+            if by_provider.get(provider_name, {}).get("sector"):
+                sector = by_provider[provider_name]["sector"]
+                industry = by_provider[provider_name].get("industry")
+                sector_source = provider_name
+                break
+        if sector is None and (snapshot := snapshots.get(instrument_id)) is not None and snapshot.sector:
+            sector, industry, sector_source = snapshot.sector, snapshot.industry, snapshot.source
+
+        status = "unknown"
+        change_percent: str | None = None
+        session_date: date | None = None
+        reason: str | None = None
+        missing_previous_date: str | None = None
+        bars = bars_by_instrument.get(instrument_id, [])
+        sources = sorted({bar.source for bar in bars}, key=lambda name: (name != "dhan", name))
+        if not bars:
+            reason = "no stored daily close"
+        else:
+            same_source = [bar for bar in bars if bar.source == sources[0]]
+            latest = same_source[0]
+            session_date = _daily_session_date(latest.timestamp)
+            zone = ZoneInfo(instrument.timezone)
+            reference = datetime.combine(session_date, datetime_time.min, tzinfo=zone).astimezone(timezone.utc)
+            expected_previous = _expected_market_session_date(instrument, reference)
+            previous = next(
+                (bar for bar in same_source if _daily_session_date(bar.timestamp) == expected_previous),
+                None,
+            )
+            if previous is None:
+                reason = f"previous-session close for {expected_previous.isoformat()} is not stored"
+                missing_previous_date = expected_previous.isoformat()
+            else:
+                adjusted, _note = _adjust_previous_daily_close(
+                    db, active_session.user_id, instrument, previous.close, session_date
+                )
+                if adjusted is None or adjusted == 0:
+                    reason = "previous close adjustment is unavailable"
+                else:
+                    move = latest.close - adjusted
+                    status = "advancing" if move > 0 else "declining" if move < 0 else "unchanged"
+                    change_percent = str((move / adjusted * Decimal("100")).quantize(Decimal("0.01")))
+        rows.append({
+            "instrument_id": str(instrument_id),
+            "symbol": instrument.symbol,
+            "sector": sector,
+            "industry": industry,
+            "sector_source": sector_source,
+            "status": status,
+            "change_percent": change_percent,
+            "session_date": session_date.isoformat() if session_date else None,
+            "missing_previous_date": missing_previous_date,
+            "reason": reason,
+        })
+
+    latest_session = max((row["session_date"] for row in rows if row["session_date"]), default=None)
+    for row in rows:  # a move measured on an older session is not today's move
+        if row["status"] != "unknown" and row["session_date"] != latest_session:
+            row.update(
+                status="unknown",
+                change_percent=None,
+                reason=f"latest stored close is {row['session_date']}, older than {latest_session}",
+            )
+    counts = {
+        name: sum(row["status"] == name for row in rows)
+        for name in ("advancing", "declining", "unchanged", "unknown")
+    }
+    return {
+        "as_of_session": latest_session,
+        "scope": f"Your holdings and watchlist ({len(rows)} instruments); not the whole market.",
+        "breadth": {**counts, "total": len(rows)},
+        "instruments": rows,
+        "disclaimer": "Decision support, not investment advice.",
+    }

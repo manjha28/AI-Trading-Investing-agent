@@ -1,42 +1,42 @@
 .dd-root { min-width: 0; }
 .dd-head-status { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .dd-stats { grid-template-columns: repeat(8, minmax(95px, 1fr)); margin: 0; }
-.dd-loading { padding: 18px; color: var(--sl-muted); }
-.dd-sub { color: var(--sl-muted); font-size: 11px; margin: 3px 0 0; max-width: 720px; }
+.dd-loading { padding: 18px; color:var(--sl-muted); }
+.dd-sub { color:var(--sl-muted); font-size: 11px; margin: 3px 0 0; max-width: 720px; }
 .dd-filter-grid { display: grid; grid-template-columns: repeat(6, minmax(105px, 1fr)); gap: 7px; }
 .dd-filter-grid .sl-field { min-width: 0; }
 .dd-card-head { align-items: flex-start; }
 .dd-root .sl-card-head > input { width: min(280px, 100%); }
 .dd-table-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.dd-table-tools label { display: flex; align-items: center; gap: 5px; color: var(--sl-muted); white-space: nowrap; }
+.dd-table-tools label { display: flex; align-items: center; gap: 5px; color:var(--sl-muted); white-space: nowrap; }
 .dd-table-wrap { width: 100%; max-width: 100%; overflow: auto; overscroll-behavior-inline: contain; }
 .dd-table-wrap .sl-table { min-width: 980px; }
 .dd-table-wrap td { max-width: 220px; overflow-wrap: anywhere; }
 .dd-table-wrap code { display: inline-block; max-width: 150px; }
-.dd-warning { color: var(--sl-warn); font-size: 10.5px; max-width: 260px; overflow-wrap: anywhere; }
-.dd-error { min-width: 140px; max-width: 240px !important; color: var(--sl-neg) !important; overflow-wrap: anywhere; }
+.dd-warning { color:var(--sl-warn); font-size: 10.5px; max-width: 260px; overflow-wrap: anywhere; }
+.dd-error { min-width: 140px; max-width: 240px !important; color:var(--sl-neg) !important; overflow-wrap: anywhere; }
 .dd-explorer-tools { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .dd-explorer-tools > .sl-field { flex: 1 1 220px; max-width: 360px; }
-.dd-page-control { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; color: var(--sl-muted); font-size: 11px; margin: 7px 0; }
+.dd-page-control { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; color:var(--sl-muted); font-size: 11px; margin: 7px 0; }
 .dd-underlying-list { display: flex; flex-wrap: wrap; gap: 5px; max-height: 122px; overflow: auto; padding: 2px 0 7px; }
 .dd-underlying-list button { display: flex; flex-direction: column; align-items: flex-start; min-width: 118px; }
-.dd-underlying-list button.active { border-color: var(--sl-accent); }
-.dd-underlying-list small { color: var(--sl-muted); font-size: 10px; }
+.dd-underlying-list button.active { border-color:var(--sl-accent); }
+.dd-underlying-list small { color:var(--sl-muted); font-size: 10px; }
 .dd-contract-filters { grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); margin: 5px 0 8px; }
 .dd-detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
-.dd-detail-grid > div { display: flex; flex-direction: column; gap: 3px; background: var(--sl-raised); border: 1px solid var(--sl-line); border-radius: 4px; padding: 7px 9px; min-width: 0; }
-.dd-detail-grid span { color: var(--sl-muted); font-size: 11px; overflow-wrap: anywhere; }
+.dd-detail-grid > div { display: flex; flex-direction: column; gap: 3px; background:var(--sl-raised); border:1px solid var(--sl-line); border-radius: 4px; padding: 7px 9px; min-width: 0; }
+.dd-detail-grid span { color:var(--sl-muted); font-size: 11px; overflow-wrap: anywhere; }
 .dd-readiness { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 8px; }
-.dd-readiness > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; border: 1px solid var(--sl-line); border-radius: 4px; padding: 7px 9px; min-width: 0; }
-.dd-readiness small { grid-column: 1 / -1; color: var(--sl-muted); overflow-wrap: anywhere; }
-.dd-progress { width: 105px; max-width: 100%; height: 4px; background: var(--sl-line); border-radius: 9px; margin: 4px 0 2px; overflow: hidden; }
-.dd-progress span { display: block; height: 100%; background: var(--sl-accent); }
+.dd-readiness > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; border:1px solid var(--sl-line); border-radius: 4px; padding: 7px 9px; min-width: 0; }
+.dd-readiness small { grid-column: 1 / -1; color:var(--sl-muted); overflow-wrap: anywhere; }
+.dd-progress { width: 105px; max-width: 100%; height: 4px; background:var(--sl-line); border-radius: 9px; margin: 4px 0 2px; overflow: hidden; }
+.dd-progress span { display: block; height: 100%; background:var(--sl-accent); }
 .dd-actions { display: flex; flex-wrap: wrap; gap: 4px; min-width: 160px; }
 .dd-actions button { min-height: 24px; padding: 1px 6px; font-size: 10.5px; }
 .dd-backfill-modal { max-height: min(90vh, 740px); overflow-y: auto; }
 .dd-plan-review { display: grid; gap: 6px; margin: 10px 0; }
-.dd-plan-review > div { display: flex; flex-direction: column; gap: 2px; background: var(--sl-raised); padding: 7px 9px; border-radius: 4px; }
-.dd-plan-review span { color: var(--sl-muted); overflow-wrap: anywhere; }
+.dd-plan-review > div { display: flex; flex-direction: column; gap: 2px; background:var(--sl-raised); padding: 7px 9px; border-radius: 4px; }
+.dd-plan-review span { color:var(--sl-muted); overflow-wrap: anywhere; }
 @media (max-width: 1100px) { .dd-stats { grid-template-columns: repeat(4, minmax(100px, 1fr)); } .dd-filter-grid { grid-template-columns: repeat(3, minmax(100px, 1fr)); } .dd-readiness { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .dd-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dd-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dd-detail-grid, .dd-readiness { grid-template-columns: minmax(0, 1fr); } .dd-root .sl-card { padding: 8px; } .dd-underlying-list { max-height: 180px; } }
 @media (max-width: 390px) { .dd-filter-grid { grid-template-columns: minmax(0, 1fr); } .dd-head-status { align-items: flex-start; } .dd-actions { min-width: 0; } }

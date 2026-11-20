@@ -191,6 +191,33 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
     });
   }, [journalTrades, journalCurrency, strategyFilter, setupFilter, sideFilter, assetFilter, dateFrom, dateTo, selectedDate, search, sort]);
 
+  // The KPI cards follow the same filters as the table. The server computes them (closed-trade
+  // analytics for the chosen date range / strategy / setup / side / market), so they update live
+  // as a filter changes and no Apply button is needed.
+  const kpiQuery = useMemo(() => {
+    const params = new URLSearchParams({ currency: journalCurrency });
+    const from = selectedDate || dateFrom;
+    const to = selectedDate || dateTo;
+    if (from) params.set('date_from', from);
+    if (to) params.set('date_to', to);
+    if (strategyFilter) params.set('strategy', strategyFilter);
+    if (setupFilter) params.set('setup', setupFilter);
+    if (sideFilter) params.set('side', sideFilter);
+    if (assetFilter) params.set('asset_class', assetFilter);
+    return params.toString();
+  }, [journalCurrency, selectedDate, dateFrom, dateTo, strategyFilter, setupFilter, sideFilter, assetFilter]);
+  const hasKpiFilter = Boolean(dateFrom || dateTo || selectedDate || strategyFilter || setupFilter || sideFilter || assetFilter);
+  const [filteredAnalytics, setFilteredAnalytics] = useState<typeof journalAnalytics>(null);
+  useEffect(() => {
+    if (!hasKpiFilter) { setFilteredAnalytics(null); return undefined; }
+    let cancelled = false;
+    apiRequest<NonNullable<typeof journalAnalytics>>(`/trades/analytics/journal?${kpiQuery}`)
+      .then((data) => { if (!cancelled) setFilteredAnalytics(data); })
+      .catch(() => { if (!cancelled) setFilteredAnalytics(null); });
+    return () => { cancelled = true; };
+  }, [hasKpiFilter, kpiQuery, journalTrades]);
+  const kpiAnalytics = hasKpiFilter ? filteredAnalytics : journalAnalytics;
+
   function uniqueOptions(values: string[]) {
     const options = new Map<string, string>();
     values.forEach((value) => {
@@ -347,14 +374,14 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
 
       <div className="data-note journal-data-note"><CircleDollarSign size={16} /><span>Broker executions from Dhan are read-only; manual trades remain separately labelled. Realized broker P&amp;L is calculated from matched fills with FIFO and is unavailable when provider charges are missing.</span></div>
 
-      {journalAnalytics && (
+      {kpiAnalytics && (
         <section className="journal-kpis" aria-label="Journal performance">
-          <article className="journal-kpi journal-kpi-primary"><span>Net realized P&amp;L</span><strong className={journalAnalytics.net_pnl === null ? '' : Number(journalAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{journalAnalytics.net_pnl === null ? '—' : formatMoney(journalAnalytics.net_pnl, journalCurrency)}</strong><small>{journalAnalytics.unpriced_closed_trades ? `${journalAnalytics.unpriced_closed_trades} matched trades lack charge data` : `${journalCurrency} · matched closed trades`}</small><small>Expired outcomes unknown are excluded from realized metrics.</small></article>
-          <article className="journal-kpi"><span>Win rate</span><strong>{journalAnalytics.win_rate === null ? '—' : `${journalAnalytics.win_rate}%`}</strong><small>{journalAnalytics.wins} wins · {journalAnalytics.losses} losses</small></article>
-          <article className="journal-kpi"><span>Profit factor</span><strong>{journalAnalytics.profit_factor ?? '—'}</strong><small>Closed-trade analytics</small></article>
-          <article className="journal-kpi"><span>Expectancy</span><strong>{journalAnalytics.expectancy === null ? '—' : formatMoney(journalAnalytics.expectancy, journalCurrency)}</strong><small>Per closed trade</small></article>
-          <article className="journal-kpi"><span>Max drawdown</span><strong className={journalAnalytics.max_drawdown !== null && Number(journalAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{journalAnalytics.max_drawdown === null ? '—' : formatMoney(journalAnalytics.max_drawdown, journalCurrency)}</strong><small>Closed-trade sequence</small></article>
-          <article className="journal-kpi"><span>Journal records</span><strong>{journalAnalytics.trades_logged}</strong><small>{journalAnalytics.fill_count} fills + {journalAnalytics.manual_trade_count} manual = {journalAnalytics.trades_logged} records</small><small>{journalAnalytics.fifo_match_slices} FIFO match slices + {journalAnalytics.manual_trade_count} manual records · {journalAnalytics.matched_closed_trades} closed trades</small><small>{journalAnalytics.real_open_positions} real open · {journalAnalytics.unattributed_fill_rows} unattributable · {journalAnalytics.expired_trades} expired · {journalAnalytics.unmatched_fill_rows} unmatched</small><small>{journalAnalytics.fill_reconciliation}</small></article>
+          <article className="journal-kpi journal-kpi-primary"><span>Net realized P&amp;L</span><strong className={kpiAnalytics.net_pnl === null ? '' : Number(kpiAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{kpiAnalytics.net_pnl === null ? '—' : formatMoney(kpiAnalytics.net_pnl, journalCurrency)}</strong><small>{kpiAnalytics.unpriced_closed_trades ? `${kpiAnalytics.unpriced_closed_trades} matched trades lack charge data` : `${journalCurrency} · matched closed trades${hasKpiFilter ? ' · filtered' : ''}`}</small><small>Expired outcomes unknown are excluded from realized metrics.</small></article>
+          <article className="journal-kpi"><span>Win rate</span><strong>{kpiAnalytics.win_rate === null ? '—' : `${kpiAnalytics.win_rate}%`}</strong><small>{kpiAnalytics.wins} wins · {kpiAnalytics.losses} losses</small></article>
+          <article className="journal-kpi"><span>Profit factor</span><strong>{kpiAnalytics.profit_factor ?? '—'}</strong><small>Closed-trade analytics</small></article>
+          <article className="journal-kpi"><span>Expectancy</span><strong>{kpiAnalytics.expectancy === null ? '—' : formatMoney(kpiAnalytics.expectancy, journalCurrency)}</strong><small>Per closed trade</small></article>
+          <article className="journal-kpi"><span>Max drawdown</span><strong className={kpiAnalytics.max_drawdown !== null && Number(kpiAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{kpiAnalytics.max_drawdown === null ? '—' : formatMoney(kpiAnalytics.max_drawdown, journalCurrency)}</strong><small>Closed-trade sequence</small></article>
+          <article className="journal-kpi"><span>Journal records</span><strong>{kpiAnalytics.trades_logged}</strong><small>{kpiAnalytics.fill_count} fills + {kpiAnalytics.manual_trade_count} manual = {kpiAnalytics.trades_logged} records</small><small>{kpiAnalytics.fifo_match_slices} FIFO match slices + {kpiAnalytics.manual_trade_count} manual records · {kpiAnalytics.matched_closed_trades} closed trades</small><small>{kpiAnalytics.real_open_positions} real open · {kpiAnalytics.unattributed_fill_rows} unattributable · {kpiAnalytics.expired_trades} expired · {kpiAnalytics.unmatched_fill_rows} unmatched</small><small>{kpiAnalytics.fill_reconciliation}</small></article>
         </section>
       )}
 

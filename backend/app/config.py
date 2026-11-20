@@ -1,6 +1,7 @@
 import ipaddress
 from datetime import date, time
 from decimal import Decimal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr
@@ -105,6 +106,9 @@ class Settings(BaseSettings):
     market_data_refresh_seconds: int = Field(default=300, gt=0)
     market_data_scheduler_enabled: bool = False
     job_worker_enabled: bool = True                                # durable job queue worker + scan scheduler (per-owner scan switch is off by default)
+    scheduler_leader_election_enabled: bool = True                 # only one replica (Postgres advisory lock) runs the in-process periodic loops
+    corporate_action_sync_enabled: bool = True                     # periodically ingest Yahoo dividends/splits for held and watched instruments
+    corporate_action_sync_interval_seconds: int = 21600
     derivatives_scheduler_enabled: bool = False                    # daily instrument-master refresh
     derivatives_master_refresh_hour_ist: int = Field(default=8, ge=0, le=23)
     derivatives_chain_poll_enabled: bool = False                   # live option-chain snapshot polling (rate-limited)
@@ -134,6 +138,11 @@ class Settings(BaseSettings):
     delta_research_enabled: bool = False
     delta_research_db_path: str | None = None
     delta_research_refresh_seconds: int = Field(default=60, ge=30, le=3600)
+    # Execution groundwork (no order transmission exists). "live" is never honoured: see app/execution/mode.py.
+    execution_mode: Literal["research", "monitor", "live"] = "research"
+    execution_max_order_notional_usd: Decimal = Decimal("1000")
+    execution_max_total_exposure_usd: Decimal = Decimal("5000")
+    execution_price_max_age_seconds: int = Field(default=120, ge=5, le=3600)
     broker_encryption_key: SecretStr | None = None
     two_factor_encryption_key: SecretStr | None = None
     broker_zerodha_enabled: bool = False

@@ -190,6 +190,8 @@ type BrokerPortfolioSummary = {
     market_value: string | null;
     synced_at: string | null;
     unavailable_reasons: Partial<Record<PortfolioFigure, string>>;
+    // Holdings whose previous-session daily close was never requested from the provider.
+    previous_close_backfill?: { instrument_id: string; symbol: string; expected_previous_date: string }[];
     coverage?: {
       priced: number;
       total: number;
@@ -585,6 +587,81 @@ function buildInsights(
   return insights;
 }
 
+type RailSummary = {
+  as_of_session: string | null;
+  scope: string;
+  breadth: { advancing: number; declining: number; unchanged: number; unknown: number; total: number };
+  instruments: {
+    instrument_id: string;
+    symbol: string;
+    sector: string | null;
+    sector_source: string | null;
+    status: 'advancing' | 'declining' | 'unchanged' | 'unknown';
+    change_percent: string | null;
+    reason: string | null;
+    missing_previous_date: string | null;
+  }[];
+};
+
+function RailBreadth({ data }: { data: RailSummary }) {
+  const { breadth } = data;
+  const parts = [
+    { key: 'advancing', label: 'Advancing', value: breadth.advancing },
+    { key: 'declining', label: 'Declining', value: breadth.declining },
+    { key: 'unchanged', label: 'Unchanged', value: breadth.unchanged },
+    { key: 'unknown', label: 'Unknown', value: breadth.unknown },
+  ] as const;
+  const unknown = data.instruments.filter((row) => row.status === 'unknown');
+  return (
+    <div className="rail-insight">
+      <div className="rail-bar" role="img" aria-label={parts.map((part) => `${part.value} ${part.label.toLowerCase()}`).join(', ')}>
+        {parts.filter((part) => part.value > 0).map((part) => <span key={part.key} className={`rail-bar-${part.key}`} style={{ flexGrow: part.value }} />)}
+      </div>
+      <ul className="rail-legend">
+        {parts.map((part) => <li key={part.key}><i className={`rail-dot rail-bar-${part.key}`} />{part.label}<strong>{part.value}</strong></li>)}
+      </ul>
+      <p className="rail-note">{data.scope}{data.as_of_session ? ` Session ${data.as_of_session}.` : ''} Moves use stored real daily closes.</p>
+      {unknown.length > 0 && (
+        <details className="rail-details">
+          <summary>{unknown.length} unknown</summary>
+          <ul>{unknown.map((row) => <li key={row.instrument_id}><strong>{row.symbol}</strong> {row.reason ?? 'unavailable'}</li>)}</ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function RailSectors({ data }: { data: RailSummary }) {
+  const groups = new Map<string, RailSummary['instruments']>();
+  for (const row of data.instruments) {
+    const key = row.sector ?? '';
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const ordered = [...groups.entries()].sort((a, b) => (a[0] === '' ? 1 : b[0] === '' ? -1 : b[1].length - a[1].length));
+  return (
+    <div className="rail-insight">
+      {ordered.map(([sector, rows]) => (
+        <section key={sector || 'unclassified'} className="rail-sector">
+          <h4>{sector || 'Unclassified'}<span>{rows.length}</span></h4>
+          <ul>
+            {rows.map((row) => (
+              <li key={row.instrument_id} title={row.reason ?? undefined}>
+                <strong>{row.symbol}</strong>
+                <span className={row.change_percent === null ? undefined : tone(row.change_percent)}>
+                  {row.change_percent === null ? '—' : `${Number(row.change_percent) > 0 ? '+' : ''}${row.change_percent}%`}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {sector === '' && <small className="rail-note">No stored sector classification for these; nothing is guessed.</small>}
+          {sector !== '' && rows[0].sector_source && <small className="rail-note">Source: {rows[0].sector_source}</small>}
+        </section>
+      ))}
+      <p className="rail-note">{data.scope} Decision support, not investment advice.</p>
+    </div>
+  );
+}
+
 export function OverviewPage({ workspace }: { workspace: Props }) {
   const [dhanPortfolio, setDhanPortfolio] = useState<DhanPortfolio | null>(null);
   const [brokerSummary, setBrokerSummary] = useState<BrokerPortfolioSummary | null>(null);
@@ -597,6 +674,10 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyRange, setHistoryRange] = useState<(typeof HISTORY_RANGES)[number]['label']>('1D');
   const [railTab, setRailTab] = useState<'watchlist' | 'sector' | 'breadth'>('watchlist');
+  const [railSummary, setRailSummary] = useState<RailSummary | null>(null);
+  const [railError, setRailError] = useState<string | null>(null);
+  const [railLoading, setRailLoading] = useState(false);
+  const [railRefreshKey, setRailRefreshKey] = useState(0);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const lastPortfolioPushSequence = useRef(0);
@@ -636,6 +717,59 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     setFetchedAt(requestedAt);
     setClock(Date.now());
   }, [portfolioId]);
+
+  // Day change needs the previous session's stored real daily close. When the backend reports
+  // a holding whose previous session was never requested, ask the history-sync endpoint (real
+  // Dhan daily bars) once per instrument and date, then refresh. Nothing is estimated here.
+  const previousCloseRequested = useRef(new Set<string>());
+  useEffect(() => {
+    const wanted = (brokerSummary?.brokers.find((broker) => broker.source === 'dhan')?.previous_close_backfill ?? [])
+      .filter((item) => !previousCloseRequested.current.has(`${item.instrument_id}:${item.expected_previous_date}`));
+    if (wanted.length === 0) return;
+    wanted.forEach((item) => previousCloseRequested.current.add(`${item.instrument_id}:${item.expected_previous_date}`));
+    void (async () => {
+      await Promise.allSettled(wanted.map((item) => {
+        const start = new Date(`${item.expected_previous_date}T00:00:00Z`);
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        const query = new URLSearchParams({ interval: '1d', start: start.toISOString(), end: end.toISOString() });
+        return apiRequest(`/market-data/instruments/${item.instrument_id}/history/sync?${query.toString()}`, { method: 'POST' });
+      }));
+      await refreshDhanData().catch(() => undefined);
+    })();
+  }, [brokerSummary, refreshDhanData]);
+
+  // Sector and breadth are derived on the backend from stored data for the user's own instruments.
+  const railInstrumentIds = [...new Set([
+    ...(dhanPortfolio?.holdings ?? []).map((holding) => holding.instrument_id),
+    ...watchlist.map((item) => item.instrument_id),
+  ].filter((id): id is string => Boolean(id)))].sort().join(',');
+  useEffect(() => {
+    if (railTab === 'watchlist' || !railInstrumentIds) return;
+    let cancelled = false;
+    setRailLoading(true);
+    apiRequest<RailSummary>(`/market-data/rail-summary?instrument_ids=${railInstrumentIds}`)
+      .then((data) => { if (!cancelled) { setRailSummary(data); setRailError(null); } })
+      .catch((error: unknown) => { if (!cancelled) setRailError(error instanceof Error ? error.message : 'Unavailable'); })
+      .finally(() => { if (!cancelled) setRailLoading(false); });
+    return () => { cancelled = true; };
+  }, [railTab, railInstrumentIds, brokerSummary, railRefreshKey]);
+
+  // Fetch (once per instrument and date) the real previous-session close the backend reports missing.
+  useEffect(() => {
+    const wanted = (railSummary?.instruments ?? []).filter((row) => row.missing_previous_date
+      && !previousCloseRequested.current.has(`${row.instrument_id}:${row.missing_previous_date}`));
+    if (wanted.length === 0) return;
+    wanted.forEach((row) => previousCloseRequested.current.add(`${row.instrument_id}:${row.missing_previous_date}`));
+    void (async () => {
+      await Promise.allSettled(wanted.map((row) => {
+        const start = new Date(`${row.missing_previous_date}T00:00:00Z`);
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        const query = new URLSearchParams({ interval: '1d', start: start.toISOString(), end: end.toISOString() });
+        return apiRequest(`/market-data/instruments/${row.instrument_id}/history/sync?${query.toString()}`, { method: 'POST' });
+      }));
+      setRailRefreshKey((key) => key + 1);
+    })();
+  }, [railSummary]);
 
   const { status: dhanFeedStatus, quotes: liveWatchlistQuotes, feedHealth: dhanFeedHealth, portfolioValues, instrumentErrors: liveInstrumentErrors } = useWatchlistStream({
     onError: setDhanError,
@@ -1244,8 +1378,13 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
                 : watchlist.length === 0
                   ? <div className="table-empty">No instruments on your watchlist. Add one from Markets.</div>
                   : <ul className="rail-watchlist">{watchlist.map(watchlistRow)}</ul>)}
-            {railTab === 'sector' && <div className="table-empty">No sector data source is connected, so no sector view is shown.</div>}
-            {railTab === 'breadth' && <div className="table-empty">Market breadth has no data source and is not shown.</div>}
+            {railTab !== 'watchlist' && (!railInstrumentIds
+              ? <div className="table-empty">Add holdings or watchlist instruments to see {railTab}.</div>
+              : railError
+                ? <ErrorState title={`${railTab === 'sector' ? 'Sector' : 'Breadth'} unavailable`} message={railError} onRetry={() => setRailTab(railTab)} />
+                : !railSummary || (railLoading && !railSummary)
+                  ? <Skeleton width="12rem" />
+                  : railTab === 'sector' ? <RailSectors data={railSummary} /> : <RailBreadth data={railSummary} />)}
             {railTab === 'watchlist' && <div className="valuation-footnote">Sparklines are stored 5-minute bars of the latest session. Gaps are left as gaps.</div>}
           </div>
         </aside>

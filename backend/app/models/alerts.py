@@ -57,6 +57,10 @@ class AlertRule(Base):
     enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Last evaluation outcome, so a rule that cannot run (stale quote, no history...) is visible.
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_status: Mapped[str | None] = mapped_column(String(16))
+    last_reason: Mapped[str | None] = mapped_column(String(200))
 
 
 class AlertEvent(Base):
