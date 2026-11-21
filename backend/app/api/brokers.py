@@ -926,6 +926,20 @@ def _upsert_dhan_trades(
     return inserted, updated, skipped
 
 
+def _merge_trade_book(reader: Any, history_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+    """Add the current day's trade book to the history rows, skipping fills history already lists (same exchange trade id and contract).
+
+    The latest session's fills can be in the day trade book before Dhan's history endpoint lists them. A trade-book failure never fails the sync:
+    it is reported in the returned note and the history rows are used as they are."""
+    try:
+        book = reader.get_trade_book()
+    except Exception as exc:  # noqa: BLE001
+        return history_rows, f"Dhan's current-day trade book could not be read ({getattr(exc, 'code', type(exc).__name__)}); only trade history was used."
+    seen = {(str(r.get("exchangeTradeId")), str(r.get("securityId"))) for r in history_rows}
+    extra = [r for r in book if (str(r.get("exchangeTradeId")), str(r.get("securityId"))) not in seen]
+    return history_rows + extra, (f"{len(extra)} fill(s) came from Dhan's current-day trade book." if extra else None)
+
+
 def _upsert_dhan_trade(db: Session, row: DhanTradeMirror) -> bool:
     existing = db.scalar(
         select(DhanTradeMirror).where(
@@ -942,8 +956,12 @@ def _upsert_dhan_trade(db: Session, row: DhanTradeMirror) -> bool:
                 DhanTradeMirror.user_id == row.user_id,
                 DhanTradeMirror.source == row.source,
                 DhanTradeMirror.provider_trade_id == row.provider_trade_id,
-                DhanTradeMirror.trade_at == row.trade_at,
                 DhanTradeMirror.security_id == row.security_id,
+                DhanTradeMirror.side == row.side,
+                DhanTradeMirror.quantity == row.quantity,
+                DhanTradeMirror.price == row.price,
+                DhanTradeMirror.trade_at >= row.trade_at - timedelta(hours=12),
+                DhanTradeMirror.trade_at <= row.trade_at + timedelta(hours=12),
             )
         )
     if existing is None and row.provider_trade_id is not None:
@@ -1555,6 +1573,7 @@ def sync_broker(
                     break
             else:
                 raise DhanAccountRequestError("provider_pagination_limit")
+            trade_records, _book_note = _merge_trade_book(dhan_reader, trade_records)
             normalized_trades = _normalize_dhan_trades(
                 trade_records, _user_id(active_session), now
             )
@@ -1989,7 +2008,9 @@ def backfill_dhan_trades(
             break
         page += 1
 
+    book_note: str | None = None
     if not failure:
+        chunk_rows, book_note = _merge_trade_book(reader, chunk_rows)
         try:
             all_rows = _normalize_dhan_trades(
                 chunk_rows, _user_id(active_session), now, source="dhan"
@@ -2069,7 +2090,7 @@ def backfill_dhan_trades(
         "updated": updated,
         "skipped": len(skipped_rows),
         "records_received": len(chunk_rows),
-        "note": ("Dhan returned no trades for this date range." if not chunk_rows else
+        "note": book_note or ("Dhan returned no trades for this date range." if not chunk_rows else
                  "Dhan returned trades but they were already stored." if inserted == 0 and updated == len(all_rows) else None),
         "years": yearly_results,
     }

@@ -50,3 +50,22 @@ def test_option_fills_with_different_symbol_text_still_pair_by_security_id():  #
     closing = fill("SELL", "4.25", 20, "ONGC 23 NOV 222 PUT")         # custom-symbol style
     result = _match_dhan_fills([opening, closing])
     assert len(result["matches"]) == 1 and result["matches"][0]["side"] == "long" and not result["open_fill_ids"]
+
+
+def test_trade_book_fills_are_added_once_and_a_trade_book_failure_never_fails_the_sync():  # test data only
+    from app.api.brokers import _merge_trade_book
+
+    class Reader:
+        def __init__(self, book=None, error=None):
+            self.book, self.error = book or [], error
+
+        def get_trade_book(self):
+            if self.error:
+                raise self.error
+            return self.book
+    history = [{"exchangeTradeId": "1", "securityId": "52123"}]
+    sell = {"exchangeTradeId": "2", "securityId": "52123"}
+    merged, note = _merge_trade_book(Reader([history[0], sell]), history)
+    assert [r["exchangeTradeId"] for r in merged] == ["1", "2"] and "1 fill" in note       # the fill history already lists is not added twice
+    merged, note = _merge_trade_book(Reader(error=RuntimeError("down")), history)
+    assert merged == history and "could not be read" in note

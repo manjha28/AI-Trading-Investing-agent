@@ -53,6 +53,18 @@ def _probe_dhan(db: Session, needle: str, from_date: str) -> None:
         page += 1
         time.sleep(1)
     print(f"  Dhan returned {total} fills in total, {shown} mentioning {needle}.")
+    print("\nDHAN LIVE current-day trade book:")
+    try:
+        book = reader.get_trade_book()
+    except Exception as exc:  # noqa: BLE001
+        print("  request failed ->", getattr(exc, "code", None) or type(exc).__name__)
+        return
+    hits = 0
+    for r in book:
+        if needle in f"{r.get('tradingSymbol') or ''} {r.get('customSymbol') or ''}".upper():
+            hits += 1
+            print(f"  {r.get('exchangeTime') or r.get('updateTime')}  {r.get('transactionType'):<4} qty={r.get('tradedQuantity')} price={r.get('tradedPrice')} sec={r.get('securityId')} tradeId={r.get('exchangeTradeId')}")
+    print(f"  trade book holds {len(book)} fills, {hits} mentioning {needle}.")
 
 
 def main() -> int:

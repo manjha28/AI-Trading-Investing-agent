@@ -554,6 +554,11 @@ class DhanReadOnlyAccountAdapter:
             raise DhanAccountRequestError("invalid_provider_response")
         return payload
 
+    def get_trade_book(self) -> list[dict[str, Any]]:
+        """The current trading day's executed trades (Dhan GET /trades). Fills of the latest session can appear here before the history endpoint lists them."""
+        payload = self._get("/trades")
+        return self._records(payload)
+
     def get_past_trades(
         self, from_date: str, to_date: str, page: int
     ) -> list[dict[str, Any]]:
