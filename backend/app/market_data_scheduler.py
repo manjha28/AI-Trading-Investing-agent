@@ -191,7 +191,10 @@ def refresh_stale_universe_closes(
         except Exception as error:
             db.rollback()
             failed += 1
-            reasons.setdefault(f"error {type(error).__name__}", []).append(instrument.symbol)
+            detail = getattr(error, "detail", None)
+            detail = (detail.get("message") or detail.get("code") if isinstance(detail, dict) else detail) if detail else None
+            label = f"error {type(error).__name__}" + (f" {getattr(error, 'status_code', '')}: {str(detail)[:120]}" if detail else "")
+            reasons.setdefault(label, []).append(instrument.symbol)
         attempted += 1
     for why, symbols in reasons.items():
         logger.warning("Universe close refresh unavailable for %d symbols (%s): %s%s", len(symbols), why, ", ".join(symbols[:12]), " ..." if len(symbols) > 12 else "")

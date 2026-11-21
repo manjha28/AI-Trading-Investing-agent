@@ -217,6 +217,11 @@ def _instrument_identity(row: DhanTradeMirror) -> tuple[Any, ...]:
     if symbol in {"", "0", "NONE", "UNKNOWN"}:
         symbol = ""
     if segment in _DERIVATIVE_SEGMENTS:
+        security_id = (row.security_id or "").strip()
+        if security_id not in {"", "0"}:
+            # Dhan's security id names exactly one contract. Fills of the same contract can carry different symbol texts
+            # (trading symbol vs custom symbol, or none at all), which used to keep an opening and a closing fill from matching.
+            return segment, "SEC:" + security_id
         expiry, strike, option_type = _contract_details(row)
         return segment, symbol or row.security_id, expiry, strike, option_type
     return segment, symbol or row.security_id
