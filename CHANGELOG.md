@@ -190,3 +190,4 @@
 - Technical engine pruned to trend/structure/momentum direction (no Fibonacci, no action mapping, no extra score weights); baseline-vs-engine backtest comparison (technical_backtest.compare); Dhan-only price data (MARKET_DATA_DHAN_ONLY).
 - Daily report: pivot support/resistance now come from the engine's nearest classic pivots (the card read an old field and showed blanks).
 - Entry range fix: the buy band is anchored at the top of the support zone and capped at 1 daily ATR and 1.2% / 2% / 3% of price (swing / positional / long-term); pullback levels more than 6% / 10% / 15% below price are not offered.
+- Research: entry bands follow the support/resistance core and the stock's own daily ATR (no fixed % caps); every BUY gets a range (watch level) or goes to a new Radar bucket that is rechecked every 3h; recent listings use weekly candles for the long-term view; shared Yahoo circuit breaker stops the 401 flood; new env RESEARCH_RADAR_*.

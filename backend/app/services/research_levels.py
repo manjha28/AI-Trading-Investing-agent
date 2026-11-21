@@ -47,7 +47,7 @@ def build_levels(technicals: dict[str, Any], assessment: dict[str, Any] | None, 
             entry, stop = eng["entry"], eng["stop_loss"]
             pivot_support, pivot_resistance = nearest_pivots(eng["pivots"], eng["current_price"])
             out[horizon] = {
-                "status": "available", "entry_status": eng["entry_status"], "selected_setup": eng["selected_setup"], "direction": eng["direction"],
+                "status": "available", "entry_status": eng["entry_status"], "watch_only": bool(eng.get("watch_only")), "limited_history": eng.get("limited_history"), "selected_setup": eng["selected_setup"], "direction": eng["direction"],
                 "technical_score": eng["technical_score"], "market_regime": eng["market_regime"], "reference_close": eng["current_price"],
                 "entry_zone": {"low": entry["low"], "high": entry["high"]}, "planned_entry": entry["planned_price"], "breakout_trigger": entry.get("breakout_trigger"),
                 "extension_atr": entry.get("extension_atr"), "extension": entry.get("extension"),

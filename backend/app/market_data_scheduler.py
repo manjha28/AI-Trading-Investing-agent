@@ -102,6 +102,9 @@ def _sync_corporate_actions_sync() -> int:
         PrefetchedActionsProvider, _yfinance_ticker, fetch_recent_actions, sync_yfinance_corporate_actions,
     )
 
+    from app import yahoo_guard
+    if not yahoo_guard.allowed():
+        return 0          # Yahoo is refusing this server; retried automatically after the cooldown
     inserted = 0
     with Session(engine) as db:
         users = db.scalars(select(User.id).where(User.email_verified.is_(True))).all()
@@ -113,6 +116,11 @@ def _sync_corporate_actions_sync() -> int:
             except ValueError:
                 continue
         bulk_events, bulk_failed = fetch_recent_actions(list(tickers)) if tickers else ({}, set())
+        if tickers and len(bulk_failed) >= 0.8 * len(tickers):
+            yahoo_guard.trip()
+            return inserted
+        if tickers:
+            yahoo_guard.record(True)
         for user_id in users:
             try:
                 tracked = _tracked_instrument_ids(db, user_id)

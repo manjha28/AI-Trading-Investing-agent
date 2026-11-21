@@ -10,10 +10,10 @@ export type Levels = {
 };
 export type Confidence = { score: number; band: 'High' | 'Medium' | 'Low'; note: string; parts: { key: string; label: string; value: number; weight: number }[]; horizon?: string };
 type HorizonRec = { recommendation: string | null; score: number | null; confidence: number | null; buy_confidence?: Confidence | null; why_not: string[] };
-type Bucket = 'buy' | 'hold' | 'no_new_entry' | 'not_enough_data';
+type Bucket = 'buy' | 'radar' | 'hold' | 'no_new_entry' | 'not_enough_data';
 type Row = {
   instrument_id: string; symbol: string; name: string; held: boolean; quantity: string | null; bucket: Bucket; action: string; researched_at: string | null; stale: boolean;
-  horizons: Record<string, HorizonRec>; levels: Record<string, Levels | null>; last_close?: string | null; confidence?: Confidence | null; researching?: boolean; data_note?: string | null;
+  horizons: Record<string, HorizonRec>; levels: Record<string, Levels | null>; last_close?: string | null; confidence?: Confidence | null; researching?: boolean; data_note?: string | null; radar_reasons?: string[] | null;
 };
 type Coverage = { universe: number; researched_current: number; stale: number; never_researched: number; last_research_at: string | null; universe_rule: string; schedule: string };
 type Report = { coverage?: Coverage; as_of: string; buckets: Record<Bucket, Row[]>; counts: Record<Bucket, number>; scope: string; disclaimer: string; researching?: string[] };
@@ -22,7 +22,7 @@ const HORIZONS = ['swing', 'positional', 'long_term'] as const;
 const HORIZON_NAME: Record<string, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
 const HORIZON_SPAN: Record<string, string> = { swing: 'days to weeks', positional: 'weeks to months', long_term: 'months to years' };
 const TABS: { key: Bucket | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' }, { key: 'buy', label: 'Ready to buy' }, { key: 'hold', label: 'Hold' }, { key: 'no_new_entry', label: 'No new entry' }, { key: 'not_enough_data', label: 'Needs data' },
+  { key: 'all', label: 'All' }, { key: 'buy', label: 'Ready to buy' }, { key: 'radar', label: 'Radar' }, { key: 'hold', label: 'Hold' }, { key: 'no_new_entry', label: 'No new entry' }, { key: 'not_enough_data', label: 'Needs data' },
 ];
 const REC_TEXT: Record<string, string> = { BUY: 'Buy', HOLD: 'Hold', AVOID: 'Avoid', WAIT: 'Wait', INSUFFICIENT_EVIDENCE: 'No data' };
 const POLL_FAST_MS = 15_000;
@@ -98,7 +98,7 @@ function CompactRow({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
   return <tr className={row.researching ? 'rt-skel' : ''}>
     <td><button type="button" className="rt-sym" onClick={() => onOpen(row)}>{row.symbol}</button><small className="rt-name">{row.name}</small></td>
     <td>{row.held ? <span className="rt-chip rt-chip-held">Holding {row.quantity ? Number(row.quantity).toLocaleString('en-IN') : ''}</span> : <span className="rt-muted">—</span>}</td>
-    <td className="rt-act">{row.researching ? <span className="rt-spin">Researching…</span> : row.action}{row.data_note && <small className="rt-datanote">{row.data_note}</small>}{row.stale && !row.data_note && !row.researching && row.researched_at && <small className="rt-datanote">Last researched {when(row.researched_at)}; a refresh is queued for tonight's run.</small>}</td>
+    <td className="rt-act">{row.researching ? <span className="rt-spin">Researching…</span> : row.action}{row.radar_reasons?.map((r) => <small key={r} className="rt-datanote">{r}</small>)}{row.data_note && <small className="rt-datanote">{row.data_note}</small>}{row.stale && !row.data_note && !row.researching && row.researched_at && <small className="rt-datanote">Last researched {when(row.researched_at)}; a refresh is queued for tonight's run.</small>}</td>
     <td className="rt-dots">{HORIZONS.map((h) => { const rec = row.horizons[h]?.recommendation; return <span key={h} className={`rt-dot rt-dot-${rec ?? 'none'}`} title={`${HORIZON_NAME[h]}: ${REC_TEXT[rec ?? ''] ?? '—'}`}>{HORIZON_NAME[h][0]}</span>; })}</td>
     <td className="r">{inr(row.last_close)}</td>
     <td className="rt-muted">{when(row.researched_at)}</td>
@@ -121,14 +121,14 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
     return () => { window.clearInterval(timer); window.removeEventListener('focus', onFocus); };
   }, [load, researching]);
   const open = (row: Row) => onOpen({ id: row.instrument_id, symbol: row.symbol, display_name: row.name, venue: 'NSE', is_synthetic: false });
-  const rows = useMemo(() => (report ? (tab === 'all' ? (Object.values(report.buckets).flat() as Row[]) : report.buckets[tab]) : []), [report, tab]);
+  const rows = useMemo(() => (report ? (tab === 'all' ? (Object.values(report.buckets).flat() as Row[]) : (report.buckets[tab] ?? [])) : []), [report, tab]);
   if (!report) return <section className="rt-card rt-daily" aria-label="Daily report">{error ? <p className="rt-alert rt-alert-error" role="alert">{error}</p> : <div className="rt-skel-block" aria-busy="true">Loading the daily report…</div>}</section>;
   const total = Object.values(report.counts).reduce((a, b) => a + b, 0);
   const buys = tab === 'all' || tab === 'buy' ? report.buckets.buy : [];
   const allOthers = rows.filter((r) => r.bucket !== 'buy');
   const others = allOthers.slice(0, limit);
   const tiles: { key: Bucket; label: string; hint: string }[] = [
-    { key: 'buy', label: 'Ready to buy', hint: 'with levels' }, { key: 'hold', label: 'Hold', hint: 'in your portfolio' },
+    { key: 'buy', label: 'Ready to buy', hint: 'with a range' }, { key: 'radar', label: 'Radar', hint: 'buy signal, no range yet' }, { key: 'hold', label: 'Hold', hint: 'in your portfolio' },
     { key: 'no_new_entry', label: 'No new entry', hint: 'not a buy now' }, { key: 'not_enough_data', label: 'Needs data', hint: 'not current' },
   ];
   return <section className="rt-daily" aria-label="Daily report">
@@ -140,7 +140,7 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
     {report.coverage && <details className="rt-cover"><summary><b>Coverage</b> · {report.coverage.researched_current} of {report.coverage.universe} stocks researched and current{report.coverage.stale > 0 ? ` · ${report.coverage.stale} not current` : ''}{report.coverage.never_researched > 0 ? ` · ${report.coverage.never_researched} waiting` : ''} · last run {when(report.coverage.last_research_at)}</summary>
       <p className="rt-note"><b>Universe:</b> {report.coverage.universe_rule}</p><p className="rt-note"><b>Schedule:</b> {report.coverage.schedule}</p>
       <p className="rt-note">Every stock in the universe is listed below, including any that failed or are still waiting. Nothing is hidden.</p></details>}
-    <div className="rt-tiles">{tiles.map((t) => <button key={t.key} type="button" className={`rt-tile rt-tile-${t.key}${tab === t.key ? ' active' : ''}`} onClick={() => setTab(tab === t.key ? 'all' : t.key)}><b>{report.counts[t.key]}</b><span>{t.label}</span><small>{t.hint}</small></button>)}</div>
+    <div className="rt-tiles">{tiles.map((t) => <button key={t.key} type="button" className={`rt-tile rt-tile-${t.key}${tab === t.key ? ' active' : ''}`} onClick={() => setTab(tab === t.key ? 'all' : t.key)}><b>{report.counts[t.key] ?? 0}</b><span>{t.label}</span><small>{t.hint}</small></button>)}</div>
     <div className="rt-seg rt-seg-wide" role="tablist" aria-label="Filter">{TABS.map((t) => <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''} onClick={() => setTab(t.key)}>{t.label}</button>)}</div>
     {total === 0 && <div className="rt-card rt-empty-state"><h3>Nothing to report yet</h3><p>Add a stock to a watchlist or record a holding. It is researched automatically and appears here within a minute or two.</p></div>}
     {buys.length > 0 && <><h3 className="rt-h">Ready to buy <small>highest confidence first</small></h3><div className="rt-buy-grid">{buys.map((r) => <BuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}

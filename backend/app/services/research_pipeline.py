@@ -48,6 +48,7 @@ from app.services.indicators import compute_indicators
 from app.services import news_highlights
 from app.services.news_sentiment import CLASSIFIER_VERSION, aggregate_instrument_sentiment
 from app.services.price_freshness import is_continuous_market, is_official_session_close
+from app import yahoo_guard
 from app.services import dhan_company_info, valuation_inputs
 from app.services import valuation as valuation_service
 from app.services.research_scoring import build_assessment, daily_bar_staleness, expected_last_completed_session
@@ -1008,6 +1009,8 @@ def _refresh_yahoo_fundamentals(
     if snapshot is not None and (snapshot_has_values or periods_have_values) and not fundamentals_service.is_stale(snapshot.fetched_at, now):
         _refresh_yahoo_valuation_inputs(db, instrument, now)
         return "cached", None, snapshot.fetched_at.isoformat()
+    if not yahoo_guard.allowed():
+        return "unavailable", f"Yahoo Finance is blocking or rate-limiting this server; its calls are paused for about {yahoo_guard.seconds_left() // 3600 + 1} h.", None
     try:
         providers = _providers(create_market_data_provider_chain(("yfinance",)))
         provider = next((item for item in providers if item.name == "yfinance"), None)
@@ -1017,8 +1020,10 @@ def _refresh_yahoo_fundamentals(
         _rows, snapshot = fundamentals_service.sync_instrument_fundamentals(
             db, instrument, candidate.provider_symbol
         )
+        yahoo_guard.record(True)
         return "refreshed", None, snapshot.fetched_at.isoformat()
     except (BrokerAdapterError, HTTPException, MarketDataProviderError, TimeoutError, ValueError) as exc:
+        yahoo_guard.record(False)
         db.rollback()
         category = getattr(exc, "code", type(exc).__name__)
         return "failed", str(category)[:120], None
@@ -1030,6 +1035,8 @@ def _refresh_yahoo_valuation_inputs(db: Session, instrument: Instrument, now: da
     newest = max((datetime.fromisoformat(r["retrieved_at"]) for r in stored.values()), default=None)
     if newest is not None and now - newest.astimezone(timezone.utc) < timedelta(hours=12):
         return
+    if not yahoo_guard.allowed():
+        return
     try:
         providers = _providers(create_market_data_provider_chain(("yfinance",)))
         provider = next((item for item in providers if item.name == "yfinance"), None)
@@ -1037,7 +1044,10 @@ def _refresh_yahoo_valuation_inputs(db: Session, instrument: Instrument, now: da
             return
         candidate, _mapping = _resolve_provider_candidate(db, instrument, provider)
         fundamentals_service.refresh_valuation_inputs(db, instrument, candidate.provider_symbol)
-    except (BrokerAdapterError, HTTPException, MarketDataProviderError, TimeoutError, ValueError):
+        yahoo_guard.record(True)
+    except Exception:  # noqa: BLE001 - Yahoo is optional; any failure counts toward the shared breaker
+        yahoo_guard.record(False)
+        db.rollback()
         logger.warning("yahoo_valuation_inputs_refresh_failed instrument_id=%s", instrument.id)
 
 

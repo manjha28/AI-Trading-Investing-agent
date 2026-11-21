@@ -20,7 +20,7 @@ from app.services.research_levels import PARAMS
 
 HORIZONS = tuple(PARAMS)            # swing, positional, long_term
 STALE_AFTER = timedelta(hours=40)   # a nightly run missed by more than a day is flagged, not trusted silently
-BUCKETS = ("buy", "hold", "no_new_entry", "not_enough_data")
+BUCKETS = ("buy", "radar", "hold", "no_new_entry", "not_enough_data")
 
 
 def held_quantities(db: Session, user_id: UUID) -> dict[str, Decimal]:
@@ -33,11 +33,22 @@ def held_quantities(db: Session, user_id: UUID) -> dict[str, Decimal]:
     return held
 
 
-def classify(recs: dict[str, str | None], held: bool, fresh: bool) -> tuple[str, str]:
+def is_radar(sections: dict[str, Any]) -> bool:
+    """A BUY on some horizon but no entry range could be determined for any BUY horizon (history too short, no usable structure, data gap)."""
+    buys = research_alerts.buy_horizons(sections)
+    if not buys:
+        return False
+    level_sets = (sections.get("levels") or {}).get("horizons") or {}
+    return not any((level_sets.get(h) or {}).get("status") == "available" for h in buys)
+
+
+def classify(recs: dict[str, str | None], held: bool, fresh: bool, has_range: bool = True) -> tuple[str, str]:
     """-> (bucket, plain-language action). ``recs`` maps horizon -> final recommendation."""
     values = [recs.get(h) for h in HORIZONS]
     if not fresh or all(v in (None, "INSUFFICIENT_EVIDENCE") for v in values):
         return "not_enough_data", ("Keep holding; research data is not current enough to say more." if held else "No call: research data is missing or not current.")
+    if "BUY" in values and not has_range:
+        return "radar", "On radar: a buy signal exists but no entry range can be determined yet. It is rechecked more often than other stocks."
     if "BUY" in values:
         return "buy", ("In your portfolio; a buy signal exists, so adding is possible at the levels below." if held else "Can be bought at the levels below.")
     if held:
@@ -75,14 +86,15 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
         stale = now - finished > STALE_AFTER or (sections.get("technicals") or {}).get("status") != "available"
         horizons = ((sections.get("assessment") or {}).get("horizons") or {})
         recs = {h: (horizons.get(h) or {}).get("recommendation") for h in HORIZONS}
-        bucket, action = classify(recs, row["held"], not stale)
+        bucket, action = classify(recs, row["held"], not stale, not is_radar(sections))
         level_sets = ((sections.get("levels") or {}).get("horizons") or {})
         row.update(
             bucket=bucket, action=action, researched_at=finished.isoformat(), stale=stale,
             horizons={h: {"recommendation": recs[h], "score": (horizons.get(h) or {}).get("score"), "confidence": (horizons.get(h) or {}).get("confidence"),
                           "buy_confidence": _buy_conf(sections, h),
                           "why_not": ((horizons.get(h) or {}).get("blockers") or [g.get("detail") for g in (horizons.get(h) or {}).get("gates", [])])[:2]} for h in HORIZONS},
-            levels={h: level_sets.get(h) for h in HORIZONS if recs[h] == "BUY"} if bucket == "buy" else {},
+            levels={h: level_sets.get(h) for h in HORIZONS if recs[h] == "BUY"} if bucket in ("buy", "radar") else {},
+            radar_reasons=[f"{h.replace('_', '-').title()}: {(level_sets.get(h) or {}).get('reason') or 'no range'}" for h in HORIZONS if recs[h] == "BUY"] if bucket == "radar" else None,
             last_close=(sections.get("technicals") or {}).get("latest_close"),
             confidence=research_alerts.headline_confidence(sections) if bucket == "buy" else None,
             data_note=(((sections.get("market_data_recovery") or {}).get("latest_candle") or {}).get("reason") if stale else None),

@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import engine
 from app.models import BrokerCredential, User
-from app.research_daily import user_universe
+from app import yahoo_guard
+from app.research_daily import priority_universe
 from app.services import peer_universe, research_pipeline
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,10 @@ def run_cycle() -> dict[str, object]:
                 summary["dhan"] = {k: v for k, v in result.items() if k != "failures"}
         now = datetime.now(timezone.utc)
         for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
-            for instrument in user_universe(db, user_id):
+            for instrument in priority_universe(db, user_id):   # Yahoo is only used for the owner's own stocks, never the whole master list
+                if not yahoo_guard.allowed():
+                    summary["yahoo"] = "paused_by_circuit_breaker"
+                    break
                 try:
                     research_pipeline._refresh_yahoo_valuation_inputs(db, instrument, now)
                     summary["yahoo_refreshed"] = int(summary["yahoo_refreshed"]) + 1  # type: ignore[call-overload]

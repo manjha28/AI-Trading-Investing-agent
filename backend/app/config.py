@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     valuation_refresh_interval_seconds: int = 1800
     research_daily_enabled: bool = True                           # nightly backend research for each user's watchlist + held stocks
     research_daily_max_per_cycle: int = 120
+    research_radar_recheck_hours: float = 3.0                     # stocks on the radar (buy signal, no entry range yet) are re-researched this often
+    research_radar_max_per_pass: int = 30
     research_daily_pause_seconds: float = 2.0
     market_data_dhan_only: bool = False                           # True: price history/quotes use Dhan only, never Angel One / Yahoo fallbacks
     news_ingest_enabled: bool = True                              # scheduled news + filings ingestion (rotating per-stock coverage)

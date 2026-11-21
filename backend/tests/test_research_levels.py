@@ -160,13 +160,48 @@ def test_nearest_pivots_picks_the_closest_support_below_and_resistance_above(): 
     assert nearest_pivots(pivots, "90.00")[0] is None and nearest_pivots(None, "90.00") == (None, None)
 
 
-def test_entry_zone_is_narrow_on_every_horizon():  # test data only: volatile weekly/monthly charts must not widen the buy band
+def test_entry_band_follows_the_stocks_own_volatility_not_a_fixed_percentage():  # test data only
     for seed, vol in ((7, 0.013), (3, 0.03), (11, 0.045)):
-        df = make(1500, vol=vol, seed=seed)
-        out = te.analyze(df)
-        cfg = te.EngineConfig()
+        out = te.analyze(make(1500, vol=vol, seed=seed))
         for h, v in out["horizons"].items():
             if v["status"] != "available" or not v["entry"]:
                 continue
-            width_pct = (float(v["entry"]["high"]) - float(v["entry"]["low"])) / float(v["current_price"]) * 100
-            assert width_pct <= cfg.entry_zone_max_pct[h] + 0.15, (seed, h, width_pct)
+            atr_d = v["atr"]["atr14_daily"]
+            width = float(v["entry"]["high"]) - float(v["entry"]["low"])
+            assert width <= 1.45 * atr_d + 0.1, (seed, h, width, atr_d)       # about 0.7 daily ATR for pullbacks; at most ~1.35 for a breakout band
+
+
+def test_pullback_band_is_centred_on_the_support_core_inside_a_wide_cluster():
+    ind = te.indicators(make(600))
+    a = ind["atr14"]
+    c = ind["close"]
+    wide = {"low": c - 2.0 * a, "high": c - 0.5 * a, "mid": c - 1.25 * a, "core": c - 0.7 * a, "strength": 3, "families": ["swing", "ema"], "labels": ["EMA 20"], "kind": "support"}
+    scen = te.entry_scenarios("positional", ind, [wide], "WEAK_UPTREND", te.EngineConfig(), a / 3)["PULLBACK_ENTRY"]
+    lo, hi = scen["zone"]
+    assert abs((lo + hi) / 2 - wide["core"]) < 1e-9 and hi - lo < 0.5 * (wide["high"] - wide["low"])
+
+
+def test_every_buy_gets_a_range_even_without_a_confirmed_setup():
+    df = make(1500, drift=-0.0009, seed=5)                                  # a falling chart: no confirmed long setup
+    out = te.analyze(df)
+    shown = [v for v in out["horizons"].values() if v["status"] == "available"]
+    assert shown and all(v["entry"] and v["stop_loss"] and v["targets"] for v in shown)
+    assert any(v["watch_only"] for v in shown) and all(v["entry_status"] != "ENTER_NOW" for v in shown if v["watch_only"])
+
+
+def test_recent_listing_uses_weekly_candles_for_long_term_and_says_so():
+    short = make(1500).iloc[-290:]                                          # about 13 months of daily candles
+    v = te.analyze(short)["horizons"]["long_term"]
+    assert v["status"] == "available" and v["primary_timeframe"] == "weekly" and "Limited history" in v["limited_history"]
+    assert te.analyze(make(1500).iloc[-150:])["horizons"]["long_term"]["status"] == "unavailable"       # too little for any view
+
+
+def test_buy_without_a_determinable_range_goes_to_radar():
+    from app.services.research_report import classify, is_radar
+    buy = {"swing": "BUY", "positional": "HOLD", "long_term": "HOLD"}
+    assert classify(buy, False, True, has_range=False)[0] == "radar" and classify(buy, False, True, has_range=True)[0] == "buy"
+    sec = {"assessment": {"horizons": {"swing": {"recommendation": "BUY"}, "positional": {"recommendation": "HOLD"}, "long_term": {"recommendation": "HOLD"}}},
+           "levels": {"horizons": {"swing": {"status": "insufficient_history", "reason": "short"}}}}
+    assert is_radar(sec) is True
+    sec["levels"]["horizons"]["swing"] = {"status": "available"}
+    assert is_radar(sec) is False and is_radar({"assessment": {"horizons": {}}}) is False

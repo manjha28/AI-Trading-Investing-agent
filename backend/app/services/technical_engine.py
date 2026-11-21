@@ -24,7 +24,7 @@ HORIZONS = ("swing", "positional", "long_term")
 PRIMARY = {"swing": "D", "positional": "W", "long_term": "M"}
 CONFIRM = {"swing": "W", "positional": "D", "long_term": "W"}
 LABELS = {"D": "daily", "W": "weekly", "M": "monthly"}
-MIN_BARS = {"D": 120, "W": 52, "M": 24}      # completed candles needed on the primary timeframe
+MIN_BARS = {"D": 120, "W": 40, "M": 24}      # completed candles needed on the primary timeframe
 
 
 @dataclass
@@ -38,9 +38,8 @@ class EngineConfig:
     atr_stop_mult: dict[str, float] = field(default_factory=lambda: {"swing": 1.5, "positional": 2.0, "long_term": 3.0})
     max_risk_atr: dict[str, float] = field(default_factory=lambda: {"swing": 3.5, "positional": 4.5, "long_term": 6.0})
     min_rr_first_target: dict[str, float] = field(default_factory=lambda: {"swing": 1.3, "positional": 1.5, "long_term": 1.5})
-    entry_zone_atr: float = 1.0                  # the buy band is at most this many DAILY ATRs wide, whatever the horizon (execution happens on the daily chart)
-    entry_zone_max_pct: dict[str, float] = field(default_factory=lambda: {"swing": 1.2, "positional": 2.0, "long_term": 3.0})   # and never wider than this % of price
-    pullback_reach_max_pct: dict[str, float] = field(default_factory=lambda: {"swing": 6.0, "positional": 10.0, "long_term": 15.0})   # a support further below price than this is not a practical pullback level
+    entry_band_atr: float = 0.35                 # half-width of the buy band around the key level, in DAILY ATRs (the band follows the stock's own volatility)
+    breakout_chase_daily_atr: float = 1.0        # a breakout closed further than this above its trigger waits for a retest
     pullback_reach_atr: float = 3.0              # a support further below price than this is not a pullback candidate
     min_rvol_breakout: float = 1.2
     adx_trending: float = 22.0
@@ -145,9 +144,10 @@ def indicators(df: pd.DataFrame) -> dict[str, Any]:
     pct = None if nat_hist.empty else float((nat_hist <= nat_hist.iloc[-1]).mean())
     vol_ma = df["volume"].rolling(20).mean()
     rvol = None if not vol_ma.iloc[-1] or np.isnan(vol_ma.iloc[-1]) or vol_ma.iloc[-1] == 0 else float(df["volume"].iloc[-1] / vol_ma.iloc[-1])
-    e20, e50, e200 = ema(c, 20), ema(c, 50), ema(c, 200)
+    e10, e20, e50, e200 = ema(c, 10), ema(c, 20), ema(c, 50), ema(c, 200)
     hist = macd_hist(c)
     return {
+        "ema10": last(e10), "ema20_slope": None if e20.dropna().shape[0] < 6 else float((e20.iloc[-1] / e20.iloc[-6] - 1) * 100),
         "close": float(c.iloc[-1]), "atr14": last(a14), "natr": last(nat), "natr_percentile": pct,
         "ema20": last(e20), "ema50": last(e50), "ema200": last(e200),
         "ema50_slope": None if e50.dropna().shape[0] < 11 else float((e50.iloc[-1] / e50.iloc[-11] - 1) * 100),
@@ -194,7 +194,14 @@ def build_zones(df: pd.DataFrame, ind: dict[str, Any], daily: pd.DataFrame, week
         families = {f for _, f, _ in z}
         touches = sum(1 for _, f, _ in z if f == "swing")
         strength = len(families) + min(touches, 3) * 0.5
-        out.append({"low": min(prices), "high": max(prices), "mid": float(np.mean(prices)), "strength": round(strength, 1), "families": sorted(families),
+        w = {"swing": 1.0, "ema": 1.0, "pivot": 0.7, "period": 0.7}
+        best, core = -1.0, float(np.mean(prices))
+        for p0 in prices:                          # core = the price where the most level-weight overlaps within half an ATR (the real "line" inside the cluster)
+            window = [(p, w[f]) for p, f, _ in z if p0 <= p <= p0 + 0.5 * a]
+            weight = sum(x for _, x in window)
+            if weight > best:
+                best, core = weight, sum(p * x for p, x in window) / weight
+        out.append({"low": min(prices), "high": max(prices), "mid": float(np.mean(prices)), "core": float(core), "strength": round(strength, 1), "families": sorted(families),
                     "labels": sorted({lab for _, _, lab in z})[:6], "kind": "support" if np.mean(prices) < price else "resistance"})
     return out
 
@@ -216,10 +223,13 @@ def components(df: pd.DataFrame, ind: dict[str, Any]) -> dict[str, dict[str, Any
              (ind["ema50_slope"] > 0) if ind["ema50_slope"] is not None else None, (c > ind["ema200"]) if ind["ema200"] else None,
              (ind["ema50"] > ind["ema200"]) if ind["ema50"] and ind["ema200"] else None]
     known = [v for v in votes if v is not None]
-    if len(known) >= 3 and ind["adx14"] is not None:
+    short = ind["ema50"] is None and ind.get("ema10") and ind["ema20"] and ind.get("ema20_slope") is not None   # short history: EMA10/EMA20 instead of EMA50/EMA200
+    if short:
+        known = [c > ind["ema10"], c > ind["ema20"], ind["ema10"] > ind["ema20"], ind["ema20_slope"] > 0]
+    if len(known) >= (4 if short else 3) and ind["adx14"] is not None:
         direction = (sum(1 if v else -1 for v in known)) / len(known)
         strength = _clip(ind["adx14"] / 35, 0.35, 1.0)
-        put("trend", 50 + 50 * direction * strength, f"{sum(known)} of {len(known)} trend checks bullish (price/EMA20/EMA50/EMA200 alignment, EMA50 slope); ADX {ind['adx14']:.0f} sets the strength.")
+        put("trend", 50 + 50 * direction * strength, f"{sum(known)} of {len(known)} trend checks bullish ({'price/EMA10/EMA20 alignment and EMA20 slope: short history' if short else 'price/EMA20/EMA50/EMA200 alignment, EMA50 slope'}); ADX {ind['adx14']:.0f} sets the strength.")
     else:
         put("trend", None, "Not enough history for EMA alignment and ADX.")
     highs, lows = swing_points(df, 3 if len(df) > 150 else 2)
@@ -274,7 +284,7 @@ def _extension_label(x: float, cfg: EngineConfig) -> str:
 def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any]], regime: str, cfg: EngineConfig, atr_exec: float | None = None) -> dict[str, dict[str, Any]]:
     c, a = ind["close"], ind["atr14"]
     ae = atr_exec or a                                    # daily ATR: the buy band is sized on the chart where the order is placed
-    width = min(cfg.entry_zone_atr * ae, cfg.entry_zone_max_pct[horizon] / 100 * c)
+    half = cfg.entry_band_atr * ae
     bullish_ok = regime != "DOWNTREND"
     confirm_momentum = (ind["macd_hist"] or 0) > 0 and (ind["rsi14"] or 0) > 48
     supports = sorted((z for z in zones if z["kind"] == "support"), key=lambda z: -z["high"])
@@ -282,14 +292,14 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
     out: dict[str, dict[str, Any]] = {}
 
     # A: pullback to the nearest MEANINGFUL support (multi-factor zone), not merely any touched line
-    sup = next((z for z in supports if (z["strength"] >= 2 or "ema" in z["families"]) and c - z["high"] <= cfg.pullback_reach_atr * a and (c - z["high"]) / c * 100 <= cfg.pullback_reach_max_pct[horizon]), None)
+    sup = next((z for z in supports if (z["strength"] >= 2 or "ema" in z["families"]) and c - z["high"] <= cfg.pullback_reach_atr * a), None)
     if sup is None or not bullish_ok:
-        out["PULLBACK_ENTRY"] = {"status": "INVALID", "reason": "Downtrend regime; dip-buying is avoided." if not bullish_ok else f"No multi-factor support zone within {cfg.pullback_reach_atr:g} ATR and {cfg.pullback_reach_max_pct[horizon]:g}% below price."}
+        out["PULLBACK_ENTRY"] = {"status": "INVALID", "reason": "Downtrend regime; dip-buying is avoided." if not bullish_ok else f"No multi-factor support zone within {cfg.pullback_reach_atr:g} ATR below price."}
     else:
-        hi = sup["high"] + 0.25 * ae                       # anchored at the top of the support zone, where buyers step in on a pullback
-        lo = max(sup["low"], hi - width)                    # the band stays narrow even when the support cluster is wide
+        core = sup.get("core", sup["mid"])                                  # the band is centred on the real support inside the cluster, not on the whole cluster
+        lo, hi = core - half, core + half
         ext = max(0.0, (c - hi)) / a
-        inside = lo - 0.25 * ae <= c <= hi
+        inside = lo - 0.25 * ae <= c <= hi + 0.25 * ae
         status = "ENTER_NOW" if inside and confirm_momentum else "WAIT"
         out["PULLBACK_ENTRY"] = {"status": status, "zone": [lo, hi], "reference": sup["mid"], "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg), "support_zone": sup,
                                  "reason": (f"Price is inside the support zone ({', '.join(sup['labels'][:3])})." if inside else f"Price is {ext:.1f} ATR above the support zone ({', '.join(sup['labels'][:3])}); wait for a pullback.") + ("" if confirm_momentum or not inside else " Momentum is not confirming yet.")}
@@ -301,29 +311,55 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
     if target_zone is None:
         out["BREAKOUT_ENTRY"] = {"status": "INVALID", "reason": "No significant resistance within reach to break."}
     else:
-        trigger = target_zone["high"] + cfg.breakout_buffer_atr * a
+        trigger = target_zone["high"] + cfg.breakout_buffer_atr * ae      # confirmation level: just above the resistance zone, buffer sized in daily ATR
         ext = (c - trigger) / a if c > trigger else 0.0
+        ext_daily = (c - trigger) / ae if c > trigger else 0.0
         vol_ok = (ind["rvol"] or 0) >= cfg.min_rvol_breakout
+        verge = c <= trigger and trigger - c <= 1.0 * ae                      # on the verge: within a daily ATR below the confirmation level
         if c > trigger:
             confirmed = vol_ok and confirm_momentum
             chase = ext > cfg.extension_atr[2]
-            status = "INVALID" if chase else "ENTER_NOW" if confirmed and ext <= cfg.extension_atr[1] else "WAIT"
-            reason = (f"Closed {ext:.1f} ATR above the breakout trigger ({_s(trigger)}). " + ("Too extended; do not chase." if chase else "Volume and momentum confirm." if confirmed else "Volume or momentum has not confirmed; wait for a retest."))
+            near = ext_daily <= cfg.breakout_chase_daily_atr
+            status = "INVALID" if chase else "ENTER_NOW" if confirmed and near and ext <= cfg.extension_atr[1] else "WAIT"
+            reason = (f"Closed {ext_daily:.1f} daily ATR above the breakout trigger ({_s(trigger)}). " + ("Too extended; do not chase." if chase else "Volume and momentum confirm." if confirmed and near else "Confirmed but already extended; wait for a retest of the level." if confirmed else "Volume or momentum has not confirmed; wait for a retest."))
         else:
-            status, reason = "WAIT", f"Needs a close above {_s(trigger)} (resistance {', '.join(target_zone['labels'][:2])} + {cfg.breakout_buffer_atr:g} ATR) with volume and momentum."
-        out["BREAKOUT_ENTRY"] = {"status": status, "trigger": trigger, "zone": [trigger, trigger + min(0.5 * ae, width)], "reference": trigger, "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg),
+            status = "WAIT"
+            reason = (f"On the verge of a breakout: {(trigger - c) / ae:.1f} daily ATR below the trigger. " if verge else "") + f"Needs a close above {_s(trigger)} (resistance {', '.join(target_zone['labels'][:2])}) with volume and momentum."
+        lo_b = max(target_zone.get("core", target_zone["mid"]), trigger - 1.0 * ae)
+        hi_b = max(trigger + half, c if status == "ENTER_NOW" else 0.0)
+        out["BREAKOUT_ENTRY"] = {"status": status, "trigger": trigger, "zone": [lo_b, hi_b], "reference": trigger, "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg),
                                  "resistance_zone": target_zone, "reason": reason}
 
     # C: momentum continuation: strong aligned trend, not stretched from its reference EMA
     e20 = ind["ema20"]
     if e20 and ind["adx14"] and ind["adx14"] >= cfg.adx_trending and regime in ("STRONG_UPTREND", "WEAK_UPTREND") and c > e20 and confirm_momentum:
         ext = (c - e20) / a
-        out["MOMENTUM_ENTRY"] = {"status": "ENTER_NOW" if ext <= cfg.extension_atr[1] else "INVALID" if ext > cfg.extension_atr[2] else "WAIT", "zone": [max(c - 0.5 * ae, c - width), c], "reference": e20,
+        out["MOMENTUM_ENTRY"] = {"status": "ENTER_NOW" if ext <= cfg.extension_atr[1] else "INVALID" if ext > cfg.extension_atr[2] else "WAIT", "zone": [c - 2 * half, c], "reference": e20,
                                  "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg),
                                  "reason": f"Trend is up with ADX {ind['adx14']:.0f}; price is {ext:.1f} ATR above the 20-EMA ({_extension_label(ext, cfg).replace('_', ' ').lower()})."}
     else:
         out["MOMENTUM_ENTRY"] = {"status": "INVALID", "reason": "Needs an up-trend regime with ADX above the trending threshold, price above the 20-EMA and confirming momentum."}
     return out
+
+
+def watch_level(ind: dict[str, Any], zones: list[dict[str, Any]], cfg: EngineConfig, ae: float) -> tuple[str, dict[str, Any]] | None:
+    """A level to WATCH when no confirmed setup exists (so a BUY recommendation always shows a range): a band around the nearest meaningful
+    support below price, or, with no support below, around the nearest resistance above as a breakout trigger. Never an 'enter now'."""
+    c, a, half = ind["close"], ind["atr14"], cfg.entry_band_atr * ae
+    supports = sorted((z for z in zones if z["kind"] == "support"), key=lambda z: -z["high"])
+    if supports:
+        pick = next((z for z in supports[:4] if z["strength"] >= 2), supports[0])
+        core = pick.get("core", pick["mid"])
+        ext = max(0.0, c - (core + half)) / a
+        return "PULLBACK_ENTRY", {"status": "WAIT", "zone": [core - half, core + half], "reference": pick["mid"], "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg), "support_zone": pick,
+                                  "reason": f"Watch level, not a confirmed setup: price is {(c - core) / c * 100:.1f}% above the nearest support ({', '.join(pick['labels'][:3])}). Wait for a pullback into the band and a confirming close."}
+    resist = sorted((z for z in zones if z["kind"] == "resistance"), key=lambda z: z["low"])
+    if resist:
+        z = resist[0]
+        trigger = z["high"] + cfg.breakout_buffer_atr * ae
+        return "BREAKOUT_ENTRY", {"status": "WAIT", "trigger": trigger, "zone": [max(z.get("core", z["mid"]), trigger - ae), trigger + half], "reference": trigger, "extension_atr": 0.0, "extension": "NORMAL", "resistance_zone": z,
+                                  "reason": f"Watch level, not a confirmed setup: no support is stored below price. Needs a close above {_s(trigger)} ({', '.join(z['labels'][:2])}) with volume and momentum."}
+    return None
 
 
 def choose_setup(scen: dict[str, dict[str, Any]], regime: str) -> tuple[str, str]:
@@ -343,7 +379,7 @@ def stop_and_targets(horizon: str, setup: str, scen: dict[str, Any], status: str
         return None
     a, c = ind["atr14"], ind["close"]
     zone = scen["zone"]
-    entry = c if status == "ENTER_NOW" else (zone[0] + zone[1]) / 2 if setup == "PULLBACK_ENTRY" else zone[0]
+    entry = c if status == "ENTER_NOW" else scen["support_zone"].get("core", scen["support_zone"]["mid"]) if setup == "PULLBACK_ENTRY" else scen["reference"] if setup == "BREAKOUT_ENTRY" else zone[1]
     entry = min(max(entry, zone[0]), max(zone[1], c)) if status == "ENTER_NOW" else entry
     # structural invalidation = the zone / swing low that, if lost, breaks the thesis
     if setup == "PULLBACK_ENTRY":
@@ -390,6 +426,10 @@ def stop_and_targets(horizon: str, setup: str, scen: dict[str, Any], status: str
 def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | None, cfg: EngineConfig, as_of: pd.Timestamp | None = None) -> dict[str, Any]:
     tf = PRIMARY[horizon]
     weekly, monthly = resample(daily, "W", as_of), resample(daily, "M", as_of)
+    limited: str | None = None
+    if horizon == "long_term" and len(monthly) < MIN_BARS["M"] and len(weekly) >= MIN_BARS["W"]:
+        tf = "W"      # a recent listing: not enough months, so the long-term read uses weekly candles and says so
+        limited = f"Limited history: only {len(monthly)} completed months are stored, so the long-term read uses {len(weekly)} weekly candles instead of monthly ones and carries less weight."
     df = {"D": daily, "W": weekly, "M": monthly}[tf]
     if len(df) < MIN_BARS[tf]:
         return {"status": "unavailable", "reason": f"Only {len(df)} completed {LABELS[tf]} candles are stored; at least {MIN_BARS[tf]} are needed.", "primary_timeframe": LABELS[tf]}
@@ -421,11 +461,22 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
         status = "WAIT_FOR_ENTRY"
     if setup != "NO_VALID_SETUP" and plan is None:
         setup, status = "NO_VALID_SETUP", "NO_VALID_SETUP"
+    watch_only = False
+    if setup == "NO_VALID_SETUP":              # still give a range to watch, clearly marked as not a confirmed setup
+        fallback = watch_level(ind, zones, cfg, atr_d or ind["atr14"])
+        if fallback is not None:
+            fb_setup, fb_scen = fallback
+            fb_plan = stop_and_targets(horizon, fb_setup, fb_scen, "WAIT_FOR_ENTRY", ind, zones, cfg, lows)
+            if fb_plan is not None:
+                setup, status, plan, watch_only = fb_setup, "WAIT_FOR_ENTRY", fb_plan, True
+                scen[fb_setup] = fb_scen
     a = ind["atr14"]
-    reasons = [v["why"] for n, v in sorted(scored.items(), key=lambda kv: -cfg.weights[kv[0]])]
-    risks = [v["why"] for v in scored.values() if v["score"] < 40] + ([f"{n.replace('_', ' ').title()} is not scored: {v['why']}" for n, v in comps.items() if v["score"] is None])
+    reasons = ([limited] if limited else []) + [v["why"] for n, v in sorted(scored.items(), key=lambda kv: -cfg.weights[kv[0]])]
+    risks = ([limited] if limited else []) + [v["why"] for v in scored.values() if v["score"] < 40] + ([f"{n.replace('_', ' ').title()} is not scored: {v['why']}" for n, v in comps.items() if v["score"] is None])
     if plan is not None and not plan["enough_upside"]:
         risks.append(f"First target offers {plan['rr_first']:.1f}R, below the {cfg.min_rr_first_target[horizon]:g}R this horizon requires.")
+    if watch_only:
+        risks.append("This is a level to watch, not a confirmed setup: wait for price to reach the band and for momentum to confirm.")
     if ind["rvol"] is not None and ind["rvol"] < 0.8:
         risks.append(f"Relative volume is only {ind['rvol']:.1f}x of its 20-bar average.")
     supports = sorted((z for z in zones if z["kind"] == "support"), key=lambda z: -z["high"])[:4]
@@ -435,7 +486,7 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
     pv = {name: {k2: _s(v) for k2, v in classic_pivots(float(fr.iloc[-1]["high"]), float(fr.iloc[-1]["low"]), float(fr.iloc[-1]["close"])).items()}
           for name, fr in (("daily", daily), ("weekly", weekly), ("monthly", monthly)) if len(fr) > 1}
     return {
-        "status": "available", "primary_timeframe": LABELS[tf], "confirmation_timeframe": LABELS[CONFIRM[horizon]], "last_completed_candle": df.index[-1].date().isoformat(),
+        "status": "available", "limited_history": limited, "watch_only": watch_only, "primary_timeframe": LABELS[tf], "confirmation_timeframe": LABELS[CONFIRM[horizon]], "last_completed_candle": df.index[-1].date().isoformat(),
         "direction": direction, "technical_score": round(score, 1), "score_coverage": round(covered, 2), "market_regime": regime, "components": comps,
         "selected_setup": setup, "entry_status": status, "current_price": _s(ind["close"]),
         "scenarios": {n: _scenario_out(sc) for n, sc in scen.items()},
@@ -446,7 +497,7 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
         "targets": [] if plan is None else plan["targets"],
         "risk_reward": None if plan is None else {t["label"]: t["risk_reward"] for t in plan["targets"]},
         "enough_upside": None if plan is None else plan["enough_upside"],
-        "atr": {"atr14": round(a, 4), "natr": round(ind["natr"], 2)},
+        "atr": {"atr14": round(a, 4), "natr": round(ind["natr"], 2), "atr14_daily": None if atr_d is None else round(atr_d, 4)},
         "indicators": {k2: (None if ind[k2] is None else round(ind[k2], 3)) for k2 in ("ema20", "ema50", "ema200", "rsi14", "adx14", "macd_hist", "rvol", "natr_percentile")},
         "support_levels": [zj(z) for z in supports], "resistance_levels": [zj(z) for z in resist], "pivots": pv, "relative_strength": rs_note,
         "reasons": reasons, "risks": risks,

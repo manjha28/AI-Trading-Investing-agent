@@ -253,12 +253,18 @@ def ingest(db: Session, filings_days: int = 30, news_days: int = 2) -> dict[str,
     if _in_source_cooldown(db, "yfinance", now):
         source_attempted["yfinance"] = False
         yahoo_rate_limited = True
+    from app import yahoo_guard
+    if not yahoo_guard.allowed():
+        source_attempted["yfinance"] = False
     for instrument in instruments if source_attempted["yfinance"] else []:
+        if not yahoo_guard.allowed():
+            break
         ids = db.scalars(select(InstrumentProviderIdentifier).where(InstrumentProviderIdentifier.instrument_id == instrument.id)).all()
         provider_id = next((r for r in ids if r.provider.lower() in {"yahoo", "yfinance"}), None)
         ticker = provider_id.provider_symbol if provider_id else (instrument.symbol + (".NS" if instrument.venue.upper() == "NSE" else ".BO" if instrument.venue.upper() == "BSE" else ""))
         try:
             rows = yahoo.get_news(ticker)
+            yahoo_guard.record(True)
             successful["yfinance"] = True
             if not rows:
                 no_news.append(instrument.symbol)
@@ -287,6 +293,7 @@ def ingest(db: Session, filings_days: int = 30, news_days: int = 2) -> dict[str,
             _failure(db, "yfinance", f"{category}: {type(exc).__name__}: {exc}", instrument.symbol)
             # Yahoo is optional. Throttling ends this source's poll (continuing would amplify it);
             # any other per-ticker failure skips only that ticker.
+            yahoo_guard.record(False)
             if category == "rate_limited":
                 yahoo_rate_limited = True
                 break
