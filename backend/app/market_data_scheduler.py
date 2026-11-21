@@ -173,6 +173,7 @@ def refresh_stale_universe_closes(
     stale.sort(key=lambda item: item[0].symbol)
     due = [item for item in stale if now - _universe_last_attempt.get(item[0].id, now - _UNIVERSE_RETRY_AFTER * 2) >= _UNIVERSE_RETRY_AFTER]
     attempted = failed = 0
+    reasons: dict[str, list[str]] = {}          # reason -> symbols, logged once per run instead of one warning per symbol
     for instrument, last in due[:limit]:
         _universe_last_attempt[instrument.id] = now
         start = (md._utc(last) - timedelta(days=4)) if last is not None else now - timedelta(days=12)
@@ -184,12 +185,16 @@ def refresh_stale_universe_closes(
             # sync_history reports a provider failure in its response instead of raising
             if getattr(result, "sync_status", None) == "unavailable":
                 failed += 1
-                logger.warning("Universe close refresh unavailable symbol=%s", instrument.symbol)
+                attempts = getattr(result, "provider_attempts", None) or []
+                why = "; ".join(sorted({f"{getattr(a, 'provider', '?')}: {getattr(a, 'reason', None) or getattr(a, 'reason_category', None) or getattr(a, 'outcome', 'unavailable')}" for a in attempts})) or "provider returned no candle"
+                reasons.setdefault(why, []).append(instrument.symbol)
         except Exception as error:
             db.rollback()
             failed += 1
-            logger.warning("Universe close refresh failed symbol=%s error_class=%s", instrument.symbol, type(error).__name__)
+            reasons.setdefault(f"error {type(error).__name__}", []).append(instrument.symbol)
         attempted += 1
+    for why, symbols in reasons.items():
+        logger.warning("Universe close refresh unavailable for %d symbols (%s): %s%s", len(symbols), why, ", ".join(symbols[:12]), " ..." if len(symbols) > 12 else "")
     return {"stale": len(stale), "attempted": attempted, "failed": failed}
 
 
