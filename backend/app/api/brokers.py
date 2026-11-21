@@ -2046,6 +2046,8 @@ def backfill_dhan_trades(
         )
     ).all())
     inserted, updated, skipped_rows = _upsert_dhan_trades(db, all_rows)
+    logger.info("Dhan trade backfill range=%s..%s pages=%d received=%d inserted=%d updated=%d skipped=%d",
+                effective_start.isoformat(), end.isoformat(), page_count, len(chunk_rows), inserted, updated, len(skipped_rows))
     inserted_by_year: dict[int, int] = {}
     # Inserted rows are identifiable by the provider trade IDs just returned by Dhan.
     inserted_provider_ids = {row.provider_trade_id for row in all_rows} - existing_provider_ids
@@ -2062,6 +2064,9 @@ def backfill_dhan_trades(
         "inserted": inserted,
         "updated": updated,
         "skipped": len(skipped_rows),
+        "records_received": len(chunk_rows),
+        "note": ("Dhan returned no trades for this date range." if not chunk_rows else
+                 "Dhan returned trades but they were already stored." if inserted == 0 and updated == len(all_rows) else None),
         "years": yearly_results,
     }
 

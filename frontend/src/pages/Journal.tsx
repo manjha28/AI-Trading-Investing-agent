@@ -278,6 +278,9 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
       const result = await apiRequest<{
         inserted: number;
         updated: number;
+        skipped?: number;
+        records_received?: number;
+        note?: string | null;
         years: {
           year: number;
           http_status: number | null;
@@ -288,7 +291,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
       }>('/brokers/dhan/trades/backfill', { method: 'POST' });
       await refreshJournalTrades();
       setBrokerImportMessage(
-        `Backfill complete: ${result.years.map((item) => `${item.year} HTTP ${item.http_status ?? '—'} · ${item.trades_imported} trades${item.reason ? ` (${item.reason})` : ''}`).join(' | ')}`,
+        `Backfill complete: Dhan returned ${result.records_received ?? '—'} trade records · ${result.inserted} new · ${result.updated} already stored · ${result.skipped ?? 0} skipped.${result.note ? ` ${result.note}` : ''} ${result.years.map((item) => `${item.year} HTTP ${item.http_status ?? '—'} · ${item.trades_imported} trades${item.reason ? ` (${item.reason})` : ''}`).join(' | ')}`,
       );
     } catch (error) {
       setBrokerImportMessage(error instanceof Error ? error.message : 'Dhan trade backfill failed.');

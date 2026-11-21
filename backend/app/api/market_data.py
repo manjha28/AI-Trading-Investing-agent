@@ -9460,6 +9460,9 @@ def sync_history(
                 "provider_symbol_unavailable",
                 "invalid_instrument_mapping",
                 "unsupported_interval",
+                # Dhan DH-907 "no data" for one symbol/range (an ETF, a suspended or illiquid stock, a range with no sessions) says nothing about
+                # Dhan's health. Counting it opened the breaker after 3 such symbols and blocked every other stock's candle fetch.
+                "provider_no_history_for_range",
             }:
                 _provider_circuit_breaker.record_failure(
                     active_provider.name, owner=breaker_owner

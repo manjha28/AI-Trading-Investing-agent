@@ -195,3 +195,4 @@
 - Universe close refresh logs one summary per reason (with provider reasons) instead of one warning per symbol.
 - candle_diag: 'python -m app.services.candle_diag SYMBOL' explains why a stock's latest daily candle is or is not stored (Dhan session, what Dhan returns, stored bars, partial-candle check).
 - Fix: Dhan trade-history backfill and CSV import crashed (500) because _upsert_dhan_trades now returns three values; both callers updated and the response reports skipped rows.
+- Dhan candle fetch: 'no data for range' (DH-907) no longer trips the provider circuit breaker (it blocked every other stock's candle); trade backfill reports Dhan's received/new/stored/skipped counts in the Journal message and logs.
