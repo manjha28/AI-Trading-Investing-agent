@@ -935,11 +935,15 @@ def _upsert_dhan_trade(db: Session, row: DhanTradeMirror) -> bool:
         )
     )
     if existing is None and row.provider_trade_id is not None:
+        # Exchange trade numbers repeat across trading days, so a provider trade id alone must never identify "the same fill":
+        # it must also be the same instant and contract, otherwise a new fill would overwrite an older, different one.
         existing = db.scalar(
             select(DhanTradeMirror).where(
                 DhanTradeMirror.user_id == row.user_id,
                 DhanTradeMirror.source == row.source,
                 DhanTradeMirror.provider_trade_id == row.provider_trade_id,
+                DhanTradeMirror.trade_at == row.trade_at,
+                DhanTradeMirror.security_id == row.security_id,
             )
         )
     if existing is None and row.provider_trade_id is not None:

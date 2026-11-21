@@ -197,3 +197,4 @@
 - Fix: Dhan trade-history backfill and CSV import crashed (500) because _upsert_dhan_trades now returns three values; both callers updated and the response reports skipped rows.
 - Dhan candle fetch: 'no data for range' (DH-907) no longer trips the provider circuit breaker (it blocked every other stock's candle); trade backfill reports Dhan's received/new/stored/skipped counts in the Journal message and logs.
 - Journal: derivative fills are matched by Dhan security id (not symbol text), so an option's opening and closing fills pair even when their symbol text differs; trade_diag tool added (python -m app.services.trade_diag SYMBOL).
+- Dhan fills: a provider trade number alone no longer identifies a stored fill (exchange numbers repeat across days), so a new fill cannot overwrite an older one; trade_diag --dhan probes Dhan's trade history directly.

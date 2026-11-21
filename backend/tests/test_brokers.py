@@ -2951,6 +2951,22 @@ def test_dhan_trade_and_ledger_upserts_are_noops_on_repeat(test_engine) -> None:
         db.commit()
 
 
+def test_same_exchange_trade_number_on_another_day_is_a_new_fill_not_an_overwrite(test_engine) -> None:  # test data only
+    from datetime import timedelta
+    user_id = UUID("00000000-0000-0000-0000-000000000002")
+    t0 = datetime(2026, 11, 12, 8, 51, tzinfo=timezone.utc)
+
+    def fill(day_offset: int, side: str) -> DhanTradeMirror:
+        return DhanTradeMirror(user_id=user_id, source="dhan", trade_id=f"key-{day_offset}", provider_trade_id="12345", security_id="52123", exchange_segment="NSE_FNO",
+                               side=side, quantity=Decimal("2250"), price=Decimal("2.0"), currency="INR", trade_at=t0 + timedelta(days=day_offset), synced_at=t0)
+    with Session(test_engine) as db:
+        assert brokers._upsert_dhan_trades(db, [fill(0, "BUY")])[:2] == (1, 0)
+        assert brokers._upsert_dhan_trades(db, [fill(8, "SELL")])[:2] == (1, 0)          # exchange numbers repeat across days: must not overwrite the BUY
+        db.commit()
+        sides = sorted(r.side for r in db.scalars(select(DhanTradeMirror).where(DhanTradeMirror.user_id == user_id)))
+        assert sides == ["BUY", "SELL"]
+
+
 def test_fernet_token_round_trip_and_ciphertext_at_rest(encryption_key) -> None:
     tokens = {"access_token": "private-access-token", "refresh_token": "private-refresh-token"}
     encrypted = brokers.encrypt_tokens(tokens)
