@@ -5,7 +5,7 @@ import type { Instrument } from './researchTypes';
 export type Levels = {
   status: string; reason?: string; entry_status?: string; selected_setup?: string; breakout_trigger?: string | null; stop_reason?: string; stop_method?: string; explanation?: string; direction?: string; technical_score?: number; market_regime?: string; risk_reward?: Record<string, number>;
   entry_zone?: { low: string; high: string }; stop?: string; reference_close?: string; prior_high_reference?: string;
-  pivots?: { sets: Record<string, Record<string, string>>; nearest_support: { name: string; price: string } | null; nearest_resistance: { name: string; price: string } | null; rule: string } | null;
+  pivot_support?: { name: string; price: string } | null; pivot_resistance?: { name: string; price: string } | null; pivots?: Record<string, Record<string, string>> | null;
   targets?: { label: string; price: string; risk_reward?: number; basis?: string }[]; derivation?: { rule: string; inputs: Record<string, number>; tick: string };
 };
 export type Confidence = { score: number; band: 'High' | 'Medium' | 'Low'; note: string; parts: { key: string; label: string; value: number; weight: number }[]; horizon?: string };
@@ -85,7 +85,7 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
     {levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${levels.entry_status === 'ENTER_NOW' ? 'rt-chip-ok' : 'rt-chip-warn'}`}>{levels.entry_status === 'ENTER_NOW' ? 'Enter now' : 'Wait for entry'}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}
     {levels?.status === 'available' ? <Ladder levels={levels} /> : <p className="rt-note">{levels?.reason ?? 'No levels for this horizon.'}</p>}
     {levels?.status === 'available' && <p className="rt-note">Last close {inr(levels.reference_close)} · prior high {inr(levels.prior_high_reference)} · {HORIZON_SPAN[active]}</p>}
-    {levels?.status === 'available' && levels.pivots && <p className="rt-note">Pivot support {levels.pivots.nearest_support ? `${inr(levels.pivots.nearest_support.price)} (${levels.pivots.nearest_support.name})` : '—'} · pivot resistance {levels.pivots.nearest_resistance ? `${inr(levels.pivots.nearest_resistance.price)} (${levels.pivots.nearest_resistance.name})` : '—'}</p>}
+    {levels?.status === 'available' && (levels.pivot_support || levels.pivot_resistance) && <p className="rt-note">Pivot support {levels.pivot_support ? `${inr(levels.pivot_support.price)} (${levels.pivot_support.name})` : 'none below price'} · pivot resistance {levels.pivot_resistance ? `${inr(levels.pivot_resistance.price)} (${levels.pivot_resistance.name})` : 'none above price'}</p>}
     {conf && <details className="rt-fold rt-why"><summary>Why {Math.round(conf.score)}/100?</summary>
       <ul className="rt-parts">{conf.parts.map((p) => <li key={p.key}><span>{p.label}<small> · {Math.round(p.weight * 100)}% weight</small></span><div className="rt-bar"><i style={{ width: `${p.value}%` }} /></div><b>{Math.round(p.value)}</b></li>)}</ul>
       <p className="rt-note">{conf.note} Provisional ranking of conviction, not a probability of profit.</p>

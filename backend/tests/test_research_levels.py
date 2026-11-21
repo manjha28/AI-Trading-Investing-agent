@@ -150,3 +150,11 @@ def test_baseline_comparison_runs_both_modes_on_identical_terms():
     res = compare(make(1300, drift=0.0008), "swing", step=10, warmup=260)
     assert res["engine"]["mode"] == "engine" and res["baseline"]["mode"] == "baseline"
     assert set(res["out_of_sample_summary"]) >= {"trades", "win_rate", "expectancy_r"} and "same engine direction gate" in res["note"]
+
+
+def test_nearest_pivots_picks_the_closest_support_below_and_resistance_above():  # test data only
+    from app.services.research_levels import nearest_pivots
+    pivots = {"daily": {"S1": "95.00", "P": "100.00", "R1": "108.00"}, "weekly": {"S1": "98.50", "R1": "104.00"}}
+    support, resistance = nearest_pivots(pivots, "101.00")
+    assert support == {"name": "daily P", "price": "100.00"} and resistance == {"name": "weekly R1", "price": "104.00"}
+    assert nearest_pivots(pivots, "90.00")[0] is None and nearest_pivots(None, "90.00") == (None, None)

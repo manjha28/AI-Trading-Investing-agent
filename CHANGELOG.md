@@ -188,3 +188,4 @@
 - Research: nightly research now covers the whole Market watch master list; daily-history backfill (3y) before scoring; recovery reason surfaced; pivot points (daily/weekly/monthly) shown with buy levels.
 - Technical engine (technical_engine.py): multi-timeframe direction, regime, ATR-clustered S/R zones, pullback/breakout/momentum entries, structural/ATR stops, resistance-based targets; walk-forward backtest (technical_backtest.py); Research Technicals tab + levels use it; news is a scroll window; daily-history backfill is chunked (~5.7y) and benchmark history ensured.
 - Technical engine pruned to trend/structure/momentum direction (no Fibonacci, no action mapping, no extra score weights); baseline-vs-engine backtest comparison (technical_backtest.compare); Dhan-only price data (MARKET_DATA_DHAN_ONLY).
+- Daily report: pivot support/resistance now come from the engine's nearest classic pivots (the card read an old field and showed blanks).
