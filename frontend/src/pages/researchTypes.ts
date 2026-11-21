@@ -53,7 +53,7 @@ export type NewsItem = {
 export type StoredNewsItem = {
   external_id: string; source: string; source_url: string | null; instrument_id: string | null;
   symbol_raw: string | null; published_at: string; retrieved_at: string; publisher: string | null;
-  category: string | null; headline: string; body: string | null; full_text_status: string;
+  category: string | null; headline: string; display_title?: string; key_line?: string | null; tags?: string[]; body: string | null; full_text_status: string;
   published_time_kind: string;
 };
 export type NewsSourceHealth = {
@@ -63,7 +63,7 @@ export type NewsSourceHealth = {
 };
 export type SentimentArticle = {
   news_item_id: string; source: string; publisher: string | null; url: string | null;
-  headline: string; summary: string | null; published_at: string; instrument_id: string | null;
+  headline: string; display_title?: string; key_line?: string | null; tags?: string[]; summary: string | null; published_at: string; instrument_id: string | null;
   symbol_raw: string | null; category: string | null; full_text_status: string;
   sentiment: 'positive' | 'negative' | 'neutral' | 'mixed'; score: number; strength: number;
   impact: 'low' | 'medium' | 'high'; confidence_score: number; event_category: string;
@@ -152,6 +152,8 @@ export type Brief = {
     assessment?: Assessment;
     valuation?: Valuation;
     shareholding?: Shareholding;
+    shareholding_history?: ShareholdingHistory;
+    news_highlights?: NewsHighlights;
     disclaimer: string;
   };
 };
@@ -241,3 +243,15 @@ export type Shareholding = {
   status: 'available' | 'unavailable'; source: string | null; retrieved_at: string | null; reporting_period: null; reporting_period_note: string;
   holdings: ShareholdingHolding[]; sum_percent?: string | null; not_itemised_percent?: string | null; warnings: string[];
 };
+
+export type ShareholdingPoint = { period_end: string; percent: string | null; change_qoq: string | null; change_yoy: string | null };
+export type ShareholdingHistory = {
+  status: 'available' | 'unavailable'; source?: string | null; quarters?: string[]; message?: string | null; note?: string; error?: string;
+  categories?: { key: string; label: string; points: ShareholdingPoint[] }[];
+};
+export type HighlightFact = { kind: 'amount' | 'percent'; text: string; start: number; end: number; field: 'headline' | 'summary' };
+export type NewsHighlight = {
+  headline: string; summary: string | null; publisher: string | null; url: string | null; published_at: string | null;
+  tags: { tag: string; label: string; weight: number; matched: string }[]; facts: HighlightFact[]; importance: 'high' | 'medium' | 'low'; importance_score: number;
+};
+export type NewsHighlights = { status: 'available' | 'unavailable'; message?: string | null; error?: string; method?: string; total_articles?: number; items?: NewsHighlight[]; note?: string };

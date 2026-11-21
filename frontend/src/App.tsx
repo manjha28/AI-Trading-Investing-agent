@@ -56,6 +56,7 @@ export default function App() {
   // Alerts live in the header bell and on each stock in Market watch. Clicking one opens that stock there.
   const [watchFocus, setWatchFocus] = useState<WatchFocus | undefined>(undefined);
   const [bellKey, setBellKey] = useState(0);
+  const [researchFocus, setResearchFocus] = useState<{ instrumentId: string; nonce: number } | null>(null);
   const openStock = (instrumentId: string, tab: WatchFocus['tab'] = 'alerts') => { setWatchFocus((cur) => ({ instrumentId, tab, nonce: (cur?.nonce ?? 0) + 1 })); setActiveView('market-watch'); };
 
   // The header search opens the Market watch with that term (n makes repeating a search re-run it).
@@ -239,7 +240,7 @@ export default function App() {
           </form>
           <div className="header-actions">
             {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
-            <AlertsBell refreshKey={bellKey} onOpenStock={(id) => openStock(id)} />
+            <AlertsBell refreshKey={bellKey} onOpenStock={(id) => openStock(id)} onOpenResearch={(id) => { setResearchFocus((cur) => ({ instrumentId: id, nonce: (cur?.nonce ?? 0) + 1 })); setActiveView('research'); }} />
             <button className="secondary-button" type="button" disabled={!hasConnectedBroker || headerSyncing} onClick={() => void syncBroker()}>{headerSyncing ? 'Syncing Dhan…' : 'Sync Dhan account'}</button>
             <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketStatusLabel(marketDataStatus)}</span>
             <button className="text-button" type="button" onClick={() => setActiveView('brokers')} title="Connect or reconnect your Dhan account">Dhan connection</button>
@@ -268,7 +269,7 @@ export default function App() {
         )}
 
         {activeView === 'research' ? (
-          <Research watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
+          <Research focus={researchFocus} watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
         ) : activeView === 'signals' ? (
           <SignalsWorkspace />
         ) : activeView === 'crypto-delta' ? (

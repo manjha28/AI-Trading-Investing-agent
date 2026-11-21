@@ -104,6 +104,9 @@ async def lifespan(_app: FastAPI):
     sentiment_task = None
     fundamentals_task = None
     corporate_task = None
+    news_ingest_task = None
+    research_daily_task = None
+    valuation_task = None
     universe_task = None
     forward_task = None
     master_warm_task = None
@@ -122,6 +125,15 @@ async def lifespan(_app: FastAPI):
         scheduler_task = _leader(market_data_refresh_loop, 'market_data_refresh')
     if settings.corporate_action_sync_enabled and "pytest" not in sys.modules:
         corporate_task = _leader(corporate_action_sync_loop, 'corporate_actions')
+    if settings.news_ingest_enabled and "pytest" not in sys.modules:
+        from app.news_ingestion import news_ingest_loop
+        news_ingest_task = _leader(news_ingest_loop, 'news_ingest')
+    if settings.valuation_refresh_enabled and "pytest" not in sys.modules:
+        from app.valuation_refresh import valuation_refresh_loop
+        valuation_task = _leader(valuation_refresh_loop, 'valuation_refresh')
+    if settings.research_daily_enabled and "pytest" not in sys.modules:
+        from app.research_daily import research_daily_loop
+        research_daily_task = _leader(research_daily_loop, 'research_daily')
     if settings.universe_close_refresh_enabled and "pytest" not in sys.modules:
         universe_task = _leader(universe_close_refresh_loop, 'universe_closes')
     if "pytest" not in sys.modules:
@@ -213,6 +225,24 @@ async def lifespan(_app: FastAPI):
             corporate_task.cancel()
             try:
                 await corporate_task
+            except asyncio.CancelledError:
+                pass
+        if valuation_task is not None:
+            valuation_task.cancel()
+            try:
+                await valuation_task
+            except asyncio.CancelledError:
+                pass
+        if research_daily_task is not None:
+            research_daily_task.cancel()
+            try:
+                await research_daily_task
+            except asyncio.CancelledError:
+                pass
+        if news_ingest_task is not None:
+            news_ingest_task.cancel()
+            try:
+                await news_ingest_task
             except asyncio.CancelledError:
                 pass
         if fundamentals_task is not None:

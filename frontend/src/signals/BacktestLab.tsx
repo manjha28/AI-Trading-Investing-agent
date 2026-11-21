@@ -2,7 +2,9 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { downloadCsv } from '../api';
 import { fmtMoney, fmtPct, lab, messageOf } from './lab';
 import { Field, Notice, Pill, Scroll } from './shared';
-import type { Meta, StrategyRow } from './types';
+import { LineChart } from './charts';
+import { TradePlot } from './TradePlot';
+import type { Meta, StrategyRow, Trade } from './types';
 
 type Preset = { key: string; label: string; available: number; symbols: string[]; excluded: { symbol: string; reason: string }[]; min_bars_1m: number };
 type Universes = { presets: Preset[]; max_strategies: number; max_instruments: number; note: string };
@@ -21,6 +23,30 @@ type Comparison = {
   columns: { run_id: string; strategy: string; metrics: Record<string, string | number | null> | null; monthly: Record<string, string | null>; by_instrument: Record<string, string | null> }[];
   shared_symbols: string[]; months: string[]; metric_keys: string[]; best: Record<string, string | null>; note: string;
 };
+type RunChartData = { trades?: Trade[]; equity_curve?: { t: string; equity: string | number; drawdown_pct?: number }[] };
+
+/** Loads one finished lab run on demand and plots its trades on candles plus its hypothetical equity curve. */
+function RunCharts({ runId, symbol }: { runId: string; symbol?: string | null }) {
+  const [data, setData] = useState<RunChartData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    setLoading(true); setError(null);
+    try { setData((await lab<{ result?: RunChartData }>(`/backtests/${runId}`)).result ?? {}); } catch (e) { setError(messageOf(e)); } finally { setLoading(false); }
+  };
+  useEffect(() => { if (symbol) void load(); }, [runId, symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!data) return <div className="lab-run-charts"><button type="button" onClick={() => void load()} disabled={loading}>{loading ? 'Loading chart…' : 'Show trades on chart'}</button>{error && <p className="sl-muted" role="alert">{error}</p>}</div>;
+  const trades = (data.trades ?? []).filter((t) => !symbol || t.symbol === symbol);
+  const curve = data.equity_curve ?? [];
+  return (
+    <div className="lab-run-charts">
+      {trades.length > 0 ? <TradePlot key={symbol ?? 'all'} trades={trades} /> : <p className="sl-muted">{symbol ? `No stored trades for ${symbol} in this run.` : 'This run stored no individual trades, so there is nothing to plot on candles.'}</p>}
+      {curve.length > 1 && <><h4>Equity curve (hypothetical)</h4><LineChart points={curve.map((p) => ({ t: p.t, v: Number(p.equity) }))} label="Equity (hypothetical)" fill /></>}
+      <p className="sl-muted">Hypothetical backtest result, never real P&amp;L, an order or a position.</p>
+    </div>
+  );
+}
+
 type Kind = 'single' | 'is_oos' | 'walk_forward' | 'sensitivity';
 const KIND_NAME: Record<Kind, string> = { single: 'Single run (whole window)', is_oos: 'In-sample vs out-of-sample', walk_forward: 'Walk-forward (rolling train → test)', sensitivity: 'Parameter sweep (robustness)' };
 const METRIC_LABEL: Record<string, string> = { total_trades: 'Trades', win_rate: 'Win rate', gross_pnl_before_costs: 'Gross before costs', total_charges: 'Charges', total_slippage: 'Slippage', net_profit: 'Net profit', profit_factor_net: 'Profit factor (net)', expectancy_per_trade: 'Expectancy / trade', max_drawdown_pct: 'Max drawdown %', sharpe_ratio: 'Sharpe' };
@@ -74,6 +100,7 @@ export function BacktestLab({ meta, strategies }: { meta: Meta; strategies: Stra
   const [history, setHistory] = useState<BatchListItem[]>([]);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'rank', dir: 1 });
   const [open, setOpen] = useState<string | null>(null);
+  const [plotSym, setPlotSym] = useState<{ runId: string; symbol: string } | null>(null);
   const activeId = useRef<string | null>(null);
 
   const loadHistory = useCallback(() => lab<{ batches: BatchListItem[] }>('/lab/batches').then((r) => setHistory(r.batches)).catch(() => undefined), []);
@@ -268,6 +295,7 @@ export function BacktestLab({ meta, strategies }: { meta: Meta; strategies: Stra
                       </tr>
                       {open === r.run_id && done && (
                         <tr className="lab-detail"><td colSpan={14}>
+                          {r.run_id && <RunCharts key={`${r.run_id}-${plotSym?.runId === r.run_id ? plotSym.symbol : ''}`} runId={r.run_id} symbol={plotSym?.runId === r.run_id ? plotSym.symbol : null} />}
                           {r.walk_forward && (
                             <>
                               <p className="sl-muted">{r.walk_forward.folds} rolling folds: train {r.walk_forward.train_days} days → test {r.walk_forward.test_days} days. {r.walk_forward.optimised_on}. Parameters tuned: {r.walk_forward.parameters.join(', ') || 'none'}.</p>
@@ -296,7 +324,7 @@ export function BacktestLab({ meta, strategies }: { meta: Meta; strategies: Stra
                             <table className="sl-table" aria-label={`${r.strategy} by symbol`}>
                               <thead><tr><th>Symbol</th><th className="r">Trades</th><th className="r">Win %</th><th className="r">Net</th><th className="r">Expectancy</th></tr></thead>
                               <tbody>{Object.entries(r.by_instrument).sort((a, b) => (num(b[1].net_pnl) ?? -Infinity) - (num(a[1].net_pnl) ?? -Infinity)).map(([sym, v]) => (
-                                <tr key={sym}><td>{sym}</td><td className="r">{v.trades ?? '—'}</td><td className="r">{v.win_rate != null ? fmtPct(v.win_rate * 100, 1) : '—'}</td>
+                                <tr key={sym} className={plotSym?.runId === r.run_id && plotSym.symbol === sym ? 'active' : ''} style={{ cursor: 'pointer' }} title="Plot this stock's trades on candles" onClick={() => setPlotSym({ runId: r.run_id, symbol: sym })}><td><button type="button" className="rt-link" onClick={() => setPlotSym({ runId: r.run_id, symbol: sym })}>{sym}</button></td><td className="r">{v.trades ?? '—'}</td><td className="r">{v.win_rate != null ? fmtPct(v.win_rate * 100, 1) : '—'}</td>
                                   <td className={`r ${tone(v.net_pnl)}`}>{fmtMoney(v.net_pnl)}</td><td className={`r ${tone(v.expectancy)}`}>{fmtMoney(v.expectancy)}</td></tr>))}</tbody>
                             </table>
                           )}

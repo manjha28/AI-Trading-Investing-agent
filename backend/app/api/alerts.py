@@ -235,7 +235,7 @@ def list_rules(
     return list(
         db.scalars(
             select(AlertRule)
-            .where(AlertRule.user_id == active_session.user_id)
+            .where(AlertRule.user_id == active_session.user_id, AlertRule.rule_type != "research_buy")   # hidden carrier rule for Research buy notifications
             .order_by(AlertRule.created_at.desc())
         )
     )

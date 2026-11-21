@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     market_data_scheduler_enabled: bool = False
     job_worker_enabled: bool = True                                # durable job queue worker + scan scheduler (per-owner scan switch is off by default)
     scheduler_leader_election_enabled: bool = True                 # only one replica (Postgres advisory lock) runs the in-process periodic loops
+    valuation_refresh_enabled: bool = True                        # keeps valuation inputs fresh (Dhan peers + Yahoo) without manual scripts
+    valuation_refresh_max_age_hours: float = 24
+    valuation_refresh_max_per_cycle: int = 300
+    valuation_refresh_interval_seconds: int = 1800
+    research_daily_enabled: bool = True                           # nightly backend research for each user's watchlist + held stocks
+    research_daily_max_per_cycle: int = 120
+    research_daily_pause_seconds: float = 2.0
+    market_data_dhan_only: bool = False                           # True: price history/quotes use Dhan only, never Angel One / Yahoo fallbacks
+    news_ingest_enabled: bool = True                              # scheduled news + filings ingestion (rotating per-stock coverage)
+    news_ingest_interval_seconds: int = 1800
     corporate_action_sync_enabled: bool = True                     # periodically ingest Yahoo dividends/splits for held and watched instruments
     corporate_action_sync_interval_seconds: int = 7200   # an ex-date is picked up within ~2 hours, no manual step
     universe_close_refresh_enabled: bool = True                    # keep Market watch daily closes current (Dhan history, bounded batches)

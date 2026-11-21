@@ -1733,7 +1733,7 @@ def market_data_provider_for_user(db: Session, user_id: UUID) -> MarketDataProvi
     }
     providers: list[MarketDataProvider] = []
     unavailable: list[dict[str, str]] = []
-    for name in INSTRUMENT_SEARCH_PRIORITY:
+    for name in (INSTRUMENT_SEARCH_PRIORITY if not settings.market_data_dhan_only else ("dhan",)):   # owner setting: Dhan is the only price-data source
         option = source_options.get(name)
         if option is not None and not option.enabled:
             unavailable.append({

@@ -12,7 +12,7 @@ from app.api.auth import get_active_session, require_csrf
 from app.db import get_db
 from app.models import Instrument, NewsIngestionFailure, NewsItem, NewsSourcePoll, UserSession, Watchlist, WatchlistInstrument
 from app.news_ingestion import ingest
-from app.services import news_sentiment
+from app.services import news_highlights, news_sentiment
 
 router = APIRouter(prefix="/news", tags=["news and filings"])
 
@@ -112,6 +112,9 @@ def read_news(instrument_id: UUID | None = None, watchlist_id: UUID | None = Non
              "published_at_ist": r.published_at.astimezone(ZoneInfo("Asia/Kolkata")).isoformat(),
              "retrieved_at": r.retrieved_at, "publisher": r.publisher, "category": r.category,
              "headline": r.headline, "body": r.body,
+             "display_title": news_highlights.display_title(r.headline),
+             "key_line": news_highlights.key_line(r.headline, news_sentiment._clean_summary(r.body)),
+             "tags": news_highlights.tag_labels(r.headline, news_sentiment._clean_summary(r.body)),
              "full_text_status": (r.raw_payload or {}).get("full_text_status", "restricted_or_unavailable"),
              "published_time_kind": (r.raw_payload or {}).get("published_time_kind", "publisher_publication_time"),
              "raw_payload": r.raw_payload} for r in rows]

@@ -23,6 +23,7 @@ from app.models import Instrument, InstrumentProviderIdentifier, MarketBar, News
 from app.services.source_registry import _reserve_host_request
 
 IST = ZoneInfo("Asia/Kolkata")
+GOOGLE_COMPANIES_PER_POLL = 4
 _SOURCE_LOCK = threading.Lock()
 _SOURCE_COOLDOWN_UNTIL: dict[str, float] = {}
 _SOURCE_USER_AGENT = "TradingCopilotNews/1.0 (public RSS/API metadata; contact: local deployment)"
@@ -284,10 +285,13 @@ def ingest(db: Session, filings_days: int = 30, news_days: int = 2) -> dict[str,
             code = getattr(exc, "code", None) or str(exc)
             category = "rate_limited" if any(token in str(code).casefold() for token in ("rate", "429")) else "upstream_failure"
             _failure(db, "yfinance", f"{category}: {type(exc).__name__}: {exc}", instrument.symbol)
-            # Yahoo is optional. Any per-ticker failure ends this source's poll;
-            # continuing to other symbols would amplify throttling.
-            yahoo_rate_limited = category == "rate_limited"
-            break
+            # Yahoo is optional. Throttling ends this source's poll (continuing would amplify it);
+            # any other per-ticker failure skips only that ticker.
+            if category == "rate_limited":
+                yahoo_rate_limited = True
+                break
+            db.rollback()
+            continue
         time.sleep(0.25)
 
     # One broad query plus a small deterministic company batch per poll keeps RSS
@@ -296,7 +300,14 @@ def ingest(db: Session, filings_days: int = 30, news_days: int = 2) -> dict[str,
     google_queries: list[Any] = ['India stock market earnings merger regulation corporate order']
     company_instruments = [row for row in instruments if row.country == "IN" and row.asset_class == "equity"]
     company_instruments.sort(key=lambda row: row.symbol)
-    for instrument in company_instruments[:4]:
+    # Rotate through the whole tracked universe (a stateless, deterministic window per 30-minute slot) so every stock is queried over time.
+    if company_instruments:
+        slot = int(now.timestamp() // 1800)
+        offset = (slot * GOOGLE_COMPANIES_PER_POLL) % len(company_instruments)
+        rotated = company_instruments[offset:] + company_instruments[:offset]
+    else:
+        rotated = []
+    for instrument in rotated[:GOOGLE_COMPANIES_PER_POLL]:
         name = instrument.display_name.strip()
         if len(name) >= 5:
             google_queries.append((f'"{name}" (India stock OR earnings OR merger OR order OR regulation)', instrument))
@@ -402,3 +413,23 @@ def ingest(db: Session, filings_days: int = 30, news_days: int = 2) -> dict[str,
     return {"inserted": counts, "discovered": discovered, "duplicates": duplicates, "failures": failures,
             "yahoo_rate_limited": yahoo_rate_limited, "symbols_without_news": sorted(set(no_news)),
             "unmapped_nse_symbols": unmapped}
+
+
+async def news_ingest_loop() -> None:
+    """Scheduled news and filings ingestion, so per-stock news no longer depends on someone calling POST /news/ingest."""
+    import asyncio
+    import logging
+    from app.config import settings
+    from app.db import engine
+    log = logging.getLogger(__name__)
+    await asyncio.sleep(90)
+    while True:
+        try:
+            def cycle() -> dict[str, Any]:
+                with Session(engine) as db:
+                    return ingest(db)
+            result = await asyncio.to_thread(cycle)
+            log.info("news_ingest_cycle %s", {k: v for k, v in result.items() if isinstance(v, (int, str, bool))})
+        except Exception as exc:  # noqa: BLE001 - the loop must survive any single failure
+            log.warning("news_ingest_cycle_failed error_class=%s", type(exc).__name__)
+        await asyncio.sleep(settings.news_ingest_interval_seconds)

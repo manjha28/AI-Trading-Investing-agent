@@ -726,8 +726,8 @@ def get_scan_run(scan_run_id: UUID, active_session: UserSession = Depends(requir
 def list_scan_runs(limit: int = Query(default=30, ge=1, le=100), active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     """Scan history, newest first: when each ran, what it covered, signals and suppressions."""
     ids: list[UUID] = []
-    for (rid,) in db.execute(select(ScanRun.scan_run_id, func.min(ScanRun.started_at).label("t")).where(ScanRun.user_id == active_session.user_id)
-                             .group_by(ScanRun.scan_run_id).order_by(func.min(ScanRun.started_at).desc()).limit(limit)):
+    for rid, _t in db.execute(select(ScanRun.scan_run_id, func.min(ScanRun.started_at).label("t")).where(ScanRun.user_id == active_session.user_id)
+                              .group_by(ScanRun.scan_run_id).order_by(func.min(ScanRun.started_at).desc()).limit(limit)):
         ids.append(rid)
     return [v for rid in ids if (v := _scan_run_view(db, active_session.user_id, rid)) is not None]
 

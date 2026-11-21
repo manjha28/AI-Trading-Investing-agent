@@ -331,3 +331,39 @@ def test_api_rejects_private_source_url(client, test_engine, monkeypatch) -> Non
         "/api/v1/research/sources", headers=csrf(client), json={"url": "http://example.com/x"}
     )
     assert http.status_code == 422
+
+
+# --- news highlights and shareholding history (TEST DATA ONLY: fixtures, never runtime data) ---
+def test_news_highlights_tags_and_verbatim_facts():
+    from app.services import news_highlights as nh
+
+    found = nh.extract("Acme bags order worth Rs 1,200 crore; shares jump 4.5%")
+    assert [t["tag"] for t in found["tags"]] == ["order"]
+    text = "Acme bags order worth Rs 1,200 crore; shares jump 4.5%"
+    assert [text[f["start"]:f["end"]] for f in found["facts"]] == ["Rs 1,200 crore", "4.5%"]
+    assert nh.build(None, [], "x")["status"] == "unavailable"
+
+
+def test_shareholding_history_never_fills_missing_quarters():
+    from datetime import date
+    from types import SimpleNamespace
+
+    from app.services.research_pipeline import _shareholding_history
+
+    def row(day, value):
+        return SimpleNamespace(period_type="quarterly", period_end=day, extra_metrics={"promoter_holding_pct": value})
+
+    points = _shareholding_history([row(date(2026, 9, 30), "50.5"), row(date(2026, 6, 30), "51.0"), row(date(2025, 9, 30), "52.0")])["categories"][0]["points"]
+    assert points[0]["change_qoq"] == "-0.5" and points[0]["change_yoy"] == "-1.5"
+    assert points[1]["change_qoq"] is None          # no stored March quarter: unknown, not zero
+    assert _shareholding_history([])["status"] == "unavailable"
+
+
+def test_news_display_title_and_key_line_are_honest():
+    from app.services import news_highlights as nh
+
+    assert nh.display_title("Acme Limited has informed the Exchange about Completion of tenure of Shri X as Director") == "Completion of tenure of Shri X as Director"
+    assert nh.display_title("Plain headline stays") == "Plain headline stays"
+    assert nh.key_line("Acme Q2 results", "Acme Q2 results") is None            # text that only repeats the headline is not a key line
+    assert nh.key_line("Acme wins order", "Acme wins order. The company said net profit rose 12% to Rs 340 crore in the quarter.") == \
+        "The company said net profit rose 12% to Rs 340 crore in the quarter."

@@ -3,6 +3,8 @@ import { ApiRequestError, apiRequest } from '../api';
 import './research.css';
 import type { Instrument, WatchlistEntry, SourceLink, Source, Fact, Note, FieldValue, FundamentalPeriod, IndicatorValue, NewsItem, StoredNewsItem, NewsSourceHealth, SentimentArticle, SentimentEvent, SentimentAggregate, SentimentHistoryPoint, NewsSource, QualityItem, Brief, FactDraft, ResearchProgressEvent, ResearchRunState, BatchRunResult, ComponentKey, HorizonKey, ScoreFactor, ScoreComponent, HorizonAssessment, Assessment } from './researchTypes';
 import { ResearchBriefView, plainText } from './ResearchReport';
+import { DailyReport } from './DailyReport';
+import { StockHero } from './StockHero';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const MAX_BATCH_INSTRUMENTS = 5;
@@ -22,16 +24,38 @@ function scoreLabel(score: number | null): string {
   return score === null ? 'Unavailable' : `${score > 0 ? '+' : ''}${score.toFixed(3)} / 1.000`;
 }
 
-export function Research({ watchlist, addInstrumentToWatchlist, removeInstrumentFromWatchlist }: {
+function NewsRow({ title, keyLine, chips, sentiment, impact, meta, url, why }: {
+  title: string; keyLine?: string | null; chips: string[]; sentiment?: string; impact?: string; meta: string; url?: string | null; why?: string;
+}) {
+  const unique = [...new Set(chips.filter(Boolean))].slice(0, 3);
+  return <li className={`rt-nr${impact === 'high' ? ' rt-nr-high' : ''}`}>
+    <div className="rt-nr-top">
+      {sentiment && <span className={`rt-nr-dot rt-nr-${sentiment}`} title={sentiment} aria-label={`Sentiment ${sentiment}`} />}
+      {unique.map((chip) => <span key={chip} className="rt-chip">{chip}</span>)}
+    </div>
+    <p className="rt-nr-title">{url ? <a href={url} target="_blank" rel="noreferrer">{title}</a> : title}</p>
+    {keyLine && <p className="rt-nr-key">{keyLine}</p>}
+    <small className="rt-nr-meta">{meta}{why && <details className="rt-nr-why"><summary>Why this label</summary>{why}</details>}</small>
+  </li>;
+}
+
+export function Research({ watchlist, addInstrumentToWatchlist, removeInstrumentFromWatchlist, focus }: {
+  focus?: { instrumentId: string; nonce: number } | null;
   watchlist: WatchlistEntry[];
   addInstrumentToWatchlist: (instrumentId: string, symbol: string) => Promise<void>;
   removeInstrumentFromWatchlist: (instrumentId: string) => Promise<void>;
 }) {
+  const [view, setView] = useState<'today' | 'stock'>('today');
   const [instrumentQuery, setInstrumentQuery] = useState('');
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [batchSelection, setBatchSelection] = useState<Instrument[]>([]);
   const [batchResults, setBatchResults] = useState<BatchRunResult[]>([]);
   const [selected, setSelected] = useState<Instrument | null>(null);
+  const openStock = (instrument: Instrument) => { setBatchResults([]); setSelected(instrument); setInstruments([]); setView('stock'); };
+  useEffect(() => {
+    if (!focus) return;
+    void apiRequest<Instrument>(`/market-data/instruments/${focus.instrumentId}`).then((i) => { setBatchResults([]); setSelected(i); setInstruments([]); setView('stock'); }).catch(() => undefined);
+  }, [focus?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
   const [horizon, setHorizon] = useState<HorizonKey>('positional');
   const [brief, setBrief] = useState<Brief | null>(null);
   const [sourceLinks, setSourceLinks] = useState<SourceLink[]>([]);
@@ -472,12 +496,20 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
       {error && <p className="rt-alert rt-alert-error" role="alert">{error}</p>}
       {notice && <p className="rt-alert" role="status">{notice}</p>}
 
-      <section className="rt-card rt-command" aria-label="Research command bar">
+      <nav className="rt-modes rt-seg" aria-label="Research view">
+        <button type="button" className={view === 'today' ? 'active' : ''} aria-pressed={view === 'today'} onClick={() => setView('today')}>Daily report</button>
+        <button type="button" className={view === 'stock' ? 'active' : ''} aria-pressed={view === 'stock'} onClick={() => setView('stock')}>Stock research{selected ? ` · ${selected.symbol}` : ''}</button>
+      </nav>
+      {view === 'today' && <DailyReport onOpen={openStock} />}
+      {view === 'stock' && <>
+      <section className="rt-card rt-command rt-command-slim" aria-label="Research command bar">
+        <div className="rt-topbar">
         <form className="rt-search" onSubmit={searchInstruments} role="search">
           <label className="rt-sr" htmlFor="rt-query">Search stock or instrument</label>
-          <input id="rt-query" value={instrumentQuery} onChange={(event) => setInstrumentQuery(event.target.value)} placeholder="Search symbol or company, e.g. RELIANCE" autoComplete="off" required />
+          <input id="rt-query" value={instrumentQuery} onChange={(event) => setInstrumentQuery(event.target.value)} placeholder="Search any stock: symbol or company, e.g. RELIANCE" autoComplete="off" required />
           <button className="rt-btn" type="submit" disabled={searching}>{searching ? 'Searching…' : 'Search'}</button>
         </form>
+        </div>
         {instruments.length > 0 && <div className="rt-results" role="listbox" aria-label="Instrument search results">
           {instruments.map((instrument) => {
             const inBatch = batchSelection.some((item) => item.id === instrument.id);
@@ -496,28 +528,10 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
             <button className="rt-btn" type="button" onClick={() => void runResearchBatch(batchSelection)} disabled={busy || batchSelection.length === 0}>{busy ? 'Running…' : `Run batch (${batchSelection.length})`}</button>
           </div>
         </div>}
+        
         {batchSelection.length > 0 && instruments.length === 0 && <div className="rt-batch-actions">
           <span>Batch: {batchSelection.map((item) => item.symbol).join(', ')}</span>
           <button className="rt-btn" type="button" onClick={() => void runResearchBatch(batchSelection)} disabled={busy}>{busy ? 'Running…' : `Run batch (${batchSelection.length})`}</button>
-        </div>}
-        <div className="rt-command-row">
-          <div className="rt-selected">
-            {selected ? <><strong>{selected.display_name}</strong><span>{selected.symbol} · {selected.venue}{selected.is_synthetic ? ' · synthetic' : ''}</span></>
-              : <span className="rt-muted">No instrument selected. Search above to begin.</span>}
-          </div>
-          <div className="rt-horizon-select" role="group" aria-label="Investment horizon">
-            {(['swing', 'positional', 'long_term'] as const).map((key) => <button key={key} type="button" aria-pressed={horizon === key} className={horizon === key ? 'active' : ''} onClick={() => setHorizon(key)}>
-              {key === 'long_term' ? 'Long-term' : key[0].toUpperCase() + key.slice(1)}</button>)}
-          </div>
-          <div className="rt-actions">
-            {!selected?.is_synthetic && <button className="rt-btn rt-ghost" type="button" onClick={() => void refreshSelectedData()} disabled={busy || !selected}>{busy ? 'Working…' : 'Refresh market data'}</button>}
-            <button className="rt-btn rt-primary" type="button" onClick={() => void runResearch()} disabled={busy || !selected}>{busy ? 'Researching…' : 'Run research'}</button>
-          </div>
-        </div>
-        {selected && <div className="rt-status-row">
-          <span>Last research: {lastRun ? fmtIst(lastRun) : 'never'}</span>
-          {brief && <span className={`rt-chip ${technicalFresh ? 'rt-good' : 'rt-bad'}`}>{technicalFresh ? 'Price data current' : `Price data ${brief.sections.technicals.status.replaceAll('_', ' ')}`}</span>}
-          {brief && <button className="rt-link" type="button" onClick={viewPreviousReport}>Jump to report</button>}
         </div>}
       </section>
 
@@ -532,14 +546,9 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
           <small>Attempt {new Date(source.last_attempted_at).toLocaleString()} · last success {source.last_successful_poll_at ? new Date(source.last_successful_poll_at).toLocaleString() : 'none'} · last article {source.last_successful_article_at ? new Date(source.last_successful_article_at).toLocaleString() : 'none'} · failures {source.failure_count}{source.last_error_category ? ` · ${source.last_error_category}` : ''}</small>
         </span>)}</div>}
         {storedNews.length === 0 && !storedNewsError && <p className="research-status-line">No persisted news items are available yet.</p>}
-        {storedNews.map((item) => <article className="backfill-card research-news-item" key={`${item.source}-${item.external_id}`}>
-          <strong>{item.headline}</strong>
-          <span>{item.publisher ?? item.source} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(item.published_at))} IST{item.published_time_kind === 'gdelt_seen_at' ? ' · GDELT first seen' : ''}</span>
-          <span>{item.symbol_raw ?? 'Market-wide'} · {item.category ?? 'Uncategorized'} · News sentiment unavailable</span>
-          {item.body && <p>{plainText(item.body)} <small>(feed description; not full article text)</small></p>}
-          <small>Full text: {item.full_text_status === 'available' ? 'available' : 'not stored'}</small>
-          {item.source_url && <a href={item.source_url} target="_blank" rel="noreferrer">Open original article</a>}
-        </article>)}
+        <ul className="rt-nr-list rt-scroll" tabIndex={0} aria-label="Persisted news, scrollable">{storedNews.map((item) => <NewsRow key={`${item.source}-${item.external_id}`}
+          title={item.display_title ?? item.headline} keyLine={item.key_line} chips={[...(item.symbol_raw ? [item.symbol_raw] : []), ...(item.category ? [item.category] : []), ...(item.tags ?? [])]}
+          meta={`${item.publisher ?? item.source} · ${fmtIst(item.published_at)}`} url={item.source_url} />)}</ul>
       </section>
 
       <section className="data-section research-brief-section" aria-label="News sentiment analysis">
@@ -564,17 +573,17 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
             {visibleInstrumentSentiments.length === 0 ? <strong>No analyzed company news is mapped to this watchlist yet.</strong> : visibleInstrumentSentiments.slice(0, 12).map((item) => <small key={item.scope_id}><strong>{item.instrument?.symbol ?? item.scope_id}:</strong> {item.sentiment ?? item.status} · {scoreLabel(item.score)} · confidence {item.confidence_score ?? '—'}/100</small>)}
           </span>
           <span><small>Sector sentiment · persisted sector mappings only</small>
-            {sectorSentiments.length === 0 ? <strong>Sector sentiment unavailable; no saved sector mappings are available.</strong> : sectorSentiments.slice(0, 12).map((item) => <small key={item.scope_id}><strong>{item.scope_id}:</strong> {item.sentiment ?? item.status} · {scoreLabel(item.score)} · {item.event_count} events</small>)}
+            {sectorSentiments.length > 0 && sectorSentiments.every((item) => item.event_count === 0) ? <strong>No sector has analysed events yet.</strong> : sectorSentiments.length === 0 ? <strong>Sector sentiment unavailable; no saved sector mappings are available.</strong> : sectorSentiments.slice(0, 12).map((item) => <small key={item.scope_id}><strong>{item.scope_id}:</strong> {item.sentiment ?? item.status} · {scoreLabel(item.score)} · {item.event_count} events</small>)}
           </span>
         </div>
         <h3>Recent impactful news</h3>
         {visibleRecentSentiment.length === 0 && <p className="research-status-line">{marketSentiment?.status === 'not_analyzed' ? 'News has not yet been analyzed.' : marketSentiment?.status === 'source_unavailable' ? 'News source unavailable; no recent analyzed events.' : 'No analyzed recent events are available.'}</p>}
-        {visibleRecentSentiment.map((item) => <article className="backfill-card research-news-item" key={item.news_item_id}>
-          <strong>{item.headline}</strong><span>{item.interpretation === 'uncertain' ? `UNCERTAIN · model label ${item.sentiment.toUpperCase()}` : item.sentiment.toUpperCase()} · {item.event_category.replaceAll('_', ' ')} · impact {item.impact} · confidence {item.confidence_score}/100 · {item.symbol_raw ?? (item.instrument_id ? 'Mapped company' : item.relevance_scope)}</span>
-          <span>{item.publisher ?? item.source} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(item.published_at))} IST</span>
-          <small>{item.explanation} Evidence: {item.evidence.map((evidence) => evidence.text).join(' · ')}</small>
-          {item.summary && <p>{plainText(item.summary)} <small>(available feed summary)</small></p>}{item.url && <a href={item.url} target="_blank" rel="noreferrer">Open source article</a>}
-        </article>)}
+        <ul className="rt-nr-list">{visibleRecentSentiment.map((item) => <NewsRow key={item.news_item_id}
+          title={item.display_title ?? item.headline} keyLine={item.key_line}
+          chips={[...(item.symbol_raw ? [item.symbol_raw] : []), item.event_category.replaceAll('_', ' '), ...(item.tags ?? []).filter((tag) => tag.toLowerCase() !== item.event_category.replaceAll('_', ' ').toLowerCase())]}
+          sentiment={item.interpretation === 'uncertain' ? 'uncertain' : item.sentiment} impact={item.impact}
+          meta={`${item.publisher ?? item.source} · ${fmtIst(item.published_at)}`} url={item.url}
+          why={`${item.explanation} Evidence: ${item.evidence.map((evidence) => evidence.text).join(' · ')} · confidence ${item.confidence_score}/100`} />)}</ul>
         {marketSentiment?.coverage.sources.map((source) => <small className="research-source-citation" key={`sentiment-${source.source}`}>{source.source}: {source.status}{source.rate_limited ? ' · rate limited' : ''}{source.last_error_category ? ` · ${source.last_error_category}` : ''}</small>)}
       </section>
       </details>
@@ -602,8 +611,11 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
           <strong>Research running…</strong>
           {selectedResult.run_id && <button className="rt-btn rt-ghost" type="button" onClick={() => void cancelResearchRun(selectedResult.run_id!)}>Cancel run</button>}
         </section>}
-        {brief ? <ResearchBriefView brief={brief} instrument={selected} horizon={horizon} onHorizon={setHorizon} sentimentHistory={selectedSentimentHistory} showAi />
-          : <section className="rt-card rt-empty-state"><h3>No research report yet</h3><p>Run research to calculate component scores, horizon assessments and evidence for {selected.symbol}.</p></section>}
+        <StockHero instrument={selected} brief={brief} horizon={horizon} onHorizon={setHorizon} busy={busy} watched={watched(selected)}
+          onRun={() => void runResearch()} onRefresh={() => void refreshSelectedData()}
+          onToggleWatch={() => void (watched(selected) ? removeInstrumentFromWatchlist(selected.id) : addInstrumentToWatchlist(selected.id, selected.symbol))}
+          onJump={() => document.getElementById('research-report')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
+        {brief && <ResearchBriefView brief={brief} instrument={selected} horizon={horizon} onHorizon={setHorizon} sentimentHistory={selectedSentimentHistory} showAi />}
 
         <details className="rt-card rt-collapsible">
           <summary>Custom source URLs · {sourceLinks.length}</summary>
@@ -667,6 +679,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
         </details>
       </>}
       {!selected && <section className="rt-card rt-empty-state"><h3>Select a stock to begin</h3><p>Search for an instrument, choose a horizon and run research to see scored, evidence-linked assessments.</p></section>}
+      </>}
     </div>
   );
 }

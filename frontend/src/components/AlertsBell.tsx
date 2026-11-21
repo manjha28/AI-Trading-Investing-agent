@@ -8,12 +8,13 @@ const when = (iso: string) => new Date(iso).toLocaleString('en-IN', { dateStyle:
 
 function summary(e: AlertEvent): string {
   const ev = e.evidence ?? {};
+  if (e.rule_type === 'research_buy') return `${(Array.isArray(ev.horizons) ? ev.horizons : []).map((h: string) => h.replace('_', '-')).join(', ')} · confidence ${ev.confidence ?? '—'}${ev.confidence_band ? ` (${ev.confidence_band})` : ''}`;
   const bits = ['symbol', 'price', 'last_price', 'threshold', 'threshold_pct', 'move_pct', 'rsi'].filter((k) => ev[k] !== undefined && ev[k] !== null).slice(0, 3).map((k) => `${k.replace(/_/g, ' ')} ${String(ev[k])}`);
   return bits.join(' · ');
 }
 
 /** Header bell: new alerts across all stocks. Click an alert to jump to that stock in Market watch. */
-export function AlertsBell({ onOpenStock, refreshKey = 0 }: { onOpenStock: (instrumentId: string) => void; refreshKey?: number }) {
+export function AlertsBell({ onOpenStock, onOpenResearch, refreshKey = 0 }: { onOpenStock: (instrumentId: string) => void; onOpenResearch?: (instrumentId: string) => void; refreshKey?: number }) {
   const [events, setEvents] = useState<AlertEvent[]>([]);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState(false);
@@ -53,8 +54,8 @@ export function AlertsBell({ onOpenStock, refreshKey = 0 }: { onOpenStock: (inst
           <ul>
             {events.map((e) => (
               <li key={e.id}>
-                <button type="button" className="bell-item" onClick={() => { setOpen(false); if (e.instrument_id) onOpenStock(e.instrument_id); void markRead([e.id]); }}>
-                  <span><strong>{e.instrument_id ? symbolById[e.instrument_id] ?? 'Stock' : 'Portfolio'}</strong> · {ruleLabel(e.rule_type)}</span>
+                <button type="button" className="bell-item" onClick={() => { setOpen(false); if (e.instrument_id) { if (e.rule_type === 'research_buy' && onOpenResearch) onOpenResearch(e.instrument_id); else onOpenStock(e.instrument_id); } void markRead([e.id]); }}>
+                  <span><strong>{e.instrument_id ? symbolById[e.instrument_id] ?? 'Stock' : 'Portfolio'}</strong> · {e.rule_type === 'research_buy' ? 'Ready to buy' : ruleLabel(e.rule_type)}</span>
                   <small>{when(e.fired_at)}{summary(e) ? ` · ${summary(e)}` : ''}</small>
                 </button>
               </li>))}

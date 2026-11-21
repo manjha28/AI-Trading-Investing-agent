@@ -708,14 +708,17 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     // The server measures each price's age when it responds. Elapsed time is counted from the
     // moment of the request, so a displayed age is never understated.
     const requestedAt = Date.now();
-    const [dhan, totals] = await Promise.all([
-      apiRequest<DhanPortfolio>('/brokers/dhan/portfolio'),
-      apiRequest<BrokerPortfolioSummary>('/brokers/portfolio-summary'),
+    // Each response paints as soon as it arrives (the stored-mirror totals are fast; the live holdings call can be slower). Both are
+    // aged from the same request instant, so neither can look fresher than it is.
+    const painted = <T,>(request: Promise<T>, apply: (value: T) => void) => request.then((value) => {
+      apply(value);
+      setFetchedAt(requestedAt);
+      setClock(Date.now());
+    });
+    await Promise.all([
+      painted(apiRequest<BrokerPortfolioSummary>('/brokers/portfolio-summary'), setBrokerSummary),
+      painted(apiRequest<DhanPortfolio>('/brokers/dhan/portfolio'), setDhanPortfolio),
     ]);
-    setDhanPortfolio(dhan);
-    setBrokerSummary(totals);
-    setFetchedAt(requestedAt);
-    setClock(Date.now());
   }, [portfolioId]);
 
   // Day change needs the previous session's stored real daily close. When the backend reports

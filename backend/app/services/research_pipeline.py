@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID, uuid4
@@ -21,8 +22,8 @@ from app.api.market_data import (
     _providers,
     _resolve_provider_candidate,
     MAX_BARS,
+    MarketDataProviderChain,
     create_market_data_provider_chain,
-    market_data_provider_for_user,
     sync_history,
 )
 from app.broker_adapters import BrokerAdapterError
@@ -44,6 +45,7 @@ from app.models import (
 from app.research_service import is_stale as is_source_stale
 from app.services import fundamentals as fundamentals_service
 from app.services.indicators import compute_indicators
+from app.services import news_highlights
 from app.services.news_sentiment import CLASSIFIER_VERSION, aggregate_instrument_sentiment
 from app.services.price_freshness import is_continuous_market, is_official_session_close
 from app.services import dhan_company_info, valuation_inputs
@@ -719,6 +721,34 @@ def _reconcile_dhan_snapshot(
             quality.append({"kind": "discrepancy", "field_path": f"dhan.company_info.{name}", "reason": check["reason"]})
 
 
+IST = ZoneInfo("Asia/Kolkata")
+BENCHMARK_SYMBOLS = ("NIFTY 50", "NIFTY50", "NIFTY", "NIFTYBEES")
+
+
+def _daily_frame(db: Session, instrument_id: UUID, source: str | None, *, limit: int = 1800):
+    """Completed real daily OHLCV (oldest first) as a DataFrame indexed by session date. Floats feed indicator maths only."""
+    import pandas as pd
+    query = select(MarketBar).where(MarketBar.instrument_id == instrument_id, MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False))
+    if source:
+        query = query.where(MarketBar.source == source)
+    rows = db.scalars(query.order_by(MarketBar.timestamp.desc()).limit(limit)).all()
+    if not rows:
+        return None
+    return pd.DataFrame([(pd.Timestamp(r.timestamp.date()), float(r.open), float(r.high), float(r.low), float(r.close), float(r.volume or 0)) for r in reversed(rows)],
+                        columns=["date", "open", "high", "low", "close", "volume"]).drop_duplicates("date").set_index("date")
+
+
+def _benchmark_series(db: Session):
+    """NIFTY 50 (or a tracking ETF) daily closes if real bars are stored; None otherwise, so relative strength is reported as not scored."""
+    for symbol in BENCHMARK_SYMBOLS:
+        inst = db.scalar(select(Instrument).where(func.upper(Instrument.symbol) == symbol, Instrument.is_synthetic.is_(False)).limit(1))
+        if inst is not None:
+            frame = _daily_frame(db, inst.id, None, limit=1800)
+            if frame is not None and len(frame) >= 150:
+                return frame["close"]
+    return None
+
+
 def render_brief(
     db: Session,
     instrument: Instrument,
@@ -783,7 +813,82 @@ def render_brief(
     except Exception as exc:  # noqa: BLE001
         logger.exception("research_assessment_failed error_class=%s", type(exc).__name__)
         sections["assessment"] = {"error": f"Scoring failed ({type(exc).__name__}); evidence is unaffected."}
+    try:
+        from app.services import research_alerts, research_levels, technical_engine
+        if technicals.get("status") == "available":
+            import pandas as pd
+            frame = _daily_frame(db, instrument.id, technicals.get("source"))
+            sections["technical_engine"] = technical_engine.analyze(frame, _benchmark_series(db), as_of=pd.Timestamp(datetime.now(IST).date())) if frame is not None else {
+                "status": "unavailable", "reason": "No daily candles are stored.", "horizons": {}}
+        else:
+            sections["technical_engine"] = {"status": "suppressed", "reason": technicals.get("message") or "Daily price data is not current, so technical levels are suppressed.", "horizons": {}}
+        sections["levels"] = research_levels.build_levels(technicals, sections.get("assessment"), sections["technical_engine"])
+        sections["buy_confidence"] = research_alerts.confidence_by_horizon(sections)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("research_levels_failed error_class=%s", type(exc).__name__)
+        sections["levels"] = {"error": f"Levels failed ({type(exc).__name__}); other sections are unaffected."}
+    # Each added section fails alone: a gap in one never blanks the report.
+    try:
+        sections["shareholding_history"] = _shareholding_history(periods)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("research_shareholding_history_failed error_class=%s", type(exc).__name__)
+        sections["shareholding_history"] = {"status": "unavailable", "error": f"Shareholding history failed ({type(exc).__name__}); other sections are unaffected."}
+    try:
+        sections["news_highlights"] = news_highlights.build(sentiment, news["items"], instrument.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("research_news_highlights_failed error_class=%s", type(exc).__name__)
+        sections["news_highlights"] = {"status": "unavailable", "error": f"News highlights failed ({type(exc).__name__}); other sections are unaffected."}
     return sections, quality
+
+_HOLDING_KEYS = (("promoter_holding_pct", "Promoters"), ("fii_holding_pct", "FIIs"), ("dii_holding_pct", "DIIs"),
+                 ("government_holding_pct", "Government"), ("public_holding_pct", "Public"))
+SHAREHOLDING_HISTORY_QUARTERS = 12
+
+
+def _holding_value(row: InstrumentFundamental, key: str) -> Decimal | None:
+    raw = (row.extra_metrics or {}).get(key)
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    if raw is None:
+        return None
+    try:
+        return Decimal(str(raw))        # via string: never Decimal(float)
+    except InvalidOperation:
+        return None
+
+
+def _shareholding_history(periods: list[InstrumentFundamental]) -> dict[str, Any]:
+    """Quarterly holding % per category with change vs the previous stored quarter and vs the same quarter a year earlier.
+
+    Values come only from stored quarterly rows (Screener page imports). A quarter, category or comparison that is not stored is None, never 0.
+    A change is computed only between ADJACENT quarters (about 3 months apart) or a true year-ago quarter (about 12 months apart).
+    """
+    quarters = sorted((p for p in periods if p.period_type == "quarterly"), key=lambda p: p.period_end, reverse=True)
+    quarters = [q for q in quarters if any(_holding_value(q, k) is not None for k, _ in _HOLDING_KEYS)]
+    if not quarters:
+        return {"status": "unavailable", "source": None, "quarters": [], "categories": [],
+                "message": "No quarterly shareholding history is stored for this company. Import a saved Screener page to add it; Dhan gives an undated snapshot only."}
+    by_end = {q.period_end: q for q in quarters}
+
+    def near(end: date, days: int) -> InstrumentFundamental | None:
+        target = end - timedelta(days=days)
+        hits = [q for e, q in by_end.items() if abs((e - target).days) <= 20]
+        return hits[0] if hits else None
+
+    shown = quarters[:SHAREHOLDING_HISTORY_QUARTERS]
+    categories = []
+    for key, label in _HOLDING_KEYS:
+        points = []
+        for q in shown:
+            now_v, prev, year = _holding_value(q, key), near(q.period_end, 91), near(q.period_end, 365)
+            prev_v, year_v = (_holding_value(prev, key) if prev else None), (_holding_value(year, key) if year else None)
+            points.append({"period_end": q.period_end.isoformat(), "percent": None if now_v is None else str(now_v),
+                           "change_qoq": None if now_v is None or prev_v is None else str(now_v - prev_v),
+                           "change_yoy": None if now_v is None or year_v is None else str(now_v - year_v)})
+        if any(p["percent"] is not None for p in points):
+            categories.append({"key": key, "label": label, "points": points})
+    return {"status": "available", "source": "screener_import", "quarters": [q.period_end.isoformat() for q in shown], "categories": categories,
+            "message": None, "note": "Change is in percentage points. \u2014 means that quarter is not stored; it is never filled or assumed zero."}
 
 
 def _progress_event(
@@ -1039,7 +1144,7 @@ def ensure_latest_daily_candle(
         attempts: list[dict[str, str]] = []
         try:
             user = db.get(User, user_id)
-            provider = market_data_provider_for_user(db, user_id)
+            provider = dhan_only_provider(db, user_id)
             start = datetime.combine(session_date - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
             response = sync_history(
                 instrument_id=instrument.id, start=start, end=now, background_tasks=None, interval="1d",
@@ -1075,6 +1180,65 @@ def ensure_latest_daily_candle(
         return result
 
 
+def dhan_only_provider(db: Session, user_id: UUID) -> MarketDataProviderChain:
+    """Price-history provider restricted to Dhan, as the owner requires: no fallback to Angel One, Yahoo or any other source.
+
+    Raises HTTPException (caught by the callers, which record the reason) when Dhan is not connected, instead of silently using another provider."""
+    _angel, dhan_provider, _upstox = _market_data_credentials(db, user_id, "dhan")
+    if dhan_provider is None:
+        raise HTTPException(status_code=409, detail={"message": "Dhan is not connected or its session has expired; reconnect Dhan to fetch price history (no other data source is used).", "providers": [{"provider": "dhan", "reason": "authentication_required"}]})
+    chain = MarketDataProviderChain(create_market_data_provider_chain(("dhan",), dhan_provider=dhan_provider).providers)
+    chain.unavailable_providers = []
+    return chain
+
+
+MIN_DAILY_HISTORY_BARS = 900          # about 3.5 years: enough for weekly and monthly candles
+HISTORY_WINDOW_DAYS = 700             # one provider request covers at most MAX_BARS (500) sessions
+HISTORY_WINDOWS = 3                   # ~5.7 years in total
+_HISTORY_FAILURES: dict[UUID, float] = {}
+HISTORY_RETRY_SECONDS = 6 * 3600
+
+
+def ensure_daily_history(db: Session, instrument: Instrument, user_id: UUID) -> dict[str, Any]:
+    """Fetch about 3 years of real daily bars through the existing history-sync path when fewer than MIN_DAILY_HISTORY_BARS are stored.
+
+    Technical scoring and levels need history (ATR, 200-day context, swing lows). Never fabricates data and never raises; a failure is reported
+    and retried only after HISTORY_RETRY_SECONDS so a bad symbol is not hammered.
+    """
+    out: dict[str, Any] = {"action": "none", "bars_before": None, "reason": None}
+    if instrument.is_synthetic or (instrument.country or "").upper() != "IN" or is_continuous_market(instrument):
+        return out
+    have = int(db.scalar(select(func.count(MarketBar.id)).where(MarketBar.instrument_id == instrument.id, MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False))) or 0)
+    out["bars_before"] = have
+    if have >= MIN_DAILY_HISTORY_BARS:
+        return out
+    last_fail = _HISTORY_FAILURES.get(instrument.id)
+    if last_fail is not None and time.monotonic() - last_fail < HISTORY_RETRY_SECONDS:
+        return {**out, "action": "skipped", "reason": "A recent history fetch for this stock failed; it will be retried later."}
+    out["action"] = "fetch"
+    try:
+        user = db.get(User, user_id)
+        provider = dhan_only_provider(db, user_id)
+        now = datetime.now(timezone.utc)
+        for i in range(HISTORY_WINDOWS):   # sync_history only requests ranges not already stored, so re-runs are cheap
+            end = now - timedelta(days=i * HISTORY_WINDOW_DAYS)
+            sync_history(instrument_id=instrument.id, start=end - timedelta(days=HISTORY_WINDOW_DAYS), end=end, background_tasks=None, interval="1d",
+                         limit=MAX_BARS, provider=provider, _user=user, db=db)
+    except HTTPException as exc:
+        db.rollback()
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        out["reason"] = str(detail.get("message") or f"HTTP {exc.status_code}")[:300]
+    except (MarketDataProviderError, BrokerAdapterError, TimeoutError, ValueError) as exc:
+        db.rollback()
+        out["reason"] = f"{type(exc).__name__}: {getattr(exc, 'code', None) or str(exc)}"[:300]
+    db.expire_all()
+    out["bars_after"] = int(db.scalar(select(func.count(MarketBar.id)).where(MarketBar.instrument_id == instrument.id, MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False))) or 0)
+    if out["bars_after"] <= have:
+        _HISTORY_FAILURES[instrument.id] = time.monotonic()
+        out["reason"] = out["reason"] or "The data provider returned no additional daily bars."
+    return out
+
+
 def _execute_instrument_research(
     db: Session, run: InstrumentResearchRun
 ) -> tuple[InstrumentResearchRun, InstrumentResearchBrief | None]:
@@ -1089,6 +1253,7 @@ def _execute_instrument_research(
     if not _progress_event(db, run, "checking_existing_data", "running", "Inspecting stored market, financial, news and sentiment data."):
         return run, None
     # Recover a missing latest completed session candle BEFORE scoring; a failure never blocks the run.
+    history = ensure_daily_history(db, instrument, run.user_id)   # enough history for ATR / swing lows / pivots
     recovery = ensure_latest_daily_candle(db, instrument, run.user_id)
     if recovery["action"] != "none" and not _progress_event(
         db, run, "market_data_recovery", "completed" if recovery["persisted"] else "failed",
@@ -1234,6 +1399,11 @@ def _execute_instrument_research(
         "gdelt": poll_status("gdelt"),
     }
     sections["collector_status"] = collector_status
+    sections["market_data_recovery"] = {
+        "history": {k: history.get(k) for k in ("action", "bars_before", "bars_after", "reason")},
+        "latest_candle": {"session": recovery.get("session"), "state_before": recovery.get("state_before"), "action": recovery.get("action"),
+                          "persisted": recovery.get("persisted"), "provider": recovery.get("provider"), "reason": recovery.get("reason"), "attempts": recovery.get("attempts")},
+    }
     if not _progress_event(db, run, "validating_evidence", "completed",
                            "Component values retain their source and freshness; missing sources remain unavailable."):
         return run, None
@@ -1281,6 +1451,8 @@ def _execute_instrument_research(
     db.refresh(run)
     db.refresh(brief)
     _progress_event(db, run, "preparing_snapshot", "completed", "Immutable research brief and provenance persisted.")
+    from app.services import research_alerts
+    research_alerts.notify_if_new_buy(db, run, brief)
     return run, brief
 
 

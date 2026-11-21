@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import threading
+import time
 
 from app import research_service
 from app.api.auth import get_active_session, require_csrf
@@ -827,6 +828,26 @@ def get_fundamentals_gaps(
     instrument = db.get(Instrument, instrument_id)
     return {**screener_import.fundamentals_gaps(db, instrument_id), "coverage": fundamentals_feed.instrument_coverage(db, instrument),
             "disclaimer": DISCLAIMER}
+
+
+_REPORT_CACHE: dict = {}
+
+
+@router.get("/daily-report")
+def get_daily_report(
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Buy / hold / no-new-entry buckets over the owner's watchlist and held stocks, from the latest stored research."""
+    from app import research_daily
+    from app.services import research_report
+    researching = research_daily.kick_missing(_session.user_id)   # newly added stocks start researching immediately
+    cached = _REPORT_CACHE.get(_session.user_id)
+    if cached is not None and time.monotonic() - cached[0] < 30:   # the master list makes this a few hundred briefs: build at most every 30 s
+        return {**cached[1], "researching": researching}
+    report = research_report.build_report(db, _session.user_id)
+    _REPORT_CACHE[_session.user_id] = (time.monotonic(), report)
+    return {**report, "researching": researching}
 
 
 @router.get("/fundamentals-coverage")

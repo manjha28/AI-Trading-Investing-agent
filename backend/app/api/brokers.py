@@ -155,10 +155,13 @@ def _dhan_instrument_master(
     cache_after = DhanAdapter._scrip_master_cache
     if cache_after is None:
         return master_rows, None
+    # Only cash-segment rows can be a newly listed share that a fresher master would resolve. A derivative contract (an expired or
+    # weekly option, say) is never in the equity-focused master, so it must not force a ~230,000-row re-download on every page load.
     has_unmatched_identity = any(
         not _dhan_master_matches(master_rows, row.security_id, row.isin)
         for row in rows
-        if row.security_id or row.isin
+        if (row.security_id or row.isin)
+        and not str(row.exchange or "").upper().endswith(("_FNO", "_COMM", "_CURRENCY"))
     )
     if (
         has_unmatched_identity

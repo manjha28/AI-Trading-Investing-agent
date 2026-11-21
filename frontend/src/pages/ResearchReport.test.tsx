@@ -95,23 +95,23 @@ describe('ResearchBriefView', () => {
   it('surfaces a scoring error without hiding the evidence tabs', () => {
     render(<ResearchBriefView brief={brief(assessment({ error: 'Scoring failed (ValueError); evidence is unaffected.' }))} instrument={null} />);
     expect(screen.getByText(/Scoring failed \(ValueError\)/)).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Data Quality / Sources' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Evidence' })).toBeInTheDocument();
   });
 
-  it('shows the stale-technical reason on the technical tab and states Levels Giver is unavailable', () => {
+  it('shows the stale-technical reason on the technical tab and says the technical engine is not available', () => {
     const b = brief(assessment());
     b.sections.technicals = { ...b.sections.technicals, status: 'stale', staleness: { stale: true, basis: 'nse_session_calendar', latest_session: '2026-11-03', expected_session: '2026-11-04', reason: 'Latest stored daily bar is 2026-11-03; the last completed NSE session is 2026-11-04.' } };
     render(<ResearchBriefView brief={b} instrument={null} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Technical Analysis' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Technicals' }));
     expect(screen.getByText(/last completed NSE session is 2026-11-04/)).toBeInTheDocument();
-    expect(screen.getByText(/Levels Giver output is not available/)).toBeInTheDocument();
+    expect(screen.getByText(/predates the technical engine/)).toBeInTheDocument();
   });
 
   it('renders empty states for news and financial statements', () => {
     render(<ResearchBriefView brief={brief(assessment())} instrument={null} />);
     fireEvent.click(screen.getByRole('tab', { name: 'News' }));
     expect(screen.getByText(/Missing news is not treated as neutral/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('tab', { name: 'Financial Statements' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText(/No annual periods are stored/)).toBeInTheDocument();
   });
 });
@@ -232,7 +232,7 @@ describe('Compact layout controls', () => {
   it('keeps every Research tab reachable and switchable', () => {
     render(<ResearchBriefView brief={brief(assessment())} instrument={null} />);
     const names = screen.getAllByRole('tab').filter((t) => t.id.startsWith('rt-tab-')).map((t) => t.textContent);
-    expect(names).toEqual(['Overview', 'Fundamentals', 'Valuation', 'Shareholding', 'Financial Statements', 'Technical Analysis', 'News', 'Sentiment', 'Risks & Scenarios', 'Data Quality / Sources']);
+    expect(names).toEqual(['Summary', 'Fundamentals', 'Technicals', 'News', 'Evidence']);
     for (const name of names) {
       fireEvent.click(screen.getByRole('tab', { name: name as string }));
       expect(screen.getByRole('tab', { name: name as string })).toHaveAttribute('aria-selected', 'true');
@@ -275,7 +275,7 @@ describe('Valuation tab', () => {
     const b = brief(assessment());
     (b.sections as unknown as Record<string, unknown>).valuation = valuation();
     render(<ResearchBriefView brief={b} instrument={null} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Valuation' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText('Financial quality')).toBeInTheDocument();
     expect(screen.getByText('₹240 Cr')).toBeInTheDocument();
     expect(screen.getByText('9.50x')).toBeInTheDocument();
@@ -297,7 +297,7 @@ describe('Valuation tab', () => {
     (v as unknown as { scoring: unknown }).scoring = { version: 'v', status: 'scored', score: null, label: 'x', confidence: 50, coverage_pct: 100, sector_family: 'default', blockers: [] };
     (b.sections as unknown as Record<string, unknown>).valuation = v;
     render(<ResearchBriefView brief={b} instrument={null} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Valuation' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText(/percentile —/)).toBeInTheDocument();
     expect(screen.queryByText(/cheaper than/)).toBeNull();
     expect(document.querySelector('.rt-vpeer-dot')).toBeNull();
@@ -311,14 +311,14 @@ describe('Valuation tab', () => {
     (v as unknown as { scoring: unknown }).scoring = { version: 'valuation-score-0.2.0-provisional', status: 'scored', score: 72.4, label: 'attractive', confidence: 60, coverage_pct: 100, sector_family: 'default', blockers: [] };
     (b.sections as unknown as Record<string, unknown>).valuation = v;
     render(<ResearchBriefView brief={b} instrument={null} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Valuation' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText(/Score 72 · attractive/)).toBeInTheDocument();
   });
 
   it('explains reports generated before valuation existed and still renders a model-0.1.0 assessment without a valuation component', () => {
     render(<ResearchBriefView brief={brief(assessment())} instrument={null} />);
     expect(screen.queryByText('Valuation Intelligence')).toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: 'Valuation' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText(/before Valuation Intelligence existed/)).toBeInTheDocument();
   });
 });
@@ -339,7 +339,7 @@ describe('Shareholding section', () => {
     const b = brief(assessment());
     (b.sections as unknown as Record<string, unknown>).shareholding = shareholding();
     render(<ResearchBriefView brief={b} instrument={null} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Shareholding' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText('50.44%')).toBeInTheDocument();
     expect(screen.getByText('16.67%')).toBeInTheDocument();
     expect(screen.getByText('Not provided')).toBeInTheDocument();  // a null category is not shown as 0%
@@ -355,11 +355,11 @@ describe('Shareholding section', () => {
     const b = brief(assessment());
     (b.sections as unknown as Record<string, unknown>).shareholding = shareholding({ status: 'unavailable', holdings: [], warnings: ['No shareholding data was retrieved (Dhan Company Info unavailable or not mapped).'] });
     render(<ResearchBriefView brief={b} instrument={null} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Shareholding' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText(/No shareholding data was retrieved/)).toBeInTheDocument();
     cleanup();
     render(<ResearchBriefView brief={brief(assessment())} instrument={null} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Shareholding' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Fundamentals' }));
     expect(screen.getByText(/before shareholding data was collected/)).toBeInTheDocument();
   });
 });

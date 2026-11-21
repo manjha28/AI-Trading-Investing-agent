@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Instrument, InstrumentSnapshot, NewsItem, NewsSentimentAnalysis, NewsSentimentFailure, NewsSourcePoll
+from app.services import news_highlights
 
 _SUMMARY_LIMIT = 4000
 _EVENT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -382,6 +383,9 @@ def _item_response(item: NewsItem, analysis: NewsSentimentAnalysis) -> dict[str,
     payload = item.raw_payload or {}
     return {"news_item_id": str(item.id), "source": item.source, "publisher": item.publisher,
             "url": item.source_url, "headline": item.headline, "summary": _clean_summary(item.body) or None,
+            "display_title": news_highlights.display_title(item.headline),
+            "key_line": news_highlights.key_line(item.headline, _clean_summary(item.body)),
+            "tags": news_highlights.tag_labels(item.headline, _clean_summary(item.body)),
             "published_at": _aware_utc(item.published_at), "instrument_id": str(item.instrument_id) if item.instrument_id else None,
             "symbol_raw": item.symbol_raw, "category": item.category, "full_text_status": payload.get("full_text_status", "unavailable"),
             "sentiment": analysis.sentiment, "score": float(analysis.sentiment_score),

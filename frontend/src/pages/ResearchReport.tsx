@@ -3,8 +3,9 @@ import { ApiRequestError, apiRequest } from '../api';
 import { formatChange } from '../lib/formatChange';
 import { formatMoney } from '../lib/formatMoney';
 import { CandleChart, sessionCloseForVenue } from '../components/CandleChart';
+import { EngineHeadline, TechnicalEnginePanel, type Engine } from './TechnicalEnginePanel';
 import type {
-  AiAnalysis, AiStatus, AiValuationView, Assessment, Shareholding, PeerMetric, Valuation, ValuationMetric, Brief, ComponentKey, FundamentalPeriod, HorizonKey, Instrument, QualityItem, ScoreComponent,
+  AiAnalysis, AiStatus, HorizonAssessment, NewsHighlight, NewsHighlights, ShareholdingHistory, AiValuationView, Assessment, Shareholding, PeerMetric, Valuation, ValuationMetric, Brief, ComponentKey, FundamentalPeriod, HorizonKey, Instrument, QualityItem, ScoreComponent,
   SentimentEvent, SentimentHistoryPoint,
 } from './researchTypes';
 
@@ -13,7 +14,7 @@ const HORIZON_LABEL: Record<HorizonKey, string> = { swing: 'Swing', positional: 
 const COMPONENT_ORDER: ComponentKey[] = ['fundamental', 'financial_trends', 'technical', 'news_sentiment', 'valuation'];
 // Briefs made before model 0.2.0 have no valuation component: show only the components the stored assessment really has.
 const presentKeys = (assessment: Assessment) => COMPONENT_ORDER.filter((key) => assessment.components[key]);
-const TABS = ['Overview', 'Fundamentals', 'Valuation', 'Shareholding', 'Financial Statements', 'Technical Analysis', 'News', 'Sentiment', 'Risks & Scenarios', 'Data Quality / Sources'] as const;
+const TABS = ['Summary', 'Fundamentals', 'Technicals', 'News', 'Evidence'] as const;
 type Tab = (typeof TABS)[number];
 
 export function plainText(value: string | null | undefined): string {
@@ -74,8 +75,20 @@ function freshness(brief: Brief): { label: string; level: 'good' | 'mid' | 'bad'
   return { label: `Price data current${t.latest_bar ? ` · ${t.latest_bar.slice(0, 10)}` : ''}`, level: 'good' };
 }
 
-function AssessmentPanel({ brief, instrument, horizon, onHorizon }: {
-  brief: Brief; instrument?: Instrument | null; horizon: HorizonKey; onHorizon: (h: HorizonKey) => void;
+const DIM_TAB: Record<ComponentKey, Tab> = { fundamental: 'Fundamentals', financial_trends: 'Fundamentals', valuation: 'Fundamentals', technical: 'Technicals', news_sentiment: 'News' };
+
+function evidenceLines(assessment: Assessment, h: HorizonAssessment) {
+  const keys = presentKeys(assessment).filter((k) => h.components_used.includes(k));
+  const factors = keys.flatMap((k) => assessment.components[k].factors.map((f) => ({ ...f, dim: assessment.components[k].label.replace(' Intelligence', '') })));
+  return {
+    strengths: factors.filter((f) => f.sub_score >= 65).sort((x, y) => y.sub_score - x.sub_score).slice(0, 3),
+    weak: factors.filter((f) => f.sub_score < 45).sort((x, y) => x.sub_score - y.sub_score).slice(0, 3),
+    flags: [...h.gates.map((g) => g.detail), ...keys.flatMap((k) => assessment.components[k].risk_flags)].slice(0, 4),
+  };
+}
+
+function AssessmentPanel({ brief, instrument, horizon, onHorizon, onJump }: {
+  brief: Brief; instrument?: Instrument | null; horizon: HorizonKey; onHorizon: (h: HorizonKey) => void; onJump?: (tab: Tab) => void;
 }) {
   const assessment: Assessment | undefined = brief.sections.assessment;
   const fresh = freshness(brief);
@@ -88,6 +101,7 @@ function AssessmentPanel({ brief, instrument, horizon, onHorizon }: {
     </section>;
   }
   const h = assessment.horizons[horizon];
+  const lines = evidenceLines(assessment, h);
   const onKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
     event.preventDefault();
@@ -95,7 +109,7 @@ function AssessmentPanel({ brief, instrument, horizon, onHorizon }: {
     onHorizon(next);
     document.getElementById(`rt-horizon-${next}`)?.focus();
   };
-  return <section className="rt-card rt-hero" aria-label="Primary assessment">
+  return <section className="rt-card rt-hero rt-verdict" aria-label="Primary assessment">
     <header className="rt-hero-head">
       <div>
         <h2>{title}</h2>
@@ -117,7 +131,7 @@ function AssessmentPanel({ brief, instrument, horizon, onHorizon }: {
         </button>;
       })}
     </div>
-    <div className="rt-hero-body" role="tabpanel">
+    <div className="rt-verdict-body" role="tabpanel">
       <div className="rt-hero-score">
         <small>Algorithmic score · {HORIZON_LABEL[horizon]}</small>
         <div className="rt-score-row"><strong className={`rt-score rt-big rt-${tone(h.score)}`}>{h.score === null ? '—' : num(h.score, 1)}</strong><span>{h.score === null ? 'not calculated' : '/100'}</span></div>
@@ -129,23 +143,38 @@ function AssessmentPanel({ brief, instrument, horizon, onHorizon }: {
           <div><dt>Evidence quality</dt><dd>{num(h.scored_weight * 100, 0)}% of weight scored</dd></div>
         </dl>
       </div>
-      <div className="rt-hero-why">
-        <h3>How {HORIZON_LABEL[horizon]} is weighted</h3>
-        <div className="rt-table-wrap"><table className="rt-table">
-          <thead><tr><th>Dimension</th><th>Weight</th><th>Used</th><th>Score</th></tr></thead>
-          <tbody>{presentKeys(assessment).map((key) => {
-            const c = assessment.components[key];
-            const used = h.contributions.find((x) => x.component === key);
-            return <tr key={key}><td>{c.label.replace(' Intelligence', '')}</td><td>{h.weights[key] === undefined ? '—' : `${Math.round(h.weights[key] * 100)}%`}</td>
-              <td>{used ? `${Math.round(used.effective_weight * 100)}%` : 'excluded'}</td><td>{c.score === null ? 'blocked' : num(c.score, 1)}</td></tr>;
-          })}</tbody>
-        </table></div>
-        <Reasons title="Not assessed because" items={h.blockers} kind="block" />
-        <Reasons title="Risk gates applied" items={h.gates.map((g) => g.detail)} kind="warn" />
-      </div>
+      <div className="rt-vcol rt-vcol-good"><h4>What supports it</h4>
+        {lines.strengths.length ? <ul>{lines.strengths.map((f) => <li key={f.key}><span>{f.label}</span><b>{num(f.value, 1)}{f.unit && !f.unit.startsWith('(') && !f.unit.startsWith('of') ? ` ${f.unit}` : ''}</b><small>{f.dim}</small></li>)}</ul>
+          : <p className="rt-empty">No factor scores strongly for this horizon.</p>}</div>
+      <div className="rt-vcol rt-vcol-bad"><h4>Watch-outs</h4>
+        {lines.flags.length > 0 && <ul className="rt-flags">{lines.flags.map((f) => <li key={f}>{f}</li>)}</ul>}
+        {lines.weak.length > 0 && <ul>{lines.weak.map((f) => <li key={f.key}><span>{f.label}</span><b>{num(f.value, 1)}{f.unit && !f.unit.startsWith('(') && !f.unit.startsWith('of') ? ` ${f.unit}` : ''}</b><small>{f.dim}</small></li>)}</ul>}
+        {lines.flags.length === 0 && lines.weak.length === 0 && <p className="rt-empty">No weak factors or active gates for this horizon.</p>}
+        {h.blockers.length > 0 && <ul className="rt-flags">{h.blockers.map((b) => <li key={b}>{b}</li>)}</ul>}</div>
     </div>
+    <div className="rt-dims" role="list" aria-label="Score by dimension">{presentKeys(assessment).map((key) => {
+      const c = assessment.components[key];
+      return <button key={key} type="button" role="listitem" className="rt-dim" onClick={() => onJump?.(DIM_TAB[key])} title={c.status === 'scored' ? c.interpretation ?? '' : c.blockers[0] ?? 'Not scored'}>
+        <small>{c.label.replace(' Intelligence', '')}</small>
+        <b className={`rt-${tone(c.score)}`}>{c.score === null ? 'Not scored' : num(c.score, 0)}</b>
+        <ScoreBar score={c.score} />
+      </button>;
+    })}</div>
+    <details className="rt-hero-why rt-fold">
+      <summary>How {HORIZON_LABEL[horizon]} is weighted</summary>
+      <div className="rt-table-wrap"><table className="rt-table">
+        <thead><tr><th>Dimension</th><th>Weight</th><th>Used</th><th>Score</th></tr></thead>
+        <tbody>{presentKeys(assessment).map((key) => {
+          const c = assessment.components[key];
+          const used = h.contributions.find((x) => x.component === key);
+          return <tr key={key}><td>{c.label.replace(' Intelligence', '')}</td><td>{h.weights[key] === undefined ? '—' : `${Math.round(h.weights[key] * 100)}%`}</td>
+            <td>{used ? `${Math.round(used.effective_weight * 100)}%` : 'excluded'}</td><td>{c.score === null ? 'blocked' : num(c.score, 1)}</td></tr>;
+        })}</tbody>
+      </table></div>
+    </details>
     <p className="rt-provisional"><b>Provisional model</b> ({assessment.model_version}). {assessment.validation.statement} Not backtested. Decision support, not investment advice.</p>
-    <div className="rt-component-grid">{presentKeys(assessment).map((key) => <ComponentCard key={key} component={assessment.components[key]} weight={h.weights[key]} />)}</div>
+    <details className="rt-fold"><summary>Score breakdown by dimension</summary>
+      <div className="rt-component-grid">{presentKeys(assessment).map((key) => <ComponentCard key={key} component={assessment.components[key]} weight={h.weights[key]} />)}</div></details>
   </section>;
 }
 
@@ -456,15 +485,81 @@ function ValuationPanel({ valuation }: { valuation: Valuation | undefined }) {
 }
 const MIN_PEERS_SHOWN = 5;
 
-function ShareholdingPanel({ shareholding }: { shareholding: Shareholding | undefined }) {
+function signed(value: string | null | undefined) {
+  if (value === null || value === undefined) return <span className="rt-muted">—</span>;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return <span className="rt-muted">—</span>;
+  return <span className={n > 0 ? 'rt-up' : n < 0 ? 'rt-down' : 'rt-muted'}>{n > 0 ? '+' : ''}{num(n, 2)}</span>;
+}
+
+function ShareholdingTrend({ history }: { history: ShareholdingHistory | undefined }) {
+  if (!history) return <p className="rt-empty">Shareholding history is not part of this older report. Run research again.</p>;
+  if (history.status !== 'available' || !history.categories?.length) {
+    return <p className="rt-empty">{history.error ?? history.message ?? 'No quarterly shareholding history is stored.'}</p>;
+  }
+  const quarters = history.quarters ?? [];
+  const qLabel = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-IN', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  return <>
+    <h4>Change in holding by quarter</h4>
+    <div className="rt-table-wrap"><table className="rt-table rt-compact rt-sh-trend">
+      <thead><tr><th>Category</th><th>Latest %</th><th>QoQ (pp)</th><th>YoY (pp)</th>{quarters.map((q) => <th key={q}>{qLabel(q)}</th>)}</tr></thead>
+      <tbody>{history.categories.map((c) => {
+        const latest = c.points[0];
+        return <tr key={c.key}><th scope="row">{c.label}</th><td><b>{latest?.percent == null ? '—' : `${num(latest.percent, 2)}%`}</b></td>
+          <td>{signed(latest?.change_qoq)}</td><td>{signed(latest?.change_yoy)}</td>
+          {c.points.map((p) => <td key={p.period_end}>{p.percent == null ? '—' : num(p.percent, 2)}</td>)}</tr>;
+      })}</tbody>
+    </table></div>
+    <p className="rt-note">{history.note} Quarters shown: {quarters.length}.</p>
+  </>;
+}
+
+function Marked({ text, facts, field }: { text: string; facts: NewsHighlight['facts']; field: 'headline' | 'summary' }) {
+  const parts: React.ReactNode[] = [];
+  let at = 0;
+  facts.filter((f) => f.field === field).sort((a, b) => a.start - b.start).forEach((f, i) => {
+    if (f.start < at || f.end > text.length) return;
+    parts.push(text.slice(at, f.start), <mark key={i} className={`rt-mark rt-mark-${f.kind}`}>{text.slice(f.start, f.end)}</mark>);
+    at = f.end;
+  });
+  parts.push(text.slice(at));
+  return <>{parts}</>;
+}
+
+function HighlightRow({ item }: { item: NewsHighlight }) {
+  return <li className={`rt-hl rt-hl-${item.importance}`}>
+    <div className="rt-hl-tags">
+      <span className={`rt-pill rt-imp-${item.importance}`}>{item.importance}</span>
+      {item.tags.slice(0, 3).map((t) => <span key={t.tag} className="rt-chip">{t.label}</span>)}
+    </div>
+    <p className="rt-hl-head">{item.url ? <a href={item.url} target="_blank" rel="noreferrer"><Marked text={item.headline} facts={item.facts} field="headline" /></a>
+      : <Marked text={item.headline} facts={item.facts} field="headline" />}</p>
+    {item.summary && <p className="rt-hl-sum"><Marked text={item.summary} facts={item.facts} field="summary" /></p>}
+    <small>{item.publisher ?? 'Publisher not identified'} · {item.published_at ? ist(item.published_at) : 'publication time unavailable'}</small>
+  </li>;
+}
+
+function NewsHighlightsPanel({ highlights, limit }: { highlights: NewsHighlights | undefined; limit?: number }) {
+  if (!highlights) return <p className="rt-empty">Key-news highlights are not part of this older report. Run research again.</p>;
+  if (highlights.status !== 'available' || !highlights.items?.length) return <p className="rt-empty">{highlights.error ?? highlights.message ?? 'No highlights.'}</p>;
+  return <>
+    <ul className={`rt-hl-list${limit === undefined ? ' rt-scroll' : ''}`} {...(limit === undefined ? { tabIndex: 0, 'aria-label': 'Company news, scrollable' } : {})}>{highlights.items.slice(0, limit).map((item) => <HighlightRow key={`${item.headline}-${item.published_at}`} item={item} />)}</ul>
+    {limit === undefined && <p className="rt-note">{highlights.note} Showing {highlights.items.length} of {highlights.total_articles} stored articles, most important first.</p>}
+  </>;
+}
+
+function ShareholdingPanel({ shareholding, history }: { shareholding: Shareholding | undefined; history?: ShareholdingHistory }) {
   if (!shareholding || shareholding.status === 'unavailable') {
     return <>
       <h3>Shareholding</h3>
+      <ShareholdingTrend history={history} />
       <p className="rt-empty">{shareholding?.warnings?.[0] ?? 'This report was generated before shareholding data was collected. Run research again.'}</p>
     </>;
   }
   return <>
     <h3>Shareholding</h3>
+    <ShareholdingTrend history={history} />
+    <details className="rt-fold" open><summary>Latest shareholding % (Dhan, undated snapshot)</summary>
     <div className="rt-reasons rt-reasons-warn" role="note"><strong>Read with care</strong>
       <ul>
         <li>Reporting period: <b>{shareholding.reporting_period_note}</b>. These figures are an undated snapshot and must not be read as the latest quarter&apos;s shareholding pattern.</li>
@@ -482,6 +577,7 @@ function ShareholdingPanel({ shareholding }: { shareholding: Shareholding | unde
       </tr>)}</tbody>
     </table></div>
     <p className="rt-note">Itemised above: {shareholding.sum_percent === null || shareholding.sum_percent === undefined ? '—' : `${num(shareholding.sum_percent, 2)}%`}. Not itemised by the source: {shareholding.not_itemised_percent === null || shareholding.not_itemised_percent === undefined ? '—' : `${num(shareholding.not_itemised_percent, 2)}%`} (other categories such as government, trusts or depositary receipts are not returned).</p>
+    </details>
   </>;
 }
 
@@ -491,7 +587,7 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
   const [localHorizon, setLocalHorizon] = useState<HorizonKey>(horizon);
   const active = onHorizon ? horizon : localHorizon;
   const setActive = onHorizon ?? setLocalHorizon;
-  const [tab, setTab] = useState<Tab>('Overview');
+  const [tab, setTab] = useState<Tab>('Summary');
   const { fundamentals, technicals, news, news_sentiment: sentiment, collector_status: collectors, data_quality: quality } = brief.sections;
   const assessment = brief.sections.assessment && !brief.sections.assessment.error ? brief.sections.assessment : undefined;
   const companyEvents = useMemo(() => (sentiment?.events ?? []).filter((e) => e.items.some((i) => i.instrument_id === brief.instrument_id)), [sentiment, brief.instrument_id]);
@@ -512,35 +608,39 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
     document.getElementById(`rt-tab-${next}`)?.focus();
   };
   const snap = fundamentals.snapshot.values ?? {};
+  const blockedDims = assessment ? presentKeys(assessment).filter((k) => assessment.components[k].status !== 'scored').map((k) => `${assessment.components[k].label.replace(' Intelligence', '')}: ${assessment.components[k].blockers[0] ?? 'not scored'}`) : [];
   const allRisks = assessment ? presentKeys(assessment).flatMap((k) => assessment.components[k].risk_flags.map((f) => `${assessment.components[k].label}: ${f}`)) : [];
 
   return <div className="rt-report" id="research-report">
-    <AssessmentPanel brief={brief} instrument={instrument} horizon={active} onHorizon={setActive} />
-    {showAi && <AiAnalysisPanel brief={brief} horizon={active} />}
+    <details className="rt-fold rt-breakdown" open><summary>Scoring breakdown · all horizons</summary><AssessmentPanel brief={brief} instrument={instrument} horizon={active} onHorizon={setActive} onJump={setTab} /></details>
     <div className="rt-tabs" role="tablist" aria-label="Research sections">
       {TABS.map((name, index) => <button key={name} id={`rt-tab-${name}`} role="tab" type="button" aria-selected={tab === name} aria-controls="rt-panel"
         tabIndex={tab === name ? 0 : -1} className={tab === name ? 'active' : ''} onClick={() => setTab(name)} onKeyDown={(e) => onTabKey(e, index)}>{name}</button>)}
     </div>
     <section className="rt-card rt-panel" id="rt-panel" role="tabpanel" aria-labelledby={`rt-tab-${tab}`}>
-      {tab === 'Overview' && <>
-        <h3>What the system knows, calculates and recommends</h3>
-        {assessment ? <div className="rt-overview-grid">
-          {presentKeys(assessment).map((key) => {
-            const c = assessment.components[key];
-            return <div key={key} className="rt-ov-row"><span>{c.label.replace(' Intelligence', '')}</span>
-              <b className={`rt-${tone(c.score)}`}>{c.score === null ? 'Not scored' : `${num(c.score, 1)} · ${c.interpretation}`}</b>
-              {c.status === 'scored' ? <small>confidence {num(c.confidence, 0)}% · coverage {num(c.coverage_pct, 0)}%</small>
-                : <details className="rt-ov-why"><summary>{c.blockers.length ? 'Insufficient evidence — details' : 'Not scored'}</summary>
-                  {c.blockers.length > 0 && <ul>{c.blockers.map((b) => <li key={b}>{b}</li>)}</ul>}</details>}</div>;
-          })}
-        </div> : <p className="rt-empty">Scores are not part of this older report. Run research again.</p>}
-        <h4>Company snapshot</h4>
+      {tab === 'Summary' && <>
+        {showAi && <AiAnalysisPanel brief={brief} horizon={active} />}
+        {assessment && blockedDims.length > 0 && <div className="rt-reasons rt-reasons-info"><strong>Dimensions that could not be scored</strong>
+          {presentKeys(assessment).filter((k) => assessment.components[k].status !== 'scored').map((k) => {
+            const c = assessment.components[k];
+            return <details key={k} className="rt-ov-why"><summary>{c.label.replace(' Intelligence', '')}: {c.blockers.length ? 'Insufficient evidence — details' : 'Not scored'}</summary>
+              {c.blockers.length > 0 && <ul>{c.blockers.map((b) => <li key={b}>{b}</li>)}</ul>}</details>;
+          })}</div>}
+        <h4>Key news</h4>
+        <NewsHighlightsPanel highlights={brief.sections.news_highlights} limit={3} />
+        <details className="rt-fold"><summary>Company snapshot</summary>
         {fundamentals.snapshot.status === 'available' ? <dl className="rt-kv">{Object.entries(snap).map(([name, item]) => <div key={name}><dt>{words(name)}</dt><dd>{item.value === null ? '—' : name === 'market_cap' ? formatMoney(item.value, instrument?.currency) : Number.isFinite(Number(item.value)) && name !== 'sector' && name !== 'industry' ? num(item.value, 2) : item.value}</dd></div>)}</dl>
           : <p className="rt-empty">No company snapshot is stored.</p>}
+        </details>
         {fundamentals.snapshot.conflicts && fundamentals.snapshot.conflicts.length > 0 && <Reasons title="Providers disagree (values kept separate, never averaged)" kind="warn"
           items={fundamentals.snapshot.conflicts.map((c) => `${words(c.field)}: ${c.source_a} ${c.value_a} vs ${c.source_b} ${c.value_b}`)} />}
       </>}
-      {tab === 'Fundamentals' && assessment && <>
+      {tab === 'Fundamentals' && <>
+        <nav className="rt-subnav" aria-label="Fundamentals sections">
+          {[['factors', 'Quality'], ['valuation', 'Valuation'], ['shareholding', 'Shareholding'], ['statements', 'Statements']].map(([id, label]) => <button key={id} type="button" className="rt-link" onClick={() => document.getElementById(`rt-sec-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>{label}</button>)}
+        </nav>
+        <section className="rt-sec" id="rt-sec-factors">
+        {assessment ? <>
         <h3>Fundamental Intelligence</h3>
         {assessment.financial_sector && <p className="rt-note">Financial-sector company: leverage, margin and cash-flow ratios are excluded as not comparable; asset quality and capital adequacy are not stored.</p>}
         <FactorTable component={assessment.components.fundamental} />
@@ -548,30 +648,34 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
         <Reasons title="Missing evidence" items={assessment.components.fundamental.missing} kind="info" />
         <Reasons title="Risk flags" items={assessment.components.fundamental.risk_flags} kind="warn" />
         <p className="rt-note">{assessment.components.fundamental.notes.join(' ')}</p>
-      </>}
-      {tab === 'Fundamentals' && !assessment && <p className="rt-empty">No scoring in this older report. Run research again.</p>}
-      {tab === 'Valuation' && <ValuationPanel valuation={brief.sections.valuation} />}
-      {tab === 'Shareholding' && <ShareholdingPanel shareholding={brief.sections.shareholding} />}
-      {tab === 'Financial Statements' && <>
+        </> : <p className="rt-empty">No scoring in this older report. Run research again.</p>}
+        </section>
+        <section className="rt-sec" id="rt-sec-valuation"><ValuationPanel valuation={brief.sections.valuation} /></section>
+        <section className="rt-sec" id="rt-sec-shareholding"><ShareholdingPanel shareholding={brief.sections.shareholding} history={brief.sections.shareholding_history} /></section>
+        <section className="rt-sec" id="rt-sec-statements">
         <h3>Financial statements</h3>
         <StatementsTable brief={brief} />
         {assessment && <><h4>Financial Trends Intelligence</h4><FactorTable component={assessment.components.financial_trends} />
           <Reasons title="Conflicting evidence" items={assessment.components.financial_trends.conflicts} kind="warn" />
           <Reasons title="Blocked because" items={assessment.components.financial_trends.blockers} kind="block" />
           <Reasons title="Missing evidence" items={assessment.components.financial_trends.missing} kind="info" /></>}
+        </section>
       </>}
-      {tab === 'Technical Analysis' && <>
+      {tab === 'Technicals' && <>
         <h3>Technical analysis · stored daily bars</h3>
         {technicals.staleness?.reason && <div className="rt-reasons rt-reasons-block"><strong>Technical data is not current</strong><ul><li>{technicals.staleness.reason}</li></ul></div>}
         {technicals.message && !technicals.staleness?.reason && <p className="rt-note">{technicals.message}</p>}
         <div className="rt-tech-layout">
           <div>{instrument && !instrument.is_synthetic ? <TechnicalChart instrument={instrument} /> : <p className="rt-empty">No chart for synthetic or unselected instruments.</p>}
-            <p className="rt-note">Levels Giver output is not available: that module does not exist in this repository, so no levels are shown or invented.</p></div>
+            </div>
           <div className="rt-table-wrap"><table className="rt-table rt-compact">
             <thead><tr><th>Indicator</th><th>Value</th><th>Bars</th></tr></thead>
             <tbody>{Object.entries(technicals.indicators).map(([name, item]) => <tr key={name}><td>{words(name)}</td><td>{item.value === null ? 'Insufficient history' : num(item.value, 2)}</td><td>{item.bars_used}/{item.bars_required}</td></tr>)}</tbody>
           </table></div>
         </div>
+        <h4>Technical engine · {HORIZON_LABEL[active]}</h4>
+        <EngineHeadline engine={(brief.sections as unknown as { technical_engine?: Engine }).technical_engine} />
+        <TechnicalEnginePanel engine={(brief.sections as unknown as { technical_engine?: Engine }).technical_engine} horizon={active} />
         {assessment && <><h4>Technical Intelligence</h4><FactorTable component={assessment.components.technical} />
           <Reasons title="Blocked because" items={assessment.components.technical.blockers} kind="block" />
           <Reasons title="Risk flags" items={assessment.components.technical.risk_flags} kind="warn" /></>}
@@ -579,14 +683,17 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
       </>}
       {tab === 'News' && <>
         <h3>Company news</h3>
+        <NewsHighlightsPanel highlights={brief.sections.news_highlights} />
+        <details className="rt-fold"><summary>All stored events and feed headlines</summary>
         <p className="rt-note">Stored headlines and permitted summaries only; full article text is not assumed. Duplicate articles on one event are grouped. Market-wide news is under the collapsed “Market-wide news” panel above.</p>
         {companyEvents.length === 0 ? <p className="rt-empty">No analysed company-mapped news events in the period. Missing news is not treated as neutral.</p> : companyEvents.map((e) => <EventRow key={e.event_key} event={e} />)}
         {marketEvents > 0 && <p className="rt-note">{marketEvents} market/sector/macro event group(s) were also in the sentiment window and are excluded from company evidence.</p>}
         {news.items.length > 0 && <><h4>Headlines from configured company feeds</h4><ul className="rt-list">{news.items.map((item, index) => <li key={`${item.source_id}-${index}`}>
           <a href={item.url} target="_blank" rel="noreferrer">{item.headline}</a><small>{item.publisher} · {item.published_at ? ist(item.published_at) : 'publication time unavailable'}</small></li>)}</ul></>}
         {news.items.length === 0 && news.message && <p className="rt-note">{news.message}</p>}
+        </details>
       </>}
-      {tab === 'Sentiment' && <>
+      {tab === 'News' && <>
         <h3>News &amp; Sentiment Intelligence</h3>
         {assessment ? <>
           <dl className="rt-kv">
@@ -604,7 +711,7 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
         <h4>Sentiment history (company)</h4><Sparkline points={sentimentHistory} />
         {companyEvents.slice(0, 8).map((e) => <EventRow key={e.event_key} event={e} />)}
       </>}
-      {tab === 'Risks & Scenarios' && <>
+      {tab === 'Evidence' && <>
         <h3>Risks &amp; scenarios</h3>
         {assessment ? <>
           <Reasons title="Active risk flags" items={allRisks} kind="warn" />
@@ -614,7 +721,7 @@ export function ResearchBriefView({ brief, instrument, horizon = 'positional', o
         </> : <p className="rt-empty">No scoring in this older report.</p>}
         <p className="rt-note">Scenario analysis (bull/base/bear) is not produced: there is no scenario engine, and no figures are invented.</p>
       </>}
-      {tab === 'Data Quality / Sources' && <>
+      {tab === 'Evidence' && <>
         <h3>Data quality &amp; sources</h3>
         {groupedQuality.length === 0 ? <p className="rt-empty">No stale, unavailable, failed-fetch or synthetic items recorded.</p> : <ul className="rt-list">{groupedQuality.map((item) => <li key={`${item.kind}-${item.reason}`}>
           <span className={`rt-pill rt-q-${item.kind}`}>{words(item.kind)}</span> {item.reason}{item.count > 1 && <small> · repeated across {item.count} fields</small>}</li>)}</ul>}
