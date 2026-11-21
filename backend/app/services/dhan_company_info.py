@@ -157,6 +157,25 @@ _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 CACHE_SECONDS = 600
 
 
+NO_DATA_SECONDS = 7 * 24 * 3600
+_NO_DATA: dict[str, float] = {}
+
+
+def mark_no_data(security_id: str, *, now: Callable[[], float] = time.monotonic) -> None:
+    """Dhan said DH-907 (no company data) for this security: do not ask again for a week (per process)."""
+    with _LOCK_GUARD:
+        _NO_DATA[security_id] = now()
+
+
+def has_no_data(security_id: str, *, now: Callable[[], float] = time.monotonic) -> bool:
+    with _LOCK_GUARD:
+        marked = _NO_DATA.get(security_id)
+        if marked is not None and now() - marked >= NO_DATA_SECONDS:
+            del _NO_DATA[security_id]
+            return False
+        return marked is not None
+
+
 def fetch_once(security_id: str, fetch: Callable[[], dict[str, Any] | None], *, now: Callable[[], float] = time.monotonic) -> dict[str, Any] | None:
     with _LOCK_GUARD:
         lock = _LOCKS.setdefault(security_id, threading.Lock())

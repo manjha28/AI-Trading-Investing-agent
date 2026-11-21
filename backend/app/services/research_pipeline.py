@@ -26,7 +26,7 @@ from app.api.market_data import (
     create_market_data_provider_chain,
     sync_history,
 )
-from app.broker_adapters import BrokerAdapterError
+from app.broker_adapters import BrokerAdapterError, DhanNoData
 from app.config import settings
 from app.db import engine
 from app.market_data import MarketDataProviderError
@@ -73,6 +73,9 @@ def _company_info_snapshot(
     return dhan_company_info.normalize(data, security_id)
 
 
+NO_COMPANY_DATA_MESSAGE = "Dhan has no company data for this security (common for ETFs, funds and recent listings); fundamentals stay unavailable and are not retried for a week."
+
+
 def _fetch_dhan_company_info(
     db: Session, user_id: UUID, instrument: Instrument
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -87,6 +90,8 @@ def _fetch_dhan_company_info(
     segment = parts[1] if len(parts) == 2 else ""
     if not security_id.isdigit() or segment not in {"NSE_EQ", "BSE_EQ"}:
         return None, "Dhan Company Info supports only verified NSE/BSE equity mappings."
+    if dhan_company_info.has_no_data(security_id):
+        return None, NO_COMPANY_DATA_MESSAGE
     try:
         _, provider, _ = _market_data_credentials(db, user_id, "dhan")
         if provider is None:
@@ -108,6 +113,9 @@ def _fetch_dhan_company_info(
         return snapshot, None
     except HTTPException:
         return None, "Dhan Company Info is unavailable; verify the Dhan connection and its data access."
+    except DhanNoData:
+        dhan_company_info.mark_no_data(security_id)
+        return None, NO_COMPANY_DATA_MESSAGE
     except BrokerAdapterError:
         return None, "Dhan Company Info could not provide this instrument's fundamentals."
 

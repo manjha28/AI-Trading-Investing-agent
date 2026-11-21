@@ -236,6 +236,14 @@ class BrokerAdapterError(Exception):
         self.status_code = status_code
 
 
+class DhanNoData(BrokerAdapterError):
+    """Dhan answered 400 DH-907 "no data found": the security has no data on that endpoint (ETFs, funds, many recent listings). Permanent for practical
+    purposes, so it is neither a connection problem nor something to retry every cycle."""
+
+    def __init__(self, message: str = "Dhan has no data for this security") -> None:
+        super().__init__(message, category="no_data_for_security", status_code=400)
+
+
 class BrokerReconnectRequired(BrokerAdapterError):
     def __init__(self, message: str, *, status_code: int | None = 401) -> None:
         super().__init__(
@@ -375,6 +383,9 @@ def _request(
             error_payload = response.json()
         except ValueError:
             error_payload = None
+        if diagnostic_stage == "company_info_api_request" and _safe_provider_error(error_payload)[0] == "DH-907":
+            logger.info("Dhan company info has no data for this security (DH-907); it is skipped and not retried for a week.")
+            raise DhanNoData()
         _log_dhan_request_failure(
             diagnostic_stage,
             path,

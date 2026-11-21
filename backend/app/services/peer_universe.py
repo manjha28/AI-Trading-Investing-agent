@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.broker_adapters import BrokerAdapterError
+from app.broker_adapters import BrokerAdapterError, DhanNoData
 from app.models import Instrument, InstrumentProviderIdentifier, ValuationProviderInput
 from app.services import dhan_company_info, valuation_inputs
 
@@ -52,7 +52,7 @@ def refresh_dhan_universe(
     (its ``get_company_info`` applies the shared throttle). Stops early after repeated failures so a revoked token cannot hammer the API."""
     now = now or datetime.now(timezone.utc)
     skip = fresh_instrument_ids(db, timedelta(hours=max_age_hours), now)
-    summary = {"targets": 0, "fetched": 0, "skipped_fresh": 0, "failed": 0, "no_classification": 0, "stopped_early": False, "failures": []}
+    summary = {"targets": 0, "fetched": 0, "skipped_fresh": 0, "failed": 0, "no_classification": 0, "no_company_data": 0, "stopped_early": False, "failures": []}
     consecutive = 0
     for instrument, security_id in dhan_equity_targets(db):
         if only is not None and instrument.id not in only:
@@ -61,10 +61,17 @@ def refresh_dhan_universe(
         if instrument.id in skip:
             summary["skipped_fresh"] += 1
             continue
+        if dhan_company_info.has_no_data(security_id):
+            summary["no_company_data"] += 1
+            continue
         if limit is not None and summary["fetched"] >= limit:
             break
         try:
             data = adapter.get_company_info(access_token, tokens, security_id, "NSE_EQ", metrics=("CO", "RATIOS"))
+        except DhanNoData:
+            dhan_company_info.mark_no_data(security_id)      # an ETF, fund or recent listing: expected, not a failure, never counts toward stopping the run
+            summary["no_company_data"] += 1
+            continue
         except BrokerAdapterError as exc:
             consecutive += 1
             summary["failed"] += 1
