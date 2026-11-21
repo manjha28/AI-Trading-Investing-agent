@@ -2045,7 +2045,7 @@ def backfill_dhan_trades(
             DhanTradeMirror.provider_trade_id.is_(None),
         )
     ).all())
-    inserted, updated = _upsert_dhan_trades(db, all_rows)
+    inserted, updated, skipped_rows = _upsert_dhan_trades(db, all_rows)
     inserted_by_year: dict[int, int] = {}
     # Inserted rows are identifiable by the provider trade IDs just returned by Dhan.
     inserted_provider_ids = {row.provider_trade_id for row in all_rows} - existing_provider_ids
@@ -2061,6 +2061,7 @@ def backfill_dhan_trades(
         "to_date": end,
         "inserted": inserted,
         "updated": updated,
+        "skipped": len(skipped_rows),
         "years": yearly_results,
     }
 
@@ -2158,13 +2159,14 @@ def import_dhan_trade_csv(
         )
     except (BrokerAdapterError, InvalidOperation, ValueError) as error:
         raise HTTPException(status_code=422, detail="Dhan CSV contains invalid trade data") from error
-    inserted, updated = _upsert_dhan_trades(db, mirror_rows)
+    inserted, updated, skipped_rows = _upsert_dhan_trades(db, mirror_rows)
     db.commit()
     return {
         "source": "dhan_csv",
         "records_received": len(records),
         "inserted": inserted,
         "updated": updated,
+        "skipped": len(skipped_rows),
     }
 
 
