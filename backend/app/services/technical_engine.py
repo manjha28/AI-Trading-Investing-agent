@@ -38,6 +38,9 @@ class EngineConfig:
     atr_stop_mult: dict[str, float] = field(default_factory=lambda: {"swing": 1.5, "positional": 2.0, "long_term": 3.0})
     max_risk_atr: dict[str, float] = field(default_factory=lambda: {"swing": 3.5, "positional": 4.5, "long_term": 6.0})
     min_rr_first_target: dict[str, float] = field(default_factory=lambda: {"swing": 1.3, "positional": 1.5, "long_term": 1.5})
+    entry_zone_atr: float = 1.0                  # the buy band is at most this many DAILY ATRs wide, whatever the horizon (execution happens on the daily chart)
+    entry_zone_max_pct: dict[str, float] = field(default_factory=lambda: {"swing": 1.2, "positional": 2.0, "long_term": 3.0})   # and never wider than this % of price
+    pullback_reach_max_pct: dict[str, float] = field(default_factory=lambda: {"swing": 6.0, "positional": 10.0, "long_term": 15.0})   # a support further below price than this is not a practical pullback level
     pullback_reach_atr: float = 3.0              # a support further below price than this is not a pullback candidate
     min_rvol_breakout: float = 1.2
     adx_trending: float = 22.0
@@ -268,8 +271,10 @@ def _extension_label(x: float, cfg: EngineConfig) -> str:
     return "NORMAL" if x < n else "ACCEPTABLE_WITH_CONFIRMATION" if x < ok else "CAUTION" if x < caution else "AVOID_CHASING"
 
 
-def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any]], regime: str, cfg: EngineConfig) -> dict[str, dict[str, Any]]:
+def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any]], regime: str, cfg: EngineConfig, atr_exec: float | None = None) -> dict[str, dict[str, Any]]:
     c, a = ind["close"], ind["atr14"]
+    ae = atr_exec or a                                    # daily ATR: the buy band is sized on the chart where the order is placed
+    width = min(cfg.entry_zone_atr * ae, cfg.entry_zone_max_pct[horizon] / 100 * c)
     bullish_ok = regime != "DOWNTREND"
     confirm_momentum = (ind["macd_hist"] or 0) > 0 and (ind["rsi14"] or 0) > 48
     supports = sorted((z for z in zones if z["kind"] == "support"), key=lambda z: -z["high"])
@@ -277,13 +282,14 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
     out: dict[str, dict[str, Any]] = {}
 
     # A: pullback to the nearest MEANINGFUL support (multi-factor zone), not merely any touched line
-    sup = next((z for z in supports if (z["strength"] >= 2 or "ema" in z["families"]) and c - z["high"] <= cfg.pullback_reach_atr * a), None)
+    sup = next((z for z in supports if (z["strength"] >= 2 or "ema" in z["families"]) and c - z["high"] <= cfg.pullback_reach_atr * a and (c - z["high"]) / c * 100 <= cfg.pullback_reach_max_pct[horizon]), None)
     if sup is None or not bullish_ok:
-        out["PULLBACK_ENTRY"] = {"status": "INVALID", "reason": "Downtrend regime; dip-buying is avoided." if not bullish_ok else f"No multi-factor support zone within {cfg.pullback_reach_atr:g} ATR below price."}
+        out["PULLBACK_ENTRY"] = {"status": "INVALID", "reason": "Downtrend regime; dip-buying is avoided." if not bullish_ok else f"No multi-factor support zone within {cfg.pullback_reach_atr:g} ATR and {cfg.pullback_reach_max_pct[horizon]:g}% below price."}
     else:
-        lo, hi = sup["low"], sup["high"] + 0.25 * a
+        hi = sup["high"] + 0.25 * ae                       # anchored at the top of the support zone, where buyers step in on a pullback
+        lo = max(sup["low"], hi - width)                    # the band stays narrow even when the support cluster is wide
         ext = max(0.0, (c - hi)) / a
-        inside = lo - 0.25 * a <= c <= hi
+        inside = lo - 0.25 * ae <= c <= hi
         status = "ENTER_NOW" if inside and confirm_momentum else "WAIT"
         out["PULLBACK_ENTRY"] = {"status": status, "zone": [lo, hi], "reference": sup["mid"], "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg), "support_zone": sup,
                                  "reason": (f"Price is inside the support zone ({', '.join(sup['labels'][:3])})." if inside else f"Price is {ext:.1f} ATR above the support zone ({', '.join(sup['labels'][:3])}); wait for a pullback.") + ("" if confirm_momentum or not inside else " Momentum is not confirming yet.")}
@@ -305,14 +311,14 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
             reason = (f"Closed {ext:.1f} ATR above the breakout trigger ({_s(trigger)}). " + ("Too extended; do not chase." if chase else "Volume and momentum confirm." if confirmed else "Volume or momentum has not confirmed; wait for a retest."))
         else:
             status, reason = "WAIT", f"Needs a close above {_s(trigger)} (resistance {', '.join(target_zone['labels'][:2])} + {cfg.breakout_buffer_atr:g} ATR) with volume and momentum."
-        out["BREAKOUT_ENTRY"] = {"status": status, "trigger": trigger, "zone": [trigger, trigger + 0.5 * a], "reference": trigger, "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg),
+        out["BREAKOUT_ENTRY"] = {"status": status, "trigger": trigger, "zone": [trigger, trigger + min(0.5 * ae, width)], "reference": trigger, "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg),
                                  "resistance_zone": target_zone, "reason": reason}
 
     # C: momentum continuation: strong aligned trend, not stretched from its reference EMA
     e20 = ind["ema20"]
     if e20 and ind["adx14"] and ind["adx14"] >= cfg.adx_trending and regime in ("STRONG_UPTREND", "WEAK_UPTREND") and c > e20 and confirm_momentum:
         ext = (c - e20) / a
-        out["MOMENTUM_ENTRY"] = {"status": "ENTER_NOW" if ext <= cfg.extension_atr[1] else "INVALID" if ext > cfg.extension_atr[2] else "WAIT", "zone": [c - 0.5 * a, c], "reference": e20,
+        out["MOMENTUM_ENTRY"] = {"status": "ENTER_NOW" if ext <= cfg.extension_atr[1] else "INVALID" if ext > cfg.extension_atr[2] else "WAIT", "zone": [max(c - 0.5 * ae, c - width), c], "reference": e20,
                                  "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg),
                                  "reason": f"Trend is up with ADX {ind['adx14']:.0f}; price is {ext:.1f} ATR above the 20-EMA ({_extension_label(ext, cfg).replace('_', ' ').lower()})."}
     else:
@@ -404,7 +410,8 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
     score = sum(cfg.weights[n] * v["score"] for n, v in scored.items()) / wsum
     direction = direction_of(score, cfg.direction_bands)
     regime = regime_of(ind, comps)
-    scen = entry_scenarios(horizon, ind, zones, regime, cfg)
+    atr_d = float(atr(daily, 14).iloc[-1]) if len(daily) > 20 else None
+    scen = entry_scenarios(horizon, ind, zones, regime, cfg, atr_d)
     setup, status = choose_setup(scen, regime) if direction in ("STRONG_BULLISH", "BULLISH", "NEUTRAL") else ("NO_VALID_SETUP", "NO_VALID_SETUP")
     if direction == "NEUTRAL" and status == "ENTER_NOW":
         status = "WAIT_FOR_ENTRY"          # a neutral reading never says "enter now"

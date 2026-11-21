@@ -158,3 +158,15 @@ def test_nearest_pivots_picks_the_closest_support_below_and_resistance_above(): 
     support, resistance = nearest_pivots(pivots, "101.00")
     assert support == {"name": "daily P", "price": "100.00"} and resistance == {"name": "weekly R1", "price": "104.00"}
     assert nearest_pivots(pivots, "90.00")[0] is None and nearest_pivots(None, "90.00") == (None, None)
+
+
+def test_entry_zone_is_narrow_on_every_horizon():  # test data only: volatile weekly/monthly charts must not widen the buy band
+    for seed, vol in ((7, 0.013), (3, 0.03), (11, 0.045)):
+        df = make(1500, vol=vol, seed=seed)
+        out = te.analyze(df)
+        cfg = te.EngineConfig()
+        for h, v in out["horizons"].items():
+            if v["status"] != "available" or not v["entry"]:
+                continue
+            width_pct = (float(v["entry"]["high"]) - float(v["entry"]["low"])) / float(v["current_price"]) * 100
+            assert width_pct <= cfg.entry_zone_max_pct[h] + 0.15, (seed, h, width_pct)
