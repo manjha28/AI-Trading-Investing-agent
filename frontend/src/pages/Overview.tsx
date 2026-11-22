@@ -19,6 +19,7 @@ import {
   type ValuationBasis,
 } from '../lib/priceStates';
 import { formatIST, formatISTDate } from '../lib/formatIST';
+import { DhanSessionBanner } from '../components/DhanSessionBanner';
 
 type Props = Pick<
   WorkspaceState,
@@ -258,7 +259,7 @@ const FIGURE_LABELS: Record<PortfolioFigure, string> = {
   positions_exposure: 'Positions exposure (cost basis)',
   holdings_unrealized_pnl: 'Holdings unrealized P&L',
   positions_unrealized_pnl: 'Positions unrealized P&L',
-  market_value: 'Portfolio value (holdings + positions)',
+  market_value: 'Holdings value (holdings + positions)',
   total_value: 'Total value (cash + holdings + positions)',
   unrealized_pnl: 'Unrealized P&L (holdings + positions)',
   day_change: 'Day change (holdings + positions)',
@@ -663,7 +664,7 @@ function RailSectors({ data }: { data: RailSummary }) {
   );
 }
 
-export function OverviewPage({ workspace }: { workspace: Props }) {
+export function OverviewPage({ workspace, brokerAccessAllowed = true }: { workspace: Props; brokerAccessAllowed?: boolean }) {
   const [dhanPortfolio, setDhanPortfolio] = useState<DhanPortfolio | null>(null);
   const [brokerSummary, setBrokerSummary] = useState<BrokerPortfolioSummary | null>(null);
   const [dhanLoading, setDhanLoading] = useState(true);
@@ -705,7 +706,18 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
     refreshWatchlist,
   } = workspace;
 
-  const refreshDhanData = useCallback(async () => {
+  // One fetch at a time: the mount effect and the feed-status fallback used to fire the same pair of requests twice, and before two-factor was verified both got a 403
+  const dhanInFlight = useRef<Promise<void> | null>(null);
+  const refreshDhanData = useCallback((): Promise<void> => {
+    if (!brokerAccessAllowed) return Promise.resolve();
+    if (dhanInFlight.current) return dhanInFlight.current;
+    const run = fetchDhanData().finally(() => { dhanInFlight.current = null; });
+    dhanInFlight.current = run;
+    return run;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portfolioId, brokerAccessAllowed]);
+
+  const fetchDhanData = async () => {
     // The server measures each price's age when it responds. Elapsed time is counted from the
     // moment of the request, so a displayed age is never understated.
     const requestedAt = Date.now();
@@ -1139,10 +1151,12 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
         <p className="muted">Decision support, not investment advice. Brokers are read-only.</p>
       </div>
       {dhanError && <p className="broker-sync-time" role="alert">{dhanError}</p>}
+      {!brokerAccessAllowed && <p className="broker-sync-time" role="status">Verify this session with your authenticator code to load broker account data.</p>}
+      <DhanSessionBanner allowed={brokerAccessAllowed} onOpenBrokers={() => setActiveView('brokers')} />
 
       <section className="metrics-row portfolio-metrics" aria-label="Portfolio metrics">
         <MetricCard
-          label="Portfolio Value"
+          label="Holdings Value"
           value={totals?.market_value ?? null}
           loading={dhanLoading}
           reason={reasonFor('market_value')}
@@ -1166,6 +1180,14 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
           subline={coverageNote ?? dhanBroker?.unavailable_reasons.day_change ?? 'Complete across all holdings and positions'}
           basis={cardBasis(dhanBroker, 'day_change', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
           signed
+        />
+        <MetricCard
+          label="Total incl. cash"
+          value={totals?.total_value ?? null}
+          loading={dhanLoading}
+          reason={reasonFor('total_value')}
+          subline="Cash + holdings + positions (broker summary)"
+          basis={cardBasis(dhanBroker, 'total_value', ageNow, dhanPortfolio?.market_session?.venue, portfolioPriceLabel ?? undefined)}
         />
         <MetricCard
           label="Cash Balance"
@@ -1258,10 +1280,10 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
             )}
           </section>
 
-          <section className="data-section history-panel" aria-label="Portfolio value history">
+          <section className="data-section history-panel" aria-label="Holdings value history">
             <div className="section-heading">
               <div>
-                <h2>Portfolio value history</h2>
+                <h2>Holdings value history</h2>
                 <small className="trade-subtext">
                   {historyUsesPortfolio ? 'Selected portfolio' : 'Owner-wide · all broker holdings'}
                   {' · decision support, not investment advice'}
@@ -1288,6 +1310,10 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
             ) : (
               <>
                 {!historyUsesPortfolio && <p className="history-scope-note">Showing owner-wide history from stored portfolio snapshots.</p>}
+                {(() => {
+                  const last = [...historyRows].reverse().find((r) => r.market_value !== null);
+                  return last ? <p className="history-scope-note">Latest point {formatMoney(String(last.market_value), last.currency)} as of {formatIST(last.timestamp)}: a stored snapshot, so it can differ from the Holdings value card above, which uses live prices.</p> : null;
+                })()}
                 {chartValues.length === 0 ? (
                   <div className="table-empty">No complete market-value points are available in this range.</div>
                 ) : (

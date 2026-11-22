@@ -692,7 +692,7 @@ export function useWorkspace() {
     return () => {
       active = false;
     };
-  }, [portfolioId, transactions, valuation]);
+  }, [portfolioId, transactions]);   // not `valuation`: refetching the risk metrics when the valuation arrived made every page load request them twice
 
   useEffect(() => {
     if (!portfolioId) {

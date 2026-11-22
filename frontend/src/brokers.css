@@ -30,3 +30,5 @@
   .broker-card { padding: 14px; }
   .broker-table { min-width: 540px; }
 }
+.session-banner { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; border: 1px solid #b7791f; background: rgba(183, 121, 31, .12); margin: 8px 0; }
+.session-banner-expired { border-color: #c53030; background: rgba(197, 48, 48, .12); }
