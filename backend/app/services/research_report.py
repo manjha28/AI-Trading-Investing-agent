@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -139,6 +139,13 @@ def _buy_conf(sections: dict[str, Any], horizon: str) -> dict[str, Any] | None:
 
 def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
+    verdict_by_instrument: dict[Any, dict[str, str]] = {}
+    if settings.stock_verdict_enabled:
+        from app.models.stock_verdict import StockVerdict
+        latest_day = db.scalar(select(func.max(StockVerdict.as_of)).where(StockVerdict.user_id == user_id))
+        if latest_day is not None:
+            for v in db.scalars(select(StockVerdict).where(StockVerdict.user_id == user_id, StockVerdict.as_of == latest_day)):
+                verdict_by_instrument.setdefault(v.instrument_id, {})[v.horizon] = v.verdict
     held_info = held_details(db, user_id)
     held = {sym: d["quantity"] for sym, d in held_info.items()}
     rows: list[dict[str, Any]] = []
@@ -174,6 +181,17 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
                 blockers = _insufficient_reasons(sections, horizons)
                 row["not_enough_kind"], row["insufficient_reasons"] = "insufficient_evidence", blockers
                 action = "Insufficient evidence: " + ("; ".join(blockers[:3]) if blockers else "every horizon lacks enough stored data") + ("." if blockers else ".") + (" Keep holding." if row["held"] else "")
+        if settings.stock_verdict_enabled and bucket != "not_enough_data":      # Phase 7: with the flag on the buckets follow the stock verdict (Ready to buy = buy_now, Set up waiting = buy_on_trigger)
+            verdicts = verdict_by_instrument.get(instrument.id) or {}
+            if verdicts:
+                best = min(verdicts.values(), key=lambda v: ("buy_now", "buy_on_trigger").index(v) if v in ("buy_now", "buy_on_trigger") else 9)
+                row["stock_verdicts"] = verdicts
+                if best == "buy_now":
+                    bucket, action = "buy", "Ready to buy: the stock verdict is buy now on at least one horizon (see the levels below)."
+                elif best == "buy_on_trigger":
+                    bucket, action = "setup_waiting", "Set up, waiting: the stock verdict is buy on trigger (price is not in the band yet)."
+                elif bucket in ("buy", "setup_waiting", "radar"):
+                    bucket, action = ("hold", "In your portfolio: keep holding.") if row["held"] else ("no_new_entry", "Do not make a new entry now: the stock verdict has no buy horizon.")
         held_buy = bool(row["held"] and bucket in ("buy", "setup_waiting"))
         if held_buy:      # already held (manual ledger or Dhan): not a new purchase candidate, so it is listed under Hold with the buy levels kept for adding
             bucket, action = "hold", f"Already held ({row.get('held_text') or 'in your portfolio'}): a buy signal exists, so adding is possible at the levels below. Listed under Hold, not Ready to buy."
@@ -196,7 +214,7 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
                 "last_research_at": max(researched) if researched else None,
                 "universe_rule": "Your watchlists plus every stock with a recorded portfolio transaction (NSE equity).",
                 "schedule": "Researched automatically after 16:30 IST on trading days, at app start-up if anything is older than 20 hours, and within minutes of a stock being added."}
-    buckets_all = BUCKETS_V2 if settings.levels_v2_active else BUCKETS
+    buckets_all = BUCKETS_V2 if (settings.levels_v2_active or settings.stock_verdict_enabled) else BUCKETS
     order = {b: i for i, b in enumerate(buckets_all)}
     rows.sort(key=lambda r: (order[r["bucket"]], -((r.get("confidence") or {}).get("score") or ((r.get("horizons") or {}).get("positional") or {}).get("score") or 0), r["symbol"]))
     return {"as_of": now.isoformat(), "buckets": {b: [r for r in rows if r["bucket"] == b] for b in buckets_all},

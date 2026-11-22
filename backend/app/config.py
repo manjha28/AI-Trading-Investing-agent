@@ -217,6 +217,7 @@ class Settings(BaseSettings):
     confidence_v2_enabled: bool = False                           # Nexus v2 phase 2: factor rank + setup grade replace the confidence badge
     multibagger_screen_enabled: bool = False                      # Phase 6: the multibagger engine feeds the long-term Quality stage and the page; the nightly shadow run happens regardless
     multibagger_gsec_10y_pct: float | None = None                  # Phase 6: 10-year G-sec yield in percent, set by hand; unset = the earnings-yield spread factor is unknown (dropped from V)
+    stock_verdict_enabled: bool = False                           # Phase 7: the full stock verdict (seven lenses, a verdict and an evidence score per horizon) drives the Daily report buckets and the stock report page; computed nightly in shadow mode regardless
     leader_tag_enabled: bool = False                              # Phase 6: optional 'Leader' tag on swing/positional cards (chart stage X >= 70 and RS > 0)
     pipeline_v2_enabled: bool = False                             # Nexus v2 phases 3-4: Gate -> Quality (long-term) -> Timing, shadow mode
     ml_overlay_enabled: bool = False                              # Nexus v2 phase 5: in-house ML tie-break overlay

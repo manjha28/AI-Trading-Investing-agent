@@ -1223,3 +1223,4 @@ from app.models.price_crosscheck import PriceCrosscheck  # noqa: F401
 from app.models.multibagger import MultibaggerAssessment  # noqa: F401
 from app.models.listings import InstrumentListing  # noqa: F401
 from app.models.report_snapshot import DailyReportSnapshot  # noqa: F401
+from app.models.stock_verdict import StockVerdict  # noqa: F401

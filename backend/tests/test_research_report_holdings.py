@@ -97,3 +97,26 @@ def test_a_short_history_horizon_says_why_instead_of_no_data():
     assert rr.horizon_data_note(sections, "swing") is None
     sections["technicals"]["bars_available"] = 900                                                           # an old listing with a data gap is not "listed recently"
     assert rr.horizon_data_note(sections, "positional") == "only 2 weekly candles stored; positional needs 40"
+
+
+def test_with_the_stock_verdict_flag_on_the_buckets_follow_the_verdicts(db, monkeypatch):
+    from datetime import date
+
+    from app.config import settings
+    from app.models.stock_verdict import StockVerdict
+    uid = _user(db)
+    a, b, c = _inst(db, "NOWCO"), _inst(db, "TRIGCO"), _inst(db, "NOCO")
+    monkeypatch.setattr(rr, "user_universe", lambda d, u: [a, b, c])
+    buy = {"swing": "BUY", "positional": "BUY", "long_term": "HOLD"}
+    monkeypatch.setattr(rr.research_pipeline, "latest_brief", lambda d, u, iid: _brief(buy))
+    for inst, verdicts in ((a, ("buy_now", "watch", "not_now")), (b, ("buy_on_trigger", "not_now", "avoid")), (c, ("not_now", "avoid", "watch"))):
+        for h, v in zip(("swing", "positional", "long_term"), verdicts):
+            db.add(StockVerdict(instrument_id=inst.id, user_id=uid, as_of=date(2026, 11, 22), computed_at=NOW, horizon=h, verdict=v, evidence_score=50.0, lens={}, reasons={}, model_version="t"))
+    db.commit()
+    monkeypatch.setattr(settings, "stock_verdict_enabled", False)
+    off = rr.build_report(db, uid, NOW)
+    assert {r["symbol"] for r in off["buckets"]["buy"]} == {"NOWCO", "TRIGCO", "NOCO"}                  # v1: all three carry a BUY horizon
+    monkeypatch.setattr(settings, "stock_verdict_enabled", True)
+    on = rr.build_report(db, uid, NOW)
+    where = {r["symbol"]: b_ for b_, rows in on["buckets"].items() for r in rows}
+    assert where["NOWCO"] == "buy" and where["TRIGCO"] == "setup_waiting" and where["NOCO"] == "no_new_entry"

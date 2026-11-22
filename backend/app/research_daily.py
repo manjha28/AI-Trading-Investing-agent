@@ -148,6 +148,8 @@ def _blue_sky_review_once_a_day(now: datetime) -> None:
                 _start_nse_nightly(user_id)               # NSE shareholding + filed results (flags off in code, on in the owner's .env); its own slow, polite thread
                 shadow_outcomes.log_review(db, user_id)
                 multibagger_loader.log_nightly(db, user_id)      # Phase 6: the engine always runs in shadow mode; the flag only decides whether results are shown or used
+                from app.services import stock_verdict
+                stock_verdict.log_nightly(db, user_id)           # Phase 7: the stock verdict, shadow mode whatever the flag says
     except Exception as exc:  # noqa: BLE001
         logger.warning("blue_sky_review_hook_failed error_class=%s", type(exc).__name__)
 

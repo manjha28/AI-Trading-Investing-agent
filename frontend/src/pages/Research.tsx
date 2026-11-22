@@ -6,6 +6,7 @@ import { ResearchBriefView, plainText } from './ResearchReport';
 import { DailyReport } from './DailyReport';
 import { Multibagger } from './Multibagger';
 import { StockHero } from './StockHero';
+import { StockVerdictPanel } from './StockVerdictPanel';
 import { formatIST } from '../lib/formatIST';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -626,6 +627,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
           onRun={() => void runResearch()} onRefresh={() => void refreshSelectedData()}
           onToggleWatch={() => void (watched(selected) ? removeInstrumentFromWatchlist(selected.id) : addInstrumentToWatchlist(selected.id, selected.symbol))}
           onJump={() => document.getElementById('research-report')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
+        <StockVerdictPanel symbol={selected.symbol} />
         {brief && <ResearchBriefView brief={brief} instrument={selected} horizon={horizon} onHorizon={setHorizon} sentimentHistory={selectedSentimentHistory} showAi />}
 
         <details className="rt-card rt-collapsible">
