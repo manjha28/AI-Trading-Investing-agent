@@ -79,7 +79,6 @@ def _insufficient_reasons(sections: dict[str, Any], horizons: dict[str, Any]) ->
     return seen[:6]
 
 
-def is_radar(sections: dict[str, Any]) -> bool:
 _NEEDS = re.compile(r"Only (\d+) completed (\w+) candles are stored; at least (\d+) are needed")
 
 
@@ -97,6 +96,7 @@ def horizon_data_note(sections: dict[str, Any], horizon: str) -> str | None:
     return f"{recent}only {m.group(1)} {m.group(2)} candles stored; {horizon.replace('_', '-')} needs {m.group(3)}"
 
 
+def is_radar(sections: dict[str, Any]) -> bool:
     """A BUY on some horizon but no entry range could be determined for any BUY horizon (history too short, no usable structure, data gap)."""
     buys = research_alerts.buy_horizons(sections)
     if not buys:
