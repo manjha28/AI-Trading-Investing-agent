@@ -1,5 +1,6 @@
 import { Ladder, Ring, inr, when, type Confidence, type Levels } from './DailyReport';
 import type { Brief, HorizonKey, Instrument } from './researchTypes';
+import { formatIST } from '../lib/formatIST';
 
 const ORDER: HorizonKey[] = ['swing', 'positional', 'long_term'];
 const NAME: Record<HorizonKey, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
@@ -11,10 +12,11 @@ const REC: Record<string, { text: string; cls: string }> = {
 type Props = {
   instrument: Instrument; brief: Brief | null; horizon: HorizonKey; onHorizon: (h: HorizonKey) => void; busy: boolean; watched: boolean;
   onRun: () => void; onRefresh: () => void; onToggleWatch: () => void; onJump: (tab: string) => void;
+  loading?: boolean; loadError?: string | null; onRetry?: () => void;
 };
 
 /** Top of the stock page: who it is, the verdict on each horizon, and (for a buy) confidence and levels. Numbers come from the stored report only. */
-export function StockHero({ instrument, brief, horizon, onHorizon, busy, watched, onRun, onRefresh, onToggleWatch, onJump }: Props) {
+export function StockHero({ instrument, brief, horizon, onHorizon, busy, watched, onRun, onRefresh, onToggleWatch, onJump, loading = false, loadError = null, onRetry }: Props) {
   const sections = brief?.sections as (Brief['sections'] & { levels?: { horizons?: Record<string, Levels> }; buy_confidence?: Record<string, Confidence>; market_data_recovery?: { history?: { reason?: string | null; bars_before?: number | null; bars_after?: number | null }; latest_candle?: { reason?: string | null; persisted?: boolean | null } } }) | undefined;
   const assessment = sections?.assessment && !sections.assessment.error ? sections.assessment : undefined;
   const current = sections?.technicals?.status === 'available';
@@ -42,7 +44,10 @@ export function StockHero({ instrument, brief, horizon, onHorizon, busy, watched
     {brief && (sections as unknown as { technical_engine?: { horizons?: Record<string, { status: string; direction?: string; technical_score?: number; market_regime?: string }> } })?.technical_engine?.horizons?.[horizon]?.status === 'available' && <p className="rt-note">Technical read ({NAME[horizon]}): <b>{(((sections as unknown as { technical_engine: { horizons: Record<string, { direction?: string }> } }).technical_engine.horizons[horizon].direction) ?? '').replace('_', ' ').toLowerCase()}</b>, regime {(((sections as unknown as { technical_engine: { horizons: Record<string, { market_regime?: string }> } }).technical_engine.horizons[horizon].market_regime) ?? '').replace(/_/g, ' ').toLowerCase()}. Full technical evidence is in the Technicals tab below.</p>}
     {brief && !current && (sections?.market_data_recovery?.latest_candle?.reason || sections?.market_data_recovery?.history?.reason) && <p className="rt-alert" role="status">
       <b>Why price data is not current:</b> {sections?.market_data_recovery?.latest_candle?.reason ?? sections?.market_data_recovery?.history?.reason} Re-run research or use Refresh price data to retry.</p>}
-    {!brief && <div className="rt-card rt-empty-state"><h3>No research report yet</h3><p>Run research to score {instrument.symbol} on swing, positional and long-term horizons and see entry levels if it is a buy.</p></div>}
+    {!brief && loading && <div className="rt-card rt-empty-state" role="status" aria-busy="true"><p>Loading the research report…</p></div>}
+    {!brief && !loading && (loadError || instrument.card_researched_at) && <div className="rt-card rt-empty-state" role="alert"><h3>Could not load the report (network or server error).</h3>
+      <p>{instrument.card_researched_at ? `Researched ${formatIST(instrument.card_researched_at)}, but the report could not be loaded. ` : ''}{loadError ?? 'The server returned no report for this research run.'}</p>{onRetry && <button className="rt-btn" type="button" onClick={onRetry}>Retry</button>}</div>}
+    {!brief && !loading && !loadError && !instrument.card_researched_at && <div className="rt-card rt-empty-state"><h3>No research report yet</h3><p>Run research to score {instrument.symbol} on swing, positional and long-term horizons and see entry levels if it is a buy.</p></div>}
     {brief && !assessment && <div className="rt-card rt-empty-state"><h3>No scoring in this report</h3><p>{sections?.assessment?.error ?? 'This report predates the scoring engine. Re-run research.'}</p></div>}
     {assessment && <>
       <div className="rt-hz" role="tablist" aria-label="Investment horizon">

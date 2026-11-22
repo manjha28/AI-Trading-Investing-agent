@@ -60,6 +60,9 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
   }, [focus?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
   const [horizon, setHorizon] = useState<HorizonKey>('positional');
   const [brief, setBrief] = useState<Brief | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefLoadError, setBriefLoadError] = useState<string | null>(null);
+  const [briefReload, setBriefReload] = useState(0);
   const [sourceLinks, setSourceLinks] = useState<SourceLink[]>([]);
   const [legacySources, setLegacySources] = useState<Source[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -169,6 +172,8 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
     }
     let active = true;
     setError('');
+    setBriefLoading(true);
+    setBriefLoadError(null);
     void Promise.all([
       apiRequest<Brief>(`/research/instruments/${selected.id}/brief`).catch((requestError: unknown) => {
         if (requestError instanceof ApiRequestError && requestError.status === 404) return null;
@@ -178,12 +183,14 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
     ]).then(([latest]) => {
       if (active) setBrief(latest);
     }).catch((requestError: Error) => {
-      if (active) setError(requestError.message);
+      if (active) { setBrief(null); setBriefLoadError(requestError.message || 'network or server error'); }   // a failed load is not "no report yet": the page offers a retry
+    }).finally(() => {
+      if (active) setBriefLoading(false);
     });
     return () => {
       active = false;
     };
-  }, [selected?.id, refreshNotesAndSources]);
+  }, [selected?.id, refreshNotesAndSources, briefReload]);
 
   async function searchInstruments(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -615,7 +622,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
           <strong>Research running…</strong>
           {selectedResult.run_id && <button className="rt-btn rt-ghost" type="button" onClick={() => void cancelResearchRun(selectedResult.run_id!)}>Cancel run</button>}
         </section>}
-        <StockHero instrument={selected} brief={brief} horizon={horizon} onHorizon={setHorizon} busy={busy} watched={watched(selected)}
+        <StockHero instrument={selected} brief={brief} loading={briefLoading} loadError={briefLoadError} onRetry={() => setBriefReload((n) => n + 1)} horizon={horizon} onHorizon={setHorizon} busy={busy} watched={watched(selected)}
           onRun={() => void runResearch()} onRefresh={() => void refreshSelectedData()}
           onToggleWatch={() => void (watched(selected) ? removeInstrumentFromWatchlist(selected.id) : addInstrumentToWatchlist(selected.id, selected.symbol))}
           onJump={() => document.getElementById('research-report')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />

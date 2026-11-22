@@ -1,6 +1,8 @@
 export type Instrument = {
   id: string; symbol: string; display_name: string; venue: string; is_synthetic: boolean;
   tick_size?: string | null; currency?: string; timezone?: string; asset_class?: string;
+  /** Set when the stock is opened from a Daily report card: the card's research date, so the page can say "Researched ..., failed to load" instead of "No research report yet". */
+  card_researched_at?: string | null;
 };
 export type WatchlistEntry = { instrument_id: string; symbol: string };
 export type SourceLink = { id: string; instrument_id: string; url: string; label: string; enabled: boolean; created_at: string };
