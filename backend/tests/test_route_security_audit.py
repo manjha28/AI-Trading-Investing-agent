@@ -26,6 +26,7 @@ UUID_PLACEHOLDER = "00000000-0000-0000-0000-000000000001"
 PUBLIC = {
     ("get", "/"),
     ("get", "/api/v1/health"),
+    ("get", "/api/v1/healthz"),         # liveness only: no database, no data
     ("get", "/api/v1/ready"),
     ("post", "/api/v1/auth/register"),
     ("post", "/api/v1/auth/login"),
