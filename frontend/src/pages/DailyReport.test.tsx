@@ -84,4 +84,13 @@ describe('DailyReport', () => {
     expect(screen.queryByText(/prior high —/)).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
+
+  it('explains a horizon without data instead of printing "No data"', async () => {
+    const short = { ...hold, instrument_id: 'i9', symbol: 'NEWCO', name: 'New Co Ltd', held: false, quantity: null, bucket: 'not_enough_data', action: 'Insufficient evidence: no annual statements stored.', researched_at: '2026-11-20T11:00:00Z',
+      horizons: { positional: { recommendation: 'INSUFFICIENT_EVIDENCE', score: null, confidence: null, why_not: [], data_note: 'Listed recently: only 2 weekly candles stored; positional needs 40' } } };
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, not_enough_data: [short] }, counts: { ...report.counts, not_enough_data: 1 } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/Listed recently: only 2 weekly candles stored; positional needs 40/)).toBeTruthy());
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
 });

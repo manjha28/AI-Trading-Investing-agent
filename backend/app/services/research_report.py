@@ -5,6 +5,7 @@ long-term only. Intraday is a separate system. Missing or stale research is repo
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -79,6 +80,23 @@ def _insufficient_reasons(sections: dict[str, Any], horizons: dict[str, Any]) ->
 
 
 def is_radar(sections: dict[str, Any]) -> bool:
+_NEEDS = re.compile(r"Only (\d+) completed (\w+) candles are stored; at least (\d+) are needed")
+
+
+def horizon_data_note(sections: dict[str, Any], horizon: str) -> str | None:
+    """Why a horizon has no read because the history is short, in plain words ("Listed recently: only 2 weekly candles; positional needs 40"), from the engine's own reason text. None when the data is not the problem."""
+    card = (((sections.get("technical_engine") or {}).get("horizons")) or {}).get(horizon) or {}
+    if card.get("status") not in ("unavailable", "insufficient_data"):
+        return None
+    reason = str(card.get("reason") or card.get("message") or "")
+    m = _NEEDS.search(reason)
+    if not m:
+        return reason or None
+    bars = (sections.get("technicals") or {}).get("bars_available")
+    recent = "Listed recently: " if isinstance(bars, int) and bars < 300 else ""
+    return f"{recent}only {m.group(1)} {m.group(2)} candles stored; {horizon.replace('_', '-')} needs {m.group(3)}"
+
+
     """A BUY on some horizon but no entry range could be determined for any BUY horizon (history too short, no usable structure, data gap)."""
     buys = research_alerts.buy_horizons(sections)
     if not buys:
@@ -162,7 +180,7 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
         row.update(
             bucket=bucket, action=action, researched_at=finished.isoformat(), stale=stale,
             horizons={h: {"recommendation": recs[h], "score": (horizons.get(h) or {}).get("score"), "confidence": (horizons.get(h) or {}).get("confidence"),
-                          "buy_confidence": _buy_conf(sections, h),
+                          "buy_confidence": _buy_conf(sections, h), "data_note": horizon_data_note(sections, h),
                           "why_not": ((horizons.get(h) or {}).get("blockers") or [g.get("detail") for g in (horizons.get(h) or {}).get("gates", [])])[:2]} for h in HORIZONS},
             levels={h: level_sets.get(h) for h in HORIZONS if recs[h] == "BUY"} if bucket in ("buy", "radar") or held_buy else {},
             radar_reasons=[f"{h.replace('_', '-').title()}: {(level_sets.get(h) or {}).get('reason') or 'no range'}" if (level_sets.get(h) or {}).get("status") != "available" else f"{h.replace('_', '-').title()}: Not ready ({', '.join(((_buy_conf(sections, h) or {}).get('setup') or {}).get('failed_vetoes') or ['setup checks'])})" for h in HORIZONS if recs[h] == "BUY"] if bucket == "radar" else None,

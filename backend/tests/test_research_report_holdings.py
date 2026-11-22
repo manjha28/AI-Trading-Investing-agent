@@ -87,3 +87,13 @@ def test_not_enough_data_is_split_into_not_current_and_insufficient_evidence(db,
     assert rows["STALECO"]["not_enough_kind"] == "not_current" and rows["STALECO"]["action"].startswith("Not current: Stored daily bars are stale")
     assert rows["THINCO"]["not_enough_kind"] == "insufficient_evidence" and "no annual statements stored" in rows["THINCO"]["action"] and rows["THINCO"]["insufficient_reasons"]
     assert rep["coverage"]["not_current"] == 1 and rep["coverage"]["insufficient_evidence"] == 1
+
+
+def test_a_short_history_horizon_says_why_instead_of_no_data():
+    sections = {"technicals": {"bars_available": 10}, "technical_engine": {"horizons": {
+        "positional": {"status": "unavailable", "reason": "Only 2 completed weekly candles are stored; at least 40 are needed."},
+        "swing": {"status": "available"}}}}
+    assert rr.horizon_data_note(sections, "positional") == "Listed recently: only 2 weekly candles stored; positional needs 40"
+    assert rr.horizon_data_note(sections, "swing") is None
+    sections["technicals"]["bars_available"] = 900                                                           # an old listing with a data gap is not "listed recently"
+    assert rr.horizon_data_note(sections, "positional") == "only 2 weekly candles stored; positional needs 40"
