@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Fragment } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
+import { groupBrokers, SHOW_MOCK } from '../lib/brokerGroups';
 import '../brokers.css';
 import { formatIST } from '../lib/formatIST';
 
@@ -318,11 +320,192 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
     }
   }
 
+  const renderBroker = (broker: Broker) => (
+        <article className="broker-card" key={broker.slug}>
+          <div className="broker-card-heading">
+            <span className="broker-logo" aria-hidden="true">{broker.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2)}</span>
+            <div>
+              <h2>{broker.name}</h2>
+              <p className={broker.connected ? 'broker-status connected' : 'broker-status'}>
+                    {busy === broker.slug
+                          ? broker.connected ? 'Syncing…' : 'Connecting…'
+                      : broker.connection_status === 'connected'
+                      ? 'Connected'
+                      : broker.connection_status === 'expired'
+                      ? 'Connection expired — reconnect required'
+                      : failedBroker === broker.slug
+                        ? 'Connection attempt failed'
+                        : broker.integration_status === 'pending'
+                          ? 'Pending — official redirect flow required'
+                          : broker.enabled
+                            ? 'Not connected'
+                            : broker.integration_status === 'synthetic'
+                              ? 'Synthetic demo only'
+                              : 'Not connected — app setup required'}
+                  </p>
+            </div>
+          </div>
+          {broker.synthetic && <p className="broker-synthetic">SYNTHETIC DEMO DATA — NOT A REAL ACCOUNT</p>}
+          {broker.last_synced_at && <p className="broker-sync-time">Last sync: {formatIST(broker.last_synced_at)}</p>}
+          {syncResults[broker.slug] && (
+            <p className="broker-sync-time" role="status">
+              Account sync: {syncResults[broker.slug].sync_status}. {Object.entries(syncResults[broker.slug].endpoint_results)
+                .map(([endpoint, result]) => `${endpoint}: ${result.status}`).join(' · ')}
+            </p>
+          )}
+          {syncErrors[broker.slug] && <p className="broker-sync-time" role="alert">Account sync failed: {syncErrors[broker.slug]} Authentication status is shown separately above. Retry with Sync.</p>}
+          <p className="broker-sync-time">Market data is separate from account sync; check the Market watch page for quote freshness and feed status.</p>
+          {broker.expires_at && <p className="broker-sync-time">Session expiry: {formatIST(broker.expires_at)}</p>}
+          {broker.last_synced_at && (
+            <p className="broker-sync-time">
+              Account data source: {broker.synthetic ? 'synthetic demo' : 'live broker API'} · Last successful sync {formatIST(broker.last_synced_at)}
+            </p>
+          )}
+          {broker.slug === 'dhan' && !broker.connected && broker.enabled && broker.integration_status === 'available' && (
+            <label className="broker-secret-field">Dhan client ID<input value={clientId} onChange={(event) => setClientId(event.target.value)} autoComplete="off" /></label>
+          )}
+          {broker.integration_status === 'pending' && (
+            <p className="broker-sync-time">Authentication is not available yet. Trading Copilot never collects your broker password, PIN, or OTP.</p>
+          )}
+          {broker.integration_status === 'setup_required' && (
+            <p className="broker-sync-time">Requires a developer app, registered redirect URL, and server-side API credentials.</p>
+          )}
+          {accountErrors[broker.slug] && <p className="broker-sync-time">Account details unavailable: {accountErrors[broker.slug]}</p>}
+          {accounts[broker.slug] && (
+            <details className="broker-sync-time">
+              <summary>{accounts[broker.slug].synthetic ? 'Synthetic demo account details' : 'Live broker account details'}</summary>
+              <p>Profile: {JSON.stringify(accounts[broker.slug].profile)}</p>
+              <p>Funds: {JSON.stringify(accounts[broker.slug].funds)}</p>
+              <p>Read-only order history: {accounts[broker.slug].order_history.length} record(s)</p>
+            </details>
+          )}
+          <div className="broker-actions">
+            {!broker.connected ? (
+              <button className="primary-button" type="button" onClick={() => void connect(broker)} disabled={!broker.enabled || busy === broker.slug || (broker.slug === 'dhan' && !clientId)}>
+                {busy === broker.slug ? 'Connecting…' : broker.connection_status === 'expired' ? 'Reconnect' : 'Connect'}
+              </button>
+            ) : (
+              <>
+                <button className="primary-button" type="button" onClick={() => void sync(broker)} disabled={busy === broker.slug}>
+                  {busy === broker.slug ? 'Syncing…' : 'Sync'}
+                </button>
+                <button className="secondary-button" type="button" onClick={() => void disconnect(broker)} disabled={busy === broker.slug}>Disconnect</button>
+              </>
+            )}
+          </div>
+          {broker.connected && broker.last_synced_at && portfolioId && (
+            <section className="broker-reconciliation">
+              <div className="section-heading">
+                <div><p className="eyebrow">READ-ONLY MIRROR</p><h3>Reconciliation</h3></div>
+                <span className="section-count">{differences[broker.slug]?.length ?? 0} differences</span>
+              </div>
+              {!differences[broker.slug]?.length ? (
+                <p className="table-empty">No differences found, or reconciliation is still loading.</p>
+              ) : (
+                <div className="broker-table-wrap">
+                  <table className="broker-table">
+                    <thead><tr><th>Symbol</th><th>Manual</th><th>Broker</th><th>Difference</th><th>Status</th><th /></tr></thead>
+                    <tbody>
+                      {differences[broker.slug].map((difference) => (
+                        <tr key={difference.symbol}>
+                          <td><strong>{difference.symbol}</strong><small>{difference.exchanges.join(', ')}</small></td>
+                          <td>{difference.manual_quantity}</td>
+                          <td>{difference.broker_quantity}</td>
+                          <td>{difference.difference}</td>
+                          <td>{readableStatus[difference.status]}</td>
+                          <td>
+                            {difference.status !== 'missing' && difference.average_price && Number(difference.average_price) > 0 ? (
+                              <button className="secondary-button" type="button" onClick={() => void importDifference(broker, difference)} disabled={Boolean(busy)}>
+                                Import difference
+                              </button>
+                            ) : difference.status !== 'missing' ? <span>No cost basis</span> : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
+        </article>
+  );
+
+  const angelCard = (
+    <article className="broker-card">
+      <div className="broker-card-heading">
+        <span className="broker-logo" aria-hidden="true">AO</span>
+        <div>
+          <h2>Angel One SmartAPI</h2>
+          <p className={angelOneSource?.available ? 'broker-status connected' : 'broker-status'}>
+            {angelOneSource?.status === 'session_expired'
+              ? 'Session expired — reconnect required'
+              : angelOneSource?.available
+                ? 'Connected for market data'
+                : angelOneSource?.status === 'provider_configuration_required'
+                  ? 'Backend setup required'
+                  : 'Not connected'}
+          </p>
+        </div>
+      </div>
+      {angelOneSource?.expires_at && (
+        <p className="broker-sync-time">
+          Session expiry: {formatIST(angelOneSource.expires_at)}
+        </p>
+      )}
+      {(
+        !angelOneSource?.available
+        || angelOneSource.status === 'session_expired'
+        || angelOneReconnectMode
+      ) && (
+        <form className="broker-form" onSubmit={(event) => void connectAngelOne(event)}>
+          <label className="broker-secret-field">
+            Client code
+            <input value={angelOneClientCode} onChange={(event) => setAngelOneClientCode(event.target.value)} autoComplete="username" required />
+          </label>
+          <label className="broker-secret-field">
+            PIN
+            <input type="password" value={angelOnePin} onChange={(event) => setAngelOnePin(event.target.value)} autoComplete="current-password" required />
+          </label>
+          <label className="broker-secret-field">
+            Authenticator code
+            <input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={angelOneTotp} onChange={(event) => setAngelOneTotp(event.target.value)} autoComplete="one-time-code" required />
+          </label>
+          <button className="primary-button" type="submit" disabled={angelOneBusy}>
+            {angelOneBusy ? 'Connecting…' : angelOneSource?.status === 'session_expired' ? 'Reconnect' : 'Connect'}
+          </button>
+        </form>
+      )}
+      {angelOneSource?.available
+        && angelOneSource.status !== 'session_expired'
+        && !angelOneReconnectMode && (
+        <div className="broker-actions">
+          <button className="secondary-button" type="button" onClick={() => void disconnectAngelOne()} disabled={angelOneBusy}>Disconnect</button>
+          <button className="secondary-button" type="button" onClick={() => setAngelOneReconnectMode(true)} disabled={angelOneBusy}>Reconnect</button>
+        </div>
+      )}
+      {angelOneError && <p className="broker-sync-time" role="alert">{angelOneError}</p>}
+    </article>
+  );
+
+  const placeholderCard = (
+    <article className="broker-card">
+      <div className="broker-card-heading">
+        <span className="broker-logo" aria-hidden="true">+</span>
+        <div><h2>Other brokers</h2><p className="broker-status">Not supported yet</p></div>
+      </div>
+      <p className="broker-sync-time">Only the brokers listed here have adapters. No connection is attempted for other providers.</p>
+      <button className="secondary-button" type="button" disabled>Pending integration</button>
+    </article>
+  );
+
+  const { primary, others } = groupBrokers(brokers, { angelOneUsable: !!angelOneSource?.available, showMock: SHOW_MOCK });
+
   return (
     <section className="brokers-page">
       <div className="broker-disclaimer" role="note">
-        <strong>Read-only broker access.</strong> Trading Copilot only reads your profile, holdings, positions,
-        order history, and funds. It has no code path to place, modify, or cancel broker orders. Broker data
+        <strong>Broker connections are read-only.</strong> Trading Copilot reads your profile, holdings, positions,
+        order history, and funds here. Nothing on this page can place, modify, or cancel an order; the only order path in the app is Signals &gt; Forward Test, for allowlisted Dhan strategies and only when live execution is armed. Broker data
         stays in a separate mirror and never overwrites your manual portfolio. Any reconciliation import
         creates a manual ledger transaction only after you confirm it.
       </div>
@@ -336,180 +519,20 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
         </div>
       )}
 
-      {!brokerApiUnavailable && <div className="broker-card-grid">
-        <article className="broker-card">
-          <div className="broker-card-heading">
-            <span className="broker-logo" aria-hidden="true">AO</span>
-            <div>
-              <h2>Angel One SmartAPI</h2>
-              <p className={angelOneSource?.available ? 'broker-status connected' : 'broker-status'}>
-                {angelOneSource?.status === 'session_expired'
-                  ? 'Session expired — reconnect required'
-                  : angelOneSource?.available
-                    ? 'Connected for market data'
-                    : angelOneSource?.status === 'provider_configuration_required'
-                      ? 'Backend setup required'
-                      : 'Not connected'}
-              </p>
-            </div>
+      {!brokerApiUnavailable && (
+        <>
+          <div className="broker-card-grid">
+            {primary.map((item) => (item === 'angel_one' ? <Fragment key="angel_one">{angelCard}</Fragment> : renderBroker(item)))}
           </div>
-          {angelOneSource?.expires_at && (
-            <p className="broker-sync-time">
-              Session expiry: {formatIST(angelOneSource.expires_at)}
-            </p>
-          )}
-          {(
-            !angelOneSource?.available
-            || angelOneSource.status === 'session_expired'
-            || angelOneReconnectMode
-          ) && (
-            <form className="broker-form" onSubmit={(event) => void connectAngelOne(event)}>
-              <label className="broker-secret-field">
-                Client code
-                <input value={angelOneClientCode} onChange={(event) => setAngelOneClientCode(event.target.value)} autoComplete="username" required />
-              </label>
-              <label className="broker-secret-field">
-                PIN
-                <input type="password" value={angelOnePin} onChange={(event) => setAngelOnePin(event.target.value)} autoComplete="current-password" required />
-              </label>
-              <label className="broker-secret-field">
-                Authenticator code
-                <input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={angelOneTotp} onChange={(event) => setAngelOneTotp(event.target.value)} autoComplete="one-time-code" required />
-              </label>
-              <button className="primary-button" type="submit" disabled={angelOneBusy}>
-                {angelOneBusy ? 'Connecting…' : angelOneSource?.status === 'session_expired' ? 'Reconnect' : 'Connect'}
-              </button>
-            </form>
-          )}
-          {angelOneSource?.available
-            && angelOneSource.status !== 'session_expired'
-            && !angelOneReconnectMode && (
-            <div className="broker-actions">
-              <button className="secondary-button" type="button" onClick={() => void disconnectAngelOne()} disabled={angelOneBusy}>Disconnect</button>
-              <button className="secondary-button" type="button" onClick={() => setAngelOneReconnectMode(true)} disabled={angelOneBusy}>Reconnect</button>
+          <details className="broker-others">
+            <summary>Other brokers ({others.length}): not connected, not configured or expired</summary>
+            <div className="broker-card-grid">
+              {others.map((item) => (item === 'angel_one' ? <Fragment key="angel_one">{angelCard}</Fragment> : renderBroker(item)))}
+              {placeholderCard}
             </div>
-          )}
-          {angelOneError && <p className="broker-sync-time" role="alert">{angelOneError}</p>}
-        </article>
-        {brokers.filter((broker) => broker.slug !== 'angel_one').map((broker) => (
-          <article className="broker-card" key={broker.slug}>
-            <div className="broker-card-heading">
-              <span className="broker-logo" aria-hidden="true">{broker.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2)}</span>
-              <div>
-                <h2>{broker.name}</h2>
-                <p className={broker.connected ? 'broker-status connected' : 'broker-status'}>
-                      {busy === broker.slug
-                            ? broker.connected ? 'Syncing…' : 'Connecting…'
-                        : broker.connection_status === 'connected'
-                        ? 'Connected'
-                        : broker.connection_status === 'expired'
-                        ? 'Connection expired — reconnect required'
-                        : failedBroker === broker.slug
-                          ? 'Connection attempt failed'
-                          : broker.integration_status === 'pending'
-                            ? 'Pending — official redirect flow required'
-                            : broker.enabled
-                              ? 'Not connected'
-                              : broker.integration_status === 'synthetic'
-                                ? 'Synthetic demo only'
-                                : 'Not connected — app setup required'}
-                    </p>
-              </div>
-            </div>
-            {broker.synthetic && <p className="broker-synthetic">SYNTHETIC DEMO DATA — NOT A REAL ACCOUNT</p>}
-            {broker.last_synced_at && <p className="broker-sync-time">Last sync: {formatIST(broker.last_synced_at)}</p>}
-            {syncResults[broker.slug] && (
-              <p className="broker-sync-time" role="status">
-                Account sync: {syncResults[broker.slug].sync_status}. {Object.entries(syncResults[broker.slug].endpoint_results)
-                  .map(([endpoint, result]) => `${endpoint}: ${result.status}`).join(' · ')}
-              </p>
-            )}
-            {syncErrors[broker.slug] && <p className="broker-sync-time" role="alert">Account sync failed: {syncErrors[broker.slug]} Authentication status is shown separately above. Retry with Sync.</p>}
-            <p className="broker-sync-time">Market data is separate from account sync; check the Market watch page for quote freshness and feed status.</p>
-            {broker.expires_at && <p className="broker-sync-time">Session expiry: {formatIST(broker.expires_at)}</p>}
-            {broker.last_synced_at && (
-              <p className="broker-sync-time">
-                Account data source: {broker.synthetic ? 'synthetic demo' : 'live broker API'} · Last successful sync {formatIST(broker.last_synced_at)}
-              </p>
-            )}
-            {broker.slug === 'dhan' && !broker.connected && broker.enabled && broker.integration_status === 'available' && (
-              <label className="broker-secret-field">Dhan client ID<input value={clientId} onChange={(event) => setClientId(event.target.value)} autoComplete="off" /></label>
-            )}
-            {broker.integration_status === 'pending' && (
-              <p className="broker-sync-time">Authentication is not available yet. Trading Copilot never collects your broker password, PIN, or OTP.</p>
-            )}
-            {broker.integration_status === 'setup_required' && (
-              <p className="broker-sync-time">Requires a developer app, registered redirect URL, and server-side API credentials.</p>
-            )}
-            {accountErrors[broker.slug] && <p className="broker-sync-time">Account details unavailable: {accountErrors[broker.slug]}</p>}
-            {accounts[broker.slug] && (
-              <details className="broker-sync-time">
-                <summary>{accounts[broker.slug].synthetic ? 'Synthetic demo account details' : 'Live broker account details'}</summary>
-                <p>Profile: {JSON.stringify(accounts[broker.slug].profile)}</p>
-                <p>Funds: {JSON.stringify(accounts[broker.slug].funds)}</p>
-                <p>Read-only order history: {accounts[broker.slug].order_history.length} record(s)</p>
-              </details>
-            )}
-            <div className="broker-actions">
-              {!broker.connected ? (
-                <button className="primary-button" type="button" onClick={() => void connect(broker)} disabled={!broker.enabled || busy === broker.slug || (broker.slug === 'dhan' && !clientId)}>
-                  {busy === broker.slug ? 'Connecting…' : broker.connection_status === 'expired' ? 'Reconnect' : 'Connect'}
-                </button>
-              ) : (
-                <>
-                  <button className="primary-button" type="button" onClick={() => void sync(broker)} disabled={busy === broker.slug}>
-                    {busy === broker.slug ? 'Syncing…' : 'Sync'}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={() => void disconnect(broker)} disabled={busy === broker.slug}>Disconnect</button>
-                </>
-              )}
-            </div>
-            {broker.connected && broker.last_synced_at && portfolioId && (
-              <section className="broker-reconciliation">
-                <div className="section-heading">
-                  <div><p className="eyebrow">READ-ONLY MIRROR</p><h3>Reconciliation</h3></div>
-                  <span className="section-count">{differences[broker.slug]?.length ?? 0} differences</span>
-                </div>
-                {!differences[broker.slug]?.length ? (
-                  <p className="table-empty">No differences found, or reconciliation is still loading.</p>
-                ) : (
-                  <div className="broker-table-wrap">
-                    <table className="broker-table">
-                      <thead><tr><th>Symbol</th><th>Manual</th><th>Broker</th><th>Difference</th><th>Status</th><th /></tr></thead>
-                      <tbody>
-                        {differences[broker.slug].map((difference) => (
-                          <tr key={difference.symbol}>
-                            <td><strong>{difference.symbol}</strong><small>{difference.exchanges.join(', ')}</small></td>
-                            <td>{difference.manual_quantity}</td>
-                            <td>{difference.broker_quantity}</td>
-                            <td>{difference.difference}</td>
-                            <td>{readableStatus[difference.status]}</td>
-                            <td>
-                              {difference.status !== 'missing' && difference.average_price && Number(difference.average_price) > 0 ? (
-                                <button className="secondary-button" type="button" onClick={() => void importDifference(broker, difference)} disabled={Boolean(busy)}>
-                                  Import difference
-                                </button>
-                              ) : difference.status !== 'missing' ? <span>No cost basis</span> : null}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </section>
-            )}
-          </article>
-        ))}
-        <article className="broker-card">
-          <div className="broker-card-heading">
-            <span className="broker-logo" aria-hidden="true">+</span>
-            <div><h2>Other brokers</h2><p className="broker-status">Not supported yet</p></div>
-          </div>
-          <p className="broker-sync-time">Only the brokers listed here have adapters. No connection is attempted for other providers.</p>
-          <button className="secondary-button" type="button" disabled>Pending integration</button>
-        </article>
-      </div>}
+          </details>
+        </>
+      )}
       {!brokerApiUnavailable && !brokers.length && !error && <p className="table-empty">Loading available brokers…</p>}
       {!portfolioId && <p className="accounting-note">Create or select a manual portfolio to compare holdings and import confirmed differences.</p>}
     </section>
