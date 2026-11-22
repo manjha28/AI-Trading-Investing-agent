@@ -5,6 +5,7 @@ import { marketStatusLabel } from './lib/priceStates';
 import { footerWording, sidebarWording, type LiveCapability } from './lib/liveCapability';
 import { useWorkspace } from './components/useWorkspace';
 import { AlertsBell } from './components/AlertsBell';
+import { MobileNav } from './components/MobileNav';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
 import { CryptoDeltaPage } from './pages/CryptoDelta';
@@ -22,6 +23,7 @@ export default function App() {
   const [hasConnectedBroker, setHasConnectedBroker] = useState(false);
   const [brokerStatusChecked, setBrokerStatusChecked] = useState(false);
   const [headerSyncing, setHeaderSyncing] = useState(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const {
   const [liveCapability, setLiveCapability] = useState<LiveCapability>(null);
     user,
@@ -250,11 +252,14 @@ export default function App() {
             <input type="search" aria-label="Search instruments" placeholder="Search instruments" value={marketQuery} onChange={(event) => setMarketQuery(event.target.value)} />
           </form>
           <div className="header-actions">
-            {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
+            <button className="header-menu-button" type="button" aria-expanded={headerMenuOpen} aria-label="Menu" onClick={() => setHeaderMenuOpen((open) => !open)}>☰</button>
             <AlertsBell refreshKey={bellKey} onOpenStock={(id) => openStock(id)} onOpenResearch={(id) => { setResearchFocus((cur) => ({ instrumentId: id, nonce: (cur?.nonce ?? 0) + 1 })); setActiveView('research'); }} />
+            <div className={headerMenuOpen ? "header-menu open" : "header-menu"}>
+            {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
             <button className="secondary-button" type="button" disabled={!hasConnectedBroker || headerSyncing} onClick={() => void syncBroker()}>{headerSyncing ? 'Syncing Dhan…' : 'Sync Dhan account'}</button>
             <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketStatusLabel(marketDataStatus)}</span>
             <button className="text-button" type="button" onClick={() => setActiveView('brokers')} title="Connect or reconnect your Dhan account">Dhan connection</button>
+            </div>
           </div>
         </header>
         {activeView !== 'overview' && <h1 className="page-title">{pageTitle}</h1>}
@@ -351,14 +356,7 @@ export default function App() {
         ) : null}
         <footer className="workspace-footer"><span><ArrowDownLeft size={14} /> {footerWording(liveCapability)}</span><span>Data entered by you · {portfolios.length} portfolio{portfolios.length === 1 ? '' : 's'}</span></footer>
       </main>
-      <nav className="mobile-nav" aria-label="Workspace">
-        <button className={activeView === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('overview')}><Wallet size={18} /><span>Overview</span></button>
-        <button className={activeView === 'journal' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('journal')}><Activity size={18} /><span>Journal</span></button>
-        <button className={activeView === 'market-watch' || activeView === 'market-data' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('market-watch')}><TrendingUp size={18} /><span>Watch</span></button>
-        <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={18} /><span>Signals</span></button>
-        <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={18} /><span>Delta</span></button>
-        <button className={activeView === 'research' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('research')}><BookOpen size={18} /><span>Research</span></button>
-      </nav>
+      <MobileNav activeView={activeView} setActiveView={setActiveView} onSignOut={signOut} />
     </div>
   );
 }
