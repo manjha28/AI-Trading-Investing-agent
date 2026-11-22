@@ -144,6 +144,7 @@ class BacktestRequest(_Numbers):
     sizing_mode: Literal["contracts", "notional_usd", "risk_pct"] = "contracts"
     notional_usd: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"))
     risk_pct: Decimal | None = Field(default=None, gt=0, le=100)
+    window_end: datetime | None = None                       # pin the window end (a timezone-aware bar boundary) to reproduce a run exactly; default: the latest completed candle
 
 
 def _quality(candles: list, resolution: str, start: datetime, end: datetime, extra: dict[str, Any]) -> dict[str, Any]:
@@ -268,6 +269,22 @@ def sync(
     return {"symbol": symbol, "resolution": resolution, "window_start": start.isoformat(), "window_end": end.isoformat(), **report}
 
 
+DEDUPE_SECONDS = 60
+
+
+def _recent_identical_run(db: Session, user_id: Any, strategy_id: str, symbol: str, resolution: str, params: dict[str, Any], days: int, assumptions: dict[str, Any], now: datetime) -> Any:
+    """The same owner's completed run with the same strategy, symbol, resolution, parameters, window length and sizing within the last 60 seconds (one click used to create three runs, and a moving window
+    end made near-identical runs differ). Pass ``window_end`` to pin the window instead."""
+    since = now - timedelta(seconds=DEDUPE_SECONDS)
+    want = {k: str(v) for k, v in params.items()}
+    span = timedelta(days=days)
+    for row in db.scalars(select(CryptoBacktestRun).where(CryptoBacktestRun.user_id == user_id, CryptoBacktestRun.strategy_id == strategy_id, CryptoBacktestRun.symbol == symbol,
+                                                           CryptoBacktestRun.resolution == resolution, CryptoBacktestRun.created_at >= since, CryptoBacktestRun.status == "completed").order_by(CryptoBacktestRun.created_at.desc())):
+        if row.params == want and abs((row.window_end - row.window_start) - span) < timedelta(seconds=1) and row.assumptions == assumptions:       # same sizing, leverage, slippage and capital
+            return row
+    return None
+
+
 @router.post("/backtests")
 def create_backtest(
     payload: BacktestRequest,
@@ -286,6 +303,12 @@ def create_backtest(
     except ParamError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
     start, end = _window(resolution, payload.days)
+    if payload.window_end is not None:
+        if payload.window_end.tzinfo is None:
+            raise HTTPException(status_code=422, detail="window_end must be timezone-aware.")
+        step = RESOLUTION_SECONDS[resolution]
+        end = datetime.fromtimestamp(int(payload.window_end.timestamp()) // step * step, timezone.utc)
+        start = end - timedelta(days=payload.days)
     now = datetime.now(timezone.utc)
     expected = int((end - start).total_seconds() // RESOLUTION_SECONDS[resolution])
     if expected > MAX_BARS:
@@ -324,6 +347,9 @@ def create_backtest(
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
+    duplicate = _recent_identical_run(db, active_session.user_id, strategy.id, symbol, resolution, params, payload.days, result["assumptions"], now)
+    if duplicate is not None:        # a double click or a retry: the identical run from the last 60 seconds is returned, no second row
+        return {**_run_json(duplicate, full=True), "deduplicated": True}
     row = CryptoBacktestRun(**base, status="completed", assumptions=result["assumptions"], metrics=result["metrics"],
                             trades=result["trades"], equity=result["equity"])
     db.add(row)

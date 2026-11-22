@@ -529,7 +529,7 @@ def test_a_stored_backtest_can_be_deleted_by_its_owner_only(client, engine, delt
     headers = login(client, engine, "deleter@example.com")
     seed_candles(engine)
     keep = client.post("/api/v1/crypto-delta/backtests", headers=headers, json=BODY).json()["id"]
-    drop = client.post("/api/v1/crypto-delta/backtests", headers=headers, json=BODY).json()["id"]
+    drop = client.post("/api/v1/crypto-delta/backtests", headers=headers, json={**BODY, "slippage_bps": "2"}).json()["id"]
     assert client.delete(f"/api/v1/crypto-delta/backtests/{drop}").status_code in (400, 403)          # CSRF is required
     assert client.delete(f"/api/v1/crypto-delta/backtests/{drop}", headers=headers).status_code == 204
     assert [r["id"] for r in client.get("/api/v1/crypto-delta/backtests").json()] == [keep]
@@ -540,3 +540,16 @@ def test_a_stored_backtest_can_be_deleted_by_its_owner_only(client, engine, delt
     assert client.delete(f"/api/v1/crypto-delta/backtests/{keep}", headers=other).status_code == 404    # someone else's run is untouchable
     with Session(engine) as db:
         assert db.scalar(select(CryptoBacktestRun).where(CryptoBacktestRun.id == UUID(keep))) is not None
+
+
+def test_an_identical_backtest_submitted_twice_within_a_minute_is_one_run(client, engine, delta_store):
+    headers = login(client, engine, "dedupe@example.com")
+    seed_candles(engine)
+    first = client.post("/api/v1/crypto-delta/backtests", headers=headers, json=BODY)
+    second = client.post("/api/v1/crypto-delta/backtests", headers=headers, json=BODY)
+    third = client.post("/api/v1/crypto-delta/backtests", headers=headers, json=BODY)
+    assert first.status_code == second.status_code == third.status_code == 200
+    assert first.json()["id"] == second.json()["id"] == third.json()["id"] and second.json()["deduplicated"] is True and "deduplicated" not in first.json()
+    assert len(client.get("/api/v1/crypto-delta/backtests").json()) == 1
+    other = client.post("/api/v1/crypto-delta/backtests", headers=headers, json={**BODY, "slippage_bps": "5"})
+    assert other.json()["id"] != first.json()["id"] and "deduplicated" not in other.json()                       # a different setting is a different run
