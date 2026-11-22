@@ -25,14 +25,57 @@ BUCKETS = ("buy", "radar", "hold", "no_new_entry", "not_enough_data")
 BUCKETS_V2 = ("buy", "setup_waiting", "radar", "hold", "no_new_entry", "not_enough_data")      # Nexus v2: "Ready to buy" holds only in-band / enter-now cards
 
 
-def held_quantities(db: Session, user_id: UUID) -> dict[str, Decimal]:
+def held_details(db: Session, user_id: UUID) -> dict[str, dict[str, Any]]:
+    """Held stocks from BOTH the manual ledger and the latest synced Dhan holdings, with the source of each quantity. A symbol in both sources is counted once (the larger quantity), not added:
+    a manual ledger line and the Dhan mirror usually describe the same shares."""
     from app.api.portfolio_transactions import calculate_portfolio_ledger
-    held: dict[str, Decimal] = {}
+    from app.models import BrokerMirror
+    ledger: dict[str, Decimal] = {}
     for portfolio_id in db.scalars(select(Portfolio.id).where(Portfolio.user_id == user_id)):
         for symbol, position in calculate_portfolio_ledger(db, user_id, portfolio_id).positions.items():
             if position.quantity > 0:
-                held[symbol.upper()] = held.get(symbol.upper(), Decimal(0)) + position.quantity
-    return held
+                ledger[symbol.upper()] = ledger.get(symbol.upper(), Decimal(0)) + position.quantity
+    dhan: dict[str, Decimal] = {}
+    for m in db.scalars(select(BrokerMirror).where(BrokerMirror.user_id == user_id, BrokerMirror.broker == "dhan", BrokerMirror.kind == "holding")):
+        if m.quantity and m.quantity > 0:
+            dhan[m.symbol.strip().upper()] = dhan.get(m.symbol.strip().upper(), Decimal(0)) + m.quantity
+    out: dict[str, dict[str, Any]] = {}
+    for sym in set(ledger) | set(dhan):
+        src = {k: v for k, v in (("ledger", ledger.get(sym)), ("dhan", dhan.get(sym))) if v is not None}
+        out[sym] = {"quantity": max(src.values()), "sources": {k: str(v) for k, v in src.items()},
+                    "text": "Held at Dhan: " + f"{dhan[sym].normalize():f}" if sym in dhan and sym not in ledger else "Held in your ledger: " + f"{ledger[sym].normalize():f}" if sym not in dhan else
+                            f"Held at Dhan: {dhan[sym].normalize():f} (also in your ledger: {ledger[sym].normalize():f})"}
+    return out
+
+
+def held_quantities(db: Session, user_id: UUID) -> dict[str, Decimal]:
+    return {sym: d["quantity"] for sym, d in held_details(db, user_id).items()}
+
+
+def _insufficient_reasons(sections: dict[str, Any], horizons: dict[str, Any]) -> list[str]:
+    """The reasons every horizon is INSUFFICIENT_EVIDENCE, from the assessment's own blockers and the data notes (deduplicated, stored text only)."""
+    out: list[str] = []
+    tech = sections.get("technicals") or {}
+    if tech.get("status") not in (None, "available") and tech.get("message"):
+        out.append(str(tech["message"]))
+    for h in HORIZONS:
+        for b in ((horizons.get(h) or {}).get("blockers") or []):
+            out.append(str(b))
+        for g in ((horizons.get(h) or {}).get("gates") or []):
+            if g.get("detail"):
+                out.append(str(g["detail"]))
+    comps = ((sections.get("assessment") or {}).get("components") or {})
+    for name, comp in comps.items():
+        for b in (comp.get("blockers") or []):
+            out.append(f"{name.replace('_', ' ')}: {b}")
+    fund = sections.get("fundamentals") or {}
+    if not any(p.get("period_type") == "annual" for p in (fund.get("periods") or [])):
+        out.append("no annual statements stored")
+    seen: list[str] = []
+    for r in out:
+        if r and r not in seen:
+            seen.append(r)
+    return seen[:6]
 
 
 def is_radar(sections: dict[str, Any]) -> bool:
@@ -78,12 +121,14 @@ def _buy_conf(sections: dict[str, Any], horizon: str) -> dict[str, Any] | None:
 
 def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
-    held = held_quantities(db, user_id)
+    held_info = held_details(db, user_id)
+    held = {sym: d["quantity"] for sym, d in held_info.items()}
     rows: list[dict[str, Any]] = []
     for instrument in user_universe(db, user_id):
         latest = research_pipeline.latest_brief(db, user_id, instrument.id)
         row: dict[str, Any] = {"instrument_id": str(instrument.id), "symbol": instrument.symbol, "name": instrument.display_name,
-                               "held": instrument.symbol.upper() in held, "quantity": str(held[instrument.symbol.upper()]) if instrument.symbol.upper() in held else None}
+                               "held": instrument.symbol.upper() in held, "quantity": str(held[instrument.symbol.upper()]) if instrument.symbol.upper() in held else None,
+                               "held_text": (held_info.get(instrument.symbol.upper()) or {}).get("text"), "held_sources": (held_info.get(instrument.symbol.upper()) or {}).get("sources")}
         if latest is None:
             row.update(bucket="not_enough_data", action="Research for this stock is starting now; it will appear here automatically.", researched_at=None, stale=True, horizons={}, levels={}, researching=True)
             rows.append(row)
@@ -97,18 +142,29 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
         recs = {h: (horizons.get(h) or {}).get("recommendation") for h in HORIZONS}
         bucket, action = classify(recs, row["held"], not stale, not is_radar(sections))
         level_sets = ((sections.get("levels") or {}).get("horizons") or {})
-        if settings.levels_v2_enabled and v2_bucket(bucket, recs, level_sets) == "setup_waiting":
+        if settings.levels_v2_active and v2_bucket(bucket, recs, level_sets) == "setup_waiting":
             bucket, action = "setup_waiting", "Set up, waiting: a buy signal and levels exist, but price is not in the buy band yet (see each card's entry label)."
-        if settings.confidence_v2_enabled and bucket in ("buy", "setup_waiting"):
+        if settings.confidence_v2_active and bucket in ("buy", "setup_waiting"):
             graded = [h for h in HORIZONS if recs[h] == "BUY" and (_buy_conf(sections, h) or {}).get("grade")]
             if not graded:
                 bucket, action = "radar", "On radar: a buy signal exists, but no horizon passes the setup checks yet (Not ready); the failed checks are listed on the card."
+        if bucket == "not_enough_data":       # two different situations used to share one text: research that is not current, and current research whose every horizon lacks evidence
+            if stale:
+                why = (sections.get("technicals") or {}).get("message") or ((sections.get("market_data_recovery") or {}).get("latest_candle") or {}).get("reason") or f"the last research run finished more than {int(STALE_AFTER.total_seconds() // 3600)} hours ago"
+                row["not_enough_kind"], action = "not_current", f"Not current: {why}" + (" Keep holding; nothing newer to say." if row["held"] else "")
+            else:
+                blockers = _insufficient_reasons(sections, horizons)
+                row["not_enough_kind"], row["insufficient_reasons"] = "insufficient_evidence", blockers
+                action = "Insufficient evidence: " + ("; ".join(blockers[:3]) if blockers else "every horizon lacks enough stored data") + ("." if blockers else ".") + (" Keep holding." if row["held"] else "")
+        held_buy = bool(row["held"] and bucket in ("buy", "setup_waiting"))
+        if held_buy:      # already held (manual ledger or Dhan): not a new purchase candidate, so it is listed under Hold with the buy levels kept for adding
+            bucket, action = "hold", f"Already held ({row.get('held_text') or 'in your portfolio'}): a buy signal exists, so adding is possible at the levels below. Listed under Hold, not Ready to buy."
         row.update(
             bucket=bucket, action=action, researched_at=finished.isoformat(), stale=stale,
             horizons={h: {"recommendation": recs[h], "score": (horizons.get(h) or {}).get("score"), "confidence": (horizons.get(h) or {}).get("confidence"),
                           "buy_confidence": _buy_conf(sections, h),
                           "why_not": ((horizons.get(h) or {}).get("blockers") or [g.get("detail") for g in (horizons.get(h) or {}).get("gates", [])])[:2]} for h in HORIZONS},
-            levels={h: level_sets.get(h) for h in HORIZONS if recs[h] == "BUY"} if bucket in ("buy", "radar") else {},
+            levels={h: level_sets.get(h) for h in HORIZONS if recs[h] == "BUY"} if bucket in ("buy", "radar") or held_buy else {},
             radar_reasons=[f"{h.replace('_', '-').title()}: {(level_sets.get(h) or {}).get('reason') or 'no range'}" if (level_sets.get(h) or {}).get("status") != "available" else f"{h.replace('_', '-').title()}: Not ready ({', '.join(((_buy_conf(sections, h) or {}).get('setup') or {}).get('failed_vetoes') or ['setup checks'])})" for h in HORIZONS if recs[h] == "BUY"] if bucket == "radar" else None,
             last_close=(sections.get("technicals") or {}).get("latest_close"),
             confidence=research_alerts.headline_confidence(sections) if bucket == "buy" else None,
@@ -117,11 +173,12 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
         rows.append(row)
     researched = [r["researched_at"] for r in rows if r.get("researched_at")]
     coverage = {"universe": len(rows), "researched_current": sum(1 for r in rows if r.get("researched_at") and not r.get("stale")),
-                "stale": sum(1 for r in rows if r.get("researched_at") and r.get("stale")), "never_researched": sum(1 for r in rows if not r.get("researched_at")),
+                "stale": sum(1 for r in rows if r.get("researched_at") and r.get("stale")),
+                "not_current": sum(1 for r in rows if r.get("not_enough_kind") == "not_current"), "insufficient_evidence": sum(1 for r in rows if r.get("not_enough_kind") == "insufficient_evidence"), "never_researched": sum(1 for r in rows if not r.get("researched_at")),
                 "last_research_at": max(researched) if researched else None,
                 "universe_rule": "Your watchlists plus every stock with a recorded portfolio transaction (NSE equity).",
                 "schedule": "Researched automatically after 16:30 IST on trading days, at app start-up if anything is older than 20 hours, and within minutes of a stock being added."}
-    buckets_all = BUCKETS_V2 if settings.levels_v2_enabled else BUCKETS
+    buckets_all = BUCKETS_V2 if settings.levels_v2_active else BUCKETS
     order = {b: i for i, b in enumerate(buckets_all)}
     rows.sort(key=lambda r: (order[r["bucket"]], -((r.get("confidence") or {}).get("score") or ((r.get("horizons") or {}).get("positional") or {}).get("score") or 0), r["symbol"]))
     return {"as_of": now.isoformat(), "buckets": {b: [r for r in rows if r["bucket"] == b] for b in buckets_all},
