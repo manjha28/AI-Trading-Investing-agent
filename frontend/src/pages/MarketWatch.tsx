@@ -8,6 +8,7 @@ import { StockAlerts } from '../components/StockAlerts';
 import { StockEvents } from '../components/StockEvents';
 import { CommodityWatch } from './CommodityWatch';
 import { useWatchlistStream } from '../hooks/useWatchlistStream';
+import { tickPrice } from '../lib/formatPrice';
 
 type UniverseRow = {
   instrument_id: string; symbol: string; name: string; venue: string; sector: string | null;
@@ -42,8 +43,7 @@ const INTERVALS = ['1m', '5m', '15m', '1h', '1d'] as const;
 const WINDOW_DAYS: Record<string, number> = { '1m': 2, '5m': 10, '15m': 30, '1h': 90, '1d': 400 };
 const RENDER_LIMIT = 400;
 
-const price = (value: string | null) => (value === null || !Number.isFinite(Number(value)) ? '—'
-  : Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const price = (value: string | null) => tickPrice(value);                      // one tick-rounded formatter, shared with Research
 const compact = (value: string | null) => (value === null || !Number.isFinite(Number(value)) ? '—'
   : new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 2 }).format(Number(value)));
 const signed = (value: string | null, suffix = '') => (value === null || !Number.isFinite(Number(value)) ? '—'
@@ -204,10 +204,13 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
     }) };
   }, [rows, query, sector, mode, sort]);
 
+  // the header counts what the table actually shows (after the filters and the render limit), and names the stocks that have no current close instead of leaving silent gaps
+  const shown = view.slice(0, RENDER_LIMIT);
+  const noClose = rows.filter((r) => r.ltp === null).map((r) => r.symbol);
   const stats = useMemo(() => ({
-    ticking: rows.filter((r) => r.live).length,
-    up: rows.filter((r) => (numeric(r.chgPct) ?? 0) > 0).length,
-    down: rows.filter((r) => (numeric(r.chgPct) ?? 0) < 0).length,
+    ticking: shown.filter((r) => r.live).length,
+    up: shown.filter((r) => (numeric(r.chgPct) ?? 0) > 0).length,
+    down: shown.filter((r) => (numeric(r.chgPct) ?? 0) < 0).length,
     missing: rows.filter((r) => !r.live && (r.last_close === null || (r.sessions_behind ?? 0) >= 2)).length,
     stale: rows.filter((r) => !r.live && (r.sessions_behind ?? 0) >= 2).length,
   }), [rows]);
@@ -310,10 +313,11 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
       <div className="watch-strip" role="status">
         <span className={`watch-status watch-status-${status}`}>● {statusLabel}</span>
         {universeSession && <span title="Latest completed NSE session">session <b>{universeSession}</b></span>}
-        <span><b>{universe.length}</b> symbols</span>
+        <span title={`${universe.length} in the master list`}><b>{shown.length}</b> symbols{shown.length < universe.length ? ` of ${universe.length}` : ''}</span>
         <span><b>{stats.ticking}</b> live</span>
         <span className="positive">▲ <b>{stats.up}</b></span>
         <span className="negative">▼ <b>{stats.down}</b></span>
+        {noClose.length > 0 && <span className="watch-missing" title="No stored or live close exists for these, so they have no price or change">+ {noClose.length} without a current close ({noClose.slice(0, 6).join(', ')}{noClose.length > 6 ? ', …' : ''})</span>}
         {stats.missing > 0 && <span className="watch-missing">{stats.missing} need a refreshed close</span>}
         {stats.stale > 0 && <span className="watch-missing" title="Last stored close is two or more sessions old; the background job refreshes these">{stats.stale} stale</span>}
         <span className="watch-note">NSE · Dhan live feed · decision support, not investment advice</span>
@@ -360,7 +364,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
                   <th className="watch-num"><button type="button" onClick={() => sortBy('volume')}>Volume{arrow('volume')}</button></th>
                   <th className="watch-num">Last tick / close</th>
                 </tr></thead>
-                <tbody>{view.slice(0, RENDER_LIMIT).map((r) => <WatchRow key={r.instrument_id} row={r} selected={r.instrument_id === selectedId} onSelect={setSelectedId} onToggleStar={toggleStar} />)}</tbody>
+                <tbody>{shown.map((r) => <WatchRow key={r.instrument_id} row={r} selected={r.instrument_id === selectedId} onSelect={setSelectedId} onToggleStar={toggleStar} />)}</tbody>
               </table>
               {view.length > RENDER_LIMIT && <p className="crypto-sub">Showing the first {RENDER_LIMIT} of {view.length}. Narrow the search to see the rest.</p>}
               {view.length === 0 && <p className="table-empty">No symbols match these filters.</p>}

@@ -24,6 +24,7 @@ import { depthStatusView, type DepthStatus } from '../lib/depthStatus';
 import { useSnapshotFallback, selectFreshestSource } from '../hooks/useSnapshotFallback';
 import { useWatchlistStream, type WatchlistStreamStatus } from '../hooks/useWatchlistStream';
 import { FRESHNESS_PRIOR_CLOSE, resolveMarketPrice } from '../lib/priceStates';
+import { formatIST } from '../lib/formatIST';
 
 type FundamentalPeriod = {
   id: string;
@@ -170,7 +171,7 @@ function resolvedQuoteLabel(
     return `Close · ${date} ${time} · ${price.provider ?? 'market data'} · ${venue} closed`;
   }
   if (price.source === 'ltp') {
-    const stamp = price.as_of ? new Date(price.as_of).toLocaleString() : 'time unavailable';
+    const stamp = price.as_of ? formatIST(price.as_of) : 'time unavailable';
     return `LTP · ${stamp} · ${price.freshness === 'live' ? 'Live' : 'Delayed'}${price.close_pending ? ' · close pending' : ''} · ${price.provider ?? 'market data'}`;
   }
   return 'No usable market price';
@@ -1715,7 +1716,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                           <small role="status">
                             Live feed: {liveFeedLabel}{liveFeedMessage ? ` · ${liveFeedMessage}` : ''}
                             {liveFeedHealth && ` · Last packet: ${liveFeedHealth.last_successful_packet_at ? new Date(liveFeedHealth.last_successful_packet_at).toLocaleTimeString() : 'none'} · Consecutive failures: ${liveFeedHealth.consecutive_failure_count}${liveFeedHealth.last_failure_reason ? ` · Last failure: ${liveFeedHealth.last_failure_reason} at ${liveFeedHealth.last_failure_at ? new Date(liveFeedHealth.last_failure_at).toLocaleTimeString() : 'unknown time'}` : ''}${liveFeedHealth.current_backoff_seconds !== null && liveFeedHealth.current_backoff_seconds !== undefined ? ` · Backoff ${liveFeedHealth.current_backoff_seconds.toFixed(1)}s; next attempt ${liveFeedHealth.next_attempt_at ? new Date(liveFeedHealth.next_attempt_at).toLocaleTimeString() : 'pending'}` : ''}`}
-                            {liveFeedStatus === 'market_closed' && ` · Last snapshot: ${liveLastSnapshotAt ? new Date(liveLastSnapshotAt).toLocaleString() : 'Not available'}`}
+                            {liveFeedStatus === 'market_closed' && ` · Last snapshot: ${liveLastSnapshotAt ? formatIST(liveLastSnapshotAt) : 'Not available'}`}
                           </small>
                         )}
                         {activeWatchlistInstrument && resolvedDetailQuote?.source === 'close' ? (
@@ -1822,7 +1823,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         </div>
                         <p className="market-provenance">
                           Source: Yahoo Finance · Last updated: {financialsFetchedAt
-                            ? new Date(financialsFetchedAt).toLocaleString()
+                            ? formatIST(financialsFetchedAt)
                             : 'Not available'}
                         </p>
                         {fundamentalsMessage && <p className="market-provenance" role="status">{fundamentalsMessage}</p>}
@@ -1841,7 +1842,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                         <td>{row.operating_margin === null ? '—' : displayFundamental(row.operating_margin, '%')}</td>
                                         <td>{row.eps === null ? '—' : displayFundamental(row.eps)}</td>
                                         <td>{row.free_cash_flow === null ? '—' : formatMoney(row.free_cash_flow, row.currency)}</td>
-                                        <td>{row.source}<small className="trade-subtext">{new Date(row.fetched_at).toLocaleString()} · {row.stale ? 'stale' : 'fresh'}</small></td>
+                                        <td>{row.source}<small className="trade-subtext">{formatIST(row.fetched_at)} · {row.stale ? 'stale' : 'fresh'}</small></td>
                                       </tr>
                                     ))}</tbody>
                                   </table>
@@ -1853,7 +1854,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         <strong>{companyProfile?.name ?? activeWatchlistEntry?.display_name ?? activeWatchlistEntry?.symbol ?? 'Company profile'}</strong>
                         <span>
                           Source: {companyProfile?.instrument_master.source ?? 'Instrument record'} · Profile: {companyProfile?.source ?? 'Yahoo Finance'} · Last updated: {companyProfile?.fetched_at
-                              ? new Date(companyProfile.fetched_at).toLocaleString()
+                              ? formatIST(companyProfile.fetched_at)
                               : 'Not available'}
                         </span>
                         <span>ISIN: {companyProfile?.instrument_master.isin ?? 'Unavailable'}</span>
@@ -1901,11 +1902,11 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         </div>
                         <p className="market-provenance">
                           Source: Dhan 20-level WebSocket depth · Snapshot: {depthSnapshot
-                            ? new Date(depthSnapshot.timestamp).toLocaleString()
+                            ? formatIST(depthSnapshot.timestamp)
                             : depthLastSnapshotAt
-                              ? new Date(depthLastSnapshotAt).toLocaleString()
+                              ? formatIST(depthLastSnapshotAt)
                               : detailQuote
-                                ? new Date(detailQuote.retrieved_at).toLocaleString()
+                                ? formatIST(detailQuote.retrieved_at)
                                 : 'Not available'}
                         </p>
                         {(() => {
@@ -1968,7 +1969,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         <p className="market-provenance">
                           Source: Dhan Option Chain
                           {optionChain?.fetched_at
-                            ? ` · Updated: ${new Date(optionChain.fetched_at).toLocaleString()}`
+                            ? ` · Updated: ${formatIST(optionChain.fetched_at)}`
                             : ''}
                           {optionChain?.underlying_price
                             ? ` · Underlying: ${displayOptionPrice(optionChain.underlying_price)}`
@@ -2091,10 +2092,10 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                                 <p><strong>Blockers:</strong> {optionSignal.blockers.map((blocker) => blocker.replaceAll('_', ' ')).join(' · ')}</p>
                               )}
                               <small>
-                                Chain retrieved {new Date(optionSignal.chain_retrieved_at).toLocaleString()}
+                                Chain retrieved {formatIST(optionSignal.chain_retrieved_at)}
                                 {' · '}Bars source: {optionSignal.bar_source}
                                 {' · '}Latest bar: {optionSignal.last_bar_timestamp
-                                  ? new Date(optionSignal.last_bar_timestamp).toLocaleString()
+                                  ? formatIST(optionSignal.last_bar_timestamp)
                                   : 'Unavailable'}
                               </small>
                               <small>{optionSignal.disclaimer}</small>
@@ -2244,7 +2245,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                       {liveFeedStatus !== 'not_configured' && <p className="market-provenance" role="status">{selectedSourceLabel} live feed: {liveFeedLabel}.{liveFeedMessage ? ` ${liveFeedMessage}` : ''}{liveFeedHealth && <> Last successful packet: {liveFeedHealth.last_successful_packet_at ? new Date(liveFeedHealth.last_successful_packet_at).toLocaleTimeString() : 'none'}.{liveFeedHealth.consecutive_failure_count > 0 && ` Consecutive failures: ${liveFeedHealth.consecutive_failure_count}.`}</>}</p>}
                       {displayedMarketQuote && <div className="market-quote" aria-live="polite">
                         <div className="section-heading"><div><p className="eyebrow">{displayedMarketQuote.data_type === 'daily_close' ? 'HISTORICAL DAILY CLOSE' : displayedMarketQuote.data_type === 'live_tick' ? 'LIVE WEBSOCKET TICK' : displayedMarketQuote.data_type === 'provider_snapshot' ? 'LATEST REST SNAPSHOT' : 'LATEST PROVIDER QUOTE'}</p><h3>{formatMoney(displayedMarketQuote.bar.close, displayedMarketQuote.currency)}</h3></div><span className={`freshness-badge freshness-${displayedMarketQuote.freshness_status}`}>{displayedMarketQuote.freshness_status.replaceAll('_', ' ')}</span></div>
-                        <p className="market-provenance">{resolvedDetailQuote ? resolvedQuoteLabel(resolvedDetailQuote, activeWatchlistEntry?.venue ?? selectedInstrument?.venue ?? 'NSE') : displayedMarketQuote.freshness_message} · Retrieved: {new Date(displayedMarketQuote.retrieved_at).toLocaleString()} · {displayedMarketQuote.is_cached ? 'Cached' : 'Provider response'} · {displayedMarketQuote.is_synthetic ? 'Synthetic' : displayedMarketQuote.is_verified ? 'Verified mapping' : 'Unverified mapping'}{resolvedDetailQuote?.source === 'close' ? '' : ` · Observation age: ${Math.floor(displayedMarketQuote.market_age_seconds)}s`}</p>
+                        <p className="market-provenance">{resolvedDetailQuote ? resolvedQuoteLabel(resolvedDetailQuote, activeWatchlistEntry?.venue ?? selectedInstrument?.venue ?? 'NSE') : displayedMarketQuote.freshness_message} · Retrieved: {formatIST(displayedMarketQuote.retrieved_at)} · {displayedMarketQuote.is_cached ? 'Cached' : 'Provider response'} · {displayedMarketQuote.is_synthetic ? 'Synthetic' : displayedMarketQuote.is_verified ? 'Verified mapping' : 'Unverified mapping'}{resolvedDetailQuote?.source === 'close' ? '' : ` · Observation age: ${Math.floor(displayedMarketQuote.market_age_seconds)}s`}</p>
                         <p className="market-provenance">Provider configured: {displayedMarketQuote.provider_configured ? 'yes' : 'no'} · Delivery: {displayedMarketQuote.delivery_mode.replaceAll('_', ' ')} · Latest request: {displayedMarketQuote.provider_request_status.replaceAll('_', ' ')} · Persistent connection: {displayedMarketQuote.provider_connection_status.replaceAll('_', ' ')} · Stream active: {displayedMarketQuote.feed_active ? 'yes' : 'no'} · Provider delay: unavailable.</p>
                         {displayedMarketQuote.fallback_reason && <p className="market-provenance">Fallback reason: {displayedMarketQuote.fallback_reason.replaceAll('_', ' ')}.</p>}
                         {displayedMarketQuote.provider_attempts.length > 0 && <p className="market-provenance">Provider attempts: {displayedMarketQuote.provider_attempts.map((attempt) => `${attempt.provider}: ${attempt.outcome.replaceAll('_', ' ')}${attempt.reason_category ? ` [${attempt.reason_category.replaceAll('_', ' ')}]` : attempt.reason ? ` (${attempt.reason.replaceAll('_', ' ')})` : ''}${attempt.http_status ? ` · HTTP ${attempt.http_status}` : ''}${attempt.provider_error_code ? ` · ${attempt.provider_error_code}` : ''}${attempt.provider_message ? `: ${attempt.provider_message}` : ''}${attempt.latency_ms !== null && attempt.latency_ms !== undefined ? `, ${Math.round(attempt.latency_ms)} ms` : ''}`).join(' · ')}</p>}
@@ -2278,7 +2279,7 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                           <article><span>Industry</span><strong>{fundamentals.snapshot.industry || 'Unavailable'}</strong></article>
                         </div>
                         <p className="market-provenance">
-                          Source: {fundamentals.snapshot.source} · Fetched {new Date(fundamentals.snapshot.fetched_at).toLocaleString()} · <span className={`freshness-badge ${fundamentals.snapshot.stale ? 'freshness-stale' : 'freshness-fresh'}`}>{fundamentals.snapshot.stale ? 'stale' : 'fresh'}</span>
+                          Source: {fundamentals.snapshot.source} · Fetched {formatIST(fundamentals.snapshot.fetched_at)} · <span className={`freshness-badge ${fundamentals.snapshot.stale ? 'freshness-stale' : 'freshness-fresh'}`}>{fundamentals.snapshot.stale ? 'stale' : 'fresh'}</span>
                         </p>
                       </>}
                       <div className="fundamental-period-toolbar">
@@ -2299,16 +2300,16 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                         <td>{row.operating_cash_flow === null ? 'Unavailable' : formatMoney(row.operating_cash_flow, row.currency)}</td>
                         <td>{row.free_cash_flow === null ? 'Unavailable' : formatMoney(row.free_cash_flow, row.currency)}</td>
                         <td>{displayFundamental(row.free_cash_flow_yoy_growth_pct, '%')}</td>
-                        <td>{row.source}<small className="trade-subtext">{new Date(row.fetched_at).toLocaleString()} · <span className={row.stale ? 'stale-text' : ''}>{row.stale ? 'stale' : 'fresh'}</span></small></td>
+                        <td>{row.source}<small className="trade-subtext">{formatIST(row.fetched_at)} · <span className={row.stale ? 'stale-text' : ''}>{row.stale ? 'stale' : 'fresh'}</span></small></td>
                       </tr>)}</tbody></table></div>}
                     </> : <p className="table-empty">Fundamentals unavailable from providers.</p>}
                   </div>
                 </section>}
                 {marketHistory && selectedInstrument && legacyInstrumentSelected && <section className="data-section market-history">
                   <div className="section-heading"><div><p className="eyebrow">PROVENANCE &amp; FRESHNESS</p><h2>{selectedInstrument.symbol} history</h2></div><span className={`freshness-badge freshness-${marketHistory.freshness.status}`}>{marketHistory.freshness.status.replace('_', ' ')}</span></div>
-                  {marketHistory.sync_job && <p className="market-provenance" role="status">Intraday sync {marketHistory.sync_job.status} · {marketHistory.sync_job.chunks_completed}/{marketHistory.sync_job.chunks_total} chunks · {marketHistory.sync_job.bars_fetched} bars fetched{marketHistory.sync_job.current_window ? ` · ${new Date(marketHistory.sync_job.current_window.start).toLocaleString()} – ${new Date(marketHistory.sync_job.current_window.end).toLocaleString()}` : ''}</p>}
+                  {marketHistory.sync_job && <p className="market-provenance" role="status">Intraday sync {marketHistory.sync_job.status} · {marketHistory.sync_job.chunks_completed}/{marketHistory.sync_job.chunks_total} chunks · {marketHistory.sync_job.bars_fetched} bars fetched{marketHistory.sync_job.current_window ? ` · ${formatIST(marketHistory.sync_job.current_window.start)} – ${formatIST(marketHistory.sync_job.current_window.end)}` : ''}</p>}
                   {marketHistory.is_cached && marketHistory.sync_status === 'unavailable' && marketHistory.bars.length > 0 && <p className="market-provenance stale-text" role="status">Saved historical data · last available session {marketHistory.bars[marketHistory.bars.length - 1].session_date ?? new Date(marketHistory.bars[marketHistory.bars.length - 1].timestamp).toISOString().slice(0, 10)} · refresh failed</p>}
-                  <p className="market-provenance">{marketHistory.freshness.message} Provider: {marketHistory.provider ?? marketHistory.freshness.source ?? 'unavailable'} · Interval: {marketHistory.interval} · Currency: {marketHistory.currency ?? selectedInstrument.currency} · Session: {marketHistory.session_state} · Last successful fetch: {marketHistory.freshness.last_successful_update ? new Date(marketHistory.freshness.last_successful_update).toLocaleString() : 'Never'} · Retrieved: {marketHistory.fetched_at ? new Date(marketHistory.fetched_at).toLocaleString() : 'not recorded'} · Latest bar: {marketHistory.as_of ? new Date(marketHistory.as_of).toLocaleString() : marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : new Date(marketHistory.freshness.latest_bar_timestamp).toLocaleString() : 'Unavailable'} · {marketHistory.is_cached ? 'Cached' : 'Provider response'} · Sync: {marketHistory.sync_status.replaceAll('_', ' ')}{marketHistory.provider_intervals_requested.length ? ` · Requested from provider: ${marketHistory.provider_intervals_requested.join(', ')}` : ''}{marketHistory.interval !== '1d' && (marketHistory.coverage?.provider_fallback_bars ?? 0) > 0 ? ` · ${marketHistory.coverage?.provider_fallback_bars} provider-sourced fallback bars; 1m-derived bars take precedence` : ''}</p>
+                  <p className="market-provenance">{marketHistory.freshness.message} Provider: {marketHistory.provider ?? marketHistory.freshness.source ?? 'unavailable'} · Interval: {marketHistory.interval} · Currency: {marketHistory.currency ?? selectedInstrument.currency} · Session: {marketHistory.session_state} · Last successful fetch: {marketHistory.freshness.last_successful_update ? formatIST(marketHistory.freshness.last_successful_update) : 'Never'} · Retrieved: {marketHistory.fetched_at ? formatIST(marketHistory.fetched_at) : 'not recorded'} · Latest bar: {marketHistory.as_of ? formatIST(marketHistory.as_of) : marketHistory.freshness.latest_bar_timestamp ? marketInterval === '1d' ? new Date(marketHistory.freshness.latest_bar_timestamp).toISOString().slice(0, 10) : formatIST(marketHistory.freshness.latest_bar_timestamp) : 'Unavailable'} · {marketHistory.is_cached ? 'Cached' : 'Provider response'} · Sync: {marketHistory.sync_status.replaceAll('_', ' ')}{marketHistory.provider_intervals_requested.length ? ` · Requested from provider: ${marketHistory.provider_intervals_requested.join(', ')}` : ''}{marketHistory.interval !== '1d' && (marketHistory.coverage?.provider_fallback_bars ?? 0) > 0 ? ` · ${marketHistory.coverage?.provider_fallback_bars} provider-sourced fallback bars; 1m-derived bars take precedence` : ''}</p>
                   {marketHistory.fallback_reason && <p className="market-provenance">Fallback reason: {marketHistory.fallback_reason.replaceAll('_', ' ')}.</p>}
                   {marketHistory.provider_attempts.length > 0 && <p className="market-provenance">Provider attempts: {marketHistory.provider_attempts.map((attempt) => `${attempt.provider}: ${attempt.outcome.replaceAll('_', ' ')}${attempt.reason_category ? ` [${attempt.reason_category.replaceAll('_', ' ')}]` : attempt.reason ? ` (${attempt.reason.replaceAll('_', ' ')})` : ''}${attempt.http_status ? ` · HTTP ${attempt.http_status}` : ''}${attempt.provider_error_code ? ` · ${attempt.provider_error_code}` : ''}${attempt.provider_message ? `: ${attempt.provider_message}` : ''}${attempt.latency_ms !== null && attempt.latency_ms !== undefined ? `, ${Math.round(attempt.latency_ms)} ms` : ''}${attempt.bars ? `, ${attempt.bars} bars` : ''}`).join(' · ')}</p>}
                   {marketHistory.bars.length === 0 ? <div className="table-empty">No bars are available for that date range.</div> : <>

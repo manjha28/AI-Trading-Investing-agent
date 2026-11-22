@@ -112,7 +112,7 @@ describe('MarketWatch · equities', () => {
     render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
     await screen.findByText('ONGC');
     const ongc = screen.getByText('ONGC').closest('tr')!;
-    expect(within(ongc).getByText('223.46')).toBeTruthy();   // the live price replaces the stale stored one
+    expect(within(ongc).getByText('223.45')).toBeTruthy();   // the live price replaces the stale stored one
     expect(within(ongc).getByText('-1.46%')).toBeTruthy();
     expect(within(ongc).queryByText('stale')).toBeNull();     // a live row is not shown as stale
     expect(screen.getByText('● LIVE')).toBeTruthy();
@@ -363,5 +363,33 @@ describe('MarketWatch · alerts, corporate actions and news per stock', () => {
     expect((screen.getByLabelText('Search symbols') as HTMLInputElement).value).toBe('');
     rerender(<MarketWatch workspace={workspace} focus={{ instrumentId: 'id-BBB', tab: 'events', nonce: 2 }} />);
     expect((await screen.findByTestId('events-panel')).textContent).toBe('actions and news for BBB');
+  });
+});
+
+describe('MarketWatch · header counts and row selection', () => {
+  it('counts what the table shows, names the stocks without a current close, and shows tick-rounded prices', async () => {
+    stream.value = { status: 'active', message: null, quotes: { 'id-AAA': liveQuote('id-AAA', '100.03', '1.00', '1.00', '10') } };
+    mockApi();
+    render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
+    await screen.findByText('AAA');
+    const strip = document.querySelector('.watch-strip')!;
+    expect(within(strip as HTMLElement).getByText(/4/, { selector: 'b' })).toBeTruthy();
+    expect(screen.getByText(/\+ 1 without a current close \(CCC\)/)).toBeTruthy();                       // CCC has no close at all: named, not silent
+    expect(within(screen.getByText('AAA').closest('tr')!).getByText('100.05')).toBeTruthy();             // 100.03 shown on the 0.05 tick
+    fireEvent.click(screen.getByRole('button', { name: 'Gainers' }));
+    await waitFor(() => expect(symbolsShown()).toEqual(['AAA', 'ONGC']));
+    expect(strip.textContent).toContain('2 symbols of 4');                                                   // the filter is visible in the count
+  });
+
+  it('opens the detail panel when a row is clicked', async () => {
+    mockApi();
+    render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
+    expect(screen.getByText('Select a symbol to chart it.')).toBeTruthy();
+    const tr = await tableRow('BBB');
+    fireEvent.click(tr);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'BBB' })).toBeTruthy());
+    expect(tr.getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByText('Select a symbol to chart it.')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Chart' })).toBeTruthy();
   });
 });

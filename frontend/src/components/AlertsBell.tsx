@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BellRing } from 'lucide-react';
 import { apiRequest } from '../api';
 import { ruleLabel, type AlertEvent } from './StockAlerts';
+import { formatIST } from '../lib/formatIST';
 
 const POLL_MS = 60_000;
-const when = (iso: string) => new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+const when = (iso: string) => formatIST(iso);
 
 function summary(e: AlertEvent): string {
   const ev = e.evidence ?? {};

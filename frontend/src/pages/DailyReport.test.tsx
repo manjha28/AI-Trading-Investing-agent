@@ -69,4 +69,19 @@ describe('DailyReport', () => {
     expect(screen.queryByText(/past setups/)).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
+
+  it('sorts Ready to buy by exactly the number shown on each card and hides the prior high when it is missing', async () => {
+    const mk = (id: string, sym: string, shown: number, headline: number, withPrior: boolean) => ({ ...buy, instrument_id: id, symbol: sym, name: `${sym} Ltd`,
+      horizons: { positional: { recommendation: 'BUY', score: 80, confidence: 80, buy_confidence: { ...conf, score: shown }, why_not: [] } }, confidence: { ...conf, score: headline },
+      levels: { positional: { ...levels, prior_high_reference: withPrior ? '110.00' : undefined } } });
+    // headline (best horizon) order would be A, B, C; the number shown on the cards is 71, 75, 72
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [mk('a', 'AAA', 71, 90, true), mk('b', 'BBB', 75, 80, false), mk('c', 'CCC', 72, 70, true)] }, counts: { ...report.counts, buy: 3 } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('BBB Ltd')).toBeTruthy());
+    const order = screen.getAllByRole('button').map((b) => b.textContent).filter((t) => ['AAA', 'BBB', 'CCC'].includes(t ?? ''));
+    expect(order.slice(0, 3)).toEqual(['BBB', 'CCC', 'AAA']);
+    expect(screen.getAllByText(/prior high/).length).toBe(2);                                    // BBB has no prior high: that part of the line is hidden, not "prior high —"
+    expect(screen.queryByText(/prior high —/)).toBeNull();
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
+import { formatIST } from '../lib/formatIST';
 
 type Portfolio = { id: string; name: string; base_currency: string };
 type Instrument = { id: string; symbol: string; display_name: string; currency: string; venue: string };
@@ -299,7 +300,7 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
                         : rule.last_status === 'suppressed'
                           ? `Not evaluating: ${rule.last_reason ?? 'inputs unavailable'}`
                           : 'Watching'}
-                    {rule.enabled && rule.last_evaluated_at ? ` · checked ${new Date(rule.last_evaluated_at).toLocaleString()}` : ''}
+                    {rule.enabled && rule.last_evaluated_at ? ` · checked ${formatIST(rule.last_evaluated_at)}` : ''}
                   </small>
                   <small>{rule.scope}{rule.portfolio_id ? ` · ${portfolios.find((item) => item.id === rule.portfolio_id)?.name ?? 'Portfolio'}` : ''}</small>
                 </div>
@@ -360,7 +361,7 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
             <h4><span className={`severity-badge severity-${level}`}>{level}</span> {grouped.length} event{grouped.length === 1 ? '' : 's'}</h4>
             {grouped.map((event) => (
               <article className="alerts-event" key={event.id}>
-                <header><div><strong>{ruleLabels[event.rule_type]}</strong><span>{new Date(event.fired_at).toLocaleString()}</span></div><span className={`event-status event-${event.status}`}>{event.status}</span></header>
+                <header><div><strong>{ruleLabels[event.rule_type]}</strong><span>{formatIST(event.fired_at)}</span></div><span className={`event-status event-${event.status}`}>{event.status}</span></header>
                 <button className="text-button" type="button" aria-expanded={expandedEvidence === event.id} onClick={() => setExpandedEvidence(expandedEvidence === event.id ? null : event.id)}>{expandedEvidence === event.id ? 'Hide evidence' : 'Show evidence'}</button>
                 {expandedEvidence === event.id && <pre className="alerts-evidence">{evidenceText(event.evidence)}</pre>}
                 <div className="alerts-actions">{(['read', 'dismissed', 'actioned'] as const).map((status) => <button className="secondary-button" type="button" key={status} disabled={event.status === status} onClick={() => void updateEvent(event, status)}>{status === 'dismissed' ? 'Dismiss' : status === 'actioned' ? 'Mark actioned' : 'Mark read'}</button>)}</div>

@@ -18,6 +18,7 @@ import {
   type ResolvedMarketPrice,
   type ValuationBasis,
 } from '../lib/priceStates';
+import { formatIST, formatISTDate } from '../lib/formatIST';
 
 type Props = Pick<
   WorkspaceState,
@@ -941,7 +942,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
         ?? dhanPortfolio?.positions.find((item) => item.symbol === closeObservation.symbol)?.exchange;
       return ` · official close ${sessionCloseLabel(closeObservation.basis_date ?? closeObservation.timestamp, venue)}`;
     }
-    return row.provider_timestamp ? ` · provider ${new Date(row.provider_timestamp).toLocaleString()}` : '';
+    return row.provider_timestamp ? ` · provider ${formatIST(row.provider_timestamp)}` : '';
   };
   const priceCoverage = dhanBroker?.coverage ?? null;
   const coverageNote = priceCoverage?.partial && priceCoverage.excluded.length > 0
@@ -1195,9 +1196,9 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
             <div className="section-heading"><div><p className="eyebrow">READ-ONLY BROKER DATA · INR</p><h2>Broker sync health</h2></div></div>
             {dhanLoading ? <Skeleton width="16rem" /> : !dhanPortfolio ? <div className="table-empty">Dhan data is unavailable.</div> : (
               <dl className="sync-health">
-                <div><dt>Last synced</dt><dd>{dhanPortfolio.synced_at ? new Date(dhanPortfolio.synced_at).toLocaleString() : 'Never'}</dd></div>
+                <div><dt>Last synced</dt><dd>{dhanPortfolio.synced_at ? formatIST(dhanPortfolio.synced_at) : 'Never'}</dd></div>
                 <div><dt>Live feed</dt><dd>{dhanFeedStatus === 'active' ? 'Live' : dhanFeedStatus === 'stale' ? 'Stale · no recent packet' : dhanFeedStatus === 'market_closed' ? 'Idle · market closed' : dhanFeedStatus}{typeof dhanFeedHealth?.consecutive_failure_count === 'number' ? ` · consecutive failures ${dhanFeedHealth.consecutive_failure_count}` : ''}{typeof dhanFeedHealth?.last_failure_reason === 'string' ? ` · last failure ${dhanFeedHealth.last_failure_reason}${typeof dhanFeedHealth.last_failure_at === 'string' ? ` at ${new Date(dhanFeedHealth.last_failure_at).toLocaleTimeString()}` : ''}` : ''}</dd></div>
-                <div><dt>Instrument master</dt><dd>{dhanPortfolio.instrument_master.last_refreshed_at ? new Date(dhanPortfolio.instrument_master.last_refreshed_at).toLocaleString() : 'Not loaded in this process'}</dd></div>
+                <div><dt>Instrument master</dt><dd>{dhanPortfolio.instrument_master.last_refreshed_at ? formatIST(dhanPortfolio.instrument_master.last_refreshed_at) : 'Not loaded in this process'}</dd></div>
                 <div><dt>Snapshot cadence</dt><dd>every {Math.max(30, dhanPortfolio.snapshot_min_interval_seconds)}s while open</dd></div>
               </dl>
             )}
@@ -1244,7 +1245,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
             {alerts === null && !alertsError ? <Skeleton width="12rem" /> : alertsError ? <ErrorState title="Alerts unavailable" message={alertsError} onRetry={() => void refreshAlerts()} /> : alerts?.length === 0 ? <div className="table-empty">No new alerts.</div> : alerts && (
               <ul className="overview-alerts">
                 {alerts.map((event) => (
-                  <li key={event.id}><span className={`freshness-badge freshness-${event.severity === 'critical' ? 'unavailable' : 'fresh'}`}>{event.severity}</span> {event.rule_type.replaceAll('_', ' ')} <small className="trade-subtext">{new Date(event.fired_at).toLocaleString()}</small></li>
+                  <li key={event.id}><span className={`freshness-badge freshness-${event.severity === 'critical' ? 'unavailable' : 'fresh'}`}>{event.severity}</span> {event.rule_type.replaceAll('_', ' ')} <small className="trade-subtext">{formatIST(event.fired_at)}</small></li>
                 ))}
               </ul>
             )}
@@ -1309,7 +1310,7 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
                             {segment.map((point) => (
                               <circle className="history-point" cx={point.x} cy={point.y} key={point.row.timestamp} r="3">
                                 <title>
-                                  {`${new Date(point.row.timestamp).toLocaleString()} · ${formatMoney(String(point.value), point.row.currency)} · ${point.row.valuation_basis} · ${point.row.source}${historyProviderLabel(point.row)}${point.row.complete ? '' : ` · partial: ${point.row.reason ?? 'incomplete valuation'}`}`}
+                                  {`${formatIST(point.row.timestamp)} · ${formatMoney(String(point.value), point.row.currency)} · ${point.row.valuation_basis} · ${point.row.source}${historyProviderLabel(point.row)}${point.row.complete ? '' : ` · partial: ${point.row.reason ?? 'incomplete valuation'}`}`}
                                 </title>
                               </circle>
                             ))}
@@ -1339,10 +1340,10 @@ export function OverviewPage({ workspace }: { workspace: Props }) {
                   return <tr key={position.symbol}>
                     <td className="instrument-cell">{position.symbol}</td>
                     <td>{formatQuantity(position.quantity)}</td>
-                    <td>{position.holding_period_start ? new Date(position.holding_period_start).toLocaleDateString() : '—'}</td>
+                    <td>{position.holding_period_start ? formatISTDate(position.holding_period_start) : '—'}</td>
                     <td>{formatMoney(position.average_cost, currency)}</td>
                     <td>{formatMoney(position.cost_basis, currency)}</td>
-                    <td>{priced?.last_price ? formatMoney(priced.last_price, currency) : '—'}<small className="trade-subtext">{priced ? priced.basis === BASIS_SESSION_CLOSE ? `Official close · ${sessionCloseLabel(priced.provider_timestamp, watchlist.find((item) => item.instrument_id === priced.instrument_id)?.venue)} · fetched ${priced.retrieved_at ? new Date(priced.retrieved_at).toLocaleString() : 'time unavailable'}` : `${basisCaption(priced.basis)}${priced.provider_timestamp ? ` · ${new Date(priced.provider_timestamp).toLocaleString()}` : ''}` : 'Not valued'}</small></td>
+                    <td>{priced?.last_price ? formatMoney(priced.last_price, currency) : '—'}<small className="trade-subtext">{priced ? priced.basis === BASIS_SESSION_CLOSE ? `Official close · ${sessionCloseLabel(priced.provider_timestamp, watchlist.find((item) => item.instrument_id === priced.instrument_id)?.venue)} · fetched ${priced.retrieved_at ? formatIST(priced.retrieved_at) : 'time unavailable'}` : `${basisCaption(priced.basis)}${priced.provider_timestamp ? ` · ${formatIST(priced.provider_timestamp)}` : ''}` : 'Not valued'}</small></td>
                     <td>{priced?.market_value ? formatMoney(priced.market_value, currency) : '—'}</td>
                     <td className={priced?.unrealized_pnl ? tone(priced.unrealized_pnl) : undefined}>{priced?.unrealized_pnl ? formatMoney(priced.unrealized_pnl, currency) : '—'}</td>
                     <td>{priced?.day_change ? formatMoney(priced.day_change, currency) : '—'}{priced?.day_change_percent ? ` (${Number(priced.day_change_percent).toFixed(2)}%)` : ''}{priced && !priced.day_change ? <small className="trade-subtext">{priced.day_change_reason ?? 'No prior close'}</small> : null}</td>

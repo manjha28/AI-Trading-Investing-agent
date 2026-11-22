@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiRequest, ApiRequestError } from '../api';
+import { formatIST } from '../lib/formatIST';
 
 export type AlertRule = { id: string; scope: string; instrument_id: string | null; rule_type: string; params: Record<string, unknown>; severity: string; enabled: boolean; last_status: string | null; last_reason: string | null };
 export type AlertEvent = { id: string; rule_id: string; instrument_id: string | null; fired_at: string; evidence: Record<string, unknown>; status: string; severity: string; rule_type: string };
@@ -21,7 +22,7 @@ export const STOCK_RULES: Record<string, { label: string; fields: Field[] }> = {
 export const ruleLabel = (type: string) => STOCK_RULES[type]?.label ?? type.replace(/_/g, ' ');
 export const describeParams = (params: Record<string, unknown>) => Object.entries(params).map(([k, v]) => `${k.replace(/_/g, ' ')} ${String(v)}`).join(' · ');
 const messageOf = (e: unknown) => (e instanceof ApiRequestError || e instanceof Error ? e.message : 'Request failed.');
-const when = (iso: string) => new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+const when = (iso: string) => formatIST(iso);
 
 /** Alerts for ONE stock: its rules, a quick form to add one, and what has fired. Everything is owner-scoped on the server. */
 export function StockAlerts({ instrumentId, symbol, lastPrice, onChanged }: { instrumentId: string; symbol: string; lastPrice: string | null; onChanged?: () => void }) {

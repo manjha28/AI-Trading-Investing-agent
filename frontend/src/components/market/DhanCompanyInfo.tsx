@@ -1,4 +1,5 @@
 import { formatMoney } from '../../lib/formatMoney';
+import { formatIST } from '../../lib/formatIST';
 
 /** Shape returned by the company-profile endpoint. The verification metadata stays in the payload (it is a backend
  *  data-quality concern); this view simply does not render it. */
@@ -99,7 +100,7 @@ export function DhanCompanyInfo({ info }: { info: CompanyInfoDetails }) {
   const { overview, valuation, holdings, price } = buildCompanyMetrics(info);
   if (!overview.length && !valuation.length && !holdings.length && !price.length) return null;
   const shares = holdings.map((metric) => ({ ...metric, width: Math.max(0, Math.min(100, Number.parseFloat(metric.value.replace(/,/g, '')))) }));
-  const retrieved = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(info.retrieved_at));
+  const retrieved = formatIST(info.retrieved_at);
   return <div className="company-metrics" aria-label="Company metrics">
     <Section title="Company overview" metrics={overview} note={overview.some((m) => m.label === 'Earnings per share') ? 'Earnings per share is as reported by Dhan; its period is not stated.' : undefined} />
     <Section title="Valuation & ratios" metrics={valuation} note="Ratios and EBITDA are as reported by Dhan without a stated period; EBITDA is shown in ₹ crore." />

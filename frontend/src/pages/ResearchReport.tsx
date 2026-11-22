@@ -8,6 +8,7 @@ import type {
   AiAnalysis, AiStatus, HorizonAssessment, NewsHighlight, NewsHighlights, ShareholdingHistory, AiValuationView, Assessment, Shareholding, PeerMetric, Valuation, ValuationMetric, Brief, ComponentKey, FundamentalPeriod, HorizonKey, Instrument, QualityItem, ScoreComponent,
   SentimentEvent, SentimentHistoryPoint,
 } from './researchTypes';
+import { formatIST } from '../lib/formatIST';
 
 const HORIZON_ORDER: HorizonKey[] = ['swing', 'positional', 'long_term'];
 const HORIZON_LABEL: Record<HorizonKey, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
@@ -29,9 +30,7 @@ const num = (value: string | number | null | undefined, digits = 2) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed.toLocaleString('en-IN', { maximumFractionDigits: digits }) : '—';
 };
-const ist = (value: string | null | undefined) => value
-  ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(value)) + ' IST'
-  : '—';
+const ist = (value: string | null | undefined) => formatIST(value);
 const words = (value: string) => value.replaceAll('_', ' ');
 const tone = (score: number | null) => score === null ? 'none' : score >= 65 ? 'good' : score >= 45 ? 'mid' : 'bad';
 const REC_TEXT: Record<string, string> = {

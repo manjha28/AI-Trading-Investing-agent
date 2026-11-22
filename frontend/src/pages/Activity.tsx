@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiRequest } from '../api';
 import { formatMoney, formatQuantity } from '../components/useWorkspace';
+import { formatIST } from '../lib/formatIST';
 
 type DhanTrade = {
   id: string;
@@ -68,8 +69,8 @@ export function DhanTradeAndCashHistory() {
       {brokerHistory && brokerHistory.trades.length + brokerHistory.ledger.length === 0 && <div className="table-empty">No mirrored Dhan trades or cash entries yet. Sync Dhan from the Brokers page.</div>}
       {brokerHistory && brokerHistory.trades.length + brokerHistory.ledger.length > 0 && (
         <div className="table-scroll"><table><thead><tr><th>Type</th><th>Instrument / description</th><th>Quantity</th><th>Price / cash movement</th><th>Event time</th><th>Broker</th><th>Synced</th></tr></thead><tbody>
-          {brokerHistory.trades.map((trade) => <tr key={`trade-${trade.id}`}><td><span className={`type-label type-${trade.side.toLowerCase()}`}>{trade.side}</span></td><td>{trade.symbol ?? trade.security_id ?? 'Trade'}{trade.exchange_segment ? ` · ${trade.exchange_segment}` : ''}{trade.order_id ? ` · Order ${trade.order_id}` : ''}</td><td>{formatQuantity(trade.quantity)}</td><td>{formatMoney(trade.price, brokerHistory.currency)}{trade.charges != null ? ` · fees ${formatMoney(trade.charges, brokerHistory.currency)}` : ''}</td><td>{new Date(trade.trade_at).toLocaleString()}</td><td>{trade.broker}</td><td>{new Date(trade.synced_at).toLocaleString()}</td></tr>)}
-          {brokerHistory.ledger.map((entry) => <tr key={`ledger-${entry.id}`}><td>Cash ledger</td><td>{entry.description ?? 'Cash movement'}</td><td>—</td><td>{entry.debit != null ? `Debit ${formatMoney(entry.debit, entry.currency)}` : ''}{entry.debit != null && entry.credit != null ? ' · ' : ''}{entry.credit != null ? `Credit ${formatMoney(entry.credit, entry.currency)}` : ''}{entry.running_balance != null ? ` · Balance ${formatMoney(entry.running_balance, entry.currency)}` : ''}</td><td>{new Date(entry.entry_date).toLocaleString()}</td><td>{entry.broker}</td><td>{new Date(entry.synced_at).toLocaleString()}</td></tr>)}
+          {brokerHistory.trades.map((trade) => <tr key={`trade-${trade.id}`}><td><span className={`type-label type-${trade.side.toLowerCase()}`}>{trade.side}</span></td><td>{trade.symbol ?? trade.security_id ?? 'Trade'}{trade.exchange_segment ? ` · ${trade.exchange_segment}` : ''}{trade.order_id ? ` · Order ${trade.order_id}` : ''}</td><td>{formatQuantity(trade.quantity)}</td><td>{formatMoney(trade.price, brokerHistory.currency)}{trade.charges != null ? ` · fees ${formatMoney(trade.charges, brokerHistory.currency)}` : ''}</td><td>{formatIST(trade.trade_at)}</td><td>{trade.broker}</td><td>{formatIST(trade.synced_at)}</td></tr>)}
+          {brokerHistory.ledger.map((entry) => <tr key={`ledger-${entry.id}`}><td>Cash ledger</td><td>{entry.description ?? 'Cash movement'}</td><td>—</td><td>{entry.debit != null ? `Debit ${formatMoney(entry.debit, entry.currency)}` : ''}{entry.debit != null && entry.credit != null ? ' · ' : ''}{entry.credit != null ? `Credit ${formatMoney(entry.credit, entry.currency)}` : ''}{entry.running_balance != null ? ` · Balance ${formatMoney(entry.running_balance, entry.currency)}` : ''}</td><td>{formatIST(entry.entry_date)}</td><td>{entry.broker}</td><td>{formatIST(entry.synced_at)}</td></tr>)}
         </tbody></table></div>
       )}
     </section>

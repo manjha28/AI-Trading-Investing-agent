@@ -53,7 +53,7 @@
 .rt-status-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12px; color:var(--rt-muted); }
 
 /* Chips and tones */
-.rt-chip { display: inline-block; padding: 3px 9px; border-radius: 999px; border:1px solid var(--rt-border); font-size: 12px; color:var(--rt-muted); background:var(--rt-raised); }
+.rt-chip { display: inline-flex; align-items: center; height: 24px; box-sizing: border-box; white-space: nowrap; padding: 0 9px; border-radius: 999px; border:1px solid var(--rt-border); font-size: 12px; color:var(--rt-muted); background:var(--rt-raised); }
 .rt-chip.rt-good, .rt-pill.rt-s-positive { color:var(--rt-good); border-color:var(--rt-good); }
 .rt-chip.rt-bad, .rt-pill.rt-s-negative { color:var(--rt-bad); border-color:var(--rt-bad); }
 .rt-chip.rt-mid, .rt-pill.rt-s-mixed { color:var(--rt-mid); border-color:var(--rt-mid); }
@@ -299,7 +299,7 @@
 .rt-seg button small { font-size: 10px; opacity: .8; } .rt-seg button.active { background: var(--rt-panel); color: var(--rt-text); box-shadow: 0 0 0 1px var(--rt-accent) inset; }
 .rt-seg button:disabled { opacity: .4; cursor: not-allowed; }
 .rt-h { font-size: 15px; } .rt-h small { color: var(--rt-muted); font-weight: normal; margin-left: 8px; }
-.rt-buy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.rt-buy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; align-items: start; }      /* an expanded card must not stretch its row neighbours */
 .rt-buy { background: var(--rt-panel); border: 1px solid var(--rt-border); border-top: 3px solid var(--rt-good); border-radius: 10px; padding: 14px; display: grid; gap: 10px; min-width: 0; }
 .rt-buy header { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
 .rt-sym { background: none; border: 0; padding: 0; color: var(--rt-text); font-size: 20px; font-weight: 700; cursor: pointer; letter-spacing: .01em; } .rt-sym:hover { color: var(--rt-accent); }

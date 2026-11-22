@@ -6,6 +6,7 @@ import { ResearchBriefView, plainText } from './ResearchReport';
 import { DailyReport } from './DailyReport';
 import { Multibagger } from './Multibagger';
 import { StockHero } from './StockHero';
+import { formatIST } from '../lib/formatIST';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const MAX_BATCH_INSTRUMENTS = 5;
@@ -489,7 +490,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
   const selectedResult = batchResults.find((item) => item.instrument.id === selected?.id);
   const lastRun = brief?.finished_at ?? brief?.created_at ?? null;
   const technicalFresh = brief?.sections.technicals.status === 'available';
-  const fmtIst = (value: string) => new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(value)) + ' IST';
+  const fmtIst = (value: string) => formatIST(value);
 
   return (
     <div className="rt-root research-pipeline-page">
@@ -546,7 +547,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
         {newsHealth.length > 0 && <div className="research-value-grid" aria-label="News source health">{newsHealth.map((source) => <span key={source.source}>
           <small>{source.source} · {source.status}{source.rate_limited ? ' · rate limited' : ''}</small>
           <strong>{source.articles_discovered} discovered · {source.articles_inserted} inserted · {source.duplicate_count} duplicates</strong>
-          <small>Attempt {new Date(source.last_attempted_at).toLocaleString()} · last success {source.last_successful_poll_at ? new Date(source.last_successful_poll_at).toLocaleString() : 'none'} · last article {source.last_successful_article_at ? new Date(source.last_successful_article_at).toLocaleString() : 'none'} · failures {source.failure_count}{source.last_error_category ? ` · ${source.last_error_category}` : ''}</small>
+          <small>Attempt {formatIST(source.last_attempted_at)} · last success {source.last_successful_poll_at ? formatIST(source.last_successful_poll_at) : 'none'} · last article {source.last_successful_article_at ? formatIST(source.last_successful_article_at) : 'none'} · failures {source.failure_count}{source.last_error_category ? ` · ${source.last_error_category}` : ''}</small>
         </span>)}</div>}
         {storedNews.length === 0 && !storedNewsError && <p className="research-status-line">No persisted news items are available yet.</p>}
         <ul className="rt-nr-list rt-scroll" tabIndex={0} aria-label="Persisted news, scrollable">{storedNews.map((item) => <NewsRow key={`${item.source}-${item.external_id}`}
@@ -600,7 +601,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
             {item.progress && <div className="research-section-status-grid" aria-label={`${item.instrument.symbol} research progress`}>
               {item.progress.slice(-8).map((step, index) => <article key={`${step.component}-${step.updated_at}-${index}`}>
                 <small>{step.component.replaceAll('_', ' ')}</small><strong>{step.state}</strong><span>{step.detail}</span>
-                {step.source && <small>{step.source}{step.retrieved_at ? ` · ${new Date(step.retrieved_at).toLocaleString()}` : ''}</small>}
+                {step.source && <small>{step.source}{step.retrieved_at ? ` · ${formatIST(step.retrieved_at)}` : ''}</small>}
               </article>)}
             </div>}
             {item.brief && item.instrument.id !== selected?.id && <ResearchBriefView brief={item.brief} instrument={item.instrument} horizon={horizon} onHorizon={setHorizon} />}
@@ -652,7 +653,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
             {legacySources.map((source) => <article className="backfill-card" key={source.id}>
               <strong>{source.title || source.publisher || source.url}</strong>
               <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
-              <span>{source.publisher || 'Publisher not identified'} · fetched {new Date(source.fetched_at).toLocaleString()}</span>
+              <span>{source.publisher || 'Publisher not identified'} · fetched {formatIST(source.fetched_at)}</span>
             </article>)}
             <form className="form-stack research-note-form" onSubmit={saveNote}>
               <div className="section-heading"><h3>{editingNote ? 'Edit personal note' : 'Add personal note'}</h3></div>

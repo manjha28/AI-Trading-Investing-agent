@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '../api';
+import { formatIST } from '../lib/formatIST';
 
 type FeedStatus = {
   state: string;
@@ -90,7 +91,7 @@ const tabs: Array<{ id: Tab; label: string }> = [
 ];
 
 const dateLabel = (value: string | null | undefined) =>
-  value ? new Date(value).toLocaleString() : 'Not available';
+  value ? formatIST(value) : 'Not available';
 
 export function DeltaResearchPage() {
   const [status, setStatus] = useState<DeltaResearchStatus | null>(null);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
 import '../brokers.css';
+import { formatIST } from '../lib/formatIST';
 
 type Broker = {
   slug: string;
@@ -354,7 +355,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
           </div>
           {angelOneSource?.expires_at && (
             <p className="broker-sync-time">
-              Session expiry: {new Date(angelOneSource.expires_at).toLocaleString()}
+              Session expiry: {formatIST(angelOneSource.expires_at)}
             </p>
           )}
           {(
@@ -416,7 +417,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
               </div>
             </div>
             {broker.synthetic && <p className="broker-synthetic">SYNTHETIC DEMO DATA — NOT A REAL ACCOUNT</p>}
-            {broker.last_synced_at && <p className="broker-sync-time">Last sync: {new Date(broker.last_synced_at).toLocaleString()}</p>}
+            {broker.last_synced_at && <p className="broker-sync-time">Last sync: {formatIST(broker.last_synced_at)}</p>}
             {syncResults[broker.slug] && (
               <p className="broker-sync-time" role="status">
                 Account sync: {syncResults[broker.slug].sync_status}. {Object.entries(syncResults[broker.slug].endpoint_results)
@@ -425,10 +426,10 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
             )}
             {syncErrors[broker.slug] && <p className="broker-sync-time" role="alert">Account sync failed: {syncErrors[broker.slug]} Authentication status is shown separately above. Retry with Sync.</p>}
             <p className="broker-sync-time">Market data is separate from account sync; check the Market watch page for quote freshness and feed status.</p>
-            {broker.expires_at && <p className="broker-sync-time">Session expiry: {new Date(broker.expires_at).toLocaleString()}</p>}
+            {broker.expires_at && <p className="broker-sync-time">Session expiry: {formatIST(broker.expires_at)}</p>}
             {broker.last_synced_at && (
               <p className="broker-sync-time">
-                Account data source: {broker.synthetic ? 'synthetic demo' : 'live broker API'} · Last successful sync {new Date(broker.last_synced_at).toLocaleString()}
+                Account data source: {broker.synthetic ? 'synthetic demo' : 'live broker API'} · Last successful sync {formatIST(broker.last_synced_at)}
               </p>
             )}
             {broker.slug === 'dhan' && !broker.connected && broker.enabled && broker.integration_status === 'available' && (

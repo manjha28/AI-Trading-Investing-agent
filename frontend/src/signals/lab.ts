@@ -1,5 +1,6 @@
 import { apiRequest } from '../api';
 import type { Compare, Condition, Definition, IndicatorInfo, Meta, Operand } from './types';
+import { formatIST } from '../lib/formatIST';
 
 export const DISCLAIMER = 'Decision support, not investment advice. Historical statistics only; no orders are placed.';
 
@@ -89,7 +90,7 @@ export function fmtPct(v: number | string | null | undefined, digits = 2): strin
 export function fmtTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+  return Number.isNaN(d.getTime()) ? iso : formatIST(d);
 }
 
 export function metaIndicator(meta: Meta | null, id: string): IndicatorInfo | undefined {

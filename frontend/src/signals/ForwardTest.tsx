@@ -3,6 +3,7 @@ import { apiRequest } from '../api';
 import { fmtMoney, fmtPct, messageOf } from './lab';
 import { Field, Notice, Pill, Scroll } from './shared';
 import type { RegistryStrategy } from './StrategyRegistry';
+import { formatIST } from '../lib/formatIST';
 
 type Limits = { max_order_quantity: number; allowed_strategies: string[]; product: string; segment: string; entry_window_ist: string[]; max_daily_loss_inr: string; max_trades_per_day: number; max_open_positions: number; max_notional_inr: string };
 type LiveStatus = {
@@ -22,7 +23,7 @@ type Order = { id: string; created_at: string; symbol: string; side: string; qua
 type Preset = { key: string; label: string; available: number };
 
 const tone = (v: unknown) => { const n = Number(v); return !Number.isFinite(n) || n === 0 ? '' : n > 0 ? 'sl-pos' : 'sl-neg'; };
-const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }) : '—');
+const when = (iso: string | null | undefined) => formatIST(iso, '—');
 const POLL_MS = 30_000;
 
 function LivePanel({ status, reload }: { status: LiveStatus | null; reload: () => void }) {

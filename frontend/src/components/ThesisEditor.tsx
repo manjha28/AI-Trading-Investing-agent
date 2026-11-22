@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
+import { formatIST } from '../lib/formatIST';
 
 type TargetLevel = { price: string; trim_pct: string; note: string | null; distance_pct: string | null };
 type Condition = { type: 'price_below' | 'price_above' | 'loss_from_cost_pct'; value: string; note?: string | null };
@@ -233,7 +234,7 @@ export function ThesisEditor({ portfolioId, currency, symbol, instrumentId, onCl
             </div>
             {revisions.length > 0 && <details className="thesis-history">
               <summary>View revision history ({revisions.length})</summary>
-              <ol>{revisions.map((revision) => <li key={revision.revision_number}>#{revision.revision_number} · {new Date(revision.created_at).toLocaleString()} · conviction {revision.snapshot.conviction} · {revision.snapshot.status} · changed {revision.changed_fields.join(', ')}</li>)}</ol>
+              <ol>{revisions.map((revision) => <li key={revision.revision_number}>#{revision.revision_number} · {formatIST(revision.created_at)} · conviction {revision.snapshot.conviction} · {revision.snapshot.status} · changed {revision.changed_fields.join(', ')}</li>)}</ol>
             </details>}
           </form>
         )}

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '../api';
 import type { Instrument } from './researchTypes';
+import { formatIST } from '../lib/formatIST';
+import { tickPrice } from '../lib/formatPrice';
 
 export type Levels = {
   status: string; reason?: string; entry_status?: string; selected_setup?: string; breakout_trigger?: string | null; stop_reason?: string; stop_method?: string; explanation?: string; direction?: string; technical_score?: number; market_regime?: string; risk_reward?: Record<string, number>;
@@ -11,7 +13,7 @@ export type Levels = {
 export type Confidence = { score: number; band: string; kind?: 'factor_v2'; label?: string; grade?: string | null; measured_line?: string | null; factor_rank?: { rank: number; of: number; composite: number; percentile: number; as_of?: string; universe_size?: number; text: string } | null; setup?: { label: string; checks: { key: string; label: string; result: string; reason: string; veto: boolean }[]; failed_vetoes: string[] }; note: string; parts: { key: string; label: string; value: number; weight: number }[]; horizon?: string };
 type HorizonRec = { recommendation: string | null; score: number | null; confidence: number | null; buy_confidence?: Confidence | null; why_not: string[] };
 type Bucket = 'buy' | 'setup_waiting' | 'radar' | 'hold' | 'no_new_entry' | 'not_enough_data';
-type Row = {
+export type Row = {
   instrument_id: string; symbol: string; name: string; held: boolean; quantity: string | null; bucket: Bucket; action: string; researched_at: string | null; stale: boolean;
   horizons: Record<string, HorizonRec>; levels: Record<string, Levels | null>; last_close?: string | null; confidence?: Confidence | null; researching?: boolean; data_note?: string | null; radar_reasons?: string[] | null;
 };
@@ -28,8 +30,8 @@ const REC_TEXT: Record<string, string> = { BUY: 'Buy', HOLD: 'Hold', AVOID: 'Avo
 const POLL_FAST_MS = 15_000;
 const POLL_SLOW_MS = 300_000;
 
-export const inr = (v?: string | number | null) => (v == null ? '—' : `₹${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-export const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : 'not yet');
+export const inr = (v?: string | number | null) => (v == null ? '—' : `₹${tickPrice(v)}`);
+export const when = (iso: string | null) => formatIST(iso, 'not yet');
 const bandClass = (band?: string) => (band === 'High' ? 'good' : band === 'Medium' ? 'mid' : 'bad');
 
 export function RankBadge({ conf }: { conf: Confidence }) {      // Nexus v2: a neutral factor rank plus the setup grade; no confidence wording, no colour scale
@@ -69,6 +71,20 @@ export function Ladder({ levels }: { levels: Levels }) {
   </div>;
 }
 
+/** The number a Ready-to-buy card shows when it opens: the positional horizon if it is a BUY, otherwise the first BUY horizon. The list is sorted by exactly this number. */
+export function displayedHorizon(row: Row): string | undefined {
+  const buys = HORIZONS.filter((h) => row.horizons[h]?.recommendation === 'BUY');
+  return buys.includes('positional' as never) ? 'positional' : buys[0];
+}
+export function displayedScore(row: Row): number {
+  const h = displayedHorizon(row);
+  const c = (h ? row.horizons[h]?.buy_confidence : null) ?? row.confidence;
+  return c ? c.score : -1;
+}
+export function sortByDisplayedScore(rows: Row[]): Row[] {
+  return [...rows].sort((a, b) => displayedScore(b) - displayedScore(a) || (b.confidence?.score ?? 0) - (a.confidence?.score ?? 0) || a.symbol.localeCompare(b.symbol));
+}
+
 function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
   const buyHorizons = HORIZONS.filter((h) => row.horizons[h]?.recommendation === 'BUY');
   const [horizon, setHorizon] = useState<string>(buyHorizons.includes('positional' as never) ? 'positional' : buyHorizons[0]);
@@ -91,7 +107,7 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
     </div>
     {levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${levels.entry_status === 'ENTER_NOW' ? 'rt-chip-ok' : 'rt-chip-warn'}`}>{levels.entry_label ?? (levels.entry_status === 'ENTER_NOW' ? 'In buy band' : 'Wait for entry')}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}
     {levels?.status === 'available' ? <Ladder levels={levels} /> : <p className="rt-note">{levels?.reason ?? 'No levels for this horizon.'}</p>}
-    {levels?.status === 'available' && <p className="rt-note">Last close {inr(levels.reference_close)} · prior high {inr(levels.prior_high_reference)} · {HORIZON_SPAN[active]}</p>}
+    {levels?.status === 'available' && <p className="rt-note">Last close {inr(levels.reference_close)}{levels.prior_high_reference ? ` · prior high ${inr(levels.prior_high_reference)}` : ''} · {HORIZON_SPAN[active]}</p>}
     {levels?.status === 'available' && levels.event_gate && <p className="rt-note"><b>Event:</b> {levels.event_gate}</p>}
     {levels?.status === 'available' && levels.gates?.event_calendar_note?.startsWith('EVENT CALENDAR UNRELIABLE') && <p className="rt-note">{levels.gates.event_calendar_note}</p>}
     {levels?.status === 'available' && (levels.pivot_support || levels.pivot_resistance) && <p className="rt-note">Pivot support {levels.pivot_support ? `${inr(levels.pivot_support.price)} (${levels.pivot_support.name})` : 'none below price'} · pivot resistance {levels.pivot_resistance ? `${inr(levels.pivot_resistance.price)} (${levels.pivot_resistance.name})` : 'none above price'}</p>}
@@ -155,7 +171,7 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
     <div className="rt-tiles">{tiles.map((t) => <button key={t.key} type="button" className={`rt-tile rt-tile-${t.key}${tab === t.key ? ' active' : ''}`} onClick={() => setTab(tab === t.key ? 'all' : t.key)}><b>{report.counts[t.key] ?? 0}</b><span>{t.label}</span><small>{t.hint}</small></button>)}</div>
     <div className="rt-seg rt-seg-wide" role="tablist" aria-label="Filter">{TABS.filter((t) => t.key !== 'setup_waiting' || hasWaiting).map((t) => <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''} onClick={() => setTab(t.key)}>{t.label}</button>)}</div>
     {total === 0 && <div className="rt-card rt-empty-state"><h3>Nothing to report yet</h3><p>Add a stock to a watchlist or record a holding. It is researched automatically and appears here within a minute or two.</p></div>}
-    {buys.length > 0 && <><h3 className="rt-h">Ready to buy <small>highest confidence first</small></h3><div className="rt-buy-grid">{buys.map((r) => <BuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
+    {buys.length > 0 && <><h3 className="rt-h">Ready to buy <small>highest confidence first, by the number shown on each card</small></h3><div className="rt-buy-grid">{sortByDisplayedScore(buys).map((r) => <BuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
     {waiting.length > 0 && <><h3 className="rt-h">Set up, waiting <small>levels are set; price is not in the buy band yet</small></h3><div className="rt-buy-grid">{waiting.map((r) => <BuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
     {others.length > 0 && <div className="rt-card rt-compact"><div className="rt-table-wrap"><table className="rt-table"><thead><tr><th>Stock</th><th>Portfolio</th><th>What to do</th><th title="Swing / Positional / Long-term">S · P · L</th><th className="r">Last close</th><th>Researched</th></tr></thead>
       <tbody>{others.map((r) => <CompactRow key={r.instrument_id} row={r} onOpen={open} />)}</tbody></table></div>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { apiRequest } from '../api';
 import { CryptoCandleChart, EquityChart, MarkerLegend, exitMarker, type TradeMarker } from './CryptoCharts';
 import { DEFAULT_DAYS, RESOLUTIONS, messageOf, type Candles, type ContractInfo } from './cryptoApi';
+import { formatISTDate } from '../lib/formatIST';
 
 type ParamSpec = { key: string; label: string; kind: 'int' | 'decimal' | 'bool'; default: string; minimum: string | null; maximum: string | null };
 type StrategyDef = { id: string; name: string; description: string; params: ParamSpec[] };
@@ -242,7 +243,7 @@ export function CryptoLab({ symbol, setSymbol, resolution, setResolution }: Prop
             <dl className="crypto-settings">
               <div><dt>Strategy</dt><dd>{run.strategy_name}</dd></div>
               <div><dt>Contract</dt><dd>{run.symbol} · {run.resolution} candles</dd></div>
-              <div><dt>Window</dt><dd>{new Date(run.window_start).toLocaleDateString()} → {new Date(run.window_end).toLocaleDateString()} ({run.bars_used} bars)</dd></div>
+              <div><dt>Window</dt><dd>{formatISTDate(run.window_start)} → {formatISTDate(run.window_end)} ({run.bars_used} bars)</dd></div>
               {Object.entries(run.params ?? {}).map(([key, value]) => (
                 <div key={key}><dt>{paramLabel(key)}</dt><dd>{value}</dd></div>
               ))}
