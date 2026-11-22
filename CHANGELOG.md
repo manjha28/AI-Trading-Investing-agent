@@ -206,3 +206,4 @@
 - Nexus v2 Phase 4c/6: price cross-check (Dhan vs bhavcopy, migration 0065), funds excluded from stock research, narrow-window history retry, multibagger engine in shadow mode (migration 0066), flags off.
 - Nexus v2 Phase 6b: NSE shareholding (with pledge) and filed results with filing dates (flags off in code), emerging track, new listings, T from the quarters available, recall test, migration 0067.
 - 22 Nov end-to-end fixes: stored daily report, Dhan holdings count as held, one IST formatter, tick-rounded prices, mobile nav, broker page grouping, crypto backtest dedupe (migration 0068).
+- Phase 6c/7: not_tradable and not_a_fit labels, emerging without the chart requirement, thesis-break alerts, NSE annual balance sheet and cash flow, stock verdict (flag stock_verdict_enabled, shadow nightly, migration 0069), shadow-mode pages.

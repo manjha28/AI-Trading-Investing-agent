@@ -1,0 +1,130 @@
+{
+ "version": "stock-verdict-calibration/1",
+ "generated_at": "2026-11-22T16:49:19.470279+00:00",
+ "horizons": {
+  "swing": {
+   "validated": false,
+   "chart_only_replay_passed": false,
+   "buckets": [
+    {
+     "e_lo": 0.0,
+     "e_hi": 73.94,
+     "hit_rate": 0.1887,
+     "n": 53,
+     "net_r_ci95": [
+      -1.646,
+      0.292
+     ]
+    },
+    {
+     "e_lo": 73.94,
+     "e_hi": 85.52,
+     "hit_rate": 0.2333,
+     "n": 60,
+     "net_r_ci95": [
+      -0.599,
+      0.353
+     ]
+    },
+    {
+     "e_lo": 85.52,
+     "e_hi": 91.8,
+     "hit_rate": 0.1507,
+     "n": 73,
+     "net_r_ci95": [
+      -0.623,
+      0.225
+     ]
+    },
+    {
+     "e_lo": 91.8,
+     "e_hi": 93.0,
+     "hit_rate": 0.1707,
+     "n": 41,
+     "net_r_ci95": [
+      -0.461,
+      0.571
+     ]
+    },
+    {
+     "e_lo": 93.0,
+     "e_hi": 101.0,
+     "hit_rate": 0.2444,
+     "n": 45,
+     "net_r_ci95": [
+      -0.525,
+      0.341
+     ]
+    }
+   ],
+   "train_years": "<= 2022",
+   "holdout_years": "> 2022",
+   "trades": 272
+  },
+  "positional": {
+   "validated": false,
+   "chart_only_replay_passed": false,
+   "buckets": [
+    {
+     "e_lo": 0.0,
+     "e_hi": 61.900000000000006,
+     "hit_rate": 0.3289,
+     "n": 149,
+     "net_r_ci95": [
+      -0.173,
+      0.356
+     ]
+    },
+    {
+     "e_lo": 61.900000000000006,
+     "e_hi": 73.06000000000002,
+     "hit_rate": 0.339,
+     "n": 118,
+     "net_r_ci95": [
+      -0.224,
+      0.318
+     ]
+    },
+    {
+     "e_lo": 73.06000000000002,
+     "e_hi": 84.14,
+     "hit_rate": 0.3179,
+     "n": 151,
+     "net_r_ci95": [
+      -0.24,
+      0.253
+     ]
+    },
+    {
+     "e_lo": 84.14,
+     "e_hi": 88.12,
+     "hit_rate": 0.3077,
+     "n": 182,
+     "net_r_ci95": [
+      -0.135,
+      0.36
+     ]
+    },
+    {
+     "e_lo": 88.12,
+     "e_hi": 101.0,
+     "hit_rate": 0.3939,
+     "n": 132,
+     "net_r_ci95": [
+      0.033,
+      0.622
+     ]
+    }
+   ],
+   "train_years": "<= 2022",
+   "holdout_years": "> 2022",
+   "trades": 732
+  }
+ },
+ "window": {
+  "first": "2020-03-23",
+  "last": "2026-07-09",
+  "sampling": "every 21st session",
+  "universe": "point-in-time top 300 by 20-session median traded value, delisted names included"
+ }
+}
