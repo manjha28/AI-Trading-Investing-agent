@@ -382,3 +382,7 @@
 .rt-chip-good { border-color: var(--rt-good); color: var(--rt-good); } .rt-chip-bad { border-color: var(--rt-bad); color: var(--rt-bad); } .rt-chip-mid { border-color: var(--rt-mid); color: var(--rt-mid); } .rt-chip-mute { color: var(--rt-muted); }
 .rt-good { color: var(--rt-good); } .rt-bad { color: var(--rt-bad); } .rt-mid { color: var(--rt-mid); }
 .rt-tile-radar b { color: #b58cff; }
+/* Nexus v2: neutral factor-rank badge (no good/mid/bad colour scale, no confidence wording) */
+.rt-rankbadge { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; padding: 6px 10px; border: 1px solid var(--rt-border, #d0d5dd); border-radius: 8px; min-width: 150px; }
+.rt-rankbadge b { font-size: 1rem; } .rt-rankbadge small { opacity: .75; }
+.rt-checks { list-style: none; padding: 0; margin: 6px 0; font-size: .85rem; } .rt-checks li { margin: 2px 0; } .rt-checks small { opacity: .7; }

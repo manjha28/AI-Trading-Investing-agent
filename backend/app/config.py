@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     market_data_scheduler_enabled: bool = False
     job_worker_enabled: bool = True                                # durable job queue worker + scan scheduler (per-owner scan switch is off by default)
     scheduler_leader_election_enabled: bool = True                 # only one replica (Postgres advisory lock) runs the in-process periodic loops
+    nse_filings_enabled: bool = False                              # Phase 6: governance/pledge/ASM-GSM adapter for NSE public filings. DISABLED; NSE's terms of use have NOT been read, so nothing may call NSE through it
+    levels_v2_enabled: bool = False                               # Nexus v2 phase 1: level fixes (services/levels_v2.py). Off = v1 byte-identical
+    confidence_v2_enabled: bool = False                           # Nexus v2 phase 2: factor rank + setup grade replace the confidence badge
+    pipeline_v2_enabled: bool = False                             # Nexus v2 phases 3-4: Gate -> Quality (long-term) -> Timing, shadow mode
+    ml_overlay_enabled: bool = False                              # Nexus v2 phase 5: in-house ML tie-break overlay
+    level_guardrails_enabled: bool = False                        # B04 Part A: deterministic level checks (targets above price, stale levels, stop width, overhead resistance); off until the owner reviews the diff
     valuation_refresh_enabled: bool = True                        # keeps valuation inputs fresh (Dhan peers + Yahoo) without manual scripts
     valuation_refresh_max_age_hours: float = 24
     valuation_refresh_max_per_cycle: int = 300

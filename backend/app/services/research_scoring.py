@@ -13,6 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.services import valuation_scoring
+from app.config import settings
 from app.config import (
     NSE_CALENDAR_YEARS,
     NSE_EQUITY_HOLIDAYS,
@@ -545,7 +546,7 @@ def build_assessment(sections: dict[str, Any], *, instrument_id: str, now: datet
         "sector": sector, "financial_sector": is_financial_sector(sector, industry),
         "components": components,
         "horizons": assess_horizons(components),
-        "not_implemented_gates": NOT_IMPLEMENTED_GATES,
+        "not_implemented_gates": NOT_IMPLEMENTED_GATES if not settings.pipeline_v2_enabled else [],      # Nexus v2 phase 3 implements the liquidity and corporate-event gates (services/gates_v2.py)
         "default_horizon": "positional",
     }
 

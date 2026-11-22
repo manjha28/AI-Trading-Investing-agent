@@ -34,7 +34,7 @@ def confidence_by_horizon(sections: dict) -> dict:
     level_sets = (sections.get("levels") or {}).get("horizons") or {}
     out = {}
     for h in buys:
-        c = research_confidence.buy_confidence(horizons[h], level_sets.get(h), len(buys), threshold, PARAMS[h]["max_risk_atr"])
+        c = research_confidence.buy_confidence(horizons[h], level_sets.get(h), len(buys), threshold, PARAMS[h]["max_risk_atr"], sections.get("universe_rank"), horizon_key=h, factor=sections.get("factor_rank"))
         if c:
             out[h] = c
     return out
@@ -49,7 +49,7 @@ def headline_confidence(sections: dict) -> dict | None:
     level_sets = (sections.get("levels") or {}).get("horizons") or {}
     best = None
     for h in buys:
-        c = research_confidence.buy_confidence(horizons[h], level_sets.get(h), len(buys), threshold, PARAMS[h]["max_risk_atr"])
+        c = research_confidence.buy_confidence(horizons[h], level_sets.get(h), len(buys), threshold, PARAMS[h]["max_risk_atr"], sections.get("universe_rank"), horizon_key=h, factor=sections.get("factor_rank"))
         if c and (best is None or c["score"] > best["score"]):
             best = {**c, "horizon": h}
     return best

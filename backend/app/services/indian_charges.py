@@ -1,4 +1,4 @@
-"""THE authoritative Indian trading-charge calculator (NSE equity cash intraday, NSE index futures, NSE stock futures).
+"""THE authoritative Indian trading-charge calculator (NSE equity cash intraday, NSE equity cash DELIVERY, NSE index futures, NSE stock futures).
 
 Every consumer (VAR, scalp_hold, backtests, replay, reports, API/UI) must call ``calculate_trade_charges``; there is no other
 home for these rates. Rules:
@@ -95,6 +95,24 @@ _SCHEDULES: dict[str, dict] = {
         "gst": _GST,
         "dp": [_r(*_START, "0", VERIFIED_PRIMARY, SOURCES["dhan"], "DP charge applies to delivery sells only; none for intraday")],
     },
+    "equity_delivery": {                      # CNC delivery: zero brokerage, STT on BOTH sides, DP charge on each sell (Dhan pricing page, read 2026-11-22)
+        "instrument_types": ("cash",),
+        "transaction_types": ("delivery",),
+        "brokerage": [_r(*_START, "0", VERIFIED_PRIMARY, SOURCES["dhan"], "Equity delivery: zero brokerage")],
+        "brokerage_pct_cap": None,
+        "stt_sell": [_r(*_START, "0.1", VERIFIED_PRIMARY, SOURCES["dhan"], "delivery STT 0.1% on sell")],
+        "stt_buy": [_r(*_START, "0.1", VERIFIED_PRIMARY, SOURCES["dhan"], "delivery STT 0.1% on buy")],
+        "exchange": [
+            _r(*_START, "0.00297", VERIFIED_SECONDARY, "https://www.business-standard.com/amp/markets/stock-market-news/nse-and-bse-revise-their-transaction-fees-to-comply-with-sebi-circular-124092701207_1.html", "Rs 2.97/lakh"),
+            _r(2026, 3, 1, "0.0030699", VERIFIED_PRIMARY, SOURCES["dhan"], "NSE 0.0030699% (Dhan pricing page, equity delivery column)"),
+        ],
+        "ipft": _IPFT, "sebi": _SEBI,
+        "stamp_buy": [_r(*_START, "0.015", VERIFIED_PRIMARY, SOURCES["dhan"], "delivery stamp duty 0.015% on buy")],
+        "gst": _GST,
+        "dp": [_r(*_START, "12.5", VERIFIED_PRIMARY, SOURCES["dhan"], "Rupees per sell order (per ISIN): Dhan 'DP Transaction Charges Rs 12.50 / instruction / ISIN + GST'. The page line is not explicitly limited to sells; "
+                                                                          "one sell = one instruction is assumed. GST at 18% is added.")],
+        "dp_flat_rupees_on_sell": True,
+    },
     "futures": {
         "instrument_types": ("index_future", "stock_future"),
         "transaction_types": ("intraday", "carry"),
@@ -150,6 +168,7 @@ def resolve_schedule(exchange: str, segment: str, instrument_type: str, broker_p
         "exchange": _pick(sched["exchange"], trading_date, "exchange transaction charge"), "ipft": _pick(sched["ipft"], trading_date, "IPFT"),
         "sebi": _pick(sched["sebi"], trading_date, "SEBI turnover fee"), "stamp": _pick(sched["stamp_buy"], trading_date, "stamp duty"),
         "gst": _pick(sched["gst"], trading_date, "GST"), "dp": _pick(sched["dp"], trading_date, "DP charge"),
+        **({"stt_buy": _pick(sched["stt_buy"], trading_date, "STT (buy)")} if "stt_buy" in sched else {}),
     }
 
 
@@ -230,11 +249,11 @@ def calculate_trade_charges(*, exchange: str, segment: str, instrument_type: str
     exch = turnover * pct("exchange") / HUNDRED
     ipft = turnover * pct("ipft") / HUNDRED
     sebi = turnover * pct("sebi") / HUNDRED
-    stt = turnover * pct("stt") / HUNDRED if side == "sell" else D(0)
+    stt = turnover * pct("stt") / HUNDRED if side == "sell" else (turnover * pct("stt_buy") / HUNDRED if "stt_buy" in rows else D(0))     # delivery: STT on both sides
     stamp = turnover * pct("stamp") / HUNDRED if side == "buy" else D(0)
-    gst_base = brokerage + exch + ipft + sebi          # NOT STT, NOT stamp duty
+    dp = pct("dp") if (sched.get("dp_flat_rupees_on_sell") and side == "sell") else D(0) * pct("dp")                                      # delivery: flat rupees per sell order
+    gst_base = brokerage + exch + ipft + sebi + (dp if sched.get("dp_flat_rupees_on_sell") else D(0))          # NOT STT, NOT stamp duty; the DP charge carries GST
     gst = gst_base * pct("gst") / HUNDRED
-    dp = D(0) * pct("dp")
     raw = {"brokerage": brokerage, "stt": stt, "exchange": exch, "ipft": ipft, "sebi": sebi, "stamp": stamp, "gst": gst, "dp": dp}
     rounded = {k: (_round_rupee(v) if k in ("stt", "stamp") else _round_paise(v)) for k, v in raw.items()}
     rates = {k: {"rate": str(rows[k].value), "effective_from": rows[k].effective_from.isoformat(), "status": rows[k].status, "source": rows[k].source, "note": rows[k].note}
@@ -267,3 +286,13 @@ def schedule_report(segment: str, instrument_type: str, on: date, broker_profile
             "last_verified": LAST_VERIFIED.isoformat(), "rounding_method": ROUNDING_METHOD, "brokerage_pct_cap": str(cap) if cap is not None else None,
             "components": {k: {"rate": str(r.value), "unit": "rupees per executed order" if k == "brokerage" else "percent of turnover", "effective_from": r.effective_from.isoformat(),
                                "status": r.status, "source": r.source, "note": r.note} for k, r in rows.items()}}
+
+
+def delivery_round_trip(*, buy_price: Decimal, sell_price: Decimal, quantity: Decimal, buy_date: date, sell_date: date, order_id: str = "round-trip") -> dict:
+    """Total charges (rupees) and the percent of the BUY turnover for one delivery round trip (one buy order, one sell order), from the verified delivery schedule."""
+    buy = calculate_trade_charges(exchange="NSE", segment="equity_delivery", instrument_type="cash", broker_profile="dhan", trading_date=buy_date, order_id=f"{order_id}-buy", side="buy",
+                                  execution_price=D(buy_price), executed_quantity=D(quantity), transaction_type="delivery")
+    sell = calculate_trade_charges(exchange="NSE", segment="equity_delivery", instrument_type="cash", broker_profile="dhan", trading_date=sell_date, order_id=f"{order_id}-sell", side="sell",
+                                   execution_price=D(sell_price), executed_quantity=D(quantity), transaction_type="delivery")
+    agg = sum_charges([buy, sell])
+    return {"total": agg["total"], "pct_of_buy_turnover": agg["total"] / buy.turnover * HUNDRED, "buy": buy.total, "sell": sell.total, "unverified_components": agg["unverified_components"]}

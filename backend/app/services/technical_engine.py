@@ -16,12 +16,19 @@ from datetime import date
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Any, Sequence
 
+import math
+
 import numpy as np
 import pandas as pd
 
+VALIDATION_NOTE = ("Provisional. Out-of-sample replays on stored Dhan candles (backend/app/services/technical_validation.py) found no reliable link between the technical score and forward returns, "
+                   "and at-market entries in the band did not beat chance; limit orders resting inside the band did better than entering immediately for swing trades but not for positional ones. "
+                   "Use the levels as a plan (where to act, where you are wrong), not as a forecast.")
 TICK = Decimal("0.05")
+LIMIT_ATR, LIMIT_STOP_ATR = 1.0, 1.5       # evidence: diagnostics/signal_research/REPORT.md
 HORIZONS = ("swing", "positional", "long_term")
 PRIMARY = {"swing": "D", "positional": "W", "long_term": "M"}
+FORWARD_BARS = {"swing": 10, "positional": 30, "long_term": 90}     # daily bars a horizon typically plays out over (used to scale how far a pullback level may lie)
 CONFIRM = {"swing": "W", "positional": "D", "long_term": "W"}
 LABELS = {"D": "daily", "W": "weekly", "M": "monthly"}
 MIN_BARS = {"D": 120, "W": 40, "M": 24}      # completed candles needed on the primary timeframe
@@ -40,10 +47,25 @@ class EngineConfig:
     min_rr_first_target: dict[str, float] = field(default_factory=lambda: {"swing": 1.3, "positional": 1.5, "long_term": 1.5})
     entry_band_atr: float = 0.35                 # half-width of the buy band around the key level, in DAILY ATRs (the band follows the stock's own volatility)
     breakout_chase_daily_atr: float = 1.0        # a breakout closed further than this above its trigger waits for a retest
+    pullback_reach_cap_pct: float = 30.0         # sanity guard-rail, not a tuned parameter: a level more than this far below price is never offered as an entry range
+    pullback_reach_sigma: float = 1.0            # a pullback level must lie within this many 'typical moves' of price: sigma x daily ATR x sqrt(bars in the horizon's forward window)
     pullback_reach_atr: float = 3.0              # a support further below price than this is not a pullback candidate
     min_rvol_breakout: float = 1.2
     adx_trending: float = 22.0
     direction_bands: tuple[int, int, int, int] = (80, 65, 45, 30)
+    v2: Any = None                                             # optional levels_v2.LevelsV2Config override (sensitivity runs); None = defaults
+    levels_v2: bool = field(default_factory=lambda: _flag("levels_v2_enabled"))     # Nexus v2 level rules (services/levels_v2.py), settings.levels_v2_enabled, off by default
+    guardrails: bool = field(default_factory=lambda: _guardrails_default())    # B04 Part A deterministic level checks; settings.level_guardrails_enabled, off by default
+
+
+def _flag(name: str) -> bool:
+    from app.config import settings
+    return bool(getattr(settings, name, False))
+
+
+def _guardrails_default() -> bool:
+    from app.config import settings
+    return bool(getattr(settings, "level_guardrails_enabled", False))
 
 
 # ───────────────────────────── helpers ─────────────────────────────
@@ -178,8 +200,11 @@ def build_zones(df: pd.DataFrame, ind: dict[str, Any], daily: pd.DataFrame, week
             cand.append((v, "pivot", f"{label} pivot {lvl}"))
         cand.append((float(prev["high"]), "period", f"previous {label} high"))
         cand.append((float(prev["low"]), "period", f"previous {label} low"))
-    cand.append((ind["high52"], "period", "52-week high"))
-    cand.append((ind["low52"], "period", "52-week low"))
+    hi52, lo52 = ind["high52"], ind["low52"]
+    if (cfg.guardrails or cfg.levels_v2) and len(daily) >= 30:          # B04: ind["high52"] is the last 252 bars of the PRIMARY frame (5 years on weekly, 21 on monthly); a 52-week level must come from 252 DAILY bars
+        hi52, lo52 = float(daily["high"].iloc[-252:].max()), float(daily["low"].iloc[-252:].min())
+    cand.append((hi52, "period", "52-week high"))
+    cand.append((lo52, "period", "52-week low"))
     cand = sorted((c for c in cand if c[0] and not np.isnan(c[0])), key=lambda t: t[0])
     zones: list[list[tuple[float, str, str]]] = []
     for item in cand:
@@ -285,6 +310,7 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
     c, a = ind["close"], ind["atr14"]
     ae = atr_exec or a                                    # daily ATR: the buy band is sized on the chart where the order is placed
     half = cfg.entry_band_atr * ae
+    reach = min(cfg.pullback_reach_atr * a, cfg.pullback_reach_sigma * ae * math.sqrt(FORWARD_BARS[horizon]), cfg.pullback_reach_cap_pct / 100 * c)   # adaptive to the stock's own volatility and the horizon
     bullish_ok = regime != "DOWNTREND"
     confirm_momentum = (ind["macd_hist"] or 0) > 0 and (ind["rsi14"] or 0) > 48
     supports = sorted((z for z in zones if z["kind"] == "support"), key=lambda z: -z["high"])
@@ -292,9 +318,9 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
     out: dict[str, dict[str, Any]] = {}
 
     # A: pullback to the nearest MEANINGFUL support (multi-factor zone), not merely any touched line
-    sup = next((z for z in supports if (z["strength"] >= 2 or "ema" in z["families"]) and c - z["high"] <= cfg.pullback_reach_atr * a), None)
+    sup = next((z for z in supports if (z["strength"] >= 2 or "ema" in z["families"]) and c - z.get("core", z["mid"]) <= reach), None)
     if sup is None or not bullish_ok:
-        out["PULLBACK_ENTRY"] = {"status": "INVALID", "reason": "Downtrend regime; dip-buying is avoided." if not bullish_ok else f"No multi-factor support zone within {cfg.pullback_reach_atr:g} ATR below price."}
+        out["PULLBACK_ENTRY"] = {"status": "INVALID", "reason": "Downtrend regime; dip-buying is avoided." if not bullish_ok else "No multi-factor support zone within a typical move below price."}
     else:
         core = sup.get("core", sup["mid"])                                  # the band is centred on the real support inside the cluster, not on the whole cluster
         lo, hi = core - half, core + half
@@ -325,10 +351,15 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
         else:
             status = "WAIT"
             reason = (f"On the verge of a breakout: {(trigger - c) / ae:.1f} daily ATR below the trigger. " if verge else "") + f"Needs a close above {_s(trigger)} (resistance {', '.join(target_zone['labels'][:2])}) with volume and momentum."
+        low_evidence = None
+        if status == "ENTER_NOW":      # replays: stop-buy breakout entries were the worst style (-0.48R, profit factor 0.37, vs control -0.28R); do not call them an entry
+            status = "WAIT"
+            low_evidence = "Breakout entries tested worst in replays on stored Dhan candles; waiting for a pullback limit entry is preferred."
+            reason += " " + low_evidence
         lo_b = max(target_zone.get("core", target_zone["mid"]), trigger - 1.0 * ae)
         hi_b = max(trigger + half, c if status == "ENTER_NOW" else 0.0)
         out["BREAKOUT_ENTRY"] = {"status": status, "trigger": trigger, "zone": [lo_b, hi_b], "reference": trigger, "extension_atr": round(ext, 2), "extension": _extension_label(ext, cfg),
-                                 "resistance_zone": target_zone, "reason": reason}
+                                 "resistance_zone": target_zone, "reason": reason, "low_evidence": low_evidence}
 
     # C: momentum continuation: strong aligned trend, not stretched from its reference EMA
     e20 = ind["ema20"]
@@ -342,11 +373,12 @@ def entry_scenarios(horizon: str, ind: dict[str, Any], zones: list[dict[str, Any
     return out
 
 
-def watch_level(ind: dict[str, Any], zones: list[dict[str, Any]], cfg: EngineConfig, ae: float) -> tuple[str, dict[str, Any]] | None:
+def watch_level(ind: dict[str, Any], zones: list[dict[str, Any]], cfg: EngineConfig, ae: float, horizon: str = "swing") -> tuple[str, dict[str, Any]] | None:
     """A level to WATCH when no confirmed setup exists (so a BUY recommendation always shows a range): a band around the nearest meaningful
     support below price, or, with no support below, around the nearest resistance above as a breakout trigger. Never an 'enter now'."""
     c, a, half = ind["close"], ind["atr14"], cfg.entry_band_atr * ae
-    supports = sorted((z for z in zones if z["kind"] == "support"), key=lambda z: -z["high"])
+    reach = min(cfg.pullback_reach_sigma * ae * math.sqrt(FORWARD_BARS[horizon]), cfg.pullback_reach_cap_pct / 100 * c)
+    supports = sorted((z for z in zones if z["kind"] == "support" and c - z.get("core", z["mid"]) <= reach), key=lambda z: -z["high"])   # a level far beyond a typical move is not a practical range
     if supports:
         pick = next((z for z in supports[:4] if z["strength"] >= 2), supports[0])
         core = pick.get("core", pick["mid"])
@@ -399,6 +431,10 @@ def stop_and_targets(horizon: str, setup: str, scen: dict[str, Any], status: str
     else:
         return None
     risk = entry - stop
+    if scen["zone"][1] <= stop:
+        return None                                     # the whole band would sit below its own stop: no valid long entry
+    if scen["zone"][0] <= stop:                         # never offer to buy below the stop: lift the band's floor just above it
+        scen["zone"][0] = stop + 0.2 * (scen["zone"][1] - stop)
     # targets: nearest meaningful resistance zones first, then risk-reward multiples (always labelled as such)
     cands: list[tuple[float, str]] = []
     for z in sorted((z for z in zones if z["kind"] == "resistance" and z["low"] > entry + 0.3 * risk), key=lambda z: z["low"]):
@@ -436,8 +472,17 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
     ind = indicators(df)
     if not ind["atr14"]:
         return {"status": "unavailable", "reason": "ATR could not be computed.", "primary_timeframe": LABELS[tf]}
+    # Indicators and zones come from the horizon's own candles, but "price now" is the latest COMPLETED daily close: a weekly or monthly candle's
+    # close can be days or weeks old, and entry logic (inside the band? extended? broke out?) must compare against where the stock trades today.
+    ind["close"] = float(daily["close"].iloc[-1])
     k = 3 if tf == "D" else 2
-    zones = build_zones(df, ind, daily, weekly if len(weekly) > 1 else None, monthly if len(monthly) > 1 else None, k, cfg)
+    if cfg.levels_v2:
+        from app.services import levels_v2
+        v2cfg = cfg.v2 or levels_v2.LevelsV2Config()
+        zdf = df.iloc[-v2cfg.recency_bars[tf]:]            # swing points limited to about two years per frame (item 8)
+    else:
+        zdf = df
+    zones = build_zones(zdf, ind, daily, weekly if len(weekly) > 1 else None, monthly if len(monthly) > 1 else None, k, cfg)
     windows = {"D": (20, 50), "W": (13, 26), "M": (6, 12)}[tf]
     bench = _bench_on(df.index, bench_daily, tf, as_of)
     comps = components(df, ind)
@@ -451,30 +496,79 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
     direction = direction_of(score, cfg.direction_bands)
     regime = regime_of(ind, comps)
     atr_d = float(atr(daily, 14).iloc[-1]) if len(daily) > 20 else None
+    guard_prep: dict[str, Any] = {}
+    if cfg.guardrails or cfg.levels_v2:
+        from app.services import level_guardrails
+        zones, guard_prep = level_guardrails.prepare(zones, daily, atr_d)
     scen = entry_scenarios(horizon, ind, zones, regime, cfg, atr_d)
-    setup, status = choose_setup(scen, regime) if direction in ("STRONG_BULLISH", "BULLISH", "NEUTRAL") else ("NO_VALID_SETUP", "NO_VALID_SETUP")
+    v2info: dict[str, Any] = {"rules": [], "blocked_reason": None}
+    veto = None
+    if cfg.levels_v2:
+        veto = levels_v2.bearish_veto(direction, regime)
+        rb = levels_v2.range_bound_zone(zones, ind["close"])
+        if rb is not None and scen["MOMENTUM_ENTRY"]["status"] != "INVALID":
+            scen["MOMENTUM_ENTRY"] = {"status": "INVALID", "reason": f"Range-bound: the resistance zone {_s(rb['low'])}-{_s(rb['high'])} rejected price {rb['rejections']} times with no close above it."}
+            v2info["rules"].append("repeated_rejection")
+    setup, status = choose_setup(scen, regime) if direction in ("STRONG_BULLISH", "BULLISH", "NEUTRAL") and not veto else ("NO_VALID_SETUP", "NO_VALID_SETUP")
+    if veto:
+        v2info["blocked_reason"] = veto
+        v2info["rules"].append("bearish_veto")
     if direction == "NEUTRAL" and status == "ENTER_NOW":
         status = "WAIT_FOR_ENTRY"          # a neutral reading never says "enter now"
     lows = [v for _, v in swing_points(df, k)[1]]
-    plan = stop_and_targets(horizon, setup, scen.get(setup, {}), status, ind, zones, cfg, lows) if setup != "NO_VALID_SETUP" else None
+    if cfg.levels_v2:
+        h52 = levels_v2.high52(daily, v2cfg.high52_bars)
+        v2_extra = ([(h52, "52-week high")] if h52 - ind["close"] > v2cfg.high52_blue_sky_atr * float(atr_d or ind["atr14"]) else []) + (
+            levels_v2.qualify_swing_highs(swing_points(zdf, v2cfg.major_swing_k[tf])[0], zdf, ind["atr14"], v2cfg) if v2cfg.use_major_swing_barriers else [])
+        weekly_atr = float(atr(weekly, 14).iloc[-1]) if len(weekly) > 20 else None
+        plan = None
+        if setup != "NO_VALID_SETUP":
+            plan, why_not = levels_v2.plan(horizon, setup, status, scen[setup], ind, atr_d, zones, lows, cfg.structural_buffer_atr[horizon], v2cfg, v2_extra, weekly_atr)
+            if plan is None:
+                v2info["blocked_reason"] = why_not
+                v2info["rules"].append("no_valid_plan")
+    else:
+        plan = stop_and_targets(horizon, setup, scen.get(setup, {}), status, ind, zones, cfg, lows) if setup != "NO_VALID_SETUP" else None
     if plan is not None and status == "ENTER_NOW" and not plan["enough_upside"]:
         status = "WAIT_FOR_ENTRY"
     if setup != "NO_VALID_SETUP" and plan is None:
         setup, status = "NO_VALID_SETUP", "NO_VALID_SETUP"
+    if cfg.levels_v2 and plan is not None:
+        sel0 = scen[setup]
+        lo_show = max(sel0["zone"][0], float(_s(plan["stop"], ROUND_DOWN)) + float(TICK))
+        recent_lows = [v for i, v in swing_points(df, k)[1] if i >= len(df) - v2cfg.broken_support_lookback[tf]]
+        g = levels_v2.gates(horizon, setup, status, plan, sel0, ind, zones, recent_lows, (lo_show, sel0["zone"][1]), v2cfg, v2_extra)
+        v2info["rules"] += g.get("rules", [])
+        if g["status"] == "NO_VALID_SETUP":
+            plan, setup, status = None, "NO_VALID_SETUP", "NO_VALID_SETUP"
+            v2info["blocked_reason"] = g["blocked_reason"]
+        else:
+            status = g["status"]
+            v2info.update({k2: g[k2] for k2 in ("band_position", "entry_kind", "entry_label", "ready_to_buy", "headroom_note", "breakout_trigger") if k2 in g})
     watch_only = False
-    if setup == "NO_VALID_SETUP":              # still give a range to watch, clearly marked as not a confirmed setup
-        fallback = watch_level(ind, zones, cfg, atr_d or ind["atr14"])
-        if fallback is not None:
+    if setup == "NO_VALID_SETUP":
+        fallback = watch_level(ind, zones, cfg, atr_d or ind["atr14"], horizon)
+        if cfg.levels_v2:             # v2: never a ladder; the watch band is for the Radar only
+            if fallback is not None:
+                v2info["watch_band"] = {"low": _s(fallback[1]["zone"][0], ROUND_DOWN), "high": _s(fallback[1]["zone"][1]), "kind": fallback[0], "label": "Watch level, not a setup"}
+        elif fallback is not None:              # v1: still give a range to watch, clearly marked as not a confirmed setup
             fb_setup, fb_scen = fallback
             fb_plan = stop_and_targets(horizon, fb_setup, fb_scen, "WAIT_FOR_ENTRY", ind, zones, cfg, lows)
             if fb_plan is not None:
                 setup, status, plan, watch_only = fb_setup, "WAIT_FOR_ENTRY", fb_plan, True
                 scen[fb_setup] = fb_scen
+    guard: dict[str, Any] | None = None
+    if cfg.guardrails and not cfg.levels_v2 and plan is not None:
+        plan, status, guard = level_guardrails.apply(horizon, daily, ind, atr_d, scen[setup]["zone"], setup, plan, status, zones, guard_prep, cfg.min_rr_first_target[horizon])
     a = ind["atr14"]
     reasons = ([limited] if limited else []) + [v["why"] for n, v in sorted(scored.items(), key=lambda kv: -cfg.weights[kv[0]])]
     risks = ([limited] if limited else []) + [v["why"] for v in scored.values() if v["score"] < 40] + ([f"{n.replace('_', ' ').title()} is not scored: {v['why']}" for n, v in comps.items() if v["score"] is None])
     if plan is not None and not plan["enough_upside"]:
         risks.append(f"First target offers {plan['rr_first']:.1f}R, below the {cfg.min_rr_first_target[horizon]:g}R this horizon requires.")
+    if guard:
+        risks += [f["detail"] for f in guard["flags"]]
+    if cfg.levels_v2:
+        risks += [v2info[k2] for k2 in ("blocked_reason", "headroom_note") if v2info.get(k2)]
     if watch_only:
         risks.append("This is a level to watch, not a confirmed setup: wait for price to reach the band and for momentum to confirm.")
     if ind["rvol"] is not None and ind["rvol"] < 0.8:
@@ -485,15 +579,19 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
     sel = scen.get(setup, {})
     pv = {name: {k2: _s(v) for k2, v in classic_pivots(float(fr.iloc[-1]["high"]), float(fr.iloc[-1]["low"]), float(fr.iloc[-1]["close"])).items()}
           for name, fr in (("daily", daily), ("weekly", weekly), ("monthly", monthly)) if len(fr) > 1}
-    return {
+    out = {
         "status": "available", "limited_history": limited, "watch_only": watch_only, "primary_timeframe": LABELS[tf], "confirmation_timeframe": LABELS[CONFIRM[horizon]], "last_completed_candle": df.index[-1].date().isoformat(),
         "direction": direction, "technical_score": round(score, 1), "score_coverage": round(covered, 2), "market_regime": regime, "components": comps,
         "selected_setup": setup, "entry_status": status, "current_price": _s(ind["close"]),
         "scenarios": {n: _scenario_out(sc) for n, sc in scen.items()},
-        "entry": None if plan is None else {"low": _s(sel["zone"][0], ROUND_DOWN), "high": _s(sel["zone"][1]), "planned_price": _s(plan["entry"]), "breakout_trigger": _s(sel["trigger"]) if "trigger" in sel else None,
+        "entry": None if plan is None else {"low": _s(max(sel["zone"][0], float(_s(plan["stop"], ROUND_DOWN)) + float(TICK)), ROUND_DOWN), "high": _s(sel["zone"][1]), "planned_price": _s(plan["entry"]), "breakout_trigger": _s(sel["trigger"]) if "trigger" in sel else None,
                                            "extension_atr": sel.get("extension_atr"), "extension": sel.get("extension")},
         "stop_loss": None if plan is None else {"price": _s(plan["stop"], ROUND_DOWN), "percent": round(plan["risk"] / plan["entry"] * 100, 2), "atr_units": round(plan["risk"] / a, 2), "method": plan["method"],
                                                "reason": plan["why"], "structural_invalidation": _s(plan["structure"], ROUND_DOWN)},
+        "limit_entry": None if (atr_d is None or regime == "DOWNTREND" or horizon == "long_term") else {
+            "price": _s(ind["close"] - LIMIT_ATR * atr_d, ROUND_DOWN), "stop": _s(ind["close"] - (LIMIT_ATR + LIMIT_STOP_ATR) * atr_d, ROUND_DOWN), "fill_rate_in_replays": "about 40% within 5 sessions",
+            "derivation": f"Last completed daily close {_s(ind['close'])} minus {LIMIT_ATR:g} x daily ATR14 ({atr_d:.2f}); stop {LIMIT_STOP_ATR:g} ATR below that. Orders that do not fill within about 5 sessions should be cancelled, not chased.",
+            "evidence": "Out-of-sample replays: a limit about 1 ATR below the close earned +0.03R vs -0.14R for entering at the next open (swing)."},
         "targets": [] if plan is None else plan["targets"],
         "risk_reward": None if plan is None else {t["label"]: t["risk_reward"] for t in plan["targets"]},
         "enough_upside": None if plan is None else plan["enough_upside"],
@@ -503,6 +601,20 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
         "reasons": reasons, "risks": risks,
         "explanation": explain(horizon, direction, regime, setup, status, ind, plan, scen.get(setup, {}), comps, rs_note),
     }
+    if cfg.guardrails and not cfg.levels_v2 and plan is not None:
+        out = level_guardrails.finalize(out, ind["close"], guard)
+    if cfg.levels_v2:
+        close_f = float(ind["close"])
+        ready_now = bool(v2info.get("ready_to_buy"))
+        if plan is not None and (status == "ENTER_NOW" or v2info.get("band_position") == "inside") and close_f > float(plan["stop"]):
+            for t in out["targets"]:
+                t["risk_reward_from_close"] = round((float(t["price"]) - close_f) / (close_f - float(plan["stop"])), 2)
+        out["entry_status"] = status
+        out["v2"] = {"version": "levels-v2/1", "rules": v2info["rules"], "blocked_reason": v2info["blocked_reason"], "r_definition": levels_v2.R_DEFINITION, "ready_to_buy": ready_now,
+                     "band_position": v2info.get("band_position"), "entry_kind": v2info.get("entry_kind"), "entry_label": v2info.get("entry_label"), "headroom_note": v2info.get("headroom_note"),
+                     "breakout_trigger": v2info.get("breakout_trigger"), "watch_band": v2info.get("watch_band"), "reference_close": _s(close_f),
+                     "prior_high_reference": _s(levels_v2.high52(daily, v2cfg.high52_bars)), "high52_bars": min(len(daily), v2cfg.high52_bars)}
+    return out
 
 
 def _scenario_out(sc: dict[str, Any]) -> dict[str, Any]:
@@ -539,4 +651,5 @@ def analyze(daily: pd.DataFrame, bench_daily: pd.Series | None = None, cfg: Engi
     return {"status": "available" if any(v["status"] == "available" for v in out.values()) else "unavailable", "last_daily_candle": daily.index[-1].date().isoformat(),
             "bars": len(daily), "horizons": out, "config": {"breakout_buffer_atr": cfg.breakout_buffer_atr, "cluster_atr": cfg.cluster_atr, "extension_atr": list(cfg.extension_atr),
                                                            "weights": cfg.weights},
-            "label": "Decision support, not investment advice. Levels are computed from completed candles and are not orders."}
+            "label": "Decision support, not investment advice. Levels are computed from completed candles and are not orders.",
+            "validation": VALIDATION_NOTE}

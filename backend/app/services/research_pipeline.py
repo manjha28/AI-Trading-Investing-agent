@@ -110,6 +110,8 @@ def _fetch_dhan_company_info(
         inputs = snapshot.pop("valuation_inputs", None)
         if inputs:
             valuation_inputs.store(db, instrument.id, "dhan", inputs, datetime.fromisoformat(snapshot["fetched_at"]))
+        from app.services import point_in_time
+        point_in_time.record_shareholding_snapshot(db, instrument.id, snapshot)        # dated, append-only (one per instrument per day)
         return snapshot, None
     except HTTPException:
         return None, "Dhan Company Info is unavailable; verify the Dhan connection and its data access."
@@ -768,6 +770,7 @@ def render_brief(
     external_snapshot: dict[str, Any] | None = None,
     external_reason: str | None = None,
     sentiment_section: dict[str, Any] | None = None,
+    user_id: UUID | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     quality: list[dict[str, str]] = []
     fundamentals, periods = _fundamentals_section(
@@ -824,14 +827,47 @@ def render_brief(
         sections["assessment"] = {"error": f"Scoring failed ({type(exc).__name__}); evidence is unaffected."}
     try:
         from app.services import research_alerts, research_levels, technical_engine
+        gates = None
+        price_basis = None                  # defined for BOTH branches below (technicals unavailable/suppressed must not raise a NameError)
         if technicals.get("status") == "available":
             import pandas as pd
             frame = _daily_frame(db, instrument.id, technicals.get("source"))
+            if settings.pipeline_v2_enabled and frame is not None:          # Nexus v2 phase 3: a still-forming daily bar is never completed; tradability gates for every horizon
+                from app.services import gates_v2
+                _now = datetime.now(timezone.utc)
+                frame = gates_v2.drop_forming_bar(frame, _now)
+                gates = gates_v2.compute(db, instrument.id, user_id, frame, _now)
+            if settings.levels_v2_enabled and frame is not None and user_id is not None:      # Nexus v2: adjust only bars that are actually raw at a split/bonus ex-date
+                from app.models import CorporateAction
+                from app.services import levels_v2
+                acts = [(r.ex_date, r.action_type, float(r.ratio)) for r in db.scalars(select(CorporateAction).where(
+                    CorporateAction.user_id == user_id, CorporateAction.instrument_id == instrument.id,
+                    CorporateAction.action_type.in_(("split", "bonus")), CorporateAction.ratio.is_not(None)))]
+                frame, price_basis = levels_v2.adjust_raw_bars(frame, acts)
             sections["technical_engine"] = technical_engine.analyze(frame, _benchmark_series(db), as_of=pd.Timestamp(datetime.now(IST).date())) if frame is not None else {
                 "status": "unavailable", "reason": "No daily candles are stored.", "horizons": {}}
         else:
             sections["technical_engine"] = {"status": "suppressed", "reason": technicals.get("message") or "Daily price data is not current, so technical levels are suppressed.", "horizons": {}}
+        if price_basis is not None:
+            sections["technical_engine"]["price_basis"] = price_basis
         sections["levels"] = research_levels.build_levels(technicals, sections.get("assessment"), sections["technical_engine"])
+        if gates is not None:
+            from app.services import gates_v2
+            gates_v2.apply_to_levels(sections["levels"], gates)
+            sections["gates_v2"] = gates
+        try:
+            from app.services import universe_rank
+            sections["universe_rank"] = universe_rank.rank_for(db, instrument.id)
+        except Exception as exc:  # noqa: BLE001 - a ranking failure must never break the brief
+            logger.warning("universe_rank_failed error_class=%s", type(exc).__name__)
+            sections["universe_rank"] = {"status": "unavailable", "reason": "Universe rank could not be computed."}
+        if settings.confidence_v2_enabled:
+            try:
+                from app.services import factor_rank
+                sections["factor_rank"] = factor_rank.rank_for(db, instrument.id)
+            except Exception as exc:  # noqa: BLE001 - a ranking failure must never break the brief
+                logger.warning("factor_rank_failed error_class=%s", type(exc).__name__)
+                sections["factor_rank"] = {"status": "unavailable", "reason": "The factor rank could not be computed."}
         sections["buy_confidence"] = research_alerts.confidence_by_horizon(sections)
     except Exception as exc:  # noqa: BLE001
         logger.exception("research_levels_failed error_class=%s", type(exc).__name__)
@@ -999,42 +1035,55 @@ def start_instrument_research(
 def _refresh_yahoo_fundamentals(
     db: Session, instrument: Instrument
 ) -> tuple[str, str | None, str | None]:
+    """States: cached | refreshed | rate_limited (NOT fetched, retry queued in fundamentals_fetch_log) | no_statements (Yahoo has none for this security) | unavailable | failed.
+    A rate-limited fetch is never reported as cached, and a snapshot with no statement periods is not 'cached statements'."""
+    from app.services import fundamentals_backfill as fb
     snapshot = db.scalar(select(InstrumentSnapshot).where(
         InstrumentSnapshot.instrument_id == instrument.id,
         InstrumentSnapshot.source == "yfinance",
     ))
     now = datetime.now(timezone.utc)
-    snapshot_has_values = snapshot is not None and any(
-        getattr(snapshot, field) is not None
-        for field in ("market_cap", "pe", "pb", "dividend_yield", "sector", "industry")
-    )
     periods_have_values = bool(db.scalar(select(func.count()).select_from(InstrumentFundamental).where(
         InstrumentFundamental.instrument_id == instrument.id,
         InstrumentFundamental.source == "yfinance",
         (InstrumentFundamental.revenue.is_not(None)) | (InstrumentFundamental.net_income.is_not(None)) |
         (InstrumentFundamental.eps.is_not(None)) | (InstrumentFundamental.total_assets.is_not(None)),
     )))
-    if snapshot is not None and (snapshot_has_values or periods_have_values) and not fundamentals_service.is_stale(snapshot.fetched_at, now):
+    if snapshot is not None and periods_have_values and not fundamentals_service.is_stale(snapshot.fetched_at, now):
         _refresh_yahoo_valuation_inputs(db, instrument, now)
         return "cached", None, snapshot.fetched_at.isoformat()
+    known_empty = fb.no_statements_recent(db, instrument.id, now)
+    if known_empty is not None:
+        return "no_statements", f"Yahoo has no financial statements for this security (checked {known_empty.attempted_at.date().isoformat()}); not asked again for {fb.NO_STATEMENTS_RETRY_DAYS} days.", None
     if not yahoo_guard.allowed():
-        return "unavailable", f"Yahoo Finance is blocking or rate-limiting this server; its calls are paused for about {yahoo_guard.seconds_left() // 3600 + 1} h.", None
+        reason = f"Fundamentals not fetched (rate limited): Yahoo Finance is blocking or rate-limiting this server, its calls are paused for about {yahoo_guard.seconds_left() // 3600 + 1} h. A retry is queued (fundamentals backfill)."
+        fb.record_attempt(db, instrument.id, "rate_limited", detail=reason)
+        return "rate_limited", reason, None
     try:
         providers = _providers(create_market_data_provider_chain(("yfinance",)))
         provider = next((item for item in providers if item.name == "yfinance"), None)
         if provider is None:
             return "unavailable", "Yahoo Finance collector is not configured.", None
         candidate, _mapping = _resolve_provider_candidate(db, instrument, provider)
-        _rows, snapshot = fundamentals_service.sync_instrument_fundamentals(
+        rows, snapshot = fundamentals_service.sync_instrument_fundamentals(
             db, instrument, candidate.provider_symbol
         )
         yahoo_guard.record(True)
+        annual = sum(1 for r in rows if r.period_type == "annual")
+        quarterly = sum(1 for r in rows if r.period_type == "quarterly")
+        if not (annual or quarterly):
+            fb.record_attempt(db, instrument.id, "no_statements", annual=0, quarterly=0, detail="Yahoo returned no annual or quarterly statements for this security")
+            return "no_statements", "Yahoo returned no financial statements for this security (a fund, a new listing or not covered); not retried for 30 days.", snapshot.fetched_at.isoformat()
+        fb.record_attempt(db, instrument.id, "refreshed", annual=annual, quarterly=quarterly)
         return "refreshed", None, snapshot.fetched_at.isoformat()
     except (BrokerAdapterError, HTTPException, MarketDataProviderError, TimeoutError, ValueError) as exc:
         yahoo_guard.record(False)
         db.rollback()
         category = getattr(exc, "code", type(exc).__name__)
-        return "failed", str(category)[:120], None
+        outcome = fb.classify_error(exc)
+        detail = f"{'Fundamentals not fetched (rate limited); a retry is queued: ' if outcome == 'rate_limited' else ''}{str(category)[:120]}"
+        fb.record_attempt(db, instrument.id, outcome, detail=detail)
+        return outcome, detail, None
 
 
 def _refresh_yahoo_valuation_inputs(db: Session, instrument: Instrument, now: datetime) -> None:
@@ -1246,7 +1295,7 @@ def ensure_daily_history(db: Session, instrument: Instrument, user_id: UUID) -> 
         db.rollback()
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
         out["reason"] = str(detail.get("message") or f"HTTP {exc.status_code}")[:300]
-    except (MarketDataProviderError, BrokerAdapterError, TimeoutError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - history backfill is best effort and must never stop a research run
         db.rollback()
         out["reason"] = f"{type(exc).__name__}: {getattr(exc, 'code', None) or str(exc)}"[:300]
     db.expire_all()
@@ -1372,7 +1421,7 @@ def _execute_instrument_research(
         db, instrument, fetched_result.sources, fetched_result.failures,
         selected_source=selected_source,
         external_snapshot=external_snapshot, external_reason=external_reason,
-        sentiment_section=sentiment,
+        sentiment_section=sentiment, user_id=run.user_id,
     )
     sections["technicals"]["latest_session_recovery"] = recovery
     if recovery["action"] == "failed":

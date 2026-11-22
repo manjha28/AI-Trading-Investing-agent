@@ -43,6 +43,9 @@ def build_levels(technicals: dict[str, Any], assessment: dict[str, Any] | None, 
             out[horizon] = _unavailable("insufficient_history", eng.get("reason") or "The technical engine could not analyse this horizon.")
         elif eng.get("selected_setup") == "NO_VALID_SETUP" or not eng.get("entry") or not eng.get("stop_loss"):
             out[horizon] = _unavailable("no_valid_setup", eng.get("explanation") or "No valid entry setup exists right now.")
+            if eng.get("v2"):          # Nexus v2: the stated reason and an optional Radar-only watch band (never a ladder)
+                out[horizon] = {**_unavailable("no_valid_setup", eng["v2"].get("blocked_reason") or eng.get("explanation") or "No valid entry setup exists right now."),
+                                "watch_band": eng["v2"].get("watch_band"), "v2_rules": eng["v2"].get("rules")}
         else:
             entry, stop = eng["entry"], eng["stop_loss"]
             pivot_support, pivot_resistance = nearest_pivots(eng["pivots"], eng["current_price"])
@@ -54,7 +57,9 @@ def build_levels(technicals: dict[str, Any], assessment: dict[str, Any] | None, 
                 "stop": stop["price"], "invalidation": stop["structural_invalidation"], "stop_method": stop["method"], "stop_reason": stop["reason"],
                 "stop_percent": stop["percent"], "risk_atr": stop["atr_units"],
                 "targets": eng["targets"], "risk_reward": eng["risk_reward"], "enough_upside": eng["enough_upside"],
-                "support_levels": eng["support_levels"], "resistance_levels": eng["resistance_levels"], "pivots": eng["pivots"], "pivot_support": pivot_support, "pivot_resistance": pivot_resistance, "explanation": eng["explanation"],
+                "guardrails": eng.get("guardrails"), "support_levels": eng["support_levels"], "resistance_levels": eng["resistance_levels"], "pivots": eng["pivots"], "pivot_support": pivot_support, "pivot_resistance": pivot_resistance, "explanation": eng["explanation"],
+                **({"v2": eng["v2"], "ready_to_buy": eng["v2"]["ready_to_buy"], "entry_label": eng["v2"]["entry_label"], "prior_high_reference": eng["v2"]["prior_high_reference"],
+                    "r_definition": eng["v2"]["r_definition"]} if eng.get("v2") else {}),
                 "derivation": {"rule": f"Entry setup chosen by the technical engine ({eng['primary_timeframe']} candles): {eng['selected_setup'].replace('_', ' ').lower()}. "
                                        f"Stop = {stop['method'].lower()} ({stop['reason']}) Targets from resistance zones, then risk-reward multiples, each with its basis.",
                                "inputs": {"atr14": eng["atr"]["atr14"], "natr_pct": eng["atr"]["natr"], "last_completed_candle": eng["last_completed_candle"]}, "tick": "0.05"},

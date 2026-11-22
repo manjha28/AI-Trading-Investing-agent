@@ -113,6 +113,15 @@ def _period_rows(
             "shares_outstanding": _statement_value(
                 balance, ("Ordinary Shares Number", "Share Issued"), period
             ),
+            # Extra Yahoo rows with no canonical column, under the SAME keys Screener uses (interest_expense, profit_before_tax, fixed_assets) plus ebit and cash. Stored in
+            # extra_metrics by sync_instrument_fundamentals and never over a value another source provided (Phase 6 step 1).
+            "extras": {
+                "interest_expense": _statement_value(income, ("Interest Expense",), period),
+                "profit_before_tax": _statement_value(income, ("Pretax Income",), period),
+                "ebit": _statement_value(income, ("EBIT",), period),
+                "fixed_assets": _statement_value(balance, ("Net PPE",), period),
+                "cash": _statement_value(balance, ("Cash And Cash Equivalents",), period),
+            },
         })
     return result
 
@@ -265,6 +274,21 @@ def refresh_valuation_inputs(db: Session, instrument: Instrument, provider_symbo
     return len(inputs)
 
 
+def _merge_yahoo_extras(row: InstrumentFundamental, extras_in: dict[str, Any], observed_at: datetime) -> None:
+    """Yahoo's extra statement rows into extra_metrics with provenance. A value another source already provided (Screener, an owner import) is NEVER overwritten; Yahoo's own earlier value is refreshed."""
+    if not extras_in:
+        return
+    extras = dict(row.extra_metrics or {})
+    for name, value in extras_in.items():
+        if value is None:
+            continue
+        previous = extras.get(name)
+        if isinstance(previous, dict) and previous.get("source") not in (None, "yfinance"):
+            continue
+        extras[name] = {"value": str(value), "source": "yfinance", "fetched_at": observed_at.isoformat(), "basis": row.statement_basis}
+    row.extra_metrics = extras or None
+
+
 def sync_instrument_fundamentals(
     db: Session,
     instrument: Instrument,
@@ -277,6 +301,7 @@ def sync_instrument_fundamentals(
     rows: list[InstrumentFundamental] = []
     for period_type in ("annual", "quarterly"):
         for values in data[period_type]:
+            extras_in = values.pop("extras", None) or {}
             values["currency"] = values["currency"] or instrument.currency
             existing = db.scalar(
                 select(InstrumentFundamental).where(
@@ -305,6 +330,7 @@ def sync_instrument_fundamentals(
                 existing.field_sources = sources or None
                 existing.source = "yfinance"
                 existing.fetched_at = observed_at
+            _merge_yahoo_extras(existing, extras_in, observed_at)
             rows.append(existing)
 
     snapshot_values = data["snapshot"]
@@ -331,6 +357,8 @@ def sync_instrument_fundamentals(
     for row in rows:
         db.refresh(row)
     db.refresh(snapshot)
+    from app.services import point_in_time
+    point_in_time.record_fundamental_snapshot(db, instrument.id, rows, data.get("valuation_inputs"), now=observed_at)       # dated, append-only copy of what was seen today
     return rows, snapshot
 
 

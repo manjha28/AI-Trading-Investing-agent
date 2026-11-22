@@ -1399,6 +1399,7 @@ class DhanAdapter(BrokerAdapter):
         interval: str,
         start: datetime,
         end: datetime,
+        instrument: str = "EQUITY",
     ) -> list[HistoricalBar]:
         if interval not in {"1d", "1m"}:
             raise BrokerAdapterError("Dhan history sync stores only 1m intraday and 1d candles")
@@ -1416,7 +1417,7 @@ class DhanAdapter(BrokerAdapter):
         body: dict[str, Any] = {
             "securityId": security_id,
             "exchangeSegment": exchange_segment,
-            "instrument": "EQUITY",
+            "instrument": instrument,          # "EQUITY" for stocks (default); "INDEX" for IDX_I index history (e.g. NIFTY 50, security id 13)
             "oi": False,
             "fromDate": (
                 start_local.strftime("%Y-%m-%d %H:%M:%S")
