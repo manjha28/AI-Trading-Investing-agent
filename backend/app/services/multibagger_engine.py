@@ -18,7 +18,7 @@ from app.services.research_scoring import _lerp, is_financial_sector
 from app.services.valuation_scoring import sector_family
 
 VERSION = "multibagger-0.1.0-provisional"
-CLASSES = ("multibagger_candidate", "quality_compounder", "emerging", "new_listing", "watch", "avoid", "not_assessable")
+CLASSES = ("multibagger_candidate", "quality_compounder", "emerging", "new_listing", "watch", "not_a_fit", "not_tradable", "avoid", "not_assessable")
 CYCLICAL = ("metal", "steel", "cement", "oil", "gas", "sugar", "shipping", "mining", "chemical", "commodity")
 UTILITY = ("utilit", "power", "electric")
 ASSET_LIGHT = ("technology", "software", "consumer", "healthcare", "pharma", "it ")
@@ -439,8 +439,13 @@ def assess(x: dict[str, Any], cfg: MultibaggerConfig | None = None, weekly: pd.D
         cap_list = [c for c in capped if not (ignore_unknown_caps and c["result"] == "unknown")]
         if dc["result"] == "unknown" or q["data_share"] < cfg.min_data_share or g["data_share"] < cfg.min_data_share:
             return "not_assessable", ["data current unknown" if dc["result"] == "unknown" else "less than 70% of the Q or G weight is backed by data"]
-        if hard or (q["score"] is not None and q["score"] < cfg.q_min_avoid):
-            return "avoid", [f"failed veto: {c['id']} ({c['reason']})" for c in hard] or [f"Q {q['score']} is below {cfg.q_min_avoid:g}: does not meet the quality bar"]
+        floor_ids = ("liquidity", "price")
+        veto_hard = [c for c in hard if c["id"] not in floor_ids]
+        if veto_hard or (q["score"] is not None and q["score"] < cfg.q_min_avoid):
+            # avoid = a red flag: a veto fired (pledge, dilution, cash, solvency, equity, data) or the quality score is under 40
+            return "avoid", [f"failed veto: {c['id']} ({c['reason']})" for c in veto_hard] or [f"Q {q['score']} is below {cfg.q_min_avoid:g}: does not meet the quality bar"]
+        if hard:                                  # only the liquidity or price floor failed: not a judgement on the business
+            return "not_tradable", [_floor_text(c) for c in hard]
         s = lambda k: scores[k]                                                                                         # noqa: E731
         mcap = gfacts.get("market_cap_cr")
         if (not cap_list and q["score"] is not None and q["score"] >= cfg.mb_q and s("G") is not None and s("G") >= cfg.mb_g and s("V") is not None and s("V") >= cfg.mb_v
@@ -452,7 +457,7 @@ def assess(x: dict[str, Any], cfg: MultibaggerConfig | None = None, weekly: pd.D
             return "watch", ["quality is adequate with growth or a turning point"] + [f"capped: {c['id']} ({c['reason']})" for c in cap_list]
         if cap_list and q["score"] is not None and q["score"] >= cfg.qc_q and s("G") is not None and s("G") >= cfg.qc_g and s("V") is not None and s("V") >= cfg.qc_v:
             return "watch", [f"capped: {c['id']} ({c['reason']})" for c in cap_list]
-        return "avoid", ["does not meet the quality bar"]
+        return "not_a_fit", _missed_bars(q, g, v, gfacts, cfg)
 
     cls, reasons = classify(False)
     ceiling, ceiling_reasons = classify(True)
@@ -467,7 +472,8 @@ def assess(x: dict[str, Any], cfg: MultibaggerConfig | None = None, weekly: pd.D
     hard_ids = {c["id"] for c in hard}
     # Stage 7c: a new listing (checked first, never a multibagger or compounder). The liquidity/price floors and negative equity are never relaxed.
     if status["is_new"] and (hard_ids & {"liquidity", "price", "equity_positive"}):
-        cls, reasons = "avoid", [f"failed veto: {c['id']} ({c['reason']})" for c in hard if c["id"] in ("liquidity", "price", "equity_positive")]
+        cls = "avoid" if "equity_positive" in hard_ids else "not_tradable"
+        reasons = [(_floor_text(c) if c["id"] in ("liquidity", "price") else f"failed veto: {c['id']} ({c['reason']})") for c in hard if c["id"] in ("liquidity", "price", "equity_positive")]
     elif status["is_new"]:
         cls, reasons = "new_listing", [f"new listing: {status['reason']}", "never a multibagger or compounder until it graduates (4 quarterly results)"]
         extra["new_listing"] = new_listing_assess(x, nlcfg, q, g, daily, bench_daily, status)
@@ -589,10 +595,12 @@ def emerging_assess(x: dict[str, Any], cfg: MultibaggerConfig, ecfg: EmergingCon
         ok = pe <= ecfg.pe_max and (peg is None or peg <= ecfg.peg_max)
         ck.append(chk("e_valuation", "E", "pass" if ok and peg is not None else "unknown" if ok else "fail", f"TTM PE {pe:.0f} (max {ecfg.pe_max:g})" + (", PEG on TTM growth unknown" if peg is None else f", PEG {peg:.2f} (max {ecfg.peg_max:g})"), round(pe, 1)))
     xsc = None if not xs else xs.get("score")
-    ck.append(chk("e_chart", "E", "unknown" if xsc is None else "pass" if xsc >= ecfg.x_min and (xs.get("rs") or 0) > 0 else "fail", f"X = {xsc}, relative strength {None if not xs else xs.get('rs')} (the chart must confirm when the record is short)", xsc))
+    # owner decision (22 Nov, from the recall test: X was 70+ at the start of only 5% of the big moves but reached 70+ during 85% of them): the chart is an ENTRY TRIGGER, not a filter. It no longer decides
+    # whether a stock is emerging; it only sets the timing tag (buy_zone when X >= 70, otherwise wait_for_chart).
+    ck.append(chk("e_chart", "timing", "unknown" if xsc is None else "pass" if xsc >= ecfg.x_min and (xs.get("rs") or 0) > 0 else "fail", f"X = {xsc}, relative strength {None if not xs else xs.get('rs')}: timing only, not a requirement", xsc))
     blockers = [c for c in never if c["result"] == "fail"]
-    passed = not blockers and all(c["result"] == "pass" for c in ck)
-    prove = [f"{c['id']}: {c['reason']}" for c in ck if c["result"] != "pass"]
+    passed = not blockers and all(c["result"] == "pass" for c in ck if c["stage"] != "timing")
+    prove = [f"{c['id']}: {c['reason']}" for c in ck if c["result"] != "pass" and c["stage"] != "timing"]
     trans = emerging_transition(qs, ecfg)
     return {"passed": passed, "checks": ck, "never_relaxed_failed": [c["id"] for c in blockers], "label": "unproven: about 1 year of evidence", "suggested_size_fraction": ecfg.size_fraction,
             "prove_it": prove if prove else ["keep growing: 2 more quarters with revenue growth above 20% and a steady margin upgrade it to a multibagger candidate; revenue growth below 15% in a quarter or a 2-point margin fall downgrades it to watch"],
@@ -736,6 +744,27 @@ def thesis_alerts(x: dict[str, Any], result: dict[str, Any], previous_class: str
     if result.get("class") == "avoid" and previous_class not in (None, "avoid"):
         out.append({"kind": "class_avoid", "text": f"Class dropped from {previous_class} to avoid."})
     del eg
+    return out
+
+
+def _floor_text(c: dict[str, Any]) -> str:
+    if c["id"] == "liquidity":
+        return f"Too illiquid for Nexus (median traded value Rs {c['value']:.1f} cr)" if c.get("value") is not None else "Too illiquid for Nexus (median traded value unknown)"
+    return f"Price under the floor: {c['reason']}"
+
+
+def _missed_bars(q: dict[str, Any], g: dict[str, Any], v: dict[str, Any], gfacts: dict[str, Any], cfg: MultibaggerConfig) -> list[str]:
+    """not_a_fit: no veto and Q at least 40, but a growth or valuation bar was missed. Says which one, in numbers."""
+    lead = "Quality business" if (q["score"] or 0) >= cfg.watch_q else "Average-quality business"
+    out: list[str] = []
+    rc, gs = gfacts.get("revenue_cagr_3y"), g["score"]
+    if gs is None or gs < cfg.watch_g:
+        years = gfacts.get("cagr_years") or 3
+        out.append(f"{lead}, growth below the bar (G {'unknown' if gs is None else f'{gs:.0f}'}, needs {cfg.watch_g:g}" + ("" if rc is None else f"; revenue {rc:.0%} a year over {years} years") + ")")
+    if v["score"] is not None and v["score"] < cfg.qc_v:
+        out.append(f"valuation above the bar (V {v['score']:.0f}, needs {cfg.qc_v:g})")
+    if not out:
+        out.append(f"{lead}, but it misses the quality-compounder bars (G {gs}, V {v['score']}, needs {cfg.qc_g:g} and {cfg.qc_v:g}) and has no turning point")
     return out
 
 

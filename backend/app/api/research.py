@@ -873,7 +873,7 @@ def pipeline_v2_compare(
 
 @router.get("/multibagger")
 def get_multibagger(
-    klass: str | None = Query(default=None, alias="class", pattern="^(multibagger_candidate|quality_compounder|emerging|new_listing|watch|avoid|not_assessable)$"),
+    klass: str | None = Query(default=None, alias="class", pattern="^(multibagger_candidate|quality_compounder|emerging|new_listing|watch|not_a_fit|not_tradable|avoid|not_assessable)$"),
     sector: str | None = Query(default=None, max_length=80),
     min_rank: float | None = Query(default=None, ge=0, le=100),
     limit: int = Query(default=400, ge=1, le=1000),
@@ -902,7 +902,7 @@ def get_multibagger(
         items.append({"symbol": sym, "instrument_id": str(a.instrument_id), "class": a.klass, "rank": a.rank, "scores": {"Q": a.q, "G": a.g, "V": a.v, "T": a.t, "X": a.x}, "checklist": c.get("checklist"),
                       "timing": c.get("timing"), "kind": c.get("kind"), "reasons": (c.get("reasons") or [])[:3],
                       "failed_or_unknown": [f"{k['id']}: {k['reason']}" for k in (c.get("checks") or []) if k["result"] in ("fail", "unknown")][:8], "class_if_unknown_checks_cleared": (c.get("class_if_unknown_checks_cleared") or {}).get("class")})
-    order = {"multibagger_candidate": 0, "quality_compounder": 1, "emerging": 2, "new_listing": 3, "watch": 4, "avoid": 5, "not_assessable": 6}
+    order = {"multibagger_candidate": 0, "quality_compounder": 1, "emerging": 2, "new_listing": 3, "watch": 4, "not_a_fit": 5, "not_tradable": 6, "avoid": 7, "not_assessable": 8}
     items.sort(key=lambda i: (order[i["class"]], -(i["rank"] or 0), i["symbol"]))
     return {"enabled": True, "as_of": latest.isoformat(), "model_version": rows[0][0].model_version if rows else None, "counts": counts, "items": items[:limit], "disclaimer": DISCLAIMER}
 

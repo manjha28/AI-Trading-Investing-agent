@@ -86,8 +86,22 @@ def test_net_losses_and_listing_age_cap_at_watch():
 
 
 def test_tradability_gates_fail_below_the_floor_or_price():
-    assert mb.assess(stock(median_traded_value_cr=0.5))["class"] == "avoid"
-    assert result(mb.assess(stock(price=12.0)), "price") == "fail"
+    thin = mb.assess(stock(median_traded_value_cr=0.5))
+    assert thin["class"] == "not_tradable" and thin["reasons"] == ["Too illiquid for Nexus (median traded value Rs 0.5 cr)"]        # a floor alone is not a red flag
+    cheap = mb.assess(stock(price=12.0))
+    assert result(cheap, "price") == "fail" and cheap["class"] == "not_tradable"
+    both = mb.assess(stock(median_traded_value_cr=0.5, annual=[dict(a, debt=1500.0) for a in good_annual()]))
+    assert both["class"] == "avoid"                                                                                    # a veto fired as well: avoid wins over not_tradable
+
+
+def test_avoid_means_a_red_flag_and_not_a_fit_names_the_bar_it_missed():
+    low_quality = mb.assess(stock(annual=[dict(a, op_margin=2.0, pbt=1.0, interest=5.0, pat=1.0) for a in good_annual()]))
+    assert low_quality["class"] in ("avoid", "not_assessable")
+    slow = mb.assess(stock(annual=good_annual(grow=1.02), quarterly=qtrs(6)))
+    assert slow["class"] in ("not_a_fit", "watch", "quality_compounder"), slow["reasons"]
+    if slow["class"] == "not_a_fit":
+        assert any("growth below the bar" in r and "revenue" in r for r in slow["reasons"]) and "avoid" not in slow["class"]
+    assert "not_a_fit" in mb.CLASSES and "not_tradable" in mb.CLASSES
 
 
 # ───────────── Stages 2-6 ─────────────

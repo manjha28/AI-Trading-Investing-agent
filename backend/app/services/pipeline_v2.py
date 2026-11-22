@@ -84,7 +84,7 @@ def engine_quality(db: Any, user_id: Any, instrument_id: Any, phase4: dict[str, 
         return {"status": "unknown", "financial": phase4.get("financial", False), "checks": [_chk("multibagger_engine", "Multibagger engine result", "unknown", "No nightly multibagger result is stored for this stock yet.")], "engine_class": None}
     klass = row.klass
     reasons = [r for r in ((row.checks or {}).get("reasons") or [])][:3] or [klass]
-    status = {"multibagger_candidate": "pass", "quality_compounder": "pass", "emerging": "watch", "new_listing": "watch", "watch": "watch", "avoid": "fail", "not_assessable": "not_assessable"}[klass]
+    status = {"multibagger_candidate": "pass", "quality_compounder": "pass", "emerging": "watch", "new_listing": "watch", "watch": "watch", "not_a_fit": "fail", "not_tradable": "fail", "avoid": "fail", "not_assessable": "not_assessable"}[klass]
     return {"status": status, "financial": phase4.get("financial", False), "engine_class": klass, "checks": [_chk("multibagger_engine", f"Multibagger engine class: {klass}", "pass" if status == "pass" else "fail" if status in ("fail", "watch") else "unknown", "; ".join(reasons))]}
 
 

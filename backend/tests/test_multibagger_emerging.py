@@ -94,10 +94,13 @@ def test_each_growth_check_can_fail_the_emerging_track():
     assert next(c for c in pricey["emerging"]["checks"] if c["id"] == "e_valuation")["result"] == "fail" and pricey["class"] != "emerging"
 
 
-def test_the_chart_must_confirm_when_the_record_is_short():
+def test_the_chart_is_an_entry_trigger_not_a_requirement_it_only_sets_the_timing_tag():
     down = weekly(trend=-0.004)
     r = mb.assess(stock(), MultibaggerConfig(), down, bench())
-    assert r["class"] != "emerging" and next(c for c in r["emerging"]["checks"] if c["id"] == "e_chart")["result"] == "fail"
+    assert r["class"] == "emerging" and r["timing"] == "wait_for_chart"                                     # a weak chart no longer blocks the class
+    assert next(c for c in r["emerging"]["checks"] if c["id"] == "e_chart")["result"] == "fail" and not any("e_chart" in p for p in r["emerging"]["prove_it"])
+    up = mb.assess(stock(), MultibaggerConfig(), weekly(), bench())
+    assert up["class"] == "emerging" and up["timing"] in ("buy_zone", "wait_for_chart")
 
 
 def test_a_loss_to_profit_turnaround_counts_for_profit_growth():
@@ -207,7 +210,7 @@ def test_graduation_at_four_quarterly_results_makes_it_eligible_for_emerging():
 def test_the_liquidity_and_price_floors_still_apply_to_a_new_listing():
     d = daily(125)
     r = mb.assess(listing_stock(median_traded_value_cr=0.4), MultibaggerConfig(), None, None, daily=d, bench_daily=pd.Series(100.0, index=d.index))
-    assert r["class"] == "avoid"
+    assert r["class"] == "not_tradable" and "Too illiquid" in r["reasons"][0]
 
 
 # ───────────── thesis-break alerts ─────────────
