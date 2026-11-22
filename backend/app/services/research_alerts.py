@@ -91,3 +91,49 @@ def notify_if_new_buy(db: Session, run: InstrumentResearchRun, brief: Instrument
         return False
 
 
+
+
+THESIS_RULE_TYPE = "thesis_break"      # a disabled, hidden carrier rule (like research_buy): its events appear in the bell
+
+
+def notify_thesis_breaks(db: Session, user_id, now: datetime | None = None) -> list[dict]:
+    """Stage 8: for the owner's Dhan long-term HOLDINGS, bell events when the multibagger engine sees the thesis break (revenue growth under 5% for two quarters, ROCE 5 points under its 3-year median, a pledge that
+    appeared or rose, an auditor or regulatory event, PE above 2.5x EPS growth and 1.5x its own median (trim, not sell), or the class dropping to avoid). A price fall alone never alerts. One event per stock, kind and
+    day. Runs only with ``multibagger_screen_enabled``; never raises; never an order."""
+    from app.config import settings
+    if not settings.multibagger_screen_enabled:
+        return []
+    from app.models import BrokerMirror
+    from app.models.fundamental_snapshots import ShareholdingSnapshot
+    from app.models.multibagger import MultibaggerAssessment
+    from app.services import multibagger_engine, multibagger_loader
+    now = now or datetime.now(timezone.utc)
+    fired: list[dict] = []
+    try:
+        symbols = {m.symbol.strip().upper() for m in db.scalars(select(BrokerMirror).where(BrokerMirror.user_id == user_id, BrokerMirror.broker == "dhan", BrokerMirror.kind == "holding")) if m.quantity and m.quantity > 0}
+        for inst in db.scalars(select(Instrument).where(Instrument.venue == "NSE", Instrument.symbol.in_(symbols))):
+            rows = list(db.scalars(select(MultibaggerAssessment).where(MultibaggerAssessment.instrument_id == inst.id, MultibaggerAssessment.user_id == user_id).order_by(MultibaggerAssessment.as_of.desc()).limit(2)))
+            if not rows:
+                continue
+            x = multibagger_loader.build_inputs(db, user_id, inst, now, None)
+            snaps = list(db.scalars(select(ShareholdingSnapshot.pledged_pct_of_promoter).where(ShareholdingSnapshot.instrument_id == inst.id, ShareholdingSnapshot.pledged_pct_of_promoter.is_not(None)).order_by(ShareholdingSnapshot.captured_on.desc()).limit(2)))
+            before = float(snaps[1]) if len(snaps) > 1 else None
+            result = {"class": rows[0].klass, "scores": {"G": rows[0].g}}
+            for a in multibagger_engine.thesis_alerts(x, result, previous_class=rows[1].klass if len(rows) > 1 else None, pledge_before=before):
+                rule = db.scalar(select(AlertRule).where(AlertRule.user_id == user_id, AlertRule.instrument_id == inst.id, AlertRule.rule_type == THESIS_RULE_TYPE))
+                if rule is None:
+                    rule = AlertRule(id=uuid4(), user_id=user_id, scope="instrument", instrument_id=inst.id, rule_type=THESIS_RULE_TYPE, params={}, severity="attention", cooldown_seconds=0, enabled=False, created_at=now, updated_at=now)
+                    db.add(rule)
+                    db.flush()
+                key = f"{THESIS_RULE_TYPE}:{a['kind']}:{now.astimezone(IST).date().isoformat()}"
+                if db.scalar(select(AlertEvent.id).where(AlertEvent.rule_id == rule.id, AlertEvent.dedupe_key == key)) is not None:
+                    continue
+                db.add(AlertEvent(id=uuid4(), rule_id=rule.id, user_id=user_id, instrument_id=inst.id, fired_at=now, dedupe_key=key,
+                                  evidence={"symbol": inst.symbol, "kind": a["kind"], "message": a["text"], "note": "Thesis check on a Dhan long-term holding. Decision support, not investment advice; never an order."}, status="new"))
+                fired.append({"symbol": inst.symbol, **a})
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("thesis_break_alert_failed error_class=%s", type(exc).__name__)
+        return []
+    return fired

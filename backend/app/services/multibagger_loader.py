@@ -172,6 +172,8 @@ def log_nightly(db: Any, user_id: Any) -> None:
     """One log line per night; never raises. Runs in shadow mode whatever the flag says."""
     try:
         res = run_universe(db, user_id)
+        from app.services import research_alerts
+        research_alerts.notify_thesis_breaks(db, user_id)           # only with multibagger_screen_enabled
         counts: dict[str, int] = defaultdict(int)
         for r in res:
             counts[r["class"]] += 1

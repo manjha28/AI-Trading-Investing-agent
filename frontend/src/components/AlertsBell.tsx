@@ -10,6 +10,7 @@ const when = (iso: string) => formatIST(iso);
 function summary(e: AlertEvent): string {
   const ev = e.evidence ?? {};
   if (e.rule_type === 'research_buy') return `${(Array.isArray(ev.horizons) ? ev.horizons : []).map((h: string) => h.replace('_', '-')).join(', ')} · confidence ${ev.confidence ?? '—'}${ev.confidence_band ? ` (${ev.confidence_band})` : ''}`;
+  if (e.rule_type === 'thesis_break') return String(ev.message ?? '');
   const bits = ['symbol', 'price', 'last_price', 'threshold', 'threshold_pct', 'move_pct', 'rsi'].filter((k) => ev[k] !== undefined && ev[k] !== null).slice(0, 3).map((k) => `${k.replace(/_/g, ' ')} ${String(ev[k])}`);
   return bits.join(' · ');
 }
@@ -56,7 +57,7 @@ export function AlertsBell({ onOpenStock, onOpenResearch, refreshKey = 0 }: { on
             {events.map((e) => (
               <li key={e.id}>
                 <button type="button" className="bell-item" onClick={() => { setOpen(false); if (e.instrument_id) { if (e.rule_type === 'research_buy' && onOpenResearch) onOpenResearch(e.instrument_id); else onOpenStock(e.instrument_id); } void markRead([e.id]); }}>
-                  <span><strong>{e.instrument_id ? symbolById[e.instrument_id] ?? 'Stock' : 'Portfolio'}</strong> · {e.rule_type === 'research_buy' ? 'Ready to buy' : ruleLabel(e.rule_type)}</span>
+                  <span><strong>{e.instrument_id ? symbolById[e.instrument_id] ?? 'Stock' : 'Portfolio'}</strong> · {e.rule_type === 'research_buy' ? 'Ready to buy' : e.rule_type === 'thesis_break' ? 'Thesis check' : ruleLabel(e.rule_type)}</span>
                   <small>{when(e.fired_at)}{summary(e) ? ` · ${summary(e)}` : ''}</small>
                 </button>
               </li>))}
