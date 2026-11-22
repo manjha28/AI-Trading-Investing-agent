@@ -15,6 +15,8 @@ function shortNumber(value: string | null): string {
 export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: Props) {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketsError, setMarketsError] = useState<string | null>(null);
+  const [marketsLoading, setMarketsLoading] = useState(true);       // true until the first response or error: never say "No contracts match" while the request is in flight
+  const [chartLoading, setChartLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [candles, setCandles] = useState<Candles | null>(null);
   const [contract, setContract] = useState<ContractInfo | null>(null);
@@ -29,6 +31,8 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
       setMarketsError(null);
     } catch (error) {
       setMarketsError(messageOf(error));
+    } finally {
+      setMarketsLoading(false);
     }
   }, []);
 
@@ -40,12 +44,14 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
 
   const loadChart = useCallback(async () => {
     setChartError(null);
+    setChartLoading(true);
     const [c, info] = await Promise.allSettled([
       apiRequest<Candles>(`/crypto-delta/candles?symbol=${encodeURIComponent(symbol)}&resolution=${resolution}&limit=500`),
       apiRequest<ContractInfo>(`/crypto-delta/contracts/${encodeURIComponent(symbol)}`),
     ]);
     if (c.status === 'fulfilled') setCandles(c.value); else { setCandles(null); setChartError(messageOf(c.reason)); }
     setContract(info.status === 'fulfilled' ? info.value : null);
+    setChartLoading(false);
   }, [symbol, resolution]);
 
   useEffect(() => { setSyncNote(null); void loadChart(); }, [loadChart]);
@@ -93,7 +99,8 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
               </button>
             </li>
           ))}
-          {visible.length === 0 && !marketsError && <li className="table-empty">No contracts match. Delta research may be disabled.</li>}
+          {visible.length === 0 && marketsLoading && <li className="table-empty" role="status" aria-busy="true">Loading contracts…</li>}
+          {visible.length === 0 && !marketsLoading && !marketsError && <li className="table-empty">No contracts match. Delta research may be disabled.</li>}
         </ul>
         <p className="crypto-sub">Prices are the latest public-feed quotes, refreshed every 30 seconds.</p>
       </aside>
@@ -108,6 +115,7 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
         {chartError && <p className="error-message" role="alert">{chartError}</p>}
         {candles && candles.count > 0
           ? <CryptoCandleChart candles={candles.candles} />
+          : chartLoading ? <div className="table-empty" role="status" aria-busy="true">Loading {resolution} candles…</div>
           : !chartError && <div className="table-empty">No {resolution} candles stored for {symbol}. Download them from Delta's public history to chart and backtest.</div>}
         <div className="crypto-chart-actions">
           <button className="primary-button" type="button" onClick={() => void download()} disabled={syncing}>{syncing ? 'Downloading…' : `Download ${DEFAULT_DAYS[resolution]}d of ${resolution} candles`}</button>
