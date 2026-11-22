@@ -1,3 +1,4 @@
+import { useSlow } from '../hooks/useSlow';
 import { fmtPct, fmtTime } from './lab';
 import { LifecycleChip } from './LifecycleChip';
 import { BackfillPanel } from './BackfillPanel';
@@ -7,8 +8,9 @@ import type { Health } from './types';
 const REFUSE_PCT = 5;
 
 export function Dashboard({ health, loading, error, goto, reload }: { health: Health | null; loading: boolean; error: string | null; goto: (tab: string) => void; reload?: () => void }) {
+  const slow = useSlow(loading && !health);
   if (error) return <Notice tone="bad">{error}</Notice>;
-  if (!health) return <p className="sl-muted">{loading ? 'Loading dashboard…' : 'No data.'}</p>;
+  if (!health) return <p className="sl-muted" role="status">{loading ? (slow ? 'Still loading (slow backend). This can take up to a minute…' : 'Loading dashboard…') : 'No data.'}</p>;
   const bad = health.data_health.filter((h) => h.status !== 'ok');
   const windowDays = health.data_health.find((h) => h.window_days != null)?.window_days ?? 5;
   return (

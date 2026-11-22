@@ -15,6 +15,7 @@ import { defaultParams, emptyDefinition, lab, messageOf, nextAlias } from './lab
 import { Notice } from './shared';
 import type { Definition, Health, InstrumentRow, Meta, Readiness, StrategyRow } from './types';
 import './signals.css';
+import { useSlow } from '../hooks/useSlow';
 
 // The workbench: build strategies from every indicator, keep a library of code-defined ones, and backtest many strategies over many symbols.
 // (VAR research, derivatives data and the legacy daily page are no longer part of this page; their code is untouched.)
@@ -34,6 +35,7 @@ export function SignalsWorkspace() {
   const [health, setHealth] = useState<Health | null>(null);
   const [jobsRun, setJobsRun] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const slowWorkspace = useSlow(loading);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(blankDraft);
   const [notice, setNotice] = useState<string | null>(null);
@@ -115,7 +117,7 @@ export function SignalsWorkspace() {
       </nav>
       {notice && tab === 'builder' && <Notice tone="info">{notice}</Notice>}
       {error && !meta && <Notice tone="bad">{error}</Notice>}
-      {!meta ? <p className="sl-muted">{loading ? 'Loading Signals workspace…' : 'The Signals workspace could not be loaded.'}</p> : (
+      {!meta ? <p className="sl-muted">{loading ? (slowWorkspace ? 'Still loading (slow backend). This can take up to a minute…' : 'Loading Signals workspace…') : (error ?? 'The Signals workspace could not be loaded.')}</p> : (
         <>
           {tab === 'dashboard' && <Dashboard health={health} loading={loading} error={error} goto={(t) => setTab(t as Tab)} reload={() => void reloadHealth()} />}
           {tab === 'builder' && <Builder meta={meta} draft={draft} setDraft={setDraft} onReset={() => { setDraft(blankDraft()); setNotice(null); }}

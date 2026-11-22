@@ -45,7 +45,8 @@ export const reasonLabel = (code: string | null | undefined): string => (code ? 
 /** Every timestamp shown to the user states its zone. */
 export const fmtIst = (iso: string | null | undefined): string => formatIST(iso);
 
-export function withTimeout<T>(promise: Promise<T>, ms = 15_000): Promise<T> {
+/** The slow Signals endpoints take 20-60 s on a busy backend, so the client waits 60 s (it used to give up at 15 s and show "No data"). */
+export function withTimeout<T>(promise: Promise<T>, ms = 60_000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`No response after ${Math.round(ms / 1000)} s`)), ms);
     promise.then((v) => { clearTimeout(timer); resolve(v); }, (e: unknown) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); });
