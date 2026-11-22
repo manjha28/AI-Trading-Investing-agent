@@ -121,7 +121,7 @@ describe('timeline and cancel', () => {
     const dds = firstEvent.querySelectorAll('dd');
     expect(dds[0].textContent).toMatch(/IST$/);
     expect(dds[1].textContent).toBe('—');                                              // not event_time
-    expect(timeline.querySelectorAll('li')[1].querySelectorAll('dd')[1].textContent).toMatch(/3:20.*IST|03:20.*IST/i);
+    expect(timeline.querySelectorAll('li')[1].querySelectorAll('dd')[1].textContent).toMatch(/15:20 IST/);
   });
 
   it('hides the cancel action on terminal states', async () => {

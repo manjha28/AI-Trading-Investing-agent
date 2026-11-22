@@ -1,3 +1,4 @@
+import { formatIST } from '../lib/formatIST';
 import { fmtTime } from './lab';
 
 /**
@@ -42,7 +43,7 @@ export const REASON_LABELS: Record<string, string> = {
 export const reasonLabel = (code: string | null | undefined): string => (code ? REASON_LABELS[code] ?? code : '—');
 
 /** Every timestamp shown to the user states its zone. */
-export const fmtIst = (iso: string | null | undefined): string => (iso ? `${fmtTime(iso)} IST` : '—');
+export const fmtIst = (iso: string | null | undefined): string => formatIST(iso);
 
 export function withTimeout<T>(promise: Promise<T>, ms = 15_000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
