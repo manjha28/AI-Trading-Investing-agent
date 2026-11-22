@@ -27,6 +27,11 @@ a = ap.parse_args()
 do_res = settings.nse_results_enabled and not a.no_results
 do_shp = settings.nse_shareholding_enabled and not a.no_shareholding
 print("results:", do_res, "shareholding:", do_shp, flush=True)
+from app.broker_adapters import DhanAdapter  # noqa: E402
+from app.services import instrument_kind  # noqa: E402
+
+DhanAdapter._scrip_master(force=False)          # load the Dhan master once so funds (ETFs, index and liquid funds) are skipped: they have no company filings
+print("fund symbols known:", len(instrument_kind.fund_symbols()), flush=True)
 client = nse_data.PoliteNse(settings.nse_raw_dir, min_interval=settings.nse_min_interval_seconds)
 tot_r, tot_s = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "failed": 0}, {"inserted": 0, "skipped": 0, "failed": 0}
 with Session(engine) as db:

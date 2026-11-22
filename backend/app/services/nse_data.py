@@ -376,7 +376,7 @@ def sync_results(db: Any, client: PoliteNse, instrument: Any, *, since: date, no
     sym = instrument.symbol
     old = []
     for period in ("quarterly", "annual"):
-        old += client.results_old(sym, period, since, date(2024, 12, 31)) if since <= date(2024, 12, 31) else []
+        old += client.results_old(sym, period, since, date(2025, 6, 30)) if since <= date(2025, 6, 30) else []     # to mid-2025: the December 2024 quarter was filed in January 2025 in the old format; pick_filings drops duplicates
     new = client.results_new(sym, max(since, date(2025, 1, 1)), now.date())
     filings = pick_filings(old, new)
     from sqlalchemy import select
