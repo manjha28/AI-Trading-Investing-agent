@@ -35,17 +35,39 @@ CARD_HOLD = {"swing": 15, "positional": 60, "long_term": 60}
 CARD_FILL_SESSIONS = 5
 
 
-def card_fill(df: pd.DataFrame, t: int, status: str, planned: float) -> tuple[float | None, int | None, bool]:
-    """-> (entry price, index of the fill bar, stop-only-on-the-fill-bar). ENTER_NOW fills at the next open; a waiting card is a resting limit at ``planned``, filled when a bar of the next
-    CARD_FILL_SESSIONS trades down to it (at the open if it gaps below). (None, None, False) = never filled."""
-    n = len(df)
+def simulate_card(status: str, planned: float, stop: float, t1: float, o: Any, h: Any, lo: Any, c: Any, hold: int, *, fill_sessions: int = CARD_FILL_SESSIONS, credit_fill_bar_t1: bool = False,
+                  gap_stops: bool = True, window_from_fill: bool = True, entry_price: float | None = None) -> dict[str, Any]:
+    """THE definition of a card trade (Phase 4b; the replay and the card backtest both use it). ``o/h/lo/c`` are the completed daily bars AFTER the decision candle (index 0 = next session).
+    ENTER_NOW buys at the next open. A waiting card is a resting buy limit at ``planned``, live for ``fill_sessions`` sessions; it fills at min(limit, open) on the first bar that trades down to it;
+    a setup that never fills is NOT a trade (counted as 'unfilled', neither 0R nor dropped silently). If price has already gapped to or through the stop at the fill, the order is cancelled ('invalid').
+    The stop is checked before T1 on every bar; on a limit-fill bar T1 is not credited (the intrabar order is unknown); a stop is filled at the open when the bar gaps through it; T1 fills at T1
+    (conservative: no credit for a gap above it); after ``hold`` sessions from the FILL the trade exits at that bar's close ('time'). The keyword flags exist only to reproduce the earlier replay's
+    rules for the Phase 4b reconciliation; the defaults are the truth. Returns entry/exit prices by bar index; costs are applied by the caller."""
+    n = len(o)
+    k_in, entry = None, None
     if status == "ENTER_NOW":
-        return (float(df.iloc[t + 1]["open"]), t + 1, False) if t + 1 < n else (None, None, False)
-    for j in range(t + 1, min(t + 1 + CARD_FILL_SESSIONS, n)):
-        bar = df.iloc[j]
-        if float(bar["low"]) <= planned:
-            return min(planned, float(bar["open"])), j, True
-    return (None, None, False)
+        if n:
+            k_in, entry = 0, float(o[0] if entry_price is None else entry_price)      # entry_price: counterfactual 'bought at the decision close'
+    else:
+        for k in range(min(fill_sessions, n)):
+            if float(lo[k]) <= planned:
+                k_in, entry = k, min(planned, float(o[k]))
+                break
+    if k_in is None:
+        return {"outcome": "unfilled" if n >= (1 if status == "ENTER_NOW" else fill_sessions) else "pending"}
+    if entry <= stop:
+        return {"outcome": "invalid", "entry": entry}
+    limit_bar = status != "ENTER_NOW"
+    last = k_in + hold if window_from_fill else hold
+    for k in range(k_in, min(last, n - 1) + 1):
+        if float(lo[k]) <= stop:
+            px = min(float(o[k]), stop) if gap_stops else stop
+            return {"outcome": "stop", "entry": entry, "k_in": k_in, "k_out": k, "exit": px}
+        if float(h[k]) >= t1 and (credit_fill_bar_t1 or not (limit_bar and k == k_in)):
+            return {"outcome": "t1", "entry": entry, "k_in": k_in, "k_out": k, "exit": t1}
+    if last <= n - 1:
+        return {"outcome": "time", "entry": entry, "k_in": k_in, "k_out": last, "exit": float(c[last])}
+    return {"outcome": "pending", "entry": entry, "k_in": k_in}
 
 
 def _baseline_plan(hist: pd.DataFrame, horizon: str) -> dict[str, Any] | None:
@@ -113,14 +135,17 @@ def backtest(df: pd.DataFrame, horizon: str, cfg: te.EngineConfig | None = None,
             t += step
             continue
         zone_high, stop, atr = plan["zone_high"], plan["stop"], plan["atr"]
-        card = mode == "card"
-        if card:
-            entry, j0, stop_only_first = card_fill(df, t, plan["status"], plan["planned"])
-            if entry is None or entry <= stop:
+        if mode == "card":
+            fut = df.iloc[t + 1:]
+            res_c = simulate_card(plan["status"], plan["planned"], stop, plan["targets"][0], fut["open"].values, fut["high"].values, fut["low"].values, fut["close"].values, CARD_HOLD[horizon])
+            if res_c["outcome"] in ("unfilled", "invalid"):
                 unfilled += 1
                 t += step
                 continue
-            hold, target = CARD_HOLD[horizon], plan["targets"][0]
+            if res_c["outcome"] == "pending":
+                break
+            entry, risk = res_c["entry"], res_c["entry"] - stop
+            exit_price, exit_kind, held = res_c["exit"], {"t1": "target"}.get(res_c["outcome"], res_c["outcome"]), res_c["k_out"] + 1
         else:
             nxt = df.iloc[t + 1]
             entry = float(nxt["open"])
@@ -128,19 +153,19 @@ def backtest(df: pd.DataFrame, horizon: str, cfg: te.EngineConfig | None = None,
                 missed += 1
                 t += step
                 continue
-            j0, stop_only_first, hold = t + 1, False, MAX_HOLD_BARS[horizon]
+            hold = MAX_HOLD_BARS[horizon]
             target = plan["targets"][min(TARGET_INDEX[horizon], len(plan["targets"]) - 1)]
-        risk = entry - stop
-        last_j = min(j0 + hold, n - 1) if card else min(t + 1 + hold, n - 1)
-        exit_price, exit_kind, held = float(df.iloc[last_j]["close"]), "time", ((last_j - t) if card else hold)       # existing modes keep their original default
-        for j in range(j0, last_j + 1):
-            bar = df.iloc[j]
-            if bar["low"] <= stop:
-                exit_price, exit_kind, held = (stop if (card and j == j0 and stop_only_first) else min(float(bar["open"]), stop)), "stop", j - t
-                break
-            if bar["high"] >= target and not (j == j0 and stop_only_first):
-                exit_price, exit_kind, held = target, "target", j - t
-                break
+            risk = entry - stop
+            last_j = min(t + 1 + hold, n - 1)
+            exit_price, exit_kind, held = float(df.iloc[last_j]["close"]), "time", hold       # existing modes keep their original default
+            for j in range(t + 1, last_j + 1):
+                bar = df.iloc[j]
+                if bar["low"] <= stop:
+                    exit_price, exit_kind, held = min(float(bar["open"]), stop), "stop", j - t
+                    break
+                if bar["high"] >= target:
+                    exit_price, exit_kind, held = target, "target", j - t
+                    break
         r = (exit_price - entry) / risk - (cost_pct / 100 * entry) / risk
         trades.append({"date": asof.date().isoformat(), "setup": setup, "regime": res["market_regime"], "r": round(r, 3), "exit": exit_kind, "bars": held})
         t += max(step, held)

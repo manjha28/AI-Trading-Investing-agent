@@ -25,12 +25,23 @@ def _run(monkeypatch, rows, card, horizon="swing"):
     return tb.backtest(_df(rows), horizon, mode="card", step=500, warmup=0, cost_pct=0.0)
 
 
-def test_card_fill_helper():
-    df = _df([(100, 101, 99, 100)] * 2 + [(98, 99, 97, 98)] + [(100, 101, 99, 100)] * 8)
-    assert tb.card_fill(df, 0, "ENTER_NOW", 100.0) == (100.0, 1, False)                         # next open
-    assert tb.card_fill(df, 1, "WAIT_FOR_ENTRY", 99.0) == (98.0, 2, True)                        # gaps below the limit: fills at the open
-    assert tb.card_fill(df, 0, "WAIT_FOR_ENTRY", 99.0) == (99.0, 1, True)                        # touched on the next bar: fills at the limit
-    assert tb.card_fill(df, 3, "WAIT_FOR_ENTRY", 90.0) == (None, None, False)                    # never trades down to it inside 5 sessions
+def test_simulate_card_rules():
+    sim = tb.simulate_card
+    # ENTER_NOW: next open, T1 on the next bar
+    r = sim("ENTER_NOW", 100, 95, 110, [101, 103], [104, 111], [100, 102], [103, 110], 15)
+    assert r["outcome"] == "t1" and r["entry"] == 101 and r["k_out"] == 1 and r["exit"] == 110
+    # stop before T1 when one bar reaches both; a gap through the stop fills at the open
+    assert sim("ENTER_NOW", 100, 95, 110, [101], [112], [94], [100], 15)["exit"] == 95
+    assert sim("ENTER_NOW", 100, 95, 110, [101, 92], [102, 93], [100, 90], [101, 91], 15)["exit"] == 92
+    # waiting order: gap below the limit fills at the open; fill-bar T1 is not credited
+    assert sim("WAIT_FOR_ENTRY", 99, 90, 110, [101, 98], [102, 99], [100, 97], [101, 98], 15)["entry"] == 98
+    assert sim("WAIT_FOR_ENTRY", 100, 95, 110, [101], [112], [99.5], [111], 15)["outcome"] == "pending"
+    # never fills inside 5 sessions: unfilled, not a trade; order cancelled if it fills at or under the stop
+    assert sim("WAIT_FOR_ENTRY", 90, 85, 110, [100] * 6, [101] * 6, [99] * 6, [100] * 6, 15) == {"outcome": "unfilled"}
+    assert sim("WAIT_FOR_ENTRY", 100, 95, 110, [94], [95], [93], [94], 15)["outcome"] == "invalid"
+    # time exit counts the window from the FILL, at that bar's close
+    t = sim("WAIT_FOR_ENTRY", 100, 95, 110, [101, 101, 101, 101, 101, 101, 101, 101], [103] * 8, [99.5] + [99] * 7, [102] * 8, 3)
+    assert t["outcome"] == "time" and t["k_in"] == 0 and t["k_out"] == 3
 
 
 def test_enter_now_card_fills_at_the_next_open_and_exits_at_t1(monkeypatch):
