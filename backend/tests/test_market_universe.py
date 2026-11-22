@@ -4,6 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -313,7 +314,9 @@ def test_master_list_additions_are_separate_from_the_watchlist_and_owner_scoped(
 
     assert client.delete(f"/api/v1/market-data/universe/extras/{outside_id}", headers=headers).status_code == 204
     assert client.get("/api/v1/market-data/universe").json()["count"] == 0
-    assert client.post(f"/api/v1/market-data/universe/extras/{outside2_id[:-1]}0", headers=headers).status_code in (404, 422)
+    nonexistent_id = str(uuid4())            # was outside2_id[:-1] + "0", which IS the real id about 1 run in 16 (when it already ends in 0) and made this assertion flaky
+    assert nonexistent_id != str(outside2_id)
+    assert client.post(f"/api/v1/market-data/universe/extras/{nonexistent_id}", headers=headers).status_code in (404, 422)
 
 
 def test_master_list_additions_require_csrf_and_reject_synthetic(client, engine):

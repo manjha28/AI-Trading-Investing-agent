@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import tempfile
 import re
@@ -15,12 +16,15 @@ from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models import Instrument, InstrumentProviderIdentifier, MarketBar, NewsIngestionFailure, NewsItem, NewsSourcePoll, WatchlistInstrument
 from app.services.source_registry import _reserve_host_request
+
+logger = logging.getLogger(__name__)
+FILINGS_STALE_HOURS = 24
 
 IST = ZoneInfo("Asia/Kolkata")
 GOOGLE_COMPANIES_PER_POLL = 4
@@ -205,7 +209,10 @@ def ingest(db: Session, filings_days: int = 30, news_days: int = 2) -> dict[str,
     source_attempted = {source: True for source in counts}
     failures = 0
     start = date.today() - timedelta(days=filings_days)
-    instruments = db.scalars(select(Instrument).where(Instrument.id.in_(select(WatchlistInstrument.instrument_id)) | Instrument.id.in_(select(MarketBar.instrument_id).where(MarketBar.interval.in_(["1d", "1m"]))))).all()
+    # Per-instrument EXISTS (uses the instrument/interval/time index). The previous form (id IN watchlist OR id IN (market_bars subselect)) made Postgres re-run a 6.7M-row subselect for every
+    # instrument, which took many minutes per cycle (8 seconds now, same 359 instruments).
+    has_bars = exists().where(MarketBar.instrument_id == Instrument.id, MarketBar.interval.in_(["1d", "1m"]))
+    instruments = db.scalars(select(Instrument).where(Instrument.id.in_(select(WatchlistInstrument.instrument_id)) | has_bars)).all()
     try:
         from nse import NSE
         from nse import MemoryCookieStore
@@ -422,6 +429,25 @@ def ingest(db: Session, filings_days: int = 30, news_days: int = 2) -> dict[str,
             "unmapped_nse_symbols": unmapped}
 
 
+def check_filings_freshness(db: Session, now: datetime | None = None, max_hours: int = FILINGS_STALE_HOURS) -> dict[str, Any]:
+    """Warn in the logs when the NSE filings feed has not succeeded for ``max_hours`` (it was silently failing for 17 days: the library still used NSE's old domain). Returns the status; never raises."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        poll = db.get(NewsSourcePoll, "nse")
+        last = None if poll is None else poll.last_successful_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        age_h = None if last is None else (now - last).total_seconds() / 3600
+        stale = last is None or age_h > max_hours
+        if stale:
+            logger.warning("nse_filings_stale last_success=%s age_hours=%s last_error=%s; the event calendar and corporate-event gate are unreliable until it recovers",
+                           None if last is None else last.isoformat(), None if age_h is None else round(age_h, 1), None if poll is None else poll.last_error_category)
+        return {"stale": stale, "last_successful_at": None if last is None else last.isoformat(), "age_hours": age_h, "last_error": None if poll is None else poll.last_error_category}
+    except Exception as exc:  # noqa: BLE001 - a monitoring check must never break ingestion
+        logger.warning("nse_filings_freshness_check_failed error_class=%s", type(exc).__name__)
+        return {"stale": None, "error": type(exc).__name__}
+
+
 async def news_ingest_loop() -> None:
     """Scheduled news and filings ingestion, so per-stock news no longer depends on someone calling POST /news/ingest."""
     import asyncio
@@ -439,4 +465,11 @@ async def news_ingest_loop() -> None:
             log.info("news_ingest_cycle %s", {k: v for k, v in result.items() if isinstance(v, (int, str, bool))})
         except Exception as exc:  # noqa: BLE001 - the loop must survive any single failure
             log.warning("news_ingest_cycle_failed error_class=%s", type(exc).__name__)
+        try:                                   # every cycle, success or not: warn when the NSE feed has not succeeded for 24 hours
+            def freshness() -> dict[str, Any]:
+                with Session(engine) as db:
+                    return check_filings_freshness(db)
+            await asyncio.to_thread(freshness)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("nse_filings_freshness_failed error_class=%s", type(exc).__name__)
         await asyncio.sleep(settings.news_ingest_interval_seconds)
