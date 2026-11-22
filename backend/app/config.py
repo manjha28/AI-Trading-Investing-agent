@@ -176,6 +176,10 @@ class Settings(BaseSettings):
         default="127.0.0.1,::1", validation_alias="TRUSTED_PROXY_HOSTS"
     )
     database_url: str = "postgresql+psycopg://copilot:copilot@postgres:5432/trading_copilot"
+    db_pool_size: int = 20                                          # the default pool (5 + 10 overflow) was smaller than the 40-thread request pool: slow reports starved every other request
+    db_max_overflow: int = 20
+    db_pool_timeout_seconds: float = 20.0
+    request_timeout_seconds: float = 120.0                          # a request that runs longer gets a 504 instead of holding the client (and its pool connection) for minutes; 0 = off
     resend_api_key: SecretStr | None = None
     resend_from_email: str = ""
     email_verification_url: str = "http://localhost:5173/"

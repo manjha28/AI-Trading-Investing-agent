@@ -2,7 +2,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -830,24 +831,33 @@ def get_fundamentals_gaps(
             "disclaimer": DISCLAIMER}
 
 
-_REPORT_CACHE: dict = {}
-
-
 @router.get("/daily-report")
 def get_daily_report(
+    request: Request,
+    bucket: str | None = Query(default=None, pattern="^(buy|setup_waiting|radar|hold|no_new_entry|not_enough_data)$"),
+    limit: int | None = Query(default=None, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     _session: UserSession = Depends(require_verified_session),
     db: Session = Depends(get_db),
-) -> dict:
-    """Buy / hold / no-new-entry buckets over the owner's watchlist and held stocks, from the latest stored research."""
+):
+    """Buy / hold / no-new-entry buckets over the owner's watchlist and held stocks, from the latest stored research. The report is built once after each research run and stored; this returns the stored
+    copy (ETag, gzip), rebuilding in the background when it is stale. ``bucket`` (+ ``limit``/``offset``) returns one page of one bucket."""
     from app import research_daily
-    from app.services import research_report
+    from app.services import report_store
     researching = research_daily.kick_missing(_session.user_id)   # newly added stocks start researching immediately
-    cached = _REPORT_CACHE.get(_session.user_id)
-    if cached is not None and time.monotonic() - cached[0] < 30:   # the master list makes this a few hundred briefs: build at most every 30 s
-        return {**cached[1], "researching": researching}
-    report = research_report.build_report(db, _session.user_id)
-    _REPORT_CACHE[_session.user_id] = (time.monotonic(), report)
-    return {**report, "researching": researching}
+    served = report_store.serve(db, _session.user_id)
+    etag = f'"{served["etag"]}-{bucket or "all"}-{limit or 0}-{offset}"'
+    headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"}
+    if request.headers.get("if-none-match") == etag and not researching:
+        return Response(status_code=304, headers=headers)
+    report = served["payload"]
+    if bucket:
+        rows = (report.get("buckets") or {}).get(bucket, [])
+        page = rows[offset: offset + limit] if limit else rows[offset:]
+        body = {**{k: v for k, v in report.items() if k != "buckets"}, "buckets": {bucket: page}, "page": {"bucket": bucket, "offset": offset, "returned": len(page), "total": len(rows)}}
+    else:
+        body = report
+    return JSONResponse({**body, "researching": researching, "built_at": served["built_at"].isoformat(), "rebuilding": served["rebuilding"]}, headers=headers)
 
 
 @router.get("/pipeline-v2/compare", include_in_schema=False)

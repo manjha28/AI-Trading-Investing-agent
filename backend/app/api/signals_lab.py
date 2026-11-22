@@ -1034,10 +1034,12 @@ def _batch_runs(db: Session, user_id: UUID, batch_id: str) -> list[BacktestRun]:
 
 @router.get("/lab/batches")
 def lab_batches(active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
-    recent = list(db.scalars(select(BacktestRun).where(BacktestRun.user_id == active_session.user_id).order_by(BacktestRun.created_at.desc()).limit(600)))
+    # only the columns the listing needs: the full run rows carry large result documents (loading 600 of them cost 1-2 s of the 2 SQL statements)
+    recent = db.execute(select(BacktestRun.kind, BacktestRun.status, BacktestRun.created_at, BacktestRun.config["_options"].label("opts")).where(BacktestRun.user_id == active_session.user_id)
+                        .order_by(BacktestRun.created_at.desc()).limit(600)).all()
     batches: dict[str, dict[str, Any]] = {}
     for run in recent:
-        opts = (run.config or {}).get("_options") or {}
+        opts = run.opts or {}
         bid = opts.get("batch_id")
         if not bid:
             continue

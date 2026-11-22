@@ -97,6 +97,8 @@ def kick_missing(user_id: UUID) -> list[str]:
                         instrument = db.get(Instrument, iid)
                         if instrument is not None:
                             research_pipeline.run_instrument_research(db, user_id, instrument)
+                            from app.services import report_store
+                            report_store.refresh_in_background(user_id)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("research_new_stock_failed symbol=%s error_class=%s", sym, type(exc).__name__)
                 finally:
@@ -150,7 +152,23 @@ def _blue_sky_review_once_a_day(now: datetime) -> None:
         logger.warning("blue_sky_review_hook_failed error_class=%s", type(exc).__name__)
 
 
+def _rebuild_reports(summary: dict[str, int], key: str) -> None:
+    """After research ran, rebuild each owner's stored daily report once (in the background): the endpoint serves the stored copy, never a per-request rebuild."""
+    if not summary.get(key):
+        return
+    from app.services import report_store
+    with Session(engine) as db:
+        for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
+            report_store.refresh_in_background(user_id)
+
+
 def run_cycle(now: datetime | None = None) -> dict[str, int]:
+    summary = _run_cycle(now)
+    _rebuild_reports(summary, "researched")
+    return summary
+
+
+def _run_cycle(now: datetime | None = None) -> dict[str, int]:
     """Research every not-yet-done stock of every verified user, up to the per-cycle cap. Failures are counted, never hidden."""
     now = now or datetime.now(timezone.utc)
     _blue_sky_review_once_a_day(now)
@@ -190,6 +208,12 @@ _last_radar_pass = 0.0
 
 
 def radar_pass(now: datetime | None = None) -> dict[str, int]:
+    summary = _radar_pass(now)
+    _rebuild_reports(summary, "checked")
+    return summary
+
+
+def _radar_pass(now: datetime | None = None) -> dict[str, int]:
     """Re-research stocks on the radar (a buy signal but no entry range yet) far more often than the nightly cycle.
 
     Technicals use COMPLETED daily candles, so the benefit is catching a fresh candle, a finished history backfill, a reconnected Dhan session, or

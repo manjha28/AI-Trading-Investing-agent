@@ -20,7 +20,11 @@ def fund_symbols(*, loader: Any = None) -> frozenset[str]:
     try:
         if loader is None:
             from app.broker_adapters import DhanAdapter
-            rows = DhanAdapter._scrip_master(force=False)
+            cached = DhanAdapter._scrip_master_cache
+            if cached is None:                       # never load the 230,000-row master inside a request: warm it in the background and answer from the previous copy (or none) meanwhile
+                _warm_in_background()
+                return _cache[1] if _cache else frozenset()
+            rows = cached[1]
         else:
             rows = loader()
         syms = frozenset((r.get("UNDERLYING_SYMBOL") or "").strip().upper() for r in rows
@@ -30,6 +34,28 @@ def fund_symbols(*, loader: Any = None) -> frozenset[str]:
     except Exception as exc:  # noqa: BLE001 - classification must never break research; keep the previous copy
         logger.warning("fund_symbols_unavailable error_class=%s", type(exc).__name__)
         return _cache[1] if _cache else frozenset()
+
+
+_warming = False
+
+
+def _warm_in_background() -> None:
+    global _warming
+    if _warming:
+        return
+    _warming = True
+
+    def run() -> None:
+        global _warming
+        try:
+            from app import dhan_master_warm
+            dhan_master_warm.warm_once()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fund_master_warm_failed error_class=%s", type(exc).__name__)
+        finally:
+            _warming = False
+    import threading
+    threading.Thread(target=run, name="dhan-master-warm", daemon=True).start()
 
 
 def is_fund(instrument: Any) -> bool:

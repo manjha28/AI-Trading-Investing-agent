@@ -26,6 +26,12 @@ def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "trading-copilot-api"}
 
 
+@router.get("/healthz")
+def liveness_check() -> dict[str, str]:
+    """Liveness only: never touches the database, so a saturated pool or a slow query cannot make the process look dead (use /ready for readiness)."""
+    return {"status": "ok"}
+
+
 @router.get("/ready")
 def readiness_check() -> JSONResponse:
     try:

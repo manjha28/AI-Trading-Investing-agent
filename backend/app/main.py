@@ -266,6 +266,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+
+from app.request_timeout import RequestTimeoutMiddleware  # noqa: E402
+
+app.add_middleware(GZipMiddleware, minimum_size=2048)
+app.add_middleware(RequestTimeoutMiddleware, seconds=settings.request_timeout_seconds)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.allowed_origins),
