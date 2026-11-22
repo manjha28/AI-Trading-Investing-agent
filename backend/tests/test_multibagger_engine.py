@@ -230,7 +230,7 @@ def test_decide_maps_the_engine_classes_only_compounders_and_candidates_can_buy(
 
 
 # ───────────── nightly storage and the owner-scoped API ─────────────
-def test_the_screen_endpoint_is_off_by_default_owner_scoped_and_filters(monkeypatch):
+def test_the_screen_endpoint_is_readable_in_shadow_mode_owner_scoped_and_filters(monkeypatch):
     from datetime import datetime, timezone
     from types import SimpleNamespace
     from uuid import uuid4
@@ -267,9 +267,10 @@ def test_the_screen_endpoint_is_off_by_default_owner_scoped_and_filters(monkeypa
         sess = SimpleNamespace(user_id=me)
         monkeypatch.setattr(settings, "multibagger_screen_enabled", False)
         off = api.get_multibagger(klass=None, sector=None, min_rank=None, limit=400, _session=sess, db=db)
-        assert off["enabled"] is False and off["items"] == []
+        assert off["enabled"] is True and off["shadow"] is True and len(off["items"]) == 3                      # readable with the flag off, marked as shadow
         monkeypatch.setattr(settings, "multibagger_screen_enabled", True)
         on = api.get_multibagger(klass=None, sector=None, min_rank=None, limit=400, _session=sess, db=db)
+        assert on["shadow"] is False
         assert [i["symbol"] for i in on["items"]] == ["AAA", "CCC", "BBB"] and on["counts"] == {"quality_compounder": 1, "avoid": 1, "watch": 1}        # ordered by class, then rank
         assert all("failed_or_unknown" in i and i["checklist"] for i in on["items"])
         only = api.get_multibagger(klass="watch", sector=None, min_rank=None, limit=400, _session=sess, db=db)

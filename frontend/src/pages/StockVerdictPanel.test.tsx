@@ -29,11 +29,10 @@ describe('StockVerdictPanel', () => {
     expect(screen.getByText(/quality compounder · 12 of 17 checks passed/)).toBeTruthy();
     expect(screen.getByText('results on 2026-11-26')).toBeTruthy();
   });
-  it('renders nothing when the flag is off and says so when no verdict exists yet', async () => {
-    mockApi.mockResolvedValue({ enabled: false, horizons: {}, disclaimer: 'x' });
-    const { container, rerender } = render(<StockVerdictPanel symbol="AAA" />);
-    await waitFor(() => expect(mockApi).toHaveBeenCalled());
-    expect(container.textContent).toBe('');
+  it('shows the shadow note while the flag is off, and says so when no verdict exists yet', async () => {
+    mockApi.mockResolvedValue({ ...payload, shadow: true });
+    const { rerender } = render(<StockVerdictPanel symbol="AAA" />);
+    await waitFor(() => expect(screen.getByText(/Shadow mode: nightly results/)).toBeTruthy());
     mockApi.mockResolvedValue({ enabled: true, as_of: null, message: 'No nightly verdict has been computed for this stock yet.', horizons: {}, disclaimer: 'x' });
     rerender(<StockVerdictPanel symbol="BBB" />);
     await waitFor(() => expect(screen.getByText(/No nightly verdict/)).toBeTruthy());

@@ -7,10 +7,13 @@ vi.mock('../api', () => ({ apiRequest: mockApi }));
 afterEach(() => { cleanup(); mockApi.mockReset(); });
 
 describe('Multibagger screen', () => {
-  it('says the screen is off when the flag is off', async () => {
-    mockApi.mockResolvedValue({ enabled: false, message: 'The multibagger screen is switched off.', items: [], disclaimer: 'Decision support, not investment advice.' });
+  it('shows the results in shadow mode with a note that nothing uses them yet', async () => {
+    mockApi.mockResolvedValue({ enabled: true, shadow: true, as_of: '2026-11-22', model_version: 'm', counts: { watch: 1 }, disclaimer: 'Decision support, not investment advice.',
+      items: [{ symbol: 'ABC', instrument_id: 'i1', class: 'watch', rank: null, scores: { Q: 72, G: null, V: null, T: null, X: null }, checklist: '3 of 9', timing: null, kind: 'default', reasons: [], failed_or_unknown: [], class_if_unknown_checks_cleared: null }] });
     render(<Multibagger />);
-    await waitFor(() => expect(screen.getByText(/switched off/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('ABC')).toBeTruthy());
+    expect(screen.getByText(/Shadow mode: these results are computed every night/)).toBeTruthy();
+    expect(screen.queryByText(/switched off\./)).toBeNull();
   });
   it('lists class, scores with unknown as a dash, the checklist and reasons', async () => {
     mockApi.mockResolvedValue({ enabled: true, as_of: '2026-11-22', model_version: 'multibagger-0.1.0-provisional', counts: { watch: 1 }, disclaimer: 'Decision support, not investment advice.',

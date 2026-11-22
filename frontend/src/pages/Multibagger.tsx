@@ -3,7 +3,7 @@ import { apiRequest } from '../api';
 
 type Item = { symbol: string; instrument_id: string; class: string; rank: number | null; scores: Record<string, number | null>; checklist: string | null; timing: string | null; kind: string | null;
   reasons: string[]; failed_or_unknown: string[]; class_if_unknown_checks_cleared: string | null };
-type Resp = { enabled: boolean; message?: string; as_of?: string | null; model_version?: string | null; counts?: Record<string, number>; items: Item[]; disclaimer: string };
+type Resp = { enabled: boolean; shadow?: boolean; message?: string; as_of?: string | null; model_version?: string | null; counts?: Record<string, number>; items: Item[]; disclaimer: string };
 
 const LABEL: Record<string, string> = { multibagger_candidate: 'Multibagger candidate', quality_compounder: 'Quality compounder', emerging: 'Emerging (unproven, half size)', new_listing: 'New listing (quarter size)', watch: 'Watch', not_a_fit: 'Not a fit', not_tradable: 'Not tradable', avoid: 'Avoid', not_assessable: 'Not assessable' };
 const s = (v: number | null | undefined) => (v === null || v === undefined ? '—' : v.toFixed(0));
@@ -18,9 +18,10 @@ export function Multibagger({ onOpen }: { onOpen?: (symbol: string) => void }) {
   }, [klass]);
   if (error) return <p role="alert">{error}</p>;
   if (!data) return <p>Loading the multibagger screen…</p>;
-  if (!data.enabled) return <section><h3>Multibagger screen</h3><p>{data.message}</p><p className="muted">{data.disclaimer}</p></section>;
   return (
     <section aria-label="Multibagger screen">
+      {data.shadow && <p className="rt-note" role="status">Shadow mode: these results are computed every night and shown here for you to read, but no card, verdict or buy decision uses them yet (multibagger_screen_enabled is off).</p>}
+      {data.message && data.items.length === 0 && <p>{data.message}</p>}
       <h3>Multibagger screen <small>(long-term only; provisional {data.model_version ?? ''}{data.as_of ? `, ${data.as_of}` : ''})</small></h3>
       <div className="rt-tabs" role="group" aria-label="Class filter">
         <button type="button" className={klass === '' ? 'active' : ''} onClick={() => setKlass('')}>All</button>

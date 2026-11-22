@@ -7,7 +7,7 @@ type Lens = { score: number | null; direction: string; facts: string[]; coverage
 type Levels = { entry_status?: string; entry_zone?: { low: string; high: string } | null; stop?: string; targets?: { label: string; price: string; risk_reward?: number }[]; entry_label?: string } | null;
 type Horizon = { verdict: string; evidence_score: number | null; evidence?: { label: string } | null; confidence?: { line: string | null; band: string | null; validated: boolean } | null; reasons: string[]; veto: string | null;
   size: number | null; levels: Levels; grade: string | null; lenses: Record<string, Lens> };
-type Verdict = { enabled: boolean; message?: string; symbol?: string; as_of?: string | null; headline?: { horizon: string; verdict: string; evidence: number } | null; horizons: Record<string, Horizon>;
+type Verdict = { enabled: boolean; shadow?: boolean; message?: string; symbol?: string; as_of?: string | null; headline?: { horizon: string; verdict: string; evidence: number } | null; horizons: Record<string, Horizon>;
   multibagger?: { class: string; checklist: string | null; timing: string | null; failed_or_unknown: string[] } | null; regime?: { regime: string | null; facts: string[] } | null; risks_and_events?: string[]; disclaimer: string };
 
 const HZ: Record<string, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
@@ -32,6 +32,7 @@ export function StockVerdictPanel({ symbol }: { symbol: string }) {
     <section className="rt-card stock-verdict" aria-label="Stock verdict">
       <header>
         <h3>Verdict {data.headline ? <span className={`rt-chip rt-chip-${data.headline.verdict}`}>{VERDICT[data.headline.verdict]} · {HZ[data.headline.horizon]}</span> : null}</h3>
+        {data.shadow && <small className="rt-note" role="status">Shadow mode: nightly results for you to read; the Daily report does not use them yet (stock_verdict_enabled is off).</small>}
         <small className="rt-muted">As of {formatIST(data.as_of)} · stock-verdict (provisional)</small>
       </header>
       <table className="rt-table">

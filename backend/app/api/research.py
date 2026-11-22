@@ -880,14 +880,13 @@ def get_multibagger(
     _session: UserSession = Depends(require_verified_session),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Phase 6 multibagger screen: the latest nightly result per stock of the owner's research universe. Shown only when ``multibagger_screen_enabled`` is on (the nightly shadow run happens regardless).
+    """Phase 6 multibagger screen: the latest nightly result per stock of the owner's research universe. Always readable; ``shadow`` is true while ``multibagger_screen_enabled`` is off (the results are then computed nightly but not used by any card or verdict).
     Long-term only: swing and positional are not filtered by fundamentals. Owner-scoped, read-only."""
     from app.models.multibagger import MultibaggerAssessment
-    if not settings.multibagger_screen_enabled:
-        return {"enabled": False, "message": "The multibagger screen is switched off (multibagger_screen_enabled). Results are still computed nightly in shadow mode.", "disclaimer": DISCLAIMER, "items": []}
+    shadow = not settings.multibagger_screen_enabled      # the flag decides whether the engine is USED (long-term Quality stage, cards); the owner can always read the nightly results here
     latest = db.scalar(select(func.max(MultibaggerAssessment.as_of)).where(MultibaggerAssessment.user_id == _session.user_id))
     if latest is None:
-        return {"enabled": True, "as_of": None, "counts": {}, "items": [], "message": "No nightly result has been computed yet.", "disclaimer": DISCLAIMER}
+        return {"enabled": True, "shadow": shadow, "as_of": None, "counts": {}, "items": [], "message": "No nightly result has been computed yet.", "disclaimer": DISCLAIMER}
     rows = db.execute(select(MultibaggerAssessment, Instrument.symbol).join(Instrument, Instrument.id == MultibaggerAssessment.instrument_id)
                       .where(MultibaggerAssessment.user_id == _session.user_id, MultibaggerAssessment.as_of == latest)).all()
     counts: dict[str, int] = {}
@@ -904,7 +903,7 @@ def get_multibagger(
                       "failed_or_unknown": [f"{k['id']}: {k['reason']}" for k in (c.get("checks") or []) if k["result"] in ("fail", "unknown")][:8], "class_if_unknown_checks_cleared": (c.get("class_if_unknown_checks_cleared") or {}).get("class")})
     order = {"multibagger_candidate": 0, "quality_compounder": 1, "emerging": 2, "new_listing": 3, "watch": 4, "not_a_fit": 5, "not_tradable": 6, "avoid": 7, "not_assessable": 8}
     items.sort(key=lambda i: (order[i["class"]], -(i["rank"] or 0), i["symbol"]))
-    return {"enabled": True, "as_of": latest.isoformat(), "model_version": rows[0][0].model_version if rows else None, "counts": counts, "items": items[:limit], "disclaimer": DISCLAIMER}
+    return {"enabled": True, "shadow": shadow, "as_of": latest.isoformat(), "model_version": rows[0][0].model_version if rows else None, "counts": counts, "items": items[:limit], "disclaimer": DISCLAIMER}
 
 
 @router.get("/stock/{symbol}/verdict")
@@ -913,17 +912,16 @@ def get_stock_verdict(
     _session: UserSession = Depends(require_verified_session),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Phase 7: the latest nightly stock verdict (seven lenses, a verdict, an evidence score and levels per horizon, a headline = the best horizon). Off unless ``stock_verdict_enabled``; the nightly shadow
-    run stores results regardless. Owner-scoped, read-only. Decision support, not investment advice."""
+    """Phase 7: the latest nightly stock verdict (seven lenses, a verdict, an evidence score and levels per horizon, a headline = the best horizon). Always readable (``shadow`` is true while ``stock_verdict_enabled`` is off); the nightly
+    shadow run stores results regardless. Owner-scoped, read-only. Decision support, not investment advice."""
     from app.models.stock_verdict import StockVerdict
-    if not settings.stock_verdict_enabled:
-        return {"enabled": False, "message": "The stock verdict is switched off (stock_verdict_enabled). Results are still computed nightly in shadow mode.", "disclaimer": DISCLAIMER}
+    shadow = not settings.stock_verdict_enabled          # off = computed nightly and readable here, but the Daily report buckets do not use it
     inst = db.scalar(select(Instrument).where(func.upper(Instrument.symbol) == symbol.upper(), Instrument.is_synthetic.is_(False)).order_by(Instrument.venue.desc()).limit(1))
     if inst is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
     latest = db.scalar(select(func.max(StockVerdict.as_of)).where(StockVerdict.user_id == _session.user_id, StockVerdict.instrument_id == inst.id))
     if latest is None:
-        return {"enabled": True, "symbol": inst.symbol, "as_of": None, "message": "No nightly verdict has been computed for this stock yet.", "horizons": {}, "disclaimer": DISCLAIMER}
+        return {"enabled": True, "shadow": shadow, "symbol": inst.symbol, "as_of": None, "message": "No nightly verdict has been computed for this stock yet.", "horizons": {}, "disclaimer": DISCLAIMER}
     rows = list(db.scalars(select(StockVerdict).where(StockVerdict.user_id == _session.user_id, StockVerdict.instrument_id == inst.id, StockVerdict.as_of == latest)))
     horizons = {}
     for r in rows:
@@ -931,7 +929,7 @@ def get_stock_verdict(
         horizons[r.horizon] = {"verdict": r.verdict, "evidence_score": r.evidence_score, "calibrated_confidence": r.calibrated_confidence, "confidence": extra.get("confidence"), "evidence": extra.get("evidence"),
                                "reasons": (extra.get("reasons") or [])[:3], "veto": extra.get("veto"), "size": extra.get("size"), "levels": extra.get("levels"), "grade": extra.get("grade"), "lenses": r.lens}
     any_row = (rows[0].reasons or {}) if rows else {}
-    return {"enabled": True, "symbol": inst.symbol, "as_of": latest.isoformat(), "model_version": rows[0].model_version if rows else None, "headline": any_row.get("headline"), "horizons": horizons,
+    return {"enabled": True, "shadow": shadow, "symbol": inst.symbol, "as_of": latest.isoformat(), "model_version": rows[0].model_version if rows else None, "headline": any_row.get("headline"), "horizons": horizons,
             "multibagger": any_row.get("multibagger"), "regime": any_row.get("regime"), "risks_and_events": any_row.get("risks_and_events"), "disclaimer": DISCLAIMER}
 
 
