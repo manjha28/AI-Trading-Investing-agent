@@ -70,6 +70,24 @@ def quality_gate(fundamentals: dict[str, Any] | None, sector: str | None, indust
     return {"status": status, "financial": financial, "checks": checks}
 
 
+def engine_quality(db: Any, user_id: Any, instrument_id: Any, phase4: dict[str, Any]) -> dict[str, Any]:
+    """Phase 6 (flag ``multibagger_screen_enabled``): the long-term Quality stage is the multibagger engine's stored nightly class. Only multibagger_candidate and quality_compounder can be a long-term BUY;
+    watch -> WAIT, avoid -> AVOID, not assessable / no result -> INSUFFICIENT_EVIDENCE. Phase 4's own gates still apply on top (a failed Phase 4 gate is never overridden), because the latest-year operating
+    cash flow check is stricter than the engine's 3-year cash conversion veto."""
+    from sqlalchemy import select
+
+    from app.models.multibagger import MultibaggerAssessment
+    row = db.scalar(select(MultibaggerAssessment).where(MultibaggerAssessment.instrument_id == instrument_id, MultibaggerAssessment.user_id == user_id).order_by(MultibaggerAssessment.as_of.desc()).limit(1))
+    if phase4["status"] == "fail":
+        return phase4
+    if row is None:
+        return {"status": "unknown", "financial": phase4.get("financial", False), "checks": [_chk("multibagger_engine", "Multibagger engine result", "unknown", "No nightly multibagger result is stored for this stock yet.")], "engine_class": None}
+    klass = row.klass
+    reasons = [r for r in ((row.checks or {}).get("reasons") or [])][:3] or [klass]
+    status = {"multibagger_candidate": "pass", "quality_compounder": "pass", "watch": "watch", "avoid": "fail", "not_assessable": "not_assessable"}[klass]
+    return {"status": status, "financial": phase4.get("financial", False), "engine_class": klass, "checks": [_chk("multibagger_engine", f"Multibagger engine class: {klass}", "pass" if status == "pass" else "fail" if status in ("fail", "watch") else "unknown", "; ".join(reasons))]}
+
+
 def timing_stage(engine_card: dict[str, Any] | None, levels_card: dict[str, Any] | None) -> dict[str, Any]:
     if not engine_card or engine_card.get("status") != "available":
         return {"status": "unknown", "reason": (engine_card or {}).get("reason") or "The technical engine could not read this horizon."}
@@ -93,6 +111,8 @@ def decide(horizon: str, technicals: dict[str, Any], gate_liquidity: dict[str, A
     if horizon == "long_term" and quality is not None:
         if quality["status"] == "fail":
             return {"recommendation": "AVOID", "stage_failed": "quality", "reasons": [c["reason"] for c in quality["checks"] if c["result"] == "fail"]}
+        if quality["status"] == "watch":
+            return {"recommendation": "WAIT", "stage_failed": "quality", "reasons": [c["reason"] for c in quality["checks"] if c["result"] != "pass"]}
         if quality["status"] in ("not_assessable", "unknown"):
             return {"recommendation": "INSUFFICIENT_EVIDENCE", "stage_failed": "quality", "reasons": [c["reason"] for c in quality["checks"] if c["result"] in ("fail", "unknown")]}
     if timing["status"] != "pass":
@@ -137,6 +157,9 @@ def evaluate(db: Any, user_id: Any, instrument: Any, sections: dict[str, Any], d
     snap = (fundamentals.get("snapshot") or {}).get("values") or {}
     sector, industry = (snap.get("sector") or {}).get("value"), (snap.get("industry") or {}).get("value")
     quality = quality_gate(fundamentals, sector, industry)
+    from app.config import settings
+    if settings.multibagger_screen_enabled:
+        quality = engine_quality(db, user_id, instrument.id, quality)
     news = ((sections.get("assessment") or {}).get("components") or {}).get("news_sentiment") or {}
     contradictory = bool(news.get("status") == "scored" and news.get("conflicts"))
     out_h: dict[str, Any] = {}

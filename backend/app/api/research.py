@@ -861,6 +861,42 @@ def pipeline_v2_compare(
     return {**pipeline_v2.compare(db, _session.user_id, limit=limit), "disclaimer": DISCLAIMER}
 
 
+@router.get("/multibagger")
+def get_multibagger(
+    klass: str | None = Query(default=None, alias="class", pattern="^(multibagger_candidate|quality_compounder|watch|avoid|not_assessable)$"),
+    sector: str | None = Query(default=None, max_length=80),
+    min_rank: float | None = Query(default=None, ge=0, le=100),
+    limit: int = Query(default=400, ge=1, le=1000),
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Phase 6 multibagger screen: the latest nightly result per stock of the owner's research universe. Shown only when ``multibagger_screen_enabled`` is on (the nightly shadow run happens regardless).
+    Long-term only: swing and positional are not filtered by fundamentals. Owner-scoped, read-only."""
+    from app.models.multibagger import MultibaggerAssessment
+    if not settings.multibagger_screen_enabled:
+        return {"enabled": False, "message": "The multibagger screen is switched off (multibagger_screen_enabled). Results are still computed nightly in shadow mode.", "disclaimer": DISCLAIMER, "items": []}
+    latest = db.scalar(select(func.max(MultibaggerAssessment.as_of)).where(MultibaggerAssessment.user_id == _session.user_id))
+    if latest is None:
+        return {"enabled": True, "as_of": None, "counts": {}, "items": [], "message": "No nightly result has been computed yet.", "disclaimer": DISCLAIMER}
+    rows = db.execute(select(MultibaggerAssessment, Instrument.symbol).join(Instrument, Instrument.id == MultibaggerAssessment.instrument_id)
+                      .where(MultibaggerAssessment.user_id == _session.user_id, MultibaggerAssessment.as_of == latest)).all()
+    counts: dict[str, int] = {}
+    items = []
+    for a, sym in rows:
+        counts[a.klass] = counts.get(a.klass, 0) + 1
+        c = a.checks or {}
+        if klass and a.klass != klass or (min_rank is not None and (a.rank or 0) < min_rank):
+            continue
+        if sector and sector.casefold() not in str(c.get("kind", "")).casefold() and sector.casefold() not in str(c.get("sector", "")).casefold():
+            continue
+        items.append({"symbol": sym, "instrument_id": str(a.instrument_id), "class": a.klass, "rank": a.rank, "scores": {"Q": a.q, "G": a.g, "V": a.v, "T": a.t, "X": a.x}, "checklist": c.get("checklist"),
+                      "timing": c.get("timing"), "kind": c.get("kind"), "reasons": (c.get("reasons") or [])[:3],
+                      "failed_or_unknown": [f"{k['id']}: {k['reason']}" for k in (c.get("checks") or []) if k["result"] in ("fail", "unknown")][:8], "class_if_unknown_checks_cleared": (c.get("class_if_unknown_checks_cleared") or {}).get("class")})
+    order = {"multibagger_candidate": 0, "quality_compounder": 1, "watch": 2, "avoid": 3, "not_assessable": 4}
+    items.sort(key=lambda i: (order[i["class"]], -(i["rank"] or 0), i["symbol"]))
+    return {"enabled": True, "as_of": latest.isoformat(), "model_version": rows[0][0].model_version if rows else None, "counts": counts, "items": items[:limit], "disclaimer": DISCLAIMER}
+
+
 @router.get("/fundamentals-coverage")
 def get_fundamentals_coverage(
     limit: int = Query(default=200, ge=1, le=1000),

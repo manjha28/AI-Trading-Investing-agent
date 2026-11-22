@@ -1283,6 +1283,25 @@ _HISTORY_FAILURES: dict[UUID, float] = {}
 HISTORY_RETRY_SECONDS = 6 * 3600
 
 
+NARROW_WINDOW_DAYS = 150
+
+
+def _sync_history_narrow(db: Session, instrument: Instrument, user: Any, provider: Any, start: datetime, end: datetime) -> bool:
+    """Retry [start, end] in windows of NARROW_WINDOW_DAYS from the newest backwards. True if at least one window stored data; stops at the first window that fails after one succeeded."""
+    got, cursor = False, end
+    while cursor > start:
+        lo = max(start, cursor - timedelta(days=NARROW_WINDOW_DAYS))
+        try:
+            sync_history(instrument_id=instrument.id, start=lo, end=cursor, background_tasks=None, interval="1d", limit=MAX_BARS, provider=provider, _user=user, db=db)
+            got = True
+        except HTTPException:
+            db.rollback()
+            if got:
+                break                     # reached the range before the listing
+        cursor = lo
+    return got
+
+
 def ensure_daily_history(db: Session, instrument: Instrument, user_id: UUID) -> dict[str, Any]:
     """Fetch about 3 years of real daily bars through the existing history-sync path when fewer than MIN_DAILY_HISTORY_BARS are stored.
 
@@ -1306,8 +1325,15 @@ def ensure_daily_history(db: Session, instrument: Instrument, user_id: UUID) -> 
         now = datetime.now(timezone.utc)
         for i in range(HISTORY_WINDOWS):   # sync_history only requests ranges not already stored, so re-runs are cheap
             end = now - timedelta(days=i * HISTORY_WINDOW_DAYS)
-            sync_history(instrument_id=instrument.id, start=end - timedelta(days=HISTORY_WINDOW_DAYS), end=end, background_tasks=None, interval="1d",
-                         limit=MAX_BARS, provider=provider, _user=user, db=db)
+            start = end - timedelta(days=HISTORY_WINDOW_DAYS)
+            try:
+                sync_history(instrument_id=instrument.id, start=start, end=end, background_tasks=None, interval="1d", limit=MAX_BARS, provider=provider, _user=user, db=db)
+            except HTTPException:
+                # Dhan returns nothing for a long window that starts before a recent listing (22 stocks listed Mar-Nov 2026 were stuck at ~10 bars): retry the same range in narrower
+                # windows, newest first, and stop at the first narrow window that also returns nothing (the range before the listing). Dhan only; nothing is invented.
+                db.rollback()
+                if not _sync_history_narrow(db, instrument, user, provider, start, end):
+                    raise
     except HTTPException as exc:
         db.rollback()
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}

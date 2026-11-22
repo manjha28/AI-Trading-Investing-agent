@@ -1218,3 +1218,5 @@ from app.models.strategies import BacktestRun, IntradaySignal, IntradaySignalEve
 from app.models.fundamentals_ops import FundamentalsFetchLog  # noqa: F401
 from app.models.fundamental_snapshots import FundamentalSnapshot, GovernanceEvent, ShareholdingSnapshot  # noqa: F401
 from app.models.pipeline_v2 import PipelineV2Shadow  # noqa: F401
+from app.models.price_crosscheck import PriceCrosscheck  # noqa: F401
+from app.models.multibagger import MultibaggerAssessment  # noqa: F401

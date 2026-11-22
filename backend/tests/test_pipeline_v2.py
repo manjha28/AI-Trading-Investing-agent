@@ -235,3 +235,38 @@ def test_render_brief_with_the_v2_pipeline_replaces_the_decision_and_with_it_off
         assert row["recommendation"] == on["pipeline_v2"]["horizons"][h]["v2_recommendation"] and "v1_recommendation" in row
     assert on["assessment"]["weights"]["swing"]["news_sentiment"] == 0.0                          # sentiment carries no weight under v2
     assert on["technical_engine"]["horizons"]["long_term"]["v2"]["version"] == "levels-v2/1"      # the engine ran with the v2 level rules because the pipeline needs them
+
+
+# ───────────── new listings: ensure_daily_history retries narrower windows ─────────────
+def test_ensure_daily_history_retries_narrow_windows_when_a_long_window_returns_nothing(db, monkeypatch):
+    from datetime import timedelta
+    from fastapi import HTTPException
+    from app.models import User
+    from app.services import research_pipeline as rp
+    i = _instrument(db, "NEWLIST")
+    u = User(id=uuid4(), email="x@example.invalid", password_hash="x", email_verified=True, created_at=NOW)
+    db.add(u)
+    db.commit()
+    listing_age_days = 100                                                        # listed 100 days ago: any window that reaches back before that and is LONG returns nothing
+    calls, stored = [], []
+
+    def fake_sync(*, instrument_id, start, end, **kw):
+        width = (end - start).days
+        calls.append(width)
+        if end < NOW_REAL - timedelta(days=listing_age_days) or width > 300:
+            raise HTTPException(status_code=503, detail={"message": "no history", "providers": [{"provider": "dhan", "reason": "provider_no_history_for_range"}]})
+        stored.append((start, end))
+        from decimal import Decimal
+        from app.models import MarketBar
+        t = max(start, NOW_REAL - timedelta(days=listing_age_days))
+        for k in range(30):
+            db.add(MarketBar(id=uuid4(), instrument_id=instrument_id, interval="1d", timestamp=t + timedelta(days=k * 2), open=Decimal("1"), high=Decimal("1"), low=Decimal("1"), close=Decimal("1"), volume=Decimal("1"), source="dhan", retrieved_at=NOW_REAL, is_synthetic=False))
+        db.commit()
+
+    NOW_REAL = datetime.now(timezone.utc)
+    monkeypatch.setattr(rp, "sync_history", fake_sync)
+    monkeypatch.setattr(rp, "dhan_only_provider", lambda db_, uid: object())
+    out = rp.ensure_daily_history(db, i, u.id)
+    assert out["bars_after"] > out["bars_before"] == 0 and stored                  # the narrow retry stored bars where the 700-day window stored nothing
+    assert max(calls) == rp.HISTORY_WINDOW_DAYS and min(calls) <= rp.NARROW_WINDOW_DAYS     # the long window was tried first, then narrow ones
+    assert rp.NARROW_WINDOW_DAYS < 300

@@ -115,13 +115,17 @@ def load_calibration(path=None) -> dict[str, Any]:
 
 
 def measured_line(horizon: str, grade: str | None, table: dict[str, Any] | None = None) -> str | None:
-    """The measured line ("T1 before stop in 34% of 119 past setups, average +0.41R after costs") for grade A on the POSITIONAL and LONG-TERM cards only, and only once grade A has at least
-    ``min_trades`` past trades for THAT horizon (owner rule). Otherwise None: the card shows the grade only. Hypothetical past results on a survivor-free replay, not a forecast."""
+    """The measured line ("T1 before stop in 34% of 119 past setups, average +0.41R after costs") for grade A on the POSITIONAL and LONG-TERM cards only. Owner rule (2026-11-22): shown only when that
+    horizon and grade have at least ``min_trades`` past trades AND the 95% CI of their net R excludes zero (lower bound above 0). Otherwise None: the card shows the grade only. Hypothetical past
+    results on a survivor-free replay, not a forecast. Grades A and B do not separate outcomes, so the grade is a pass/fail setup check, not evidence of quality."""
     if grade != "A" or horizon not in MEASURED_HORIZONS:
         return None
     table = table if table is not None else load_calibration()
     row = ((table.get("horizons") or {}).get(horizon) or {}).get("A")
     if not row or int(row.get("n", 0)) < int(table.get("min_trades", 100)):
+        return None
+    ci = row.get("net_r_ci95")
+    if not ci or ci[0] is None or ci[0] <= 0:
         return None
     return f"T1 before stop in {row['t1_before_stop']:.0%} of {row['n']} past setups, average {row['mean_net_r']:+.2f}R after costs"
 

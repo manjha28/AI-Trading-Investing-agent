@@ -193,7 +193,7 @@ def main() -> None:
 
     from app.db import engine
     from app.models import Instrument
-    from app.services import research_pipeline as rp
+    from app.services import instrument_kind, price_crosscheck, research_pipeline as rp
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbols", required=True)
@@ -204,6 +204,12 @@ def main() -> None:
         bench = rp._benchmark_series(db)
         for symbol in [s.strip().upper() for s in args.symbols.split(",") if s.strip()]:
             inst = db.scalar(select(Instrument).where(Instrument.symbol == symbol, Instrument.is_synthetic.is_(False)).limit(1))
+            if inst is not None and instrument_kind.is_fund(inst):
+                print(symbol, "skipped: an ETF/fund, not a stock")
+                continue
+            if inst is not None and inst.id in price_crosscheck.flagged_instrument_ids(db):
+                print(symbol, "skipped: its Dhan prices disagree with the reference (price cross-check flag); excluded from backtests until resolved")
+                continue
             frame = rp._daily_frame(db, inst.id, None) if inst else None
             if frame is None:
                 print(symbol, "no stored daily candles")

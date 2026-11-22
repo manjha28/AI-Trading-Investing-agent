@@ -44,13 +44,14 @@ def priority_universe(db: Session, user_id: UUID) -> list[Instrument]:
 
 def user_universe(db: Session, user_id: UUID, *, include_master: bool = True) -> list[Instrument]:
     """Priority stocks first, then the whole Market watch master list (the owner's scan universe). De-duplicated, NSE equity only."""
-    out = priority_universe(db, user_id)
+    from app.services import instrument_kind
+    out = [i for i in priority_universe(db, user_id) if not instrument_kind.is_fund(i)]      # ETFs / index / liquid / gilt funds are not stocks: no stock research for them
     if include_master:
         seen = {i.id for i in out}
         try:
             from app.services import lab
             for inst in lab.master_instruments(db, user_id):
-                if inst.id not in seen and inst.country == "IN" and inst.asset_class == "equity" and not inst.is_synthetic:
+                if inst.id not in seen and inst.country == "IN" and inst.asset_class == "equity" and not inst.is_synthetic and not instrument_kind.is_fund(inst):
                     seen.add(inst.id)
                     out.append(inst)
         except Exception as exc:  # noqa: BLE001 - a master-list problem must not stop research of the priority stocks
@@ -122,10 +123,12 @@ def _blue_sky_review_once_a_day(now: datetime) -> None:
         return
     _last_blue_sky_review = today
     try:
-        from app.services import shadow_outcomes
+        from app.services import multibagger_loader, price_crosscheck, shadow_outcomes
         with Session(engine) as db:
+            price_crosscheck.log_nightly(db)          # Dhan vs NSE bhavcopy closes: flags stocks off by more than 1% (excluded from backtests)
             for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
                 shadow_outcomes.log_review(db, user_id)
+                multibagger_loader.log_nightly(db, user_id)      # Phase 6: the engine always runs in shadow mode; the flag only decides whether results are shown or used
     except Exception as exc:  # noqa: BLE001
         logger.warning("blue_sky_review_hook_failed error_class=%s", type(exc).__name__)
 

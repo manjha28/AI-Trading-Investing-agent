@@ -4,6 +4,7 @@ import './research.css';
 import type { Instrument, WatchlistEntry, SourceLink, Source, Fact, Note, FieldValue, FundamentalPeriod, IndicatorValue, NewsItem, StoredNewsItem, NewsSourceHealth, SentimentArticle, SentimentEvent, SentimentAggregate, SentimentHistoryPoint, NewsSource, QualityItem, Brief, FactDraft, ResearchProgressEvent, ResearchRunState, BatchRunResult, ComponentKey, HorizonKey, ScoreFactor, ScoreComponent, HorizonAssessment, Assessment } from './researchTypes';
 import { ResearchBriefView, plainText } from './ResearchReport';
 import { DailyReport } from './DailyReport';
+import { Multibagger } from './Multibagger';
 import { StockHero } from './StockHero';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -45,7 +46,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
   addInstrumentToWatchlist: (instrumentId: string, symbol: string) => Promise<void>;
   removeInstrumentFromWatchlist: (instrumentId: string) => Promise<void>;
 }) {
-  const [view, setView] = useState<'today' | 'stock'>('today');
+  const [view, setView] = useState<'today' | 'stock' | 'multibagger'>('today');
   const [instrumentQuery, setInstrumentQuery] = useState('');
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [batchSelection, setBatchSelection] = useState<Instrument[]>([]);
@@ -499,8 +500,10 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
       <nav className="rt-modes rt-seg" aria-label="Research view">
         <button type="button" className={view === 'today' ? 'active' : ''} aria-pressed={view === 'today'} onClick={() => setView('today')}>Daily report</button>
         <button type="button" className={view === 'stock' ? 'active' : ''} aria-pressed={view === 'stock'} onClick={() => setView('stock')}>Stock research{selected ? ` · ${selected.symbol}` : ''}</button>
+        <button type="button" className={view === 'multibagger' ? 'active' : ''} aria-pressed={view === 'multibagger'} onClick={() => setView('multibagger')}>Multibagger screen</button>
       </nav>
       {view === 'today' && <DailyReport onOpen={openStock} />}
+      {view === 'multibagger' && <Multibagger />}
       {view === 'stock' && <>
       <section className="rt-card rt-command rt-command-slim" aria-label="Research command bar">
         <div className="rt-topbar">

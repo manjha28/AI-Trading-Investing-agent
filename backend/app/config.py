@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import ipaddress
 from datetime import date, time
 from decimal import Decimal
@@ -69,6 +70,57 @@ def is_trusted_proxy(peer_host: str | None, configured_proxies: tuple[str, ...])
     return False
 
 
+@dataclass
+class MultibaggerConfig:
+    """Thresholds of the Nexus v2 multibagger engine (Phase 6; flag ``multibagger_screen_enabled``). Anchors are (value, score) pairs for ``research_scoring._lerp``. Starting hypotheses, not tuned."""
+    min_price: float = 20.0
+    liquidity_floor_cr: float = 2.0                       # long-term floor (Phase 3)
+    data_current_annual_months: int = 15
+    data_current_quarter_months: int = 6
+    min_listing_fiscal_years: int = 3
+    pledge_max_pct: float = 10.0
+    share_cagr_3y_max: float = 0.05
+    cfo_pat_min: float = 0.5
+    de_max: float = 1.0
+    coverage_min: float = 3.0
+    max_losses_in_3y: int = 1                             # net loss in fewer than 2 of the last 3 years
+    min_data_share: float = 0.70                          # a score is computed only when this share of its weight is backed by data
+    q_min_avoid: float = 40.0
+    mb_q: float = 70.0
+    mb_g: float = 70.0
+    mb_v: float = 50.0
+    mb_t: float = 50.0
+    mb_cap_cr: tuple[float, float] = (500.0, 20000.0)
+    qc_q: float = 70.0
+    qc_g: float = 50.0
+    qc_v: float = 30.0
+    watch_q: float = 55.0
+    watch_g: float = 60.0
+    watch_t: float = 50.0
+    buy_zone_x: float = 70.0
+    pe_cap_at: float = 80.0
+    pe_cap_v: float = 25.0
+    gsec_10y_pct: float | None = None                     # set by hand; unknown (factor dropped) until set
+    roce_anchors: tuple = ((10.0, 0.0), (15.0, 40.0), (20.0, 70.0), (30.0, 100.0))
+    roce_min_anchors: tuple = ((8.0, 0.0), (12.0, 50.0), (18.0, 100.0))
+    cash_conv_anchors: tuple = ((0.5, 0.0), (0.8, 70.0), (1.0, 100.0))
+    de_anchors: tuple = ((0.0, 100.0), (0.3, 85.0), (0.5, 65.0), (1.0, 20.0))
+    coverage_anchors: tuple = ((3.0, 20.0), (6.0, 60.0), (12.0, 100.0))
+    promoter_anchors: tuple = ((30.0, 40.0), (50.0, 80.0), (65.0, 100.0))
+    rev_cagr_anchors: tuple = ((5.0, 0.0), (12.0, 50.0), (20.0, 85.0), (30.0, 100.0))
+    pat_cagr_anchors: tuple = ((5.0, 0.0), (15.0, 55.0), (25.0, 90.0), (35.0, 100.0))
+    consistency_anchors: tuple = ((0.0, 0.0), (0.6, 60.0), (1.0, 100.0))
+    margin_change_anchors: tuple = ((-3.0, 0.0), (0.0, 50.0), (3.0, 80.0), (6.0, 100.0))
+    runway_anchors_cr: tuple = ((500.0, 40.0), (1000.0, 100.0), (15000.0, 100.0), (50000.0, 40.0), (200000.0, 0.0))
+    tailwind_anchors: tuple = ((5.0, 0.0), (10.0, 50.0), (18.0, 100.0))
+    peg_anchors: tuple = ((0.6, 100.0), (1.0, 80.0), (1.5, 55.0), (2.5, 20.0), (3.5, 0.0))
+    pe_rel_anchors: tuple = ((0.6, 100.0), (1.0, 60.0), (1.5, 20.0), (2.0, 0.0))
+    pe_to_sector_anchors: tuple = ((0.6, 90.0), (1.0, 55.0), (1.5, 20.0))
+    ey_spread_anchors: tuple = ((-5.0, 0.0), (-2.0, 50.0), (0.0, 80.0), (2.0, 100.0))
+    roa_anchors: tuple = ((1.0, 30.0), (1.5, 70.0), (2.0, 100.0))
+    roe_anchors: tuple = ((12.0, 30.0), (15.0, 60.0), (18.0, 100.0))
+
+
 class Settings(BaseSettings):
     app_name: str = "Trading Copilot API"
     environment: str = "development"
@@ -110,6 +162,9 @@ class Settings(BaseSettings):
     nse_filings_enabled: bool = False                              # Phase 6: governance/pledge/ASM-GSM adapter for NSE public filings. DISABLED; NSE's terms of use have NOT been read, so nothing may call NSE through it
     levels_v2_enabled: bool = False                               # Nexus v2 phase 1: level fixes (services/levels_v2.py). Off = v1 byte-identical
     confidence_v2_enabled: bool = False                           # Nexus v2 phase 2: factor rank + setup grade replace the confidence badge
+    multibagger_screen_enabled: bool = False                      # Phase 6: the multibagger engine feeds the long-term Quality stage and the page; the nightly shadow run happens regardless
+    multibagger_gsec_10y_pct: float | None = None                  # Phase 6: 10-year G-sec yield in percent, set by hand; unset = the earnings-yield spread factor is unknown (dropped from V)
+    leader_tag_enabled: bool = False                              # Phase 6: optional 'Leader' tag on swing/positional cards (chart stage X >= 70 and RS > 0)
     pipeline_v2_enabled: bool = False                             # Nexus v2 phases 3-4: Gate -> Quality (long-term) -> Timing, shadow mode
     ml_overlay_enabled: bool = False                              # Nexus v2 phase 5: in-house ML tie-break overlay
     level_guardrails_enabled: bool = False                        # B04 Part A: deterministic level checks (targets above price, stale levels, stop width, overhead resistance); off until the owner reviews the diff

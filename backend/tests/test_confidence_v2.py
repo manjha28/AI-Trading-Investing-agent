@@ -194,7 +194,7 @@ def test_ordinals():
 
 
 # ───────────── the measured line (positional and long-term, grade A, >= 100 past trades per horizon) ─────────────
-TABLE = {"min_trades": 100, "horizons": {"positional": {"A": {"n": 119, "t1_before_stop": 0.34, "mean_net_r": 0.41}}, "long_term": {"A": {"n": 99, "t1_before_stop": 0.30, "mean_net_r": 0.20}},
+TABLE = {"min_trades": 100, "horizons": {"positional": {"A": {"n": 119, "t1_before_stop": 0.34, "mean_net_r": 0.41, "net_r_ci95": [0.10, 0.72]}}, "long_term": {"A": {"n": 99, "t1_before_stop": 0.30, "mean_net_r": 0.20, "net_r_ci95": [0.05, 0.35]}},
                                           "swing": {"A": {"n": 500, "t1_before_stop": 0.5, "mean_net_r": 0.5}}}}
 
 
@@ -205,11 +205,15 @@ def test_measured_line_only_for_grade_a_on_positional_and_long_term_with_enough_
     assert sg.measured_line("positional", "B", TABLE) is None and sg.measured_line("positional", None, TABLE) is None
     assert sg.measured_line("positional", "A", {"min_trades": 100, "horizons": {}}) is None
     assert sg.measured_line("positional", "A", {}) is None                      # missing calibration: grade only
+    zero_in = {"min_trades": 100, "horizons": {"positional": {"A": {"n": 500, "t1_before_stop": 0.4, "mean_net_r": 0.3, "net_r_ci95": [-0.01, 0.6]}}}}
+    assert sg.measured_line("positional", "A", zero_in) is None                 # 500 trades but the CI includes zero: hidden
+    no_ci = {"min_trades": 100, "horizons": {"positional": {"A": {"n": 500, "t1_before_stop": 0.4, "mean_net_r": 0.3}}}}
+    assert sg.measured_line("positional", "A", no_ci) is None                   # no CI recorded: hidden
 
 
-def test_the_shipped_calibration_has_no_horizon_with_100_grade_a_trades_yet_so_no_line_is_shown():
+def test_the_shipped_calibration_qualifies_nowhere_so_no_line_is_shown():
     cal = sg.load_calibration()
-    assert cal["min_trades"] == 100 and cal["horizons"]["positional"]["A"]["n"] < 100 and cal["horizons"]["long_term"]["A"]["n"] < 100
+    assert cal["min_trades"] == 100 and "net_r_ci95" in cal["horizons"]["positional"]["A"]
     assert sg.measured_line("positional", "A") is None and sg.measured_line("long_term", "A") is None
 
 
