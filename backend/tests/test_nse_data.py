@@ -203,3 +203,37 @@ def test_a_missing_old_document_is_skipped_without_counting_toward_a_block(tmp_p
         with pytest.raises(nd.NseDocumentUnavailable):
             c.document("https://example.invalid/old.xml")
     assert c.consecutive_errors == 0
+
+
+# ───────────── annual balance sheet and cash flow ─────────────
+def balance_xml(*, equity="500", nc="100", cur="50", cash="40", assets="900", ppe="300", cfo="130", end="2026-03-31", start="2025-04-01"):
+    return f"""<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:i="x" xmlns:d="http://xbrl.org/2006/xbrldi">
+<xbrli:context id="I"><xbrli:entity/><xbrli:period><xbrli:instant>{end}</xbrli:instant></xbrli:period></xbrli:context>
+<xbrli:context id="D"><xbrli:entity/><xbrli:period><xbrli:startDate>{start}</xbrli:startDate><xbrli:endDate>{end}</xbrli:endDate></xbrli:period></xbrli:context>
+<xbrli:context id="Seg"><xbrli:entity><xbrli:segment><d:explicitMember dimension="a">b</d:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:instant>{end}</xbrli:instant></xbrli:period></xbrli:context>
+<i:Equity contextRef="I">{equity}</i:Equity><i:Equity contextRef="Seg">99999</i:Equity><i:BorrowingsNoncurrent contextRef="I">{nc}</i:BorrowingsNoncurrent><i:BorrowingsCurrent contextRef="I">{cur}</i:BorrowingsCurrent>
+<i:CashAndCashEquivalents contextRef="I">{cash}</i:CashAndCashEquivalents><i:Assets contextRef="I">{assets}</i:Assets><i:PropertyPlantAndEquipment contextRef="I">{ppe}</i:PropertyPlantAndEquipment>
+<i:CashFlowsFromUsedInOperatingActivities contextRef="D">{cfo}</i:CashFlowsFromUsedInOperatingActivities></xbrli:xbrl>""".encode()
+
+
+def test_balance_sheet_and_cash_flow_parse_and_a_missing_borrowings_line_is_unknown_not_zero():
+    b = nd.parse_balance_cash_xbrl(balance_xml(), date(2026, 3, 31))
+    assert b == {"equity": 500, "assets": 900, "cash": 40, "fixed_assets": 300, "debt": 150, "cfo": 130}
+    none = nd.parse_balance_cash_xbrl(balance_xml().decode().replace("BorrowingsNoncurrent", "X1").replace("BorrowingsCurrent", "X2").encode(), date(2026, 3, 31))
+    assert "debt" not in none                                                                                 # no borrowings line at all: debt stays unknown
+    assert nd.parse_balance_cash_xbrl(balance_xml(), date(2025, 3, 31)) is None                               # nothing at another date
+
+
+def test_annual_balance_gap_fill_follows_the_same_rules_as_the_results(db):
+    i = _inst(db)
+    db.add(InstrumentFundamental(instrument_id=i.id, period_type="annual", period_end=date(2026, 3, 31), currency="INR", total_equity=Decimal("498"), total_debt=Decimal("100"), operating_cash_flow=None, source="yfinance", fetched_at=NOW))
+    db.commit()
+    log: list = []
+    res = nd.store_balance_cash(db, i.id, date(2026, 3, 31), nd.parse_balance_cash_xbrl(balance_xml(), date(2026, 3, 31)), date(2026, 4, 20), "consolidated", NOW, log)
+    db.commit()
+    row = db.scalar(select(InstrumentFundamental))
+    assert res == "updated" and row.total_equity == Decimal("498")                                           # within 2%: Yahoo's value kept, provenance confirmed
+    assert row.total_debt == Decimal("150") and [c["field"] for c in log] == ["total_debt"] and log[0]["previous_source"] == "yfinance"        # 50% apart: NSE wins, Yahoo logged
+    assert row.operating_cash_flow == Decimal("130") and row.total_assets == Decimal("900")                   # gaps filled
+    assert row.field_sources["operating_cash_flow"]["source"] == "nse_results" and row.extra_metrics["cash"]["source"] == "nse_results" and row.filed_on == date(2026, 4, 20)
+    assert nd.store_balance_cash(db, i.id, date(2026, 3, 31), nd.parse_balance_cash_xbrl(balance_xml(), date(2026, 3, 31)), date(2026, 4, 20), "consolidated", NOW) == "unchanged"

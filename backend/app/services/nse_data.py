@@ -241,6 +241,95 @@ def parse_results_xbrl(content: bytes, period_end: date) -> dict[str, Any] | Non
     return out or None
 
 
+BALANCE_TAGS = {"equity": ("Equity", "EquityAttributableToOwnersOfParent"), "assets": ("Assets",), "cash": ("CashAndCashEquivalents",), "fixed_assets": ("PropertyPlantAndEquipment",),
+                "debt_noncurrent": ("BorrowingsNoncurrent",), "debt_current": ("BorrowingsCurrent",)}
+CASH_FLOW_TAGS = ("CashFlowsFromUsedInOperatingActivities", "NetCashFlowsFromUsedInOperatingActivities")
+
+
+def parse_balance_cash_xbrl(content: bytes, period_end: date) -> dict[str, Decimal] | None:
+    """Annual balance sheet (at the March year end) and operating cash flow for the year from a year-end filing: equity, total debt (current + non-current borrowings), cash, total assets, fixed assets, CFO.
+    INR absolute. A figure the filing does not carry is simply absent (unknown), never zero. Debt is only reported when at least one borrowings line exists."""
+    root = etree.fromstring(content)
+    ctx = _contexts(root)
+    bal: dict[str, Decimal] = {}
+    cfo: Decimal | None = None
+    names = {t: k for k, ts in BALANCE_TAGS.items() for t in ts}
+    for e in root.iter():
+        ln = etree.QName(e).localname
+        cref = e.get("contextRef")
+        if cref not in ctx or ctx[cref]["dim"]:
+            continue
+        c = ctx[cref]
+        v = _dec(e.text)
+        if v is None:
+            continue
+        key = names.get(ln)
+        if key and c["end"] == period_end and c["start"] is None:                  # instant at the year end
+            if key not in bal or BALANCE_TAGS[key].index(ln) == 0:
+                bal[key] = v
+        elif ln in CASH_FLOW_TAGS and c["end"] == period_end and c["start"] is not None and 350 <= (c["end"] - c["start"]).days <= 380 and cfo is None:
+            cfo = v
+    out: dict[str, Decimal] = {k: v for k, v in bal.items() if k in ("equity", "assets", "cash", "fixed_assets")}
+    if "debt_noncurrent" in bal or "debt_current" in bal:
+        out["debt"] = bal.get("debt_noncurrent", Decimal(0)) + bal.get("debt_current", Decimal(0))
+    if cfo is not None:
+        out["cfo"] = cfo
+    return out or None
+
+
+def store_balance_cash(db: Any, instrument_id: Any, period_end: date, vals: dict[str, Decimal], filed_on: date | None, basis: str, now: datetime, conflicts_log: list[dict[str, Any]] | None = None) -> str:
+    """Gap-fill the ANNUAL row with the NSE-filed balance sheet and cash flow: a missing value is filled; a value within 2% is confirmed; a value more than 2% apart is replaced by NSE's (the earlier value and
+    its source are kept in the conflict log), exactly as for the P&L. Source order: Dhan (no statements) -> NSE -> Yahoo."""
+    from sqlalchemy import select
+
+    from app.models import InstrumentFundamental
+    row = db.scalar(select(InstrumentFundamental).where(InstrumentFundamental.instrument_id == instrument_id, InstrumentFundamental.period_type == "annual", InstrumentFundamental.period_end == period_end))
+    iso = now.isoformat()
+    if row is None:
+        row = InstrumentFundamental(instrument_id=instrument_id, period_type="annual", period_end=period_end, currency="INR", source=SOURCE, fetched_at=now, statement_basis=basis, filed_on=filed_on, field_sources={}, extra_metrics=None)
+        db.add(row)
+        created = True
+    else:
+        created = False
+    fs, extras = dict(row.field_sources or {}), dict(row.extra_metrics or {})
+    cols = {"equity": "total_equity", "assets": "total_assets", "debt": "total_debt", "cfo": "operating_cash_flow"}
+    changed = created
+    for key, col in cols.items():
+        new = vals.get(key)
+        if new is None:
+            continue
+        old = getattr(row, col)
+        if old is None:
+            setattr(row, col, new)
+        elif old != 0 and abs(new - old) / abs(old) > CONFLICT_TOLERANCE:
+            conflict = {"field": col, "period_end": str(period_end), "nse": str(new), "previous": str(old), "previous_source": (fs.get(col) or {}).get("source") or row.source, "logged_at": iso}
+            extras.setdefault("conflicts", []).append(conflict)
+            if conflicts_log is not None:
+                conflicts_log.append(conflict)
+            setattr(row, col, new)
+        elif (fs.get(col) or {}).get("source") == SOURCE:
+            continue
+        fs[col] = prov(basis, iso)
+        changed = True
+    for key in ("cash", "fixed_assets"):
+        new = vals.get(key)
+        if new is None:
+            continue
+        cur = _num(extras.get(key))
+        if cur is not None and cur != 0 and abs(new - cur) / abs(cur) > CONFLICT_TOLERANCE:
+            extras.setdefault("conflicts", []).append({"field": key, "period_end": str(period_end), "nse": str(new), "previous": str(cur), "previous_source": (extras.get(key) or {}).get("source"), "logged_at": iso})
+        if cur is None or (extras.get(key) or {}).get("source") != SOURCE:
+            extras[key] = {"value": str(new), "source": SOURCE, "fetched_at": iso, "basis": basis}
+            changed = True
+    if filed_on is not None and row.filed_on is None:
+        row.filed_on = filed_on
+        changed = True
+    if changed:
+        row.field_sources, row.extra_metrics = fs, extras or None
+        row.statement_basis = row.statement_basis or basis
+    return "inserted" if created else "updated" if changed else "unchanged"
+
+
 # ───────────────────────── storage ─────────────────────────
 def _d(s: str | None) -> date | None:
     if not s:
@@ -372,7 +461,7 @@ def pick_filings(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[d
 
 def sync_results(db: Any, client: PoliteNse, instrument: Any, *, since: date, now: datetime | None = None, max_filings: int | None = None) -> dict[str, int]:
     now = now or datetime.now(timezone.utc)
-    out = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "failed": 0}
+    out: dict[str, int] = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "failed": 0}
     sym = instrument.symbol
     old = []
     for period in ("quarterly", "annual"):
@@ -386,7 +475,10 @@ def sync_results(db: Any, client: PoliteNse, instrument: Any, *, since: date, no
     n = 0
     for f in filings:
         row = have.get(("annual" if f["kind"] == "annual" else "quarterly", f["period_end"]))
-        if row is not None and row.filed_on is not None and (row.field_sources or {}).get("revenue") == SOURCE:
+        year_end = f["period_end"].month == 3
+        arow = have.get(("annual", f["period_end"]))
+        need_balance = year_end and not ((arow is not None) and (arow.field_sources or {}).get("total_equity", {}).get("source") == SOURCE)
+        if row is not None and row.filed_on is not None and (row.field_sources or {}).get("revenue", {}).get("source") == SOURCE and not need_balance:
             out["skipped"] += 1                                       # already stored from this filing
             continue
         if max_filings is not None and n >= max_filings:
@@ -406,11 +498,21 @@ def sync_results(db: Any, client: PoliteNse, instrument: Any, *, since: date, no
         if not parsed:
             out["failed"] += 1
             continue
+        basis = "consolidated" if f["consolidated"] else "standalone"
         for kind, vals in parsed.items():
             if kind != ("annual" if f["kind"] == "annual" else "quarterly") and not (f["kind"] == "quarterly" and kind == "annual" and f["period_end"].month == 3):
                 continue
-            res = store_results(db, instrument.id, kind, f["period_end"], vals, f["filed_on"], "consolidated" if f["consolidated"] else "standalone", now)
+            res = store_results(db, instrument.id, kind, f["period_end"], vals, f["filed_on"], basis, now)
             out[res] += 1
+        if year_end:                                                  # the March filing also carries the balance sheet and the year's cash flow
+            try:
+                bal = parse_balance_cash_xbrl(client.document(f["xbrl"], now=now), f["period_end"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("nse_balance_parse_failed symbol=%s error_class=%s", sym, type(exc).__name__)
+                bal = None
+            if bal:
+                key = "balance_" + store_balance_cash(db, instrument.id, f["period_end"], bal, f["filed_on"], basis, now)
+                out[key] = out.get(key, 0) + 1
     db.commit()
     return out
 
