@@ -1217,3 +1217,4 @@ from app.models.var_strategy import VarBacktestRun, VarConfigVersion  # noqa: F4
 from app.models.strategies import BacktestRun, IntradaySignal, IntradaySignalEvent, OptionContract, OptionQuote, ScanRejection, Strategy, StrategySignal, StrategyVersion  # noqa: F401
 from app.models.fundamentals_ops import FundamentalsFetchLog  # noqa: F401
 from app.models.fundamental_snapshots import FundamentalSnapshot, GovernanceEvent, ShareholdingSnapshot  # noqa: F401
+from app.models.pipeline_v2 import PipelineV2Shadow  # noqa: F401

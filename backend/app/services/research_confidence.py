@@ -54,6 +54,7 @@ def buy_confidence_v2(horizon_key: str, horizon: dict[str, Any], levels: dict[st
     parts = [{"key": x["key"], "label": x["label"], "value": x["percentile"], "weight": x.get("weight", 0)} for x in (fh.get("groups") or []) if x["percentile"] is not None]
     rank_text = f"Factor rank {_ordinal(fh['rank'])} of {fh['of']} (factor screen)" if ok else "Factor rank unavailable"
     return {"kind": "factor_v2", "score": points * 1000 + (pct or 0), "band": label, "label": label, "grade": g["grade"], "setup": g, "provisional": True, "basis": "factor_rank_v2",
+            "measured_line": setup_grade.measured_line(horizon_key, g["grade"]),
             "factor_rank": ({"rank": fh["rank"], "of": fh["of"], "composite": fh["composite"], "percentile": fh["percentile"], "as_of": factor.get("as_of"), "universe_size": factor.get("universe_size"), "text": rank_text} if ok else None),
             "parts": parts, "note": (f"{rank_text}; composite {fh['composite']:g}/100, as of {factor.get('as_of')} across {factor.get('universe_size')} stocks. " if ok else "The factor rank could not be computed. ")
                                     + "A screen on trend quality, volume flow and relative strength, not a confidence and not a probability of profit."}
@@ -62,7 +63,7 @@ def buy_confidence_v2(horizon_key: str, horizon: dict[str, Any], levels: dict[st
 def buy_confidence(horizon: dict[str, Any], levels: dict[str, Any] | None, buy_horizons: int, buy_threshold: float, max_risk_atr: float, rank: dict[str, Any] | None = None,
                    horizon_key: str | None = None, factor: dict[str, Any] | None = None) -> dict[str, Any] | None:
     from app.config import settings
-    if settings.confidence_v2_enabled and horizon_key:
+    if settings.confidence_v2_active and horizon_key:
         return buy_confidence_v2(horizon_key, horizon, levels, factor)
     if horizon.get("recommendation") != "BUY" or horizon.get("score") is None or horizon.get("confidence") is None:
         return None

@@ -55,4 +55,18 @@ describe('DailyReport', () => {
     expect(screen.getByText(/EVENT CALENDAR UNRELIABLE/)).toBeTruthy();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
+
+  it('v2: shows the measured line only when the backend sends one, and shows the grade alone otherwise', async () => {
+    const withLine = { ...confV2, measured_line: 'T1 before stop in 34% of 119 past setups, average +0.41R after costs' };
+    const card = (c: typeof confV2) => ({ ...buy, horizons: { positional: { recommendation: 'BUY', score: 80, confidence: 80, buy_confidence: c, why_not: [] } }, confidence: c });
+    mockApi.mockImplementation(() => Promise.resolve({ ...reportV2, buckets: { ...reportV2.buckets, buy: [card(withLine)], setup_waiting: [] } }));
+    const first = render(<DailyReport onOpen={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/T1 before stop in 34% of 119 past setups/)).toBeTruthy());
+    first.unmount();
+    mockApi.mockImplementation(() => Promise.resolve({ ...reportV2, buckets: { ...reportV2.buckets, buy: [card(confV2)], setup_waiting: [] } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
+    expect(screen.queryByText(/past setups/)).toBeNull();
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
 });

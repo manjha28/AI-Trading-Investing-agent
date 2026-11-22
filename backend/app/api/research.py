@@ -850,6 +850,17 @@ def get_daily_report(
     return {**report, "researching": researching}
 
 
+@router.get("/pipeline-v2/compare", include_in_schema=False)
+def pipeline_v2_compare(
+    limit: int = Query(default=300, ge=1, le=2000),
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Hidden (not in the API docs or the UI): the owner's latest v1-vs-v2 recommendation per stock and horizon, from the shadow records. Owner-scoped, read-only."""
+    from app.services import pipeline_v2
+    return {**pipeline_v2.compare(db, _session.user_id, limit=limit), "disclaimer": DISCLAIMER}
+
+
 @router.get("/fundamentals-coverage")
 def get_fundamentals_coverage(
     limit: int = Query(default=200, ge=1, le=1000),

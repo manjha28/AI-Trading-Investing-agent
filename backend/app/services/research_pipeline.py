@@ -837,7 +837,7 @@ def render_brief(
                 _now = datetime.now(timezone.utc)
                 frame = gates_v2.drop_forming_bar(frame, _now)
                 gates = gates_v2.compute(db, instrument.id, user_id, frame, _now)
-            if settings.levels_v2_enabled and frame is not None and user_id is not None:      # Nexus v2: adjust only bars that are actually raw at a split/bonus ex-date
+            if settings.levels_v2_active and frame is not None and user_id is not None:      # Nexus v2: adjust only bars that are actually raw at a split/bonus ex-date
                 from app.models import CorporateAction
                 from app.services import levels_v2
                 acts = [(r.ex_date, r.action_type, float(r.ratio)) for r in db.scalars(select(CorporateAction).where(
@@ -855,13 +855,30 @@ def render_brief(
             from app.services import gates_v2
             gates_v2.apply_to_levels(sections["levels"], gates)
             sections["gates_v2"] = gates
+        if settings.pipeline_v2_enabled:      # Nexus v2 phase 4: Gate -> Quality (long-term) -> Timing decides; v1's recommendation is kept beside it
+            from app.services import factor_rank, gates_v2, pipeline_v2
+            v1_recs = {h: (row or {}).get("recommendation") for h, row in ((sections.get("assessment") or {}).get("horizons") or {}).items()}
+            all_buy = {"horizons": {h: {"recommendation": "BUY"} for h in technical_engine.HORIZONS}}
+            sections["levels"] = research_levels.build_levels(technicals, all_buy, sections["technical_engine"])
+            if gates is not None:
+                gates_v2.apply_to_levels(sections["levels"], gates)
+            engine_scores = {h: float(c["technical_score"]) for h, c in (sections["technical_engine"].get("horizons") or {}).items() if c.get("status") == "available"}
+            sections["assessment"] = build_assessment(sections, instrument_id=str(instrument.id), technical_override=engine_scores, news_context_only=True)
+            try:
+                sections["factor_rank"] = factor_rank.rank_for(db, instrument.id)
+            except Exception as exc:  # noqa: BLE001 - a ranking failure must never remove the decision; the grade then shows without a rank
+                logger.warning("factor_rank_failed error_class=%s", type(exc).__name__)
+                sections["factor_rank"] = {"status": "unavailable", "reason": "The factor rank could not be computed."}
+            _ev = pipeline_v2.evaluate(db, user_id, instrument, sections, frame if gates is not None else None, datetime.now(timezone.utc), engine=sections["technical_engine"], levels=sections["levels"],
+                                       gates=gates, factor=sections["factor_rank"], v1_recs=v1_recs)
+            pipeline_v2.apply_to_assessment(sections, _ev)
         try:
             from app.services import universe_rank
             sections["universe_rank"] = universe_rank.rank_for(db, instrument.id)
         except Exception as exc:  # noqa: BLE001 - a ranking failure must never break the brief
             logger.warning("universe_rank_failed error_class=%s", type(exc).__name__)
             sections["universe_rank"] = {"status": "unavailable", "reason": "Universe rank could not be computed."}
-        if settings.confidence_v2_enabled:
+        if settings.confidence_v2_active:
             try:
                 from app.services import factor_rank
                 sections["factor_rank"] = factor_rank.rank_for(db, instrument.id)
@@ -1402,7 +1419,8 @@ def _execute_instrument_research(
     try:
         sentiment = aggregate_instrument_sentiment(db, instrument.id, period_days=30)
         sentiment_state = sentiment["status"]
-        sentiment_detail = f"Existing classifier {CLASSIFIER_VERSION}; sentiment remains provisional and does not drive a recommendation."
+        sentiment_detail = (f"Existing classifier {CLASSIFIER_VERSION}; sentiment is a context flag and a contradictory-news gate only (no score weight)." if settings.pipeline_v2_enabled
+                            else f"Existing classifier {CLASSIFIER_VERSION}; sentiment remains provisional and does not drive a recommendation.")
     except Exception as exc:
         sentiment = {"status": "unavailable", "sentiment": None, "score": None,
                      "confidence_score": None, "events": [], "article_count": 0, "event_count": 0,
@@ -1518,6 +1536,13 @@ def _execute_instrument_research(
     db.refresh(run)
     db.refresh(brief)
     _progress_event(db, run, "preparing_snapshot", "completed", "Immutable research brief and provenance persisted.")
+    from app.services import pipeline_v2
+    try:        # Nexus v2: always record the v2 decision beside v1 (shadow mode when the flag is off)
+        _daily = _daily_frame(db, instrument.id, (brief.sections or {}).get("technicals", {}).get("source"))
+        pipeline_v2.record_shadow(db, run.user_id, instrument, brief, _daily, _benchmark_series(db))
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("pipeline_v2_shadow_hook_failed error_class=%s", type(exc).__name__)
     from app.services import research_alerts
     research_alerts.notify_if_new_buy(db, run, brief)
     return run, brief

@@ -51,7 +51,9 @@ class LevelsV2Config:
     major_reject_gap_bars: int = 5                   # touches closer than this count once
     broken_close_atr: float = 0.5                    # once any close is above the level by this many ATR it is broken, no longer a wall
     use_major_swing_barriers: bool = True            # relaxation switch (default = as specified): when False, only multi-factor zones and the 52-week high are barriers
-    high52_blue_sky_atr: float = 0.0                 # relaxation switch: a 52-week high less than this many daily ATR above the close is NOT a barrier (the stock is at its high). 0 = off (as specified)
+    high52_blue_sky_atr: float = 0.5                 # PROVISIONAL v2 default (owner decision 2026-11-22; v1 untouched): a 52-week high less than this many daily ATR above the close is NOT a barrier (the stock is at its high).
+                                                     # Evidence: +303 ladders, added setups net R +0.28 [+0.10, +0.46]; with 8 comparisons it would not survive a multiple-testing correction, so every ladder that exists only
+                                                     # because of it is flagged (``relaxation_dependent``) and tracked separately in shadow mode. 0 = off (the original spec).
     broken_support_veto: bool = True                 # relaxation switch (default on, as specified)
     blue_sky_weekly_atr: float = 2.0                 # no barrier above the close: T1 = max(2R, close + this x weekly ATR)
     blue_sky_min_r: float = 2.0

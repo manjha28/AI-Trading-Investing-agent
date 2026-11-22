@@ -470,12 +470,19 @@ def score_valuation_component(valuation: dict[str, Any] | None, sector: str | No
 
 
 # ───────────────────────── Horizons and recommendation ─────────────────────────
-def assess_horizons(components: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def assess_horizons(components: dict[str, dict[str, Any]], technical_override: dict[str, float] | None = None, news_context_only: bool = False) -> dict[str, Any]:
+    """``technical_override`` (Nexus v2): {horizon: the technical engine's own 0-100 score for that horizon} replaces the generic technical component's score, so the score and the levels agree.
+    ``news_context_only`` (Nexus v2): sentiment carries NO weight (the other weights are renormalised) but still raises the contradictory-news gate and stays visible as context."""
     technical_ok = components["technical"]["status"] == "scored"
     result: dict[str, Any] = {}
     for horizon in HORIZONS:
         weights = HORIZON_WEIGHTS[horizon]
+        if news_context_only:
+            rest = 1.0 - weights["news_sentiment"]
+            weights = {k: (0.0 if k == "news_sentiment" else v / rest) for k, v in weights.items()}
         scored = {k: c for k, c in components.items() if c["status"] == "scored"}
+        if technical_override and horizon in technical_override and "technical" in scored:
+            scored["technical"] = {**scored["technical"], "score": float(technical_override[horizon])}
         excluded = [k for k in OPTIONAL_COMPONENTS if k in components and k not in scored]
         denominator = 1.0 - sum(weights[k] for k in excluded)  # weight of the components that are applicable to this instrument
         scored_weight = sum(weights[k] for k in scored) / denominator
@@ -507,7 +514,7 @@ def assess_horizons(components: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if confidence < MIN_CONFIDENCE_FOR_BUY:
             gates.append({"code": "low_confidence", "detail": f"Confidence {confidence:.0f} is below {MIN_CONFIDENCE_FOR_BUY:.0f}."})
         news = components["news_sentiment"]
-        if news["status"] == "scored" and news["conflicts"] and weights["news_sentiment"] / denominator >= 0.20:
+        if news["status"] == "scored" and news["conflicts"] and (news_context_only or weights["news_sentiment"] / denominator >= 0.20):
             gates.append({"code": "contradictory_evidence", "detail": "News evidence is materially contradictory."})
         fundamental = components["fundamental"]
         if fundamental["status"] == "scored" and fundamental["risk_flags"]:
@@ -520,7 +527,8 @@ def assess_horizons(components: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def build_assessment(sections: dict[str, Any], *, instrument_id: str, now: datetime | None = None) -> dict[str, Any]:
+def build_assessment(sections: dict[str, Any], *, instrument_id: str, now: datetime | None = None, technical_override: dict[str, float] | None = None,
+                     news_context_only: bool = False) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     fundamentals = sections["fundamentals"]
     snap_values = (fundamentals.get("snapshot") or {}).get("values") or {}
@@ -538,14 +546,14 @@ def build_assessment(sections: dict[str, Any], *, instrument_id: str, now: datet
         "validation": {"status": "provisional", "backtested": False,
                        "statement": "Weights, anchors and thresholds are unvalidated hypotheses. Scores are not validated predictions of future returns."},
         "generated_at": now.isoformat(),
-        "weights": HORIZON_WEIGHTS,
+        "weights": HORIZON_WEIGHTS if not news_context_only else {h: {k: (0.0 if k == "news_sentiment" else v / (1.0 - w["news_sentiment"])) for k, v in w.items()} for h, w in HORIZON_WEIGHTS.items()},
         "optional_components": list(OPTIONAL_COMPONENTS),
         "valuation_model_version": valuation_scoring.SCORING_VERSION,
         "thresholds": {"buy": BUY_THRESHOLD, "hold": HOLD_THRESHOLD, "min_confidence_for_buy": MIN_CONFIDENCE_FOR_BUY,
                        "min_scored_weight": MIN_SCORED_WEIGHT, "min_company_events": MIN_COMPANY_EVENTS},
         "sector": sector, "financial_sector": is_financial_sector(sector, industry),
         "components": components,
-        "horizons": assess_horizons(components),
+        "horizons": assess_horizons(components, technical_override, news_context_only),
         "not_implemented_gates": NOT_IMPLEMENTED_GATES if not settings.pipeline_v2_enabled else [],      # Nexus v2 phase 3 implements the liquidity and corporate-event gates (services/gates_v2.py)
         "default_horizon": "positional",
     }

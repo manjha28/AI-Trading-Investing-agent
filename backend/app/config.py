@@ -192,6 +192,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
+    def levels_v2_active(self) -> bool:
+        """Nexus v2 level rules are active when their own flag OR the v2 pipeline (whose Timing stage is built on them) is on."""
+        return bool(self.levels_v2_enabled or self.pipeline_v2_enabled)
+
+    @property
+    def confidence_v2_active(self) -> bool:
+        """Factor rank + setup grade are active when their own flag OR the v2 pipeline (whose Rank stage is built on them) is on."""
+        return bool(self.confidence_v2_enabled or self.pipeline_v2_enabled)
+
+    @property
     def market_data_provider_names(self) -> tuple[str, ...]:
         return tuple(
             provider.strip().casefold()

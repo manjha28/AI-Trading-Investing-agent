@@ -54,7 +54,7 @@ class EngineConfig:
     adx_trending: float = 22.0
     direction_bands: tuple[int, int, int, int] = (80, 65, 45, 30)
     v2: Any = None                                             # optional levels_v2.LevelsV2Config override (sensitivity runs); None = defaults
-    levels_v2: bool = field(default_factory=lambda: _flag("levels_v2_enabled"))     # Nexus v2 level rules (services/levels_v2.py), settings.levels_v2_enabled, off by default
+    levels_v2: bool = field(default_factory=lambda: _flag("levels_v2_active"))     # Nexus v2 level rules (services/levels_v2.py), settings.levels_v2_enabled, off by default
     guardrails: bool = field(default_factory=lambda: _guardrails_default())    # B04 Part A deterministic level checks; settings.level_guardrails_enabled, off by default
 
 
@@ -518,12 +518,16 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
     lows = [v for _, v in swing_points(df, k)[1]]
     if cfg.levels_v2:
         h52 = levels_v2.high52(daily, v2cfg.high52_bars)
+        near_high_blue_sky = 0 < h52 - ind["close"] <= v2cfg.high52_blue_sky_atr * float(atr_d or ind["atr14"])       # a 52-week high just above the close is treated as blue sky (provisional)
         v2_extra = ([(h52, "52-week high")] if h52 - ind["close"] > v2cfg.high52_blue_sky_atr * float(atr_d or ind["atr14"]) else []) + (
             levels_v2.qualify_swing_highs(swing_points(zdf, v2cfg.major_swing_k[tf])[0], zdf, ind["atr14"], v2cfg) if v2cfg.use_major_swing_barriers else [])
         weekly_atr = float(atr(weekly, 14).iloc[-1]) if len(weekly) > 20 else None
         plan = None
         if setup != "NO_VALID_SETUP":
             plan, why_not = levels_v2.plan(horizon, setup, status, scen[setup], ind, atr_d, zones, lows, cfg.structural_buffer_atr[horizon], v2cfg, v2_extra, weekly_atr)
+            if plan is not None and near_high_blue_sky:      # does this ladder exist ONLY because of the provisional near-high blue-sky rule? (strict = the 52-week high counted as a barrier)
+                strict_plan, _ = levels_v2.plan(horizon, setup, status, scen[setup], ind, atr_d, zones, lows, cfg.structural_buffer_atr[horizon], v2cfg, v2_extra + [(h52, "52-week high")], weekly_atr)
+                v2info["relaxation_dependent"] = strict_plan is None
             if plan is None:
                 v2info["blocked_reason"] = why_not
                 v2info["rules"].append("no_valid_plan")
@@ -613,6 +617,8 @@ def analyze_horizon(horizon: str, daily: pd.DataFrame, bench_daily: pd.Series | 
         out["v2"] = {"version": "levels-v2/1", "rules": v2info["rules"], "blocked_reason": v2info["blocked_reason"], "r_definition": levels_v2.R_DEFINITION, "ready_to_buy": ready_now,
                      "band_position": v2info.get("band_position"), "entry_kind": v2info.get("entry_kind"), "entry_label": v2info.get("entry_label"), "headroom_note": v2info.get("headroom_note"),
                      "breakout_trigger": v2info.get("breakout_trigger"), "watch_band": v2info.get("watch_band"), "reference_close": _s(close_f),
+                     "near_high_blue_sky": bool(plan is not None and near_high_blue_sky), "relaxation_dependent": bool(plan is not None and v2info.get("relaxation_dependent")),
+                     "relaxation_note": ("PROVISIONAL: this ladder exists only because a 52-week high within 0.5 ATR above the close is treated as blue sky; tracked separately in shadow mode." if plan is not None and v2info.get("relaxation_dependent") else None),
                      "prior_high_reference": _s(levels_v2.high52(daily, v2cfg.high52_bars)), "high52_bars": min(len(daily), v2cfg.high52_bars)}
     return out
 

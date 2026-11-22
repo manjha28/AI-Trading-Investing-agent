@@ -196,3 +196,14 @@ def test_a_stale_or_missing_filings_feed_is_reported_on_the_gate_output(eng):
         poll.last_successful_at = now - timedelta(hours=6)
         db.commit()
         assert G.filings_feed_status(db, now)["stale"] is False
+
+
+def test_a_stale_event_calendar_blocks_enter_now_for_swing_only():
+    gates = {"liquidity": {h: {"pass": True, "status": "pass", "reason": "ok"} for h in ("swing", "positional", "long_term")}, "events": [], "event_calendar_note": "EVENT CALENDAR UNRELIABLE: ...",
+             "event_feed": {"stale": True, "age_days": 17, "last_successful_at": "2026-11-05"}}
+    out = G.apply_to_levels(_levels(), gates)["horizons"]
+    assert out["swing"]["entry_status"] == "WAIT_FOR_ENTRY" and out["swing"]["ready_to_buy"] is False and "17 day(s) (limit 3)" in out["swing"]["event_gate"]
+    for h in ("positional", "long_term"):                                                        # warn only
+        assert out[h]["entry_status"] == "ENTER_NOW" and out[h]["ready_to_buy"] is True and out[h]["gates"]["event_calendar_note"].startswith("EVENT CALENDAR UNRELIABLE")
+    fresh = dict(gates, event_feed={"stale": False, "age_days": 0})
+    assert G.apply_to_levels(_levels(), fresh)["horizons"]["swing"]["entry_status"] == "ENTER_NOW"

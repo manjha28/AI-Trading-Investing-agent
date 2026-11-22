@@ -5,6 +5,7 @@
 2. Corporate events: no ENTER_NOW from 3 trading sessions before up to the day of a results meeting, a record date or an ex-date. Sources: stored NSE filings (board-meeting intimations that name a
    financial-results agenda, record-date and revised-record-date notices) and the corporate-action table (ex-dates). The event calendar is only as complete as the stored filings: absence of an event
    is shown as "no scheduled event found in stored filings (coverage partial)", never as "clear".
+   A STALE calendar (the NSE filings feed has not refreshed for 3 days) additionally blocks ENTER_NOW for SWING only (owner decision; positional and long-term get the warning).
 3. Stale data: the existing daily-bar staleness rule stays; additionally a daily bar that is still forming (today's session before the exchange close plus the publication grace) is dropped before any
    level is computed, because the radar pass runs 09:00-20:00 IST and a live bar must never be treated as completed.
 Thresholds live in GateConfig (starting hypotheses). Decision support, not investment advice.
@@ -169,7 +170,13 @@ def apply_to_levels(levels: dict[str, Any], gates: dict[str, Any] | None) -> dic
         if not liq["pass"]:
             levels["horizons"][h] = {"status": "gated", "reason": f"Liquidity gate ({liq['status']}): {liq['reason']}", "gate": "liquidity", "liquidity": liq}
             continue
-        card["gates"] = {"liquidity": liq, "events": gates.get("events") or [], "event_calendar_note": gates.get("event_calendar_note")}
+        card["gates"] = {"liquidity": liq, "events": gates.get("events") or [], "event_calendar_note": gates.get("event_calendar_note"), "event_feed": gates.get("event_feed")}
+        feed = gates.get("event_feed") or {}
+        if h == "swing" and feed.get("stale") and card.get("entry_status") == "ENTER_NOW":      # owner decision: a results gap is the main overnight risk of a swing trade, so a stale calendar blocks it
+            card["entry_status"], card["ready_to_buy"] = "WAIT_FOR_ENTRY", False
+            card["event_gate"] = f"The NSE filings feed has not refreshed for {feed.get('age_days')} day(s) (limit 3), so a results date cannot be ruled out: no entry-now signal for a swing trade until it recovers."
+            if card.get("entry_label"):
+                card["entry_label"] = "Wait: event calendar stale (swing)"
         if gates.get("events"):
             e = gates["events"][0]
             note = f"{e['kind'].replace('_', ' ')} on {e['date']} ({e['sessions_ahead']} session(s) ahead): no entry-now signal until it has passed."

@@ -191,3 +191,32 @@ def test_sort_score_orders_by_grade_first_then_factor_rank(monkeypatch):
 
 def test_ordinals():
     assert [rc._ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 22, 112)] == ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "112th"]
+
+
+# ───────────── the measured line (positional and long-term, grade A, >= 100 past trades per horizon) ─────────────
+TABLE = {"min_trades": 100, "horizons": {"positional": {"A": {"n": 119, "t1_before_stop": 0.34, "mean_net_r": 0.41}}, "long_term": {"A": {"n": 99, "t1_before_stop": 0.30, "mean_net_r": 0.20}},
+                                          "swing": {"A": {"n": 500, "t1_before_stop": 0.5, "mean_net_r": 0.5}}}}
+
+
+def test_measured_line_only_for_grade_a_on_positional_and_long_term_with_enough_trades():
+    assert sg.measured_line("positional", "A", TABLE) == "T1 before stop in 34% of 119 past setups, average +0.41R after costs"
+    assert sg.measured_line("long_term", "A", TABLE) is None                    # 99 trades: one short of the bar for that horizon
+    assert sg.measured_line("swing", "A", TABLE) is None                        # never on swing cards, whatever the count
+    assert sg.measured_line("positional", "B", TABLE) is None and sg.measured_line("positional", None, TABLE) is None
+    assert sg.measured_line("positional", "A", {"min_trades": 100, "horizons": {}}) is None
+    assert sg.measured_line("positional", "A", {}) is None                      # missing calibration: grade only
+
+
+def test_the_shipped_calibration_has_no_horizon_with_100_grade_a_trades_yet_so_no_line_is_shown():
+    cal = sg.load_calibration()
+    assert cal["min_trades"] == 100 and cal["horizons"]["positional"]["A"]["n"] < 100 and cal["horizons"]["long_term"]["A"]["n"] < 100
+    assert sg.measured_line("positional", "A") is None and sg.measured_line("long_term", "A") is None
+
+
+def test_the_line_reaches_the_card_only_through_the_builder(monkeypatch):
+    monkeypatch.setattr(settings, "confidence_v2_enabled", True)
+    monkeypatch.setattr(sg, "load_calibration", lambda path=None: TABLE)
+    c = rc.buy_confidence(HORIZON, _card(), 1, 65.0, 4.5, None, horizon_key="positional", factor=FACTOR_SECTION)
+    assert c["grade"] == "A" and c["measured_line"] == "T1 before stop in 34% of 119 past setups, average +0.41R after costs"
+    b = rc.buy_confidence(HORIZON, _card(entry_status="WAIT_FOR_ENTRY"), 1, 65.0, 4.5, None, horizon_key="positional", factor=FACTOR_SECTION)
+    assert b["grade"] == "B" and b["measured_line"] is None                     # only grade A carries a line

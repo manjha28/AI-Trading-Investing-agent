@@ -111,9 +111,29 @@ def run_new_stocks_all_users() -> int:
     return sum(len(kick_missing(u)) for u in user_ids)
 
 
+_last_blue_sky_review: str | None = None
+
+
+def _blue_sky_review_once_a_day(now: datetime) -> None:
+    """Nexus v2: follow the shadow ladders forward and log the provisional blue-sky review (a WARNING only when the owner must be told). At most once per day; never raises."""
+    global _last_blue_sky_review
+    today = now.astimezone(IST).date().isoformat()
+    if _last_blue_sky_review == today:
+        return
+    _last_blue_sky_review = today
+    try:
+        from app.services import shadow_outcomes
+        with Session(engine) as db:
+            for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
+                shadow_outcomes.log_review(db, user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("blue_sky_review_hook_failed error_class=%s", type(exc).__name__)
+
+
 def run_cycle(now: datetime | None = None) -> dict[str, int]:
     """Research every not-yet-done stock of every verified user, up to the per-cycle cap. Failures are counted, never hidden."""
     now = now or datetime.now(timezone.utc)
+    _blue_sky_review_once_a_day(now)
     summary = {"researched": 0, "skipped": 0, "failed": 0}
     with Session(engine) as db:
         user_ids = list(db.scalars(select(User.id).where(User.email_verified.is_(True))))

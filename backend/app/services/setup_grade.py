@@ -102,6 +102,30 @@ def _result(checks: list[dict[str, Any]], cfg: GradeConfig) -> dict[str, Any]:
     return {"version": VERSION, "grade": g, "label": label, "checks": checks, "failed_vetoes": [c["key"] for c in vetoes], "failed_soft": [c["key"] for c in soft]}
 
 
+CALIBRATION_PATH = __import__("pathlib").Path(__file__).with_name("grade_calibration.json")
+MEASURED_HORIZONS = ("positional", "long_term")
+
+
+def load_calibration(path=None) -> dict[str, Any]:
+    import json
+    try:
+        return json.loads((path or CALIBRATION_PATH).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def measured_line(horizon: str, grade: str | None, table: dict[str, Any] | None = None) -> str | None:
+    """The measured line ("T1 before stop in 34% of 119 past setups, average +0.41R after costs") for grade A on the POSITIONAL and LONG-TERM cards only, and only once grade A has at least
+    ``min_trades`` past trades for THAT horizon (owner rule). Otherwise None: the card shows the grade only. Hypothetical past results on a survivor-free replay, not a forecast."""
+    if grade != "A" or horizon not in MEASURED_HORIZONS:
+        return None
+    table = table if table is not None else load_calibration()
+    row = ((table.get("horizons") or {}).get(horizon) or {}).get("A")
+    if not row or int(row.get("n", 0)) < int(table.get("min_trades", 100)):
+        return None
+    return f"T1 before stop in {row['t1_before_stop']:.0%} of {row['n']} past setups, average {row['mean_net_r']:+.2f}R after costs"
+
+
 def combined_label(g: dict[str, Any], rank_percentile: float | None, cfg: GradeConfig | None = None) -> str:
     """"High" only when the setup grade is A and the factor-rank percentile is at least 70; otherwise the grade itself (or "Not ready")."""
     cfg = cfg or GradeConfig()

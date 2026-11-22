@@ -1,0 +1,71 @@
+{
+ "version": "grade-calibration/1",
+ "generated_at": "2026-11-22T10:34:12.107194+00:00",
+ "min_trades": 100,
+ "source": "diagnostics/nexus-v2 replay: 693 ISINs (survivor-free bhavcopy panel, point-in-time top 300 by 20-day traded value), quarterly sample dates from 2020-03, v2 spec level rules",
+ "costs": "verified delivery schedule (services/indian_charges.py) on a Rs 1,00,000 position; dates before 2024-10-01 use the earliest declared schedule",
+ "outcome": "T1 before stop; hypothetical, never real P&L",
+ "horizons": {
+  "long_term": {
+   "A": {
+    "n": 39,
+    "t1_before_stop": 0.2564,
+    "mean_net_r": 0.316
+   },
+   "B": {
+    "n": 44,
+    "t1_before_stop": 0.1364,
+    "mean_net_r": 0.047
+   },
+   "C": {
+    "n": 1,
+    "t1_before_stop": 0.0,
+    "mean_net_r": 1.035
+   },
+   "Not ready": {
+    "n": 25,
+    "t1_before_stop": 0.08,
+    "mean_net_r": 0.272
+   }
+  },
+  "positional": {
+   "A": {
+    "n": 58,
+    "t1_before_stop": 0.3793,
+    "mean_net_r": 0.364
+   },
+   "B": {
+    "n": 37,
+    "t1_before_stop": 0.4054,
+    "mean_net_r": 0.367
+   },
+   "C": {
+    "n": 2,
+    "t1_before_stop": 0.0,
+    "mean_net_r": -0.019
+   },
+   "Not ready": {
+    "n": 26,
+    "t1_before_stop": 0.2692,
+    "mean_net_r": -0.165
+   }
+  },
+  "swing": {
+   "A": {
+    "n": 22,
+    "t1_before_stop": 0.3636,
+    "mean_net_r": 0.695
+   },
+   "B": {
+    "n": 6,
+    "t1_before_stop": 0.1667,
+    "mean_net_r": -1.394
+   },
+   "Not ready": {
+    "n": 5,
+    "t1_before_stop": 0.0,
+    "mean_net_r": -0.96
+   }
+  }
+ }
+}
