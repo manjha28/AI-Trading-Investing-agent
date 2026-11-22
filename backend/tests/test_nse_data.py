@@ -160,7 +160,17 @@ def test_results_conflicts_over_two_percent_keep_nse_and_log_yahoo_in_provenance
     row = db.scalar(select(InstrumentFundamental))
     assert res == "updated" and row.net_income == Decimal("130") and row.revenue == Decimal("1000")             # revenue +1% is within tolerance (existing value kept), PAT +30% conflicts: NSE wins
     assert [c["field"] for c in log] == ["net_income"] and log[0]["previous"] == "100.00000000" and log[0]["previous_source"] == "yfinance"
-    assert row.field_sources["net_income"] == "nse_results" and row.filed_on == date(2026, 10, 8) and row.extra_metrics["conflicts"][0]["nse"] == "130" and row.extra_metrics["interest_expense"]["source"] == "nse_results"
+    assert row.field_sources["net_income"]["source"] == "nse_results" and row.field_sources["net_income"]["basis"] == "consolidated" and row.filed_on == date(2026, 10, 8) and row.extra_metrics["conflicts"][0]["nse"] == "130" and row.extra_metrics["interest_expense"]["source"] == "nse_results"
+
+
+def test_provenance_has_the_shape_the_statement_readers_expect(db):
+    """Regression: a bare string per field made the research pipeline crash ('str' object has no attribute 'get') for every stock the NSE backfill touched."""
+    i = _inst(db)
+    vals = nd.parse_results_xbrl(results_xml(), date(2026, 9, 30))["quarterly"]
+    nd.store_results(db, i.id, "quarterly", date(2026, 9, 30), vals, date(2026, 10, 8), "consolidated", NOW)
+    db.commit()
+    for field, prov in db.scalar(select(InstrumentFundamental)).field_sources.items():
+        assert isinstance(prov, dict) and prov["source"] == "nse_results" and prov["fetched_at"] and prov["derived"] is False, field
 
 
 def test_new_nse_periods_are_inserted_with_provenance_and_filing_date(db):
@@ -178,3 +188,18 @@ def test_pick_filings_prefers_consolidated_then_the_latest_revision():
     new = [{"qe_Date": "30-SEP-2026", "consolidated": "Consolidated", "broadcast_Date": "08-Oct-2026 22:07:33", "xbrl": "u3"}, {"qe_Date": "30-SEP-2026", "consolidated": "Consolidated", "broadcast_Date": "20-Oct-2026 10:00:00", "xbrl": "u4"}]
     picked = nd.pick_filings(old, new)
     assert [(f["period_end"], f["xbrl"]) for f in picked] == [(date(2026, 9, 30), "u4"), (date(2024, 9, 30), "u2")]
+
+
+def test_a_missing_old_document_is_skipped_without_counting_toward_a_block(tmp_path):
+    class Gone(Exception):
+        pass
+    Gone.__name__ = "NSEFileUnavailableError"
+
+    class Nse:
+        def download_document(self, url):
+            raise Gone("404 Not Found")
+    c = nd.PoliteNse(tmp_path, min_interval=0.0, max_consecutive_errors=2, sleep=lambda s: None, clock=lambda: 0.0, nse=Nse())
+    for _ in range(5):                                                                                     # five missing files in a row must not stop the client
+        with pytest.raises(nd.NseDocumentUnavailable):
+            c.document("https://example.invalid/old.xml")
+    assert c.consecutive_errors == 0

@@ -25,6 +25,10 @@ SHP_SOURCE = "nse_shp"
 CONFLICT_TOLERANCE = Decimal("0.02")
 
 
+class NseDocumentUnavailable(RuntimeError):
+    """NSE answered that one document does not exist (an old filing's file is gone): skip that filing; this is not a block and does not count toward stopping."""
+
+
 class NseBlocked(RuntimeError):
     """NSE blocked us or failed repeatedly: stop and log, do not retry in a tight loop."""
 
@@ -73,6 +77,9 @@ class PoliteNse:
                 self.consecutive_errors = 0
                 return out
             except Exception as exc:  # noqa: BLE001 - classified below; credentials never appear in these errors
+                if type(exc).__name__ in ("NSEFileUnavailableError", "FileNotFoundError") or "404" in str(exc)[:200]:
+                    logger.info("nse_document_unavailable error_class=%s", type(exc).__name__)
+                    raise NseDocumentUnavailable(str(exc)[:120]) from exc
                 last_exc = exc
                 self.consecutive_errors += 1
                 logger.warning("nse_request_failed attempt=%d error_class=%s", attempt + 1, type(exc).__name__)
@@ -272,6 +279,11 @@ def _num(v: Any) -> Decimal | None:
         return None
 
 
+def prov(basis: str, iso: str) -> dict[str, Any]:
+    """Per-field provenance in the shape the statement readers expect: {source, fetched_at, basis, derived}."""
+    return {"source": SOURCE, "fetched_at": iso, "basis": basis, "derived": False}
+
+
 def store_results(db: Any, instrument_id: Any, period_type: str, period_end: date, vals: dict[str, Any], filed_on: date | None, basis: str, now: datetime, conflicts_log: list[dict[str, Any]] | None = None) -> str:
     """Upsert one NSE-filed period into instrument_fundamentals. Returns 'inserted' | 'updated' | 'unchanged'. NSE wins where it disagrees with an existing value by more than 2% (Yahoo's value
     stays in provenance and the conflict is logged); fields NSE does not have are never blanked."""
@@ -285,7 +297,7 @@ def store_results(db: Any, instrument_id: Any, period_type: str, period_end: dat
     if row is None:
         row = InstrumentFundamental(instrument_id=instrument_id, period_type=period_type, period_end=period_end, currency="INR", revenue=vals.get("revenue"), net_income=vals.get("net_income"), eps=vals.get("eps"),
                                     operating_margin=vals.get("operating_margin"), source=SOURCE, fetched_at=now, statement_basis=basis, filed_on=filed_on,
-                                    field_sources={k: SOURCE for k in ("revenue", "net_income", "eps", "operating_margin") if vals.get(k) is not None},
+                                    field_sources={k: prov(basis, iso) for k in ("revenue", "net_income", "eps", "operating_margin") if vals.get(k) is not None},
                                     extra_metrics={k: {"value": str(v), "source": SOURCE, "fetched_at": iso, "basis": basis} for k, v in extras_in.items() if v is not None} or None)
         db.add(row)
         return "inserted"
@@ -298,19 +310,19 @@ def store_results(db: Any, instrument_id: Any, period_type: str, period_end: dat
             continue
         if old is None:
             setattr(row, field, new)
-            fs[field] = SOURCE
+            fs[field] = prov(basis, iso)
             changed = True
         elif old != 0 and abs(new - old) / abs(old) > CONFLICT_TOLERANCE:
-            conflict = {"field": field, "period_end": str(period_end), "nse": str(new), "previous": str(old), "previous_source": fs.get(field) or row.source, "logged_at": iso}
+            conflict = {"field": field, "period_end": str(period_end), "nse": str(new), "previous": str(old), "previous_source": (fs.get(field) or {}).get("source") or row.source, "logged_at": iso}
             extras.setdefault("conflicts", []).append(conflict)
             logger.warning("nse_yahoo_conflict field=%s period_end=%s nse=%s previous=%s", field, period_end, new, old)
             if conflicts_log is not None:
                 conflicts_log.append(conflict)
             setattr(row, field, new)
-            fs[field] = SOURCE
+            fs[field] = prov(basis, iso)
             changed = True
-        elif fs.get(field) != SOURCE:
-            fs[field] = SOURCE                                        # NSE confirms the value within 2%: provenance records both
+        elif (fs.get(field) or {}).get("source") != SOURCE:
+            fs[field] = prov(basis, iso)                                        # NSE confirms the value within 2%: provenance records both
             changed = True
     for k, v in extras_in.items():
         if v is None:
@@ -323,7 +335,7 @@ def store_results(db: Any, instrument_id: Any, period_type: str, period_end: dat
             changed = True
     if row.operating_margin is None and vals.get("operating_margin") is not None:
         row.operating_margin = vals["operating_margin"]
-        fs["operating_margin"] = SOURCE
+        fs["operating_margin"] = prov(basis, iso)
         changed = True
     if filed_on is not None and row.filed_on is None:
         row.filed_on = filed_on
@@ -384,6 +396,9 @@ def sync_results(db: Any, client: PoliteNse, instrument: Any, *, since: date, no
             parsed = parse_results_xbrl(client.document(f["xbrl"], now=now), f["period_end"])
         except NseBlocked:
             raise
+        except NseDocumentUnavailable:
+            out["failed"] += 1
+            continue
         except Exception as exc:  # noqa: BLE001 - one unparseable filing must not stop the stock
             logger.warning("nse_results_parse_failed symbol=%s period_end=%s error_class=%s", sym, f["period_end"], type(exc).__name__)
             out["failed"] += 1
@@ -419,6 +434,9 @@ def sync_shareholding(db: Any, client: PoliteNse, instrument: Any, *, max_quarte
             parsed = parse_shareholding_xbrl(client.document(rec["xbrl"], now=now))
         except NseBlocked:
             raise
+        except NseDocumentUnavailable:
+            out["failed"] += 1
+            continue
         except Exception as exc:  # noqa: BLE001
             logger.warning("nse_shp_parse_failed symbol=%s error_class=%s", instrument.symbol, type(exc).__name__)
             out["failed"] += 1

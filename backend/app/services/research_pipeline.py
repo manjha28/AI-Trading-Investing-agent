@@ -297,6 +297,8 @@ def _fundamentals_section(
                 value = None
             values[field] = {"value": _number(value), "field_path": path}
             provenance = (row.field_sources or {}).get(field)
+            if isinstance(provenance, str):      # tolerate a bare source name: never let one oddly shaped provenance entry stop a whole research run
+                provenance = {"source": provenance}
             if provenance and value is not None:
                 # A field filled by another provider (e.g. Screener) keeps its own source/time/basis.
                 values[field].update(source=provenance.get("source"), fetched_at=provenance.get("fetched_at"),
