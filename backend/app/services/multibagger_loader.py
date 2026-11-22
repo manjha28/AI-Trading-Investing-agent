@@ -33,6 +33,13 @@ def _num(v: Any) -> float | None:
 
 
 def _row(r: InstrumentFundamental) -> dict[str, Any]:
+    row = _row_raw(r)
+    if row["ebit"] is None and row["pbt"] is not None and row["interest"] is not None:
+        row["ebit"] = row["pbt"] + row["interest"]                 # EBIT = PBT + interest (the same definition the engine uses for annual rows)
+    return row
+
+
+def _row_raw(r: InstrumentFundamental) -> dict[str, Any]:
     ex = r.extra_metrics or {}
     return {"period_end": r.period_end, "revenue": _num(r.revenue), "pat": _num(r.net_income), "eps": _num(r.eps), "op_margin": _num(r.operating_margin), "assets": _num(r.total_assets),
             "equity": _num(r.total_equity), "debt": _num(r.total_debt), "cfo": _num(r.operating_cash_flow), "shares": _num(r.shares_outstanding), "interest": _num(ex.get("interest_expense")),
