@@ -204,3 +204,4 @@
 - Nexus v2 Phase 4 (flags off): Gate->Quality->Timing->Rank pipeline in shadow mode, hidden v1-v2 compare endpoint, blue-sky shadow review, measured-line rule, card-mode backtest.
 - Nexus v2 Phase 4b: one card-trade definition (simulate_card) shared by replay and card backtest; short-history backfill script; reconciliation report (flags off).
 - Nexus v2 Phase 4c/6: price cross-check (Dhan vs bhavcopy, migration 0065), funds excluded from stock research, narrow-window history retry, multibagger engine in shadow mode (migration 0066), flags off.
+- Nexus v2 Phase 6b: NSE shareholding (with pledge) and filed results with filing dates (flags off in code), emerging track, new listings, T from the quarters available, recall test, migration 0067.

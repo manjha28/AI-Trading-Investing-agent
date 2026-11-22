@@ -121,6 +121,50 @@ class MultibaggerConfig:
     roe_anchors: tuple = ((12.0, 30.0), (15.0, 60.0), (18.0, 100.0))
 
 
+@dataclass
+class EmergingConfig:
+    """Stage 7b: early-stage multibaggers with about a year of record. Starting hypotheses, not tuned. The never-relaxed rules stay in the main engine."""
+    min_quarters: int = 4
+    preferred_quarters: int = 6
+    ttm_revenue_growth: float = 0.25
+    quarter_revenue_yoy: float = 0.20
+    ttm_pat_growth: float = 0.30
+    ttm_margin_gain_pts: float = 2.0
+    ttm_roce_min: float = 15.0
+    ttm_roce_gain_pts: float = 5.0
+    t_min: float = 50.0
+    cfo_pat_min: float = 0.3
+    de_max: float = 1.5
+    mcap_cr: tuple[float, float] = (300.0, 10000.0)
+    pe_max: float = 60.0
+    peg_max: float = 1.5
+    x_min: float = 50.0
+    dilution_max_per_year: float = 0.10
+    size_fraction: float = 0.5                      # suggested position: half a normal long-term position
+    upgrade_quarters: int = 2
+    upgrade_revenue_yoy: float = 0.20
+    downgrade_revenue_yoy: float = 0.15
+    downgrade_margin_drop_pts: float = 2.0
+    margin_steady_pts: float = 1.0
+
+
+@dataclass
+class NewListingConfig:
+    """Stage 7c: listings younger than 12 months with fewer than 4 quarterly results. Starting hypotheses, not tuned."""
+    recent_days: int = 365
+    min_quarters_to_graduate: int = 4
+    min_ipo_base_sessions: int = 15
+    max_base_depth: float = 0.35
+    breakout_volume_mult: float = 1.5
+    lockin_buffer_sessions: int = 5
+    anchor_lockin_days: tuple[int, ...] = (30, 90)
+    pre_ipo_lockin_days: int = 180                  # estimate only when the real date is not stored; labelled approximate
+    weak_demand_sessions: int = 20
+    swing_from_sessions: int = 15
+    positional_from_sessions: int = 40
+    size_fraction: float = 0.25                     # at most a quarter of a normal long-term position
+
+
 class Settings(BaseSettings):
     app_name: str = "Trading Copilot API"
     environment: str = "development"
@@ -159,6 +203,11 @@ class Settings(BaseSettings):
     market_data_scheduler_enabled: bool = False
     job_worker_enabled: bool = True                                # durable job queue worker + scan scheduler (per-owner scan switch is off by default)
     scheduler_leader_election_enabled: bool = True                 # only one replica (Postgres advisory lock) runs the in-process periodic loops
+    nse_shareholding_enabled: bool = False                         # Phase 6b: NSE shareholding patterns (promoter, FII, DII, public, pledge) with filing dates. Off in code; the owner's local .env turns it on
+    nse_results_enabled: bool = False                              # Phase 6b: NSE filed financial results (XBRL) with filing dates. Off in code; the owner's local .env turns it on
+    nse_raw_dir: str = "var/nse_raw"                               # every NSE response and XBRL document is stored here with its download date
+    nse_min_interval_seconds: float = 2.2                          # polite spacing between NSE requests (at least 2 s)
+    nse_nightly_request_budget: int = 600                          # NSE requests per nightly run (the backfill script has no budget)
     nse_filings_enabled: bool = False                              # Phase 6: governance/pledge/ASM-GSM adapter for NSE public filings. DISABLED; NSE's terms of use have NOT been read, so nothing may call NSE through it
     levels_v2_enabled: bool = False                               # Nexus v2 phase 1: level fixes (services/levels_v2.py). Off = v1 byte-identical
     confidence_v2_enabled: bool = False                           # Nexus v2 phase 2: factor rank + setup grade replace the confidence badge

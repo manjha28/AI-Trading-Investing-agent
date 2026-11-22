@@ -37,6 +37,8 @@ class ShareholdingSnapshot(Base):
     dii_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     public_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     pledged_pct_of_promoter: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))   # not provided by Dhan: stays NULL (unknown), never 0
+    quarter_end: Mapped[date | None] = mapped_column(Date)                           # NSE rows: the quarter the pattern describes (captured_on = the filing date for these rows)
+    filed_on: Mapped[date | None] = mapped_column(Date)                              # NSE rows: when the pattern was filed = the point-in-time "known from" date
 
 
 class GovernanceEvent(Base):

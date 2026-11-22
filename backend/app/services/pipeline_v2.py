@@ -84,8 +84,16 @@ def engine_quality(db: Any, user_id: Any, instrument_id: Any, phase4: dict[str, 
         return {"status": "unknown", "financial": phase4.get("financial", False), "checks": [_chk("multibagger_engine", "Multibagger engine result", "unknown", "No nightly multibagger result is stored for this stock yet.")], "engine_class": None}
     klass = row.klass
     reasons = [r for r in ((row.checks or {}).get("reasons") or [])][:3] or [klass]
-    status = {"multibagger_candidate": "pass", "quality_compounder": "pass", "watch": "watch", "avoid": "fail", "not_assessable": "not_assessable"}[klass]
+    status = {"multibagger_candidate": "pass", "quality_compounder": "pass", "emerging": "watch", "new_listing": "watch", "watch": "watch", "avoid": "fail", "not_assessable": "not_assessable"}[klass]
     return {"status": status, "financial": phase4.get("financial", False), "engine_class": klass, "checks": [_chk("multibagger_engine", f"Multibagger engine class: {klass}", "pass" if status == "pass" else "fail" if status in ("fail", "watch") else "unknown", "; ".join(reasons))]}
+
+
+def _new_listing_gate(db: Any, user_id: Any, instrument_id: Any) -> dict[str, Any] | None:
+    from sqlalchemy import select
+
+    from app.models.multibagger import MultibaggerAssessment
+    row = db.scalar(select(MultibaggerAssessment).where(MultibaggerAssessment.instrument_id == instrument_id, MultibaggerAssessment.user_id == user_id).order_by(MultibaggerAssessment.as_of.desc()).limit(1))
+    return None if row is None or row.klass != "new_listing" else (row.checks or {}).get("new_listing")
 
 
 def timing_stage(engine_card: dict[str, Any] | None, levels_card: dict[str, Any] | None) -> dict[str, Any]:
@@ -158,8 +166,10 @@ def evaluate(db: Any, user_id: Any, instrument: Any, sections: dict[str, Any], d
     sector, industry = (snap.get("sector") or {}).get("value"), (snap.get("industry") or {}).get("value")
     quality = quality_gate(fundamentals, sector, industry)
     from app.config import settings
+    nl_gate = None
     if settings.multibagger_screen_enabled:
         quality = engine_quality(db, user_id, instrument.id, quality)
+        nl_gate = _new_listing_gate(db, user_id, instrument.id)
     news = ((sections.get("assessment") or {}).get("components") or {}).get("news_sentiment") or {}
     contradictory = bool(news.get("status") == "scored" and news.get("conflicts"))
     out_h: dict[str, Any] = {}
@@ -168,6 +178,8 @@ def evaluate(db: Any, user_id: Any, instrument: Any, sections: dict[str, Any], d
         liq = ((gates or {}).get("liquidity") or {}).get(h)
         timing = timing_stage((engine.get("horizons") or {}).get(h), card)
         dec = decide(h, technicals, liq, quality if h == "long_term" else None, timing, contradictory)
+        if nl_gate and h in ("swing", "positional") and dec["recommendation"] == "BUY" and not (nl_gate.get("horizons") or {}).get(h, {}).get("allowed", True):
+            dec = {"recommendation": "WAIT", "stage_failed": "new_listing", "reasons": [nl_gate["horizons"][h]["reason"]]}      # Stage 7c: a new listing trades swing/positional only on an IPO-base breakout
         eng_card = (engine.get("horizons") or {}).get(h) or {}
         v2info = (eng_card.get("v2") or {})
         entry = {"v1_recommendation": (v1_recs or {}).get(h, (v1.get(h) or {}).get("recommendation")), "v2_recommendation": dec["recommendation"], "stage_failed": dec["stage_failed"], "reasons": dec["reasons"][:4],

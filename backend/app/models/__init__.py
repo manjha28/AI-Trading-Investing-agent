@@ -253,6 +253,7 @@ class InstrumentFundamental(Base):
     statement_basis: Mapped[str | None] = mapped_column(String(16))
     field_sources: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     extra_metrics: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    filed_on: Mapped[date | None] = mapped_column(Date)           # NSE-filed rows: the filing (broadcast) date = the point-in-time "known from" date; NULL for Yahoo-only rows (no filing date known)
 
 
 class InstrumentSnapshot(Base):
@@ -1220,3 +1221,4 @@ from app.models.fundamental_snapshots import FundamentalSnapshot, GovernanceEven
 from app.models.pipeline_v2 import PipelineV2Shadow  # noqa: F401
 from app.models.price_crosscheck import PriceCrosscheck  # noqa: F401
 from app.models.multibagger import MultibaggerAssessment  # noqa: F401
+from app.models.listings import InstrumentListing  # noqa: F401

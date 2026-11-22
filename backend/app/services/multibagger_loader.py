@@ -14,6 +14,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from app.models import CorporateAction, Instrument, InstrumentFundamental, MarketBar, ValuationProviderInput
+from app.models.listings import InstrumentListing
 from app.models.multibagger import MultibaggerAssessment
 from app.models.fundamental_snapshots import ShareholdingSnapshot
 from app.services import gates_v2, multibagger_engine as mb
@@ -35,7 +36,8 @@ def _row(r: InstrumentFundamental) -> dict[str, Any]:
     ex = r.extra_metrics or {}
     return {"period_end": r.period_end, "revenue": _num(r.revenue), "pat": _num(r.net_income), "eps": _num(r.eps), "op_margin": _num(r.operating_margin), "assets": _num(r.total_assets),
             "equity": _num(r.total_equity), "debt": _num(r.total_debt), "cfo": _num(r.operating_cash_flow), "shares": _num(r.shares_outstanding), "interest": _num(ex.get("interest_expense")),
-            "pbt": _num(ex.get("profit_before_tax")), "ebit": _num(ex.get("ebit")), "cash": _num(ex.get("cash")), "fixed_assets": _num(ex.get("fixed_assets"))}
+            "pbt": _num(ex.get("profit_before_tax")), "ebit": _num(ex.get("ebit")), "cash": _num(ex.get("cash")), "fixed_assets": _num(ex.get("fixed_assets")),
+            "op_profit": _num(ex.get("operating_profit"))}
 
 
 def build_inputs(db: Any, user_id: Any, inst: Instrument, now: datetime, daily: pd.DataFrame | None) -> dict[str, Any]:
@@ -49,6 +51,7 @@ def build_inputs(db: Any, user_id: Any, inst: Instrument, now: datetime, daily: 
     last = snaps[-1] if snaps else None
     splits = sorted((a.ex_date, float(a.ratio)) for a in db.scalars(select(CorporateAction).where(CorporateAction.user_id == user_id, CorporateAction.instrument_id == inst.id, CorporateAction.action_type == "split")) if a.ratio)
     first_bar = db.scalar(select(MarketBar.timestamp).where(MarketBar.instrument_id == inst.id, MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False)).order_by(MarketBar.timestamp).limit(1))
+    lst = db.scalar(select(InstrumentListing).where(InstrumentListing.instrument_id == inst.id))
     med, _n = (None, 0) if daily is None or len(daily) == 0 else gates_v2.median_traded_value_crore(daily)
     price = None if daily is None or len(daily) == 0 else float(daily["close"].iloc[-1])
     mcap = val.get("market_cap")
@@ -64,6 +67,7 @@ def build_inputs(db: Any, user_id: Any, inst: Instrument, now: datetime, daily: 
             "promoter_history": [float(s.promoter_pct) for s in snaps if s.promoter_pct is not None],
             "pledged_pct": None if last is None or last.pledged_pct_of_promoter is None else float(last.pledged_pct_of_promoter),
             "pledge_history": [float(s.pledged_pct_of_promoter) for s in snaps if s.pledged_pct_of_promoter is not None],
+            "listing": None if lst is None else {"issue_price": None if lst.issue_price is None else float(lst.issue_price), "allotment_date": lst.allotment_date, "listing_date": lst.listing_date, "pre_ipo_lockin_end": lst.pre_ipo_lockin_end},
             "governance_events_24m": None,                                  # NSE adapter disabled: unknown, not "none"
             "pe_median_5y": pe_median_3y(daily, [_row(r) for r in rows if r.period_type == "annual"], now.date()),   # the 3-year fallback (5 years of statements are not stored)
             "industry_revenue_cagr_pct": None, "industry_peers": 0}
@@ -124,7 +128,7 @@ def run_universe(db: Any, user_id: Any, *, now: datetime | None = None, store: b
         if len(peers) >= 5:
             x["industry_revenue_cagr_pct"], x["industry_peers"] = median(peers), len(peers)
         w, bw = weekly_frames(db, frames[iid], bench)
-        res = mb.assess(x, cfg, w, bw)
+        res = mb.assess(x, cfg, w, bw, daily=frames[iid], bench_daily=bench)
         results.append(res)
         if store:
             _store(db, user_id, inst, res, now)

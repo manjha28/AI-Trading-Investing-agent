@@ -13,12 +13,12 @@ from typing import Any
 
 import pandas as pd
 
-from app.config import MultibaggerConfig
+from app.config import EmergingConfig, MultibaggerConfig, NewListingConfig
 from app.services.research_scoring import _lerp, is_financial_sector
 from app.services.valuation_scoring import sector_family
 
 VERSION = "multibagger-0.1.0-provisional"
-CLASSES = ("multibagger_candidate", "quality_compounder", "watch", "avoid", "not_assessable")
+CLASSES = ("multibagger_candidate", "quality_compounder", "emerging", "new_listing", "watch", "avoid", "not_assessable")
 CYCLICAL = ("metal", "steel", "cement", "oil", "gas", "sugar", "shipping", "mining", "chemical", "commodity")
 UTILITY = ("utilit", "power", "electric")
 ASSET_LIGHT = ("technology", "software", "consumer", "healthcare", "pharma", "it ")
@@ -272,9 +272,10 @@ def stage_g(x: dict[str, Any], cfg: MultibaggerConfig, kind: str) -> tuple[dict[
     parts: list[tuple[str, float, float | None]] = []
     facts: dict[str, Any] = {}
     revs, pats = _series(ann, rev_key if ann and ann[-1].get(rev_key) is not None else "revenue"), _series(ann, "pat")
-    rc = cagr(revs[-4], revs[-1], 3) if len(ann) >= 4 else None
-    pc = cagr(pats[-4], pats[-1], 3) if len(ann) >= 4 else None
-    facts.update({"revenue_cagr_3y": rc, "pat_cagr_3y": pc, "eps_cagr_3y": cagr(_series(ann, "eps")[-4], _series(ann, "eps")[-1], 3) if len(ann) >= 4 else None})
+    span = 3 if len(ann) >= 4 else 2 if len(ann) == 3 else 0                       # 3 annual periods (a new listing's restated pre-IPO years) give a 2-year CAGR, labelled
+    rc = cagr(revs[-span - 1], revs[-1], span) if span else None
+    pc = cagr(pats[-span - 1], pats[-1], span) if span else None
+    facts.update({"revenue_cagr_3y": rc, "pat_cagr_3y": pc, "cagr_years": span or None, "eps_cagr_3y": cagr(_series(ann, "eps")[-span - 1], _series(ann, "eps")[-1], span) if span else None})
     parts.append(("revenue_cagr", 0.25, None if rc is None else _lerp(rc * 100, list(cfg.rev_cagr_anchors))))
     parts.append(("pat_cagr", 0.25, None if pc is None else _lerp(min(pc, 0.60) * 100, list(cfg.pat_cagr_anchors))))
     ok_years, n_years = 0, 0
@@ -354,11 +355,15 @@ def stage_t(x: dict[str, Any], cfg: MultibaggerConfig) -> dict[str, Any]:
         sig["deleveraging"] = (10, None)
     sig["institutions"] = (10, None)                                                                                   # needs 4 quarters of dated FII+DII history: stored from 2026-11-22 onward
     known = {k: v for k, v in sig.items() if v[1] is not None}
-    if len(q) < 6 or len(known) < 3:
-        return {"score": None, "signals": {k: v[1] for k, v in sig.items()}, "reason": f"unknown: {len(known)} of 6 signals can be evaluated with {len(q)} stored quarters (needs 6 quarters and 3 evaluable signals; YoY acceleration needs 10)"}
+    n_known = len(known)
+    if n_known < 3:
+        return {"score": None, "signals": {k: v[1] for k, v in sig.items()}, "n_signals": n_known, "from_text": f"T from {n_known} of 6 signals",
+                "reason": f"unknown: only {n_known} of 6 signals can be evaluated with {len(q)} stored quarters and {len(ann)} annual periods (needs 3; the YoY signals need 6 quarters, revenue acceleration 10)"}
     hits = [k for k, v in known.items() if v[1]]
-    score = 0 if len(hits) < 2 else min(100, sum(sig[k][0] for k in hits))
-    return {"score": float(score), "signals": {k: v[1] for k, v in sig.items()}, "reason": f"{len(hits)} turning-point signal(s): {', '.join(hits) or 'none'}; unevaluable: {', '.join(k for k, v in sig.items() if v[1] is None) or 'none'}"}
+    total_w = sum(sig[k][0] for k in known)                                           # weights renormalised over the signals that can be computed
+    score = 0.0 if len(hits) < 2 else min(100.0, 100.0 * sum(sig[k][0] for k in hits) / total_w)
+    return {"score": round(score, 1), "signals": {k: v[1] for k, v in sig.items()}, "n_signals": n_known, "from_text": f"T from {n_known} of 6 signals",
+            "reason": f"T from {n_known} of 6 signals: {len(hits)} turning-point signal(s): {', '.join(hits) or 'none'}; not computable: {', '.join(k for k, v in sig.items() if v[1] is None) or 'none'}"}
 
 
 # ───────────────────────── Stage 6: chart stage X ─────────────────────────
@@ -406,8 +411,9 @@ def stage_x(weekly: pd.DataFrame | None, bench_weekly: pd.Series | None, cfg: Mu
 
 
 # ───────────────────────── Stage 7: class ─────────────────────────
-def assess(x: dict[str, Any], cfg: MultibaggerConfig | None = None, weekly: pd.DataFrame | None = None, bench_weekly: pd.Series | None = None) -> dict[str, Any]:
-    cfg = cfg or MultibaggerConfig()
+def assess(x: dict[str, Any], cfg: MultibaggerConfig | None = None, weekly: pd.DataFrame | None = None, bench_weekly: pd.Series | None = None, *, daily: pd.DataFrame | None = None,
+           bench_daily: pd.Series | None = None, ecfg: EmergingConfig | None = None, nlcfg: NewListingConfig | None = None) -> dict[str, Any]:
+    cfg, ecfg, nlcfg = cfg or MultibaggerConfig(), ecfg or EmergingConfig(), nlcfg or NewListingConfig()
     kind = kind_of(x.get("sector"), x.get("industry"))
     checks = stage1(x, cfg, kind)
     if kind == "holding":
@@ -456,9 +462,280 @@ def assess(x: dict[str, Any], cfg: MultibaggerConfig | None = None, weekly: pd.D
         ceiling = "quality_compounder"
     if cls in ("multibagger_candidate", "quality_compounder") and capped:
         cls, reasons = "watch", [f"capped: {c['id']} ({c['reason']})" for c in capped]
+    extra: dict[str, Any] = {}
+    status = listing_status(x, nlcfg)
+    hard_ids = {c["id"] for c in hard}
+    # Stage 7c: a new listing (checked first, never a multibagger or compounder). The liquidity/price floors and negative equity are never relaxed.
+    if status["is_new"] and (hard_ids & {"liquidity", "price", "equity_positive"}):
+        cls, reasons = "avoid", [f"failed veto: {c['id']} ({c['reason']})" for c in hard if c["id"] in ("liquidity", "price", "equity_positive")]
+    elif status["is_new"]:
+        cls, reasons = "new_listing", [f"new listing: {status['reason']}", "never a multibagger or compounder until it graduates (4 quarterly results)"]
+        extra["new_listing"] = new_listing_assess(x, nlcfg, q, g, daily, bench_daily, status)
+    elif cls not in ("multibagger_candidate", "quality_compounder") and kind not in ("financial", "insurance_amc"):
+        # Stage 7b: the emerging track runs for stocks that did not reach a main class and fail on history-based rules only
+        dil = None
+        shs = adjusted_shares(x.get("annual") or [], x.get("splits") or [])
+        if len(shs) >= 2 and shs[-1] is not None and shs[-2] not in (None, 0):
+            dil = shs[-1] / shs[-2] - 1
+        dilution = chk("dilution_10pct", "veto", "unknown" if dil is None else "pass" if dil <= ecfg.dilution_max_per_year else "fail", "share count change unknown" if dil is None else f"share count {dil:+.1%} in the latest year (max {ecfg.dilution_max_per_year:.0%})", dil)
+        never = [c for c in checks if c["id"] in ("pledge", "equity_positive", "auditor_or_regulatory", "liquidity", "price")] + [dilution]
+        em = emerging_assess(x, cfg, ecfg, scores, xs, never, gfacts)
+        extra["emerging"] = em
+        if em["passed"]:
+            cls, reasons = "emerging", [em["label"], "passes the emerging-track checks; the chart confirms"]
     out = _out(x, kind, cls, reasons, checks, scores, xs)
+    out.update(extra)
     out["class_if_unknown_checks_cleared"] = {"class": ceiling, "note": "informational ceiling: the class this stock could reach if the unknown vetoes (for example pledge, which no stored source provides) were verified; it is NOT the assigned class" if ceiling != cls else "same as the assigned class"}
     out["unknown_vetoes"] = [c["id"] for c in unknown_vetoes]
+    return out
+
+
+# ───────────────────────── Stage 7b: Emerging track ─────────────────────────
+def _qs(x: dict[str, Any]) -> list[dict[str, Any]]:
+    return sorted(x.get("quarterly") or [], key=lambda r: r["period_end"])
+
+
+def consecutive(qs: list[dict[str, Any]]) -> bool:
+    return all(60 <= (b["period_end"] - a["period_end"]).days <= 125 for a, b in zip(qs, qs[1:]))
+
+
+def ttm(qs: list[dict[str, Any]], key: str, back: int = 0) -> float | None:
+    """Sum of 4 consecutive quarters ending ``back`` quarters before the latest; None if any is missing or the quarters are not consecutive."""
+    end = len(qs) - back
+    win = qs[end - 4:end] if end >= 4 else []
+    if len(win) < 4 or not consecutive(win):
+        return None
+    vals = [_f(r.get(key)) for r in win]
+    return None if None in vals else float(sum(vals))                                       # type: ignore[arg-type]
+
+
+def yoy_q(qs: list[dict[str, Any]], key: str, back: int = 0) -> float | None:
+    i = len(qs) - 1 - back
+    if i < 4:
+        return None
+    a, b = _f(qs[i - 4].get(key)), _f(qs[i].get(key))
+    if a is None or b is None or a <= 0 or not 330 <= (qs[i]["period_end"] - qs[i - 4]["period_end"]).days <= 400:
+        return None
+    return b / a - 1
+
+
+def _capital(r: dict[str, Any] | None) -> float | None:
+    if not r:
+        return None
+    eq, debt, cash = _f(r.get("equity")), _f(r.get("debt")), _f(r.get("cash")) or 0.0
+    return None if eq is None or debt is None or eq + debt - cash <= 0 else eq + debt - cash
+
+
+def emerging_assess(x: dict[str, Any], cfg: MultibaggerConfig, ecfg: EmergingConfig, scores: dict[str, Any], xs: dict[str, Any] | None, never: list[dict[str, Any]], gfacts: dict[str, Any]) -> dict[str, Any]:
+    """All Stage 7b checks. ``never`` = the never-relaxed rules (pledge, dilution, equity, governance, liquidity, price) as already evaluated by Stage 1. Every check is pass | fail | unknown."""
+    qs, ann = _qs(x), x.get("annual") or []
+    ck: list[dict[str, Any]] = []
+    n = len(qs)
+    ck.append(chk("e_quarters", "E", "pass" if n >= ecfg.min_quarters else "fail", f"{n} quarterly results stored (need {ecfg.min_quarters}, {ecfg.preferred_quarters} preferred)", n))
+    t_rev, p_rev = ttm(qs, "revenue"), ttm(qs, "revenue", 4)
+    g = None if t_rev is None or not p_rev or p_rev <= 0 else t_rev / p_rev - 1
+    y1, y2 = yoy_q(qs, "revenue", 0), yoy_q(qs, "revenue", 1)
+    if g is None:
+        ck.append(chk("e_revenue", "E", "unknown", "TTM revenue growth needs 8 consecutive quarters", None))
+    else:
+        ok = g >= ecfg.ttm_revenue_growth and y1 is not None and y2 is not None and y1 >= ecfg.quarter_revenue_yoy and y2 >= ecfg.quarter_revenue_yoy
+        unk = y1 is None or y2 is None
+        ck.append(chk("e_revenue", "E", "unknown" if unk and g >= ecfg.ttm_revenue_growth else "pass" if ok else "fail", f"TTM revenue {g:+.0%} vs previous TTM (need {ecfg.ttm_revenue_growth:+.0%}); last two quarters YoY {None if y1 is None else f'{y1:+.0%}'}, {None if y2 is None else f'{y2:+.0%}'} (need {ecfg.quarter_revenue_yoy:+.0%})", round(g, 3)))
+    t_pat, p_pat = ttm(qs, "pat"), ttm(qs, "pat", 4)
+    last2 = [_f(r.get("pat")) for r in qs[-2:]]
+    if t_pat is None or p_pat is None or len(last2) < 2 or None in last2:
+        ck.append(chk("e_pat", "E", "unknown", "TTM profit growth needs 8 consecutive quarters of net income", None))
+        pat_g = None
+    else:
+        turnaround = p_pat <= 0 < t_pat
+        pat_g = None if p_pat <= 0 else t_pat / p_pat - 1
+        ok = (turnaround or (pat_g is not None and pat_g >= ecfg.ttm_pat_growth)) and all(v > 0 for v in last2)                       # type: ignore[operator]
+        ck.append(chk("e_pat", "E", "pass" if ok else "fail", ("loss-to-profit turnaround" if turnaround else f"TTM PAT {0 if pat_g is None else pat_g:+.0%} vs previous TTM (need {ecfg.ttm_pat_growth:+.0%})") + f"; last two quarters {'positive' if all(v > 0 for v in last2) else 'not both positive'}", None if pat_g is None else round(pat_g, 3)))     # type: ignore[operator]
+    t_op, p_op = ttm(qs, "op_profit"), ttm(qs, "op_profit", 4)
+    if None in (t_op, p_op, t_rev, p_rev) or not t_rev or not p_rev:
+        ck.append(chk("e_margin", "E", "unknown", "TTM operating margin needs 8 consecutive quarters of operating profit", None))
+    else:
+        d = t_op / t_rev * 100 - p_op / p_rev * 100                                                       # type: ignore[operator]
+        ck.append(chk("e_margin", "E", "pass" if d >= ecfg.ttm_margin_gain_pts else "fail", f"TTM operating margin {d:+.1f} pts vs previous TTM (need +{ecfg.ttm_margin_gain_pts:g})", round(d, 2)))
+    cap_now, cap_prev = _capital(ann[-1] if ann else None), _capital(ann[-2] if len(ann) >= 2 else None)
+    e_now, e_prev = (None if ttm(qs, "ebit") is None else ttm(qs, "ebit")), ttm(qs, "ebit", 4)
+    if None in (cap_now, cap_prev, e_now, e_prev):
+        ck.append(chk("e_roce", "E", "unknown", "TTM ROCE needs 8 quarters of EBIT and two annual balance sheets (approximate: quarterly balance sheets are not stored)", None))
+    else:
+        r_now, r_prev = e_now / cap_now * 100, e_prev / cap_prev * 100                                      # type: ignore[operator]
+        ck.append(chk("e_roce", "E", "pass" if r_now >= ecfg.ttm_roce_min and r_now - r_prev >= ecfg.ttm_roce_gain_pts else "fail", f"TTM ROCE {r_now:.1f}% vs {r_prev:.1f}% a year earlier (approx; need {ecfg.ttm_roce_min:g}% and +{ecfg.ttm_roce_gain_pts:g} pts)", round(r_now, 1)))
+    t_score = scores.get("T")
+    ck.append(chk("e_turning_point", "E", "unknown" if t_score is None else "pass" if t_score >= ecfg.t_min else "fail", f"T = {t_score}", t_score))
+    cfo_now, cfo_prev, pat_now = (_f(ann[-1].get("cfo")) if ann else None), (_f(ann[-2].get("cfo")) if len(ann) >= 2 else None), (_f(ann[-1].get("pat")) if ann else None)
+    if cfo_now is None:
+        ck.append(chk("e_cash", "E", "unknown", "operating cash flow not stored (latest annual used as the TTM proxy)", None))
+    else:
+        ratio = None if not pat_now or pat_now <= 0 else cfo_now / pat_now
+        ok = cfo_now > 0 or (ratio is not None and ratio >= ecfg.cfo_pat_min and cfo_prev is not None and cfo_now > cfo_prev)
+        ck.append(chk("e_cash", "E", "pass" if ok else "fail", f"latest annual CFO {cfo_now:,.0f}" + ("" if ratio is None else f", CFO/PAT {ratio:.2f}"), None if ratio is None else round(ratio, 2)))
+    de_now = None if not ann or not _f(ann[-1].get("equity")) or _f(ann[-1].get("debt")) is None else _f(ann[-1]["debt"]) / _f(ann[-1]["equity"])        # type: ignore[operator]
+    de_prev = None if len(ann) < 2 or not _f(ann[-2].get("equity")) or _f(ann[-2].get("debt")) is None else _f(ann[-2]["debt"]) / _f(ann[-2]["equity"])    # type: ignore[operator]
+    if de_now is None:
+        ck.append(chk("e_leverage", "E", "unknown", "debt or equity missing", None))
+    else:
+        ck.append(chk("e_leverage", "E", "pass" if de_now <= ecfg.de_max and (de_prev is None or de_now <= de_prev + 1e-9) else "fail", f"D/E {de_now:.2f} (max {ecfg.de_max:g})" + ("" if de_prev is None else f", previous year {de_prev:.2f}"), round(de_now, 2)))
+    mc = gfacts.get("market_cap_cr")
+    ck.append(chk("e_market_cap", "E", "unknown" if mc is None else "pass" if ecfg.mcap_cr[0] <= mc <= ecfg.mcap_cr[1] else "fail", f"market cap Rs {mc} crore (range {ecfg.mcap_cr[0]:g}-{ecfg.mcap_cr[1]:g})" if mc is not None else "market cap unknown", mc))
+    pe = _f(x.get("pe"))
+    peg = None if pe is None or pe <= 0 or pat_g is None or pat_g <= 0 else pe / (pat_g * 100)
+    if pe is None:
+        ck.append(chk("e_valuation", "E", "unknown", "PE unknown", None))
+    else:
+        ok = pe <= ecfg.pe_max and (peg is None or peg <= ecfg.peg_max)
+        ck.append(chk("e_valuation", "E", "pass" if ok and peg is not None else "unknown" if ok else "fail", f"TTM PE {pe:.0f} (max {ecfg.pe_max:g})" + (", PEG on TTM growth unknown" if peg is None else f", PEG {peg:.2f} (max {ecfg.peg_max:g})"), round(pe, 1)))
+    xsc = None if not xs else xs.get("score")
+    ck.append(chk("e_chart", "E", "unknown" if xsc is None else "pass" if xsc >= ecfg.x_min and (xs.get("rs") or 0) > 0 else "fail", f"X = {xsc}, relative strength {None if not xs else xs.get('rs')} (the chart must confirm when the record is short)", xsc))
+    blockers = [c for c in never if c["result"] == "fail"]
+    passed = not blockers and all(c["result"] == "pass" for c in ck)
+    prove = [f"{c['id']}: {c['reason']}" for c in ck if c["result"] != "pass"]
+    trans = emerging_transition(qs, ecfg)
+    return {"passed": passed, "checks": ck, "never_relaxed_failed": [c["id"] for c in blockers], "label": "unproven: about 1 year of evidence", "suggested_size_fraction": ecfg.size_fraction,
+            "prove_it": prove if prove else ["keep growing: 2 more quarters with revenue growth above 20% and a steady margin upgrade it to a multibagger candidate; revenue growth below 15% in a quarter or a 2-point margin fall downgrades it to watch"],
+            "transition": trans}
+
+
+def emerging_transition(qs: list[dict[str, Any]], ecfg: EmergingConfig) -> dict[str, Any]:
+    """Upgrade to multibagger_candidate after 2 more quarters with revenue growth > 20% and a steady margin; downgrade to watch if revenue growth < 15% in a quarter or the margin falls 2 pts (YoY)."""
+    y = [yoy_q(qs, "revenue", b) for b in range(ecfg.upgrade_quarters)]
+    om = [(_f(qs[-1 - b].get("op_margin")), _f(qs[-5 - b].get("op_margin")) if len(qs) >= 5 + b else None) for b in range(ecfg.upgrade_quarters)] if len(qs) >= 5 else []
+    drops = [None if a is None or p is None else a - p for a, p in om]
+    if y and y[0] is not None and y[0] < ecfg.downgrade_revenue_yoy:
+        return {"action": "downgrade", "reason": f"latest quarter revenue growth {y[0]:+.0%} is below {ecfg.downgrade_revenue_yoy:.0%}"}
+    if drops and drops[0] is not None and drops[0] <= -ecfg.downgrade_margin_drop_pts:
+        return {"action": "downgrade", "reason": f"operating margin fell {abs(drops[0]):.1f} pts year on year"}
+    if len(y) == ecfg.upgrade_quarters and None not in y and all(v > ecfg.upgrade_revenue_yoy for v in y) and drops and None not in drops and all(abs(d) <= ecfg.margin_steady_pts or d > 0 for d in drops):
+        return {"action": "upgrade_ready", "reason": f"{ecfg.upgrade_quarters} quarters of revenue growth above {ecfg.upgrade_revenue_yoy:.0%} with a steady margin"}
+    return {"action": "none", "reason": "no transition"}
+
+
+# ───────────────────────── Stage 7c: New listings ─────────────────────────
+def listing_status(x: dict[str, Any], nl: NewListingConfig) -> dict[str, Any]:
+    """new_listing = a recent listing (under a year) with fewer than 4 quarterly results. Graduation (4 results -> eligible for emerging; 3 years of results -> main rules) is the same test re-run nightly."""
+    today = x["as_of"]
+    lst = x.get("listing") or {}
+    ldate = lst.get("listing_date") or x.get("first_bar_date")
+    quarters = len(_qs(x))
+    if ldate is None:
+        return {"is_new": False, "reason": "listing date unknown", "quarters": quarters}
+    age = (today - ldate).days
+    recent = age < nl.recent_days
+    return {"is_new": recent and quarters < nl.min_quarters_to_graduate, "recent": recent, "age_days": age, "quarters": quarters, "listing_date": ldate,
+            "reason": f"listed {age} days ago with {quarters} quarterly result(s)" + ("" if recent and quarters < nl.min_quarters_to_graduate else (" (graduated: eligible for emerging)" if recent else ""))}
+
+
+def ipo_base(daily: pd.DataFrame | None, bench_daily: pd.Series | None, listing_date: date | None, issue_price: float | None, nl: NewListingConfig) -> dict[str, Any]:
+    """IPO-base chart mode from 15 sessions after listing (the normal engine needs 120 daily / 40 weekly candles). daily: columns high/low/close/volume, completed sessions."""
+    if daily is None or listing_date is None or len(daily) == 0:
+        return {"state": "unknown", "reason": "no candles or listing date"}
+    d = daily[daily.index >= pd.Timestamp(listing_date)]
+    n = len(d)
+    out: dict[str, Any] = {"sessions_since_listing": n}
+    if n < nl.min_ipo_base_sessions:
+        return {**out, "state": "too_early", "reason": f"only {n} sessions since listing; the IPO base needs {nl.min_ipo_base_sessions}"}
+    close, high, low, vol = d["close"].astype(float), d["high"].astype(float), d["low"].astype(float), d["volume"].astype(float)
+    base = d.iloc[:-1]
+    hi = float(base["high"].max())
+    depth = (hi - float(base["low"].min())) / hi if hi > 0 else None
+    last, avg_vol = float(close.iloc[-1]), float(base["volume"].mean())
+    breakout = last > hi and avg_vol > 0 and float(vol.iloc[-1]) >= nl.breakout_volume_mult * avg_vol
+    typical = (high + low + close) / 3
+    vwap = float((typical * vol).sum() / vol.sum()) if float(vol.sum()) > 0 else None
+    demand = issue_price is not None and vwap is not None and last > issue_price and last > vwap
+    rs = None
+    if bench_daily is not None and len(bench_daily):
+        b = bench_daily.reindex(d.index, method="ffill").dropna()
+        if len(b) >= 2 and float(close.iloc[0]) > 0:
+            rs = float(close.iloc[-1] / close.iloc[0] - 1) - float(b.iloc[-1] / b.iloc[0] - 1)
+    state = "breakout" if breakout and depth is not None and depth <= nl.max_base_depth else "base_forming" if depth is not None and depth <= nl.max_base_depth else "no_base"
+    below = 0
+    if issue_price is not None:
+        for c in reversed(close.tolist()):
+            if c < issue_price:
+                below += 1
+            else:
+                break
+    return {**out, "state": state, "depth": None if depth is None else round(depth, 3), "base_high": hi, "breakout": breakout, "demand": demand if issue_price is not None else None, "vwap_from_listing": vwap, "rs_vs_nifty": rs,
+            "sessions_below_issue": below if issue_price is not None else None, "weak_demand": issue_price is not None and below >= nl.weak_demand_sessions,
+            "reason": f"IPO base {state.replace('_', ' ')}: depth {depth:.0%}" + ("" if issue_price is None else f", {below} consecutive sessions below the issue price") if depth is not None else "IPO base undefined"}
+
+
+def lockin_gate(x: dict[str, Any], nl: NewListingConfig) -> dict[str, Any]:
+    """No buy within 5 sessions before an anchor lock-in expiry (about 30 and 90 days after allotment) or the main pre-IPO lock-in expiry. Estimated dates are labelled approximate."""
+    from datetime import timedelta
+    lst = x.get("listing") or {}
+    allot, today = lst.get("allotment_date") or lst.get("listing_date") or x.get("first_bar_date"), x["as_of"]
+    if allot is None:
+        return {"blocked": None, "reason": "allotment date unknown: lock-in dates cannot be checked", "dates": []}
+    dates = [(allot + timedelta(days=d), "anchor lock-in (approximate)") for d in nl.anchor_lockin_days]
+    main = lst.get("pre_ipo_lockin_end")
+    dates.append((main, "pre-IPO lock-in") if main else (allot + timedelta(days=nl.pre_ipo_lockin_days), "main pre-IPO lock-in (approximate)"))
+    buf = timedelta(days=int(nl.lockin_buffer_sessions * 7 / 5) + 1)                                         # 5 sessions in calendar days
+    near = [(d, lab) for d, lab in dates if d - buf <= today <= d]
+    return {"blocked": bool(near), "reason": ("; ".join(f"{lab} on {d}" for d, lab in near) + ": no buy within 5 sessions before it") if near else "no lock-in expiry within 5 sessions", "dates": [(str(d), lab) for d, lab in dates]}
+
+
+def new_listing_assess(x: dict[str, Any], nl: NewListingConfig, q: dict[str, Any], g: dict[str, Any], daily: pd.DataFrame | None, bench_daily: pd.Series | None, status: dict[str, Any]) -> dict[str, Any]:
+    lst = x.get("listing") or {}
+    issue = _f(lst.get("issue_price"))
+    base = ipo_base(daily, bench_daily, status.get("listing_date"), issue, nl)
+    lock = lockin_gate(x, nl)
+    n = base.get("sessions_since_listing") or 0
+    weak = bool(base.get("weak_demand"))
+    allowed_entry = base.get("state") in ("breakout",) or bool(base.get("breakout"))
+    def hz(min_sessions: int) -> dict[str, Any]:
+        if weak:
+            return {"allowed": False, "reason": "weak demand: below the issue price for 20 or more sessions"}
+        if lock.get("blocked"):
+            return {"allowed": False, "reason": lock["reason"]}
+        if n < min_sessions:
+            return {"allowed": False, "reason": f"{n} sessions since listing; needs {min_sessions}"}
+        if not allowed_entry:
+            return {"allowed": False, "reason": "only an IPO-base breakout or retest is allowed for a new listing"}
+        return {"allowed": True, "reason": "IPO-base breakout; normal level rules still apply"}
+    pending = []
+    if q["score"] is None or g["score"] is None:
+        pending.append("pre-IPO statements (3 restated years) not stored: Q and G are unknown, not zero")
+    pending.append(f"{status['quarters']} of {nl.min_quarters_to_graduate} quarterly results needed to graduate to the emerging track")
+    if issue is None:
+        pending.append("issue price not stored")
+    return {"base": base, "lockin": lock, "weak_demand": weak, "horizons": {"swing": hz(nl.swing_from_sessions), "positional": hz(nl.positional_from_sessions), "long_term": {"allowed": False, "reason": "a new listing is never a multibagger or compounder; shown with pre-IPO Q and G and pending checks"}},
+            "suggested_size_fraction": nl.size_fraction, "pending_checks": pending, "pre_ipo_q": q["score"], "pre_ipo_g": g["score"]}
+
+
+# ───────────────────────── Stage 8: thesis-break alerts (pure) ─────────────────────────
+def thesis_alerts(x: dict[str, Any], result: dict[str, Any], previous_class: str | None = None, pledge_before: float | None = None) -> list[dict[str, str]]:
+    """Alerts for a long-term HOLDING. Price falls alone never alert. Wiring to research_alerts / the Dhan holdings is not done yet."""
+    out: list[dict[str, str]] = []
+    qs = _qs(x)
+    y = [yoy_q(qs, "revenue", b) for b in range(2)]
+    if None not in y and all(v < 0.05 for v in y):
+        out.append({"kind": "revenue_slowdown", "text": "Revenue growth below 5% year on year for 2 quarters in a row."})
+    ann = x.get("annual") or []
+    ro = [v for v, _ in roce_series(ann[-3:]) if v is not None]
+    if len(ro) >= 3:
+        med = sorted(ro)[len(ro) // 2]
+        if ro[-1] <= med - 5:
+            out.append({"kind": "roce_down", "text": f"ROCE {ro[-1]:.1f}% is 5 or more points below its 3-year median {med:.1f}%."})
+    pl = _f(x.get("pledged_pct"))
+    if pl is not None and pl > 0 and (pledge_before is None or pl > pledge_before):
+        out.append({"kind": "pledge", "text": f"Promoter pledge {pl:.1f}% appeared or rose."})
+    if x.get("governance_events_24m"):
+        out.append({"kind": "governance", "text": "An auditor resignation or regulatory order was recorded."})
+    pe, med_pe = _f(x.get("pe")), _f(x.get("pe_median_5y"))
+    eg = (result.get("scores") or {}).get("G")
+    cg = None
+    if len(ann) >= 4:
+        cg = cagr(_f(ann[-4].get("eps")), _f(ann[-1].get("eps")), 3)
+    if pe and cg and cg > 0 and pe > 2.5 * cg * 100 and med_pe and pe > 1.5 * med_pe:
+        out.append({"kind": "valuation_trim", "text": f"PE {pe:.0f} is above 2.5x EPS growth and 1.5x its own median: consider trimming (not selling)."})
+    if result.get("class") == "avoid" and previous_class not in (None, "avoid"):
+        out.append({"kind": "class_avoid", "text": f"Class dropped from {previous_class} to avoid."})
+    del eg
     return out
 
 

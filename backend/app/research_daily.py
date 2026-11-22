@@ -115,6 +115,22 @@ def run_new_stocks_all_users() -> int:
 _last_blue_sky_review: str | None = None
 
 
+def _start_nse_nightly(user_id: UUID) -> None:
+    from app.config import settings
+    if not (settings.nse_results_enabled or settings.nse_shareholding_enabled):
+        return
+
+    def run() -> None:
+        try:
+            from app.services import nse_data
+            with Session(engine) as db:
+                out = nse_data.nightly(db, user_id)
+                logger.info("nse_nightly stopped=%s stocks=%d", out.get("stopped"), len(out.get("results") or out.get("shareholding") or {}))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("nse_nightly_thread_failed error_class=%s", type(exc).__name__)
+    threading.Thread(target=run, name="nse-nightly", daemon=True).start()
+
+
 def _blue_sky_review_once_a_day(now: datetime) -> None:
     """Nexus v2: follow the shadow ladders forward and log the provisional blue-sky review (a WARNING only when the owner must be told). At most once per day; never raises."""
     global _last_blue_sky_review
@@ -127,6 +143,7 @@ def _blue_sky_review_once_a_day(now: datetime) -> None:
         with Session(engine) as db:
             price_crosscheck.log_nightly(db)          # Dhan vs NSE bhavcopy closes: flags stocks off by more than 1% (excluded from backtests)
             for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
+                _start_nse_nightly(user_id)               # NSE shareholding + filed results (flags off in code, on in the owner's .env); its own slow, polite thread
                 shadow_outcomes.log_review(db, user_id)
                 multibagger_loader.log_nightly(db, user_id)      # Phase 6: the engine always runs in shadow mode; the flag only decides whether results are shown or used
     except Exception as exc:  # noqa: BLE001
