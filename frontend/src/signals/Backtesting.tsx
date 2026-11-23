@@ -269,7 +269,7 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
               {single && view === 'chart' && <TradePlot trades={single.trades} />}
               {single && view === 'equity' && (
                 <div className="sl-card"><h4>Equity curve</h4><LineChart points={single.equity_curve.map((p) => ({ t: p.t, v: p.equity }))} label="Equity (mark-to-market)" fill />
-                  <h4>Drawdown</h4><LineChart points={single.equity_curve.map((p) => ({ t: p.t, v: p.drawdown_pct }))} label="Drawdown %" color="var(--sl-neg)" fill maxY={0} format={(v) => `${v.toFixed(2)}%`} /></div>
+                  <h4>Drawdown</h4><LineChart points={single.equity_curve.map((p) => ({ t: p.t, v: p.drawdown_pct }))} label="Drawdown %" color="var(--negative)" fill maxY={0} format={(v) => `${v.toFixed(2)}%`} /></div>
               )}
               {single && view === 'monthly' && <div className="sl-card"><h4>Monthly net P&amp;L</h4><BarChart label="Net P&L by month" bars={single.monthly.map((m) => ({ key: m.month, v: Number(m.net_pnl) }))} format={(v) => fmtMoney(v)} />
                 <Scroll label="Monthly returns"><table className="sl-table sl-compact"><thead><tr><th>Month</th><th>Net P&amp;L</th><th>% of initial capital</th></tr></thead><tbody>{single.monthly.map((m) => <tr key={m.month}><td>{m.month}</td><td className={Number(m.net_pnl) >= 0 ? 'sl-r sl-pos' : 'sl-r sl-neg'}>{fmtMoney(m.net_pnl)}</td><td className="sl-r">{fmtPct(m.return_pct_of_initial)}</td></tr>)}</tbody></table></Scroll></div>}

@@ -1,43 +1,98 @@
+/* FinByte Nexus design tokens: the ONLY place a colour, font, size, radius or space value is defined.
+   Values are the ones the app showed before this file existed (the former --tc-* set); to refresh the palette, edit this file only.
+   Components use roles (--surface-1, --text-muted, --positive ...), never raw colours. */
 :root {
-  --market-space-1: 4px;
-  --market-space-2: 8px;
-  --market-space-3: 12px;
-  --market-space-4: 16px;
-  --market-space-5: 20px;
-  --market-space-6: 24px;
-  --market-space-8: 32px;
-  --market-workspace: #0b0e11;
-  --market-panel: #11151a;
-  --market-panel-raised: #171c22;
-  --market-border: #232a32;
-  --market-text: #e6eaee;
-  --market-muted: #8b96a3;
-  --market-positive: #19d38a;
-  --market-negative: #ff5160;
-  --market-caution: #f5a524;
-  --market-neutral: #a0adba;
-  --market-unreliable: #d28bd5;
-  --market-font-ui: 'DM Sans', 'Avenir Next', sans-serif;
-  --market-font-numeric: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
-  --market-radius: 5px;
+  color-scheme: dark;
+  /* neutral ramp */
+  --bg: #0a0d10;
+  --surface-1: #12171d;
+  --surface-2: #181e26;
+  --surface-3: #1d232a;
+  --border: #232a32;
+  --border-strong: #2f3842;
+  --text: #e6eaee;
+  --text-muted: #8b96a3;
+  --text-faint: #6b7683;
+  /* one accent: primary actions and focus */
+  --accent: #19d38a;
+  --accent-contrast: #04140d;
+  --focus-ring: #f5a524;
+  /* four semantic tones, each with a 12% soft tint for backgrounds and a strong variant */
+  --positive: #19d38a;
+  --positive-soft: #0c2119;
+  --positive-strong: #0fb574;
+  --negative: #ff5160;
+  --negative-soft: #251217;
+  --negative-strong: #d63a48;
+  --caution: #f5a524;
+  --caution-soft: #1e1708;
+  --caution-strong: #c9840f;
+  --info: #a0adba;
+  --info-soft: #161b20;
+  --info-strong: #7f8d9b;
+  /* tone shades used for borders and light text on tinted backgrounds */
+  --positive-line: #11694b;
+  --positive-bright: #7ff0c0;
+  --positive-mid: #3de3a0;
+  --caution-line: #5e4513;
+  --caution-bright: #f7b955;
+  --negative-line: #6a232c;
+  --negative-bright: #ff8f99;
+  --text-subtle: #7b8794;
+  --text-bright: #c9d1d9;
+  --link: #6aa9ff;
+  /* type: one UI sans, one mono for tickers, prices and codes */
+  --font-ui: 'DM Sans', 'Avenir Next', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  --fs-1: 11px;
+  --fs-2: 12px;
+  --fs-3: 14px;
+  --fs-4: 16px;
+  --fs-5: 20px;
+  --fs-6: 28px;
+  /* 4px grid, radii and motion */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-pill: 999px;
+  --motion: 150ms ease-out;
+  --overlay: rgba(0, 0, 0, .45);
+  --shadow-pop: -8px 0 24px rgba(0, 0, 0, .4);
 }
 
 [data-theme='light'] {
-  --market-workspace: #f3f5f1;
-  --market-panel: #fff;
-  --market-panel-raised: #f7f9f6;
-  --market-border: #dfe5dd;
-  --market-text: #172622;
-  --market-muted: #6c7872;
+  color-scheme: light;
+  --bg: #f3f5f1;
+  --surface-1: #fff;
+  --surface-2: #f7f9f6;
+  --surface-3: #eef2ec;
+  --border: #dfe5dd;
+  --border-strong: #c9d2c6;
+  --text: #172622;
+  --text-muted: #6c7872;
+  --text-faint: #8a958f;
+  --positive-soft: #e3f6ec;
+  --negative-soft: #fde8ea;
+  --caution-soft: #fdf1da;
+  --info-soft: #eaeff3;
 }
+
+@media (prefers-reduced-motion: reduce) { :root { --motion: 0ms; } }
 
 .coverage-panel {
   color-scheme: dark;
-  color: var(--market-text);
-  background: var(--market-panel);
-  border: 1px solid var(--market-border);
-  border-radius: var(--market-radius);
-  font-family: var(--market-font-ui);
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
   font-variant-numeric: lining-nums tabular-nums;
 }
 
@@ -46,22 +101,22 @@
 }
 
 .coverage-panel :focus-visible {
-  outline: 2px solid var(--market-caution);
+  outline: 2px solid var(--caution);
   outline-offset: 2px;
 }
 
 .coverage-panel button {
   min-height: 28px;
-  padding: var(--market-space-1) var(--market-space-2);
-  color: var(--market-text);
-  border: 1px solid var(--market-border);
-  border-radius: var(--market-radius);
-  background: var(--market-panel-raised);
+  padding: var(--space-1) var(--space-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
   font-size: 11px;
 }
 
 .coverage-panel button:hover:not(:disabled) {
-  border-color: var(--market-neutral);
+  border-color: var(--info);
 }
 
 .coverage-panel button:disabled {
@@ -73,28 +128,28 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--market-space-3);
+  gap: var(--space-3);
 }
 
 .coverage-panel-heading > div { min-width: 0; }
 .coverage-panel-heading h2 { margin: 0; font-size: 15px; font-weight: 600; }
-.coverage-panel-heading p { margin: var(--market-space-1) 0 0; color: var(--market-muted); font-size: 11px; }
-.coverage-panel-content { padding: var(--market-space-4); }
-.coverage-stat-card { display: grid; gap: var(--market-space-2); padding: var(--market-space-3); border: 1px solid var(--market-border); border-radius: var(--market-radius); background: var(--market-panel-raised); }
-.coverage-stat-card span, .coverage-stat-card small { color: var(--market-muted); font-size: 10px; }
-.coverage-stat-card strong { font-family: var(--market-font-numeric); font-size: 15px; font-variant-numeric: lining-nums tabular-nums; }
-.coverage-panel-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--market-space-3); }
-.coverage-message { margin: 0 0 var(--market-space-3); color: var(--market-muted); font-size: 11px; }
+.coverage-panel-heading p { margin: var(--space-1) 0 0; color: var(--text-muted); font-size: 11px; }
+.coverage-panel-content { padding: var(--space-4); }
+.coverage-stat-card { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.coverage-stat-card span, .coverage-stat-card small { color: var(--text-muted); font-size: 10px; }
+.coverage-stat-card strong { font-family: var(--font-mono); font-size: 15px; font-variant-numeric: lining-nums tabular-nums; }
+.coverage-panel-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--space-3); }
+.coverage-message { margin: 0 0 var(--space-3); color: var(--text-muted); font-size: 11px; }
 .coverage-table-wrap { overflow-x: auto; }
 .coverage-table { width: 100%; border-collapse: collapse; text-align: left; }
 .coverage-table th {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: var(--market-space-2);
-  color: var(--market-muted);
-  border-bottom: 1px solid var(--market-border);
-  background: var(--market-panel);
+  padding: var(--space-2);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
   font-size: 9px;
   font-weight: 500;
   text-transform: uppercase;
@@ -110,46 +165,46 @@
 }
 .coverage-table td {
   height: 38px;
-  padding: var(--market-space-1) var(--market-space-2);
-  color: var(--market-text);
-  border-bottom: 1px solid var(--market-border);
+  padding: var(--space-1) var(--space-2);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
   font-size: 11px;
 }
 .coverage-table tr:last-child td { border-bottom: 0; }
 .coverage-table .coverage-symbol { font-weight: 600; }
-.coverage-table .coverage-numeric { font-family: var(--market-font-numeric); text-align: right; }
+.coverage-table .coverage-numeric { font-family: var(--font-mono); text-align: right; }
 .coverage-table .coverage-action { text-align: right; }
-.coverage-table .coverage-reason { max-width: 220px; overflow: hidden; color: var(--market-muted); text-overflow: ellipsis; }
-.coverage-badge { display: inline-flex; align-items: center; gap: var(--market-space-1); white-space: nowrap; }
-.coverage-badge.positive { color: var(--market-positive); }
-.coverage-badge.negative { color: var(--market-negative); }
-.coverage-badge.caution { color: var(--market-caution); }
-.coverage-badge.neutral { color: var(--market-neutral); }
-.coverage-badge.unreliable { color: var(--market-unreliable); }
-.coverage-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--market-neutral); }
-.coverage-status-dot.fresh { background: var(--market-positive); }
-.coverage-status-dot.stale { background: var(--market-caution); }
-.coverage-status-dot.failed { background: var(--market-negative); }
-.coverage-status-dot.never-synced { background: var(--market-neutral); }
-.coverage-status-dot.unreliable { background: var(--market-unreliable); }
-.coverage-skeleton { display: grid; gap: var(--market-space-2); }
-.coverage-skeleton-row { height: 30px; border: 1px solid var(--market-border); border-radius: var(--market-radius); background: var(--market-panel-raised); }
-.coverage-state { display: grid; justify-items: start; gap: var(--market-space-2); padding: var(--market-space-4) 0; }
+.coverage-table .coverage-reason { max-width: 220px; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; }
+.coverage-badge { display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap; }
+.coverage-badge.positive { color: var(--positive); }
+.coverage-badge.negative { color: var(--negative); }
+.coverage-badge.caution { color: var(--caution); }
+.coverage-badge.neutral { color: var(--info); }
+.coverage-badge.unreliable { color: var(--info); }
+.coverage-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--info); }
+.coverage-status-dot.fresh { background: var(--positive); }
+.coverage-status-dot.stale { background: var(--caution); }
+.coverage-status-dot.failed { background: var(--negative); }
+.coverage-status-dot.never-synced { background: var(--info); }
+.coverage-status-dot.unreliable { background: var(--info); }
+.coverage-skeleton { display: grid; gap: var(--space-2); }
+.coverage-skeleton-row { height: 30px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.coverage-state { display: grid; justify-items: start; gap: var(--space-2); padding: var(--space-4) 0; }
 .coverage-state strong { font-size: 12px; }
-.coverage-state p { margin: 0; color: var(--market-muted); font-size: 11px; }
-.coverage-state.error strong { color: var(--market-negative); }
+.coverage-state p { margin: 0; color: var(--text-muted); font-size: 11px; }
+.coverage-state.error strong { color: var(--negative); }
 
 @media (max-width: 700px) {
   .coverage-panel-heading { align-items: flex-start; flex-direction: column; }
   .coverage-table-wrap { overflow: visible; }
   .coverage-table, .coverage-table tbody, .coverage-table tr, .coverage-table td { display: block; width: 100%; }
   .coverage-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
-  .coverage-table tbody { display: grid; gap: var(--market-space-2); }
+  .coverage-table tbody { display: grid; gap: var(--space-2); }
   .coverage-table tr {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    border: 1px solid var(--market-border);
-    border-radius: var(--market-radius);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
   }
   .coverage-table td {
     display: flex;
@@ -157,11 +212,11 @@
     min-height: 34px;
     align-items: center;
     justify-content: space-between;
-    gap: var(--market-space-2);
-    border-bottom: 1px solid var(--market-border);
+    gap: var(--space-2);
+    border-bottom: 1px solid var(--border);
     text-align: right;
   }
-  .coverage-table td::before { content: attr(data-label); color: var(--market-muted); font-size: 9px; text-align: left; }
+  .coverage-table td::before { content: attr(data-label); color: var(--text-muted); font-size: 9px; text-align: left; }
   .coverage-table td.coverage-symbol { grid-column: 1 / -1; justify-content: flex-start; }
   .coverage-table td.coverage-symbol::before { content: none; }
   .coverage-table td.coverage-action { grid-column: 1 / -1; }
