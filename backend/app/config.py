@@ -282,6 +282,9 @@ class Settings(BaseSettings):
     # Dhan live order execution: the owner-approved exception in AGENTS.md. OFF unless this is set deliberately on the deployment; arming
     # (per user) and execute_live (per forward test) are separate, additional requirements.
     dhan_live_execution_enabled: bool = False
+    delta_live_execution_enabled: bool = False      # layer 1 of 3 for Delta live orders; off everywhere unless the owner sets it
+    delta_api_key: SecretStr | None = None
+    delta_api_secret: SecretStr | None = None
     forward_test_enabled: bool = True
     master_bar_refresh_enabled: bool = True
     master_bar_refresh_budget_seconds: int = Field(default=50, ge=5, le=300)

@@ -5,9 +5,11 @@ import { messageOf } from './cryptoApi';
 type Summary = { closed_trades: number; wins: number; losses: number; win_rate: number | null; gross_pnl: string; fees: string; slippage: string; net_pnl: string; avg_r: string | null };
 type Trade = { side: string; entry_time: string; exit_time: string | null; entry_fill: string; exit_fill: string; exit_reason: string; net_pnl: string; r_multiple: string | null };
 type OpenPos = { side: string; entry_time: string; entry_fill: string; stop_initial: string; target: string; mark: string };
+type LiveStatus = { deployment_enabled: boolean; credentials_present: boolean; armed: boolean; can_arm: boolean; confirmation_phrase: string; warning: string; limits: { max_contracts: number; leverage: string; max_daily_loss_usd: string; max_trades_per_day: number; max_open_positions: number; max_notional_usd: string }; today: { orders: number; placed: number; blocked: number; rejected: number } };
+type LiveOrder = { id: string; created_at: string; symbol: string; side: string; contracts: number; leverage: number; status: string; block_reason: string | null; delta_order_id: string | null };
 type Forward = {
   id: string; name: string; symbol: string; resolution: string; status: string; contracts: number; start_time: string; last_run_at: string | null; last_error: string | null;
-  label: string; summary: Summary | null; open_positions: OpenPos[]; trades?: Trade[]; params: { ema: number; rr: string; direction: number };
+  execute_live?: boolean; label: string; summary: Summary | null; open_positions: OpenPos[]; trades?: Trade[]; params: { ema: number; rr: string; direction: number };
 };
 
 const num = (v: string | null | undefined, digits = 2) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }));
@@ -23,12 +25,23 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
   const [rr, setRr] = useState('3');
   const [direction, setDirection] = useState('-1');
   const [contracts, setContracts] = useState('1');
+  const [live, setLive] = useState<LiveStatus | null>(null);
+  const [orders, setOrders] = useState<LiveOrder[]>([]);
+  const [phrase, setPhrase] = useState('');
   const [tf, setTf] = useState(['5m', '15m', '1h'].includes(resolution) ? resolution : '15m');
 
   const load = useCallback(async () => {
     try { setTests((await apiRequest<{ tests: Forward[] }>('/crypto-delta/forward-tests')).tests); } catch (e) { setError(messageOf(e)); }
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  const loadLive = useCallback(async () => {
+    try {
+      const status = await apiRequest<LiveStatus>('/crypto-delta/live/status');
+      setLive(status && status.limits ? status : null);
+      const list = await apiRequest<{ orders: LiveOrder[] }>('/crypto-delta/live/orders?limit=20');
+      setOrders(Array.isArray(list?.orders) ? list.orders : []);
+    } catch { /* live controls are optional: the paper test works without them */ }
+  }, []);
+  useEffect(() => { void load(); void loadLive(); }, [load, loadLive]);
 
   async function act<T>(fn: () => Promise<T>): Promise<T | undefined> {
     setBusy(true); setError('');
@@ -40,6 +53,12 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
       const made = await apiRequest<Forward>('/crypto-delta/forward-tests', { method: 'POST', body: JSON.stringify({ symbol, resolution: tf, rr, direction: Number(direction), contracts: Number(contracts) }) });
       setOpen(made); await load();
     });
+  };
+  const arm = () => void act(async () => { setLive(await apiRequest<LiveStatus>('/crypto-delta/live/arm', { method: 'POST', body: JSON.stringify({ confirmation: phrase }) })); setPhrase(''); });
+  const killSwitch = () => void act(async () => { await apiRequest('/crypto-delta/live/disarm', { method: 'POST', body: '{}' }); await loadLive(); });
+  const setExecuteLive = (t: Forward, enabled: boolean) => {
+    if (enabled && !window.confirm(`Let "${t.name}" place REAL Delta orders (1 contract, leveraged) when it signals?`)) return;
+    void act(async () => { await apiRequest(`/crypto-delta/live/tests/${t.id}`, { method: 'PUT', body: JSON.stringify({ enabled }) }); await load(); await loadLive(); });
   };
   const show = (id: string) => void act(async () => setOpen(await apiRequest<Forward>(`/crypto-delta/forward-tests/${id}`)));
   const refresh = (id: string) => void act(async () => { setOpen(await apiRequest<Forward>(`/crypto-delta/forward-tests/${id}/refresh`, { method: 'POST', body: '{}' })); await load(); });
@@ -62,6 +81,22 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
         <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Working…' : 'Start paper test'}</button>
       </form>
       {error && <p role="alert" className="crypto-error">{error}</p>}
+      {live && (
+        <div className="crypto-live" aria-label="Live order controls">
+          <h3>Live orders <span className="chip">{live.armed ? 'ARMED' : 'OFF'}</span></h3>
+          <p className="crypto-sub">{live.warning} Limits: {live.limits.max_contracts} contract, leverage {live.limits.leverage}, daily loss cap {live.limits.max_daily_loss_usd} USD, notional cap {live.limits.max_notional_usd} USD. Today: {live.today.placed} placed, {live.today.blocked} blocked, {live.today.rejected} rejected.</p>
+          {!live.can_arm && <p className="crypto-sub">Not available on this deployment: {!live.deployment_enabled ? 'DELTA_LIVE_EXECUTION_ENABLED is off' : 'Delta credentials are missing'}. Paper tests still run.</p>}
+          {live.can_arm && !live.armed && (
+            <p><input aria-label="Confirmation phrase" value={phrase} onChange={(e) => setPhrase(e.target.value)} placeholder={live.confirmation_phrase} />{' '}
+              <button type="button" className="secondary-button" onClick={arm} disabled={busy || phrase !== live.confirmation_phrase}>Arm live orders</button></p>
+          )}
+          <button type="button" className="secondary-button" onClick={killSwitch} disabled={busy}>Kill switch: disarm and cancel unfilled orders</button>
+          {orders.length > 0 && (
+            <table className="crypto-table"><thead><tr><th>Time</th><th>Contract</th><th>Side</th><th>Lev</th><th>Status</th><th>Reason</th></tr></thead>
+              <tbody>{orders.map((o) => <tr key={o.id}><td>{when(o.created_at)}</td><td>{o.symbol}</td><td>{o.side}</td><td>{o.leverage}x</td><td>{o.status}</td><td>{o.block_reason ?? '—'}</td></tr>)}</tbody></table>
+          )}
+        </div>
+      )}
       {tests.length === 0 ? <p className="crypto-sub">No forward tests yet.</p> : (
         <table className="crypto-table">
           <thead><tr><th>Test</th><th>Status</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Updated</th><th /></tr></thead>
@@ -74,6 +109,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
               <td>{num(t.summary?.net_pnl)}</td>
               <td>{when(t.last_run_at)}</td>
               <td><button type="button" className="secondary-button" onClick={() => toggle(t)} disabled={busy}>{t.status === 'active' ? 'Pause' : 'Resume'}</button>{' '}
+                <button type="button" className="secondary-button" onClick={() => setExecuteLive(t, !t.execute_live)} disabled={busy}>{t.execute_live ? 'Live: on' : 'Live: off'}</button>{' '}
                 <button type="button" className="secondary-button" onClick={() => remove(t.id)} disabled={busy}>Delete</button></td>
             </tr>))}
           </tbody>

@@ -45,6 +45,8 @@ class Spec:
     contract_value: Decimal
     taker_fee: Decimal
     tick_size: Decimal | None
+    product_id: int | None = None
+    initial_margin_pct: Decimal | None = None      # percent of notional, as Delta publishes it
 
 
 def fetch_spec(symbol: str, *, transport: httpx.BaseTransport | None = None) -> Spec:
@@ -68,7 +70,12 @@ def fetch_spec(symbol: str, *, transport: httpx.BaseTransport | None = None) -> 
         raise CandleDataError("Contract value or fee rate is unavailable; refusing to assume it.") from None
     if value <= 0 or taker < 0:
         raise CandleDataError("Contract value or fee rate is unavailable; refusing to assume it.")
-    return Spec(symbol, value, taker, tick)
+    try:
+        product_id = int(product["id"])
+        margin = Decimal(str(product["initial_margin"])) if product.get("initial_margin") is not None else None
+    except (KeyError, ValueError, ArithmeticError):
+        product_id, margin = None, None
+    return Spec(symbol, value, taker, tick, product_id, margin)
 
 
 def _trade(side: str, symbol: str, contracts: int, spec: Spec, signal_time: datetime, entry_time: datetime, exit_time: datetime | None,
@@ -96,6 +103,7 @@ def replay(candles: list[Candle], symbol: str, params: FiveEmaParams, spec: Spec
     buy: tuple[Decimal, Decimal, datetime] | None = None    # (alert high, alert low, alert time)
     pos: dict[str, Any] | None = None
     closed: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
 
     def close_pos(bar: Candle, raw: Decimal, reason: str) -> None:
         nonlocal pos
@@ -150,6 +158,8 @@ def replay(candles: list[Candle], symbol: str, params: FiveEmaParams, spec: Spec
                 if fill <= stop:
                     continue
                 target = fill + params.rr * (fill - stop)
+            entry_row = {"side": side, "entry_time": bar.open_time, "signal_time": alert_time, "entry_raw": raw, "stop": stop, "closed_same_bar": False}
+            entries.append(entry_row)
             pos = {"side": side, "entry_raw": raw, "entry_fill": fill, "stop": stop, "target": target, "signal_time": alert_time, "entry_time": bar.open_time}
             # the entry bar itself: the stop is checked first (a bar touching both stop and target counts as stopped)
             if side == "sell":
@@ -162,6 +172,8 @@ def replay(candles: list[Candle], symbol: str, params: FiveEmaParams, spec: Spec
                     close_pos(bar, stop, "stop")
                 elif bar.high >= target:
                     close_pos(bar, target, "target")
+        if entries and entries[-1]["entry_time"] == bar.open_time and pos is None:
+            entries[-1]["closed_same_bar"] = True
         if bar.low > e and not sell_hit:
             sell = (bar.low, bar.high, bar.open_time)
         if bar.high < e and not buy_hit:
@@ -175,7 +187,7 @@ def replay(candles: list[Candle], symbol: str, params: FiveEmaParams, spec: Spec
         open_positions.append({"symbol": symbol, "side": pos["side"], "contracts": contracts, "entry_time": pos["entry_time"].isoformat(), "entry_fill": str(pos["entry_fill"]),
                                "stop_initial": str(pos["stop"]), "target": str(pos["target"]), "mark": str(last.close),
                                "unrealised_gross": str((last.close - pos["entry_raw"]) * units * sign)})
-    return {"trades": closed, "open_positions": open_positions}
+    return {"trades": closed, "open_positions": open_positions, "entries": entries}
 
 
 def summarise(trades: list[dict[str, Any]]) -> dict[str, Any]:
@@ -203,6 +215,7 @@ def run_once(db: Session, ft: CryptoForwardTest, now: datetime | None = None, *,
     step = timedelta(seconds=RESOLUTION_SECONDS[ft.resolution])
     start = _utc(ft.start_time)
     window_start = start - step * WARMUP_BARS
+    live_entries = None
     snapshot: dict[str, Any] = {"as_of": now.isoformat(), "label": LABEL, "paper_only": True, "symbol": ft.symbol, "resolution": ft.resolution,
                                 "start_time": start.isoformat(), "contracts": ft.contracts, "params": ft.params, "slippage_bps": str(ft.slippage_bps)}
     try:
@@ -218,12 +231,19 @@ def run_once(db: Session, ft: CryptoForwardTest, now: datetime | None = None, *,
                         assumptions={"taker_fee_rate": str(spec.taker_fee), "contract_value": str(spec.contract_value), "fees": "taker fee on entry and exit, GST and funding not modelled",
                                      "fills": "stop-order entry at the alert level (gap fills at the open); stop wins a same-bar tie"})
         ft.last_error = None
+        live_entries = (result["entries"], spec, candles)
     except (CandleDataError, httpx.HTTPError) as error:
         ft.last_error = str(error)[:400] or "Delta data unavailable."
         old = ft.snapshot or {}
         snapshot.update({k: old[k] for k in ("summary", "trades", "open_positions") if k in old}, error=ft.last_error)
     ft.snapshot, ft.last_run_at, ft.updated_at = snapshot, now, now
     db.commit()
+    if live_entries is not None and ft.execute_live:      # layer 3 of 3; the service still needs the deployment flag and the owner's arming
+        from app.delta_execution import service as live
+        try:
+            live.maybe_place(db, ft, live_entries[1], live_entries[0], live_entries[2], now)
+        except Exception:  # noqa: BLE001 - recorded in the audit trail by the service; never raised into the scheduler
+            db.rollback()
     return snapshot
 
 

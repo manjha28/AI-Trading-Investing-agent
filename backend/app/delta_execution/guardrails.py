@@ -1,0 +1,93 @@
+"""Fail-closed pre-trade checks. Every check records pass/fail with its reason; any missing input counts as a failure."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from app.delta_execution import policy
+from app.delta_execution.intent import DeltaOrderIntent
+
+
+@dataclass(frozen=True)
+class LiveContext:
+    now: datetime
+    deployment_enabled: bool
+    credentials_present: bool
+    environment_block: str | None
+    armed: bool
+    test_executes_live: bool
+    max_daily_loss_usd: Decimal
+    max_trades_per_day: int
+    max_open_positions: int
+    max_notional_usd: Decimal
+    contract_value: Decimal | None          # underlying units per contract
+    exchange_max_leverage: int | None       # None = the contract's margin data is unknown
+    last_candle_close: datetime | None
+    last_price: Decimal | None
+    orders_today: int
+    open_positions: int
+    realized_pnl_today: Decimal
+    contract_has_open_order: bool
+    duplicate_signal: bool
+
+
+@dataclass(frozen=True)
+class Check:
+    name: str
+    passed: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class Decision:
+    allowed: bool
+    checks: tuple[Check, ...] = field(default_factory=tuple)
+
+    @property
+    def reason(self) -> str | None:
+        failed = [c for c in self.checks if not c.passed]
+        return "; ".join(f"{c.name}: {c.detail}" for c in failed) or None
+
+    def as_dict(self) -> dict:
+        return {"allowed": self.allowed, "reason": self.reason, "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in self.checks]}
+
+
+def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
+    now = ctx.now.astimezone(timezone.utc)
+    checks: list[Check] = []
+
+    def check(name: str, ok: bool, detail: str) -> None:
+        checks.append(Check(name, bool(ok), detail if not ok else "ok"))
+
+    check("deployment_flag", ctx.deployment_enabled, "DELTA_LIVE_EXECUTION_ENABLED is not set on this deployment")
+    check("credentials", ctx.credentials_present, "Delta API credentials are not configured")
+    check("environment", ctx.environment_block is None, f"live orders are blocked here ({ctx.environment_block})")
+    check("armed", ctx.armed, "live execution is not armed by the owner")
+    check("test_executes_live", ctx.test_executes_live, "this forward test is paper-only (execute_live is off)")
+    check("strategy_allowlist", intent.strategy_key in policy.ALLOWED_STRATEGY_KEYS, f"{intent.strategy_key} is not allowlisted")
+    check("size_cap", intent.contracts <= policy.MAX_CONTRACTS, f"{intent.contracts} contracts exceeds the cap of {policy.MAX_CONTRACTS}")
+    allowed = min(policy.LEVERAGE_CAP, ctx.exchange_max_leverage) if ctx.exchange_max_leverage else None
+    check("leverage_cap", allowed is not None and intent.leverage <= allowed,
+          "the contract's margin data is unknown, so its maximum leverage cannot be confirmed" if allowed is None else f"leverage {intent.leverage}x exceeds min({policy.LEVERAGE_CAP}x, exchange max {ctx.exchange_max_leverage}x) = {allowed}x")
+    fresh = ctx.last_candle_close is not None and timedelta(0) <= now - ctx.last_candle_close.astimezone(timezone.utc) <= timedelta(seconds=policy.SIGNAL_MAX_AGE_SECONDS)
+    check("signal_fresh", fresh, "no completed candle closed in the last two minutes; the signal is missing or stale")
+    price_ok = ctx.last_price is not None and ctx.last_price > 0
+    check("price_known", price_ok, "no last price")
+    if price_ok and ctx.contract_value is not None:
+        notional = ctx.last_price * ctx.contract_value * intent.contracts
+        check("notional_cap", notional <= ctx.max_notional_usd, f"order value {notional:.2f} USD exceeds the cap {ctx.max_notional_usd}")
+        long = intent.side == "buy"
+        passed_stop = ctx.last_price <= intent.stop_price if long else ctx.last_price >= intent.stop_price
+        passed_target = ctx.last_price >= intent.target_price if long else ctx.last_price <= intent.target_price
+        check("price_inside_levels", not passed_stop and not passed_target, "price has already moved through the stop or the target")
+        risk = abs(intent.reference_price - intent.stop_price) * ctx.contract_value * intent.contracts
+        check("risk_per_trade", risk <= ctx.max_daily_loss_usd / 2, f"risk at the stop {risk:.2f} USD exceeds half the daily loss cap")
+    else:
+        check("notional_cap", False, "contract value or price unknown")
+    check("daily_loss_cap", ctx.realized_pnl_today > -ctx.max_daily_loss_usd, f"realised loss today {ctx.realized_pnl_today} reached the cap {ctx.max_daily_loss_usd}")
+    check("daily_trade_cap", ctx.orders_today < ctx.max_trades_per_day, f"{ctx.orders_today} orders already today (cap {ctx.max_trades_per_day})")
+    check("open_position_cap", ctx.open_positions < ctx.max_open_positions, f"{ctx.open_positions} positions already open (cap {ctx.max_open_positions})")
+    check("one_order_per_contract", not ctx.contract_has_open_order, "an order for this contract is already open")
+    check("not_a_duplicate", not ctx.duplicate_signal, "this signal was already acted on")
+    return Decision(all(c.passed for c in checks), tuple(checks))

@@ -33,3 +33,18 @@ describe('CryptoForward', () => {
     expect(JSON.parse(post![1].body)).toMatchObject({ symbol: 'BTCUSD', resolution: '15m', direction: -1 });
   });
 });
+
+describe('CryptoForward live controls', () => {
+  afterEach(() => { cleanup(); apiRequest.mockReset(); });
+  const status = { deployment_enabled: false, credentials_present: true, armed: false, can_arm: false, confirmation_phrase: 'ENABLE DELTA LIVE ORDERS', warning: 'Real orders.',
+    limits: { max_contracts: 1, leverage: "min(25x, the contract's exchange maximum)", max_daily_loss_usd: '25', max_trades_per_day: 6, max_open_positions: 2, max_notional_usd: '2000' }, today: { orders: 0, placed: 0, blocked: 0, rejected: 0 } };
+
+  it('says live orders are off and cannot be armed when the deployment flag is off', async () => {
+    apiRequest.mockImplementation((path: string) => Promise.resolve(path.endsWith('/live/status') ? status : path.includes('/live/orders') ? { orders: [] } : { tests: [] }));
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
+    expect(await screen.findByText(/DELTA_LIVE_EXECUTION_ENABLED is off/)).toBeTruthy();
+    expect(screen.getByText('OFF')).toBeTruthy();
+    expect(screen.queryByText('Arm live orders')).toBeNull();
+    expect(screen.getByText(/Kill switch/)).toBeTruthy();
+  });
+});

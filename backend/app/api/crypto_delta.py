@@ -418,7 +418,7 @@ class ForwardCreate(BaseModel):
 def _forward_json(ft: CryptoForwardTest, *, full: bool) -> dict[str, Any]:
     snap = ft.snapshot or {}
     out: dict[str, Any] = {
-        "id": str(ft.id), "name": ft.name, "symbol": ft.symbol, "resolution": ft.resolution, "status": ft.status, "contracts": ft.contracts,
+        "id": str(ft.id), "name": ft.name, "symbol": ft.symbol, "resolution": ft.resolution, "status": ft.status, "contracts": ft.contracts, "execute_live": ft.execute_live,
         "params": ft.params, "slippage_bps": str(ft.slippage_bps), "start_time": ft.start_time.isoformat(), "last_run_at": ft.last_run_at.isoformat() if ft.last_run_at else None,
         "last_error": ft.last_error, "paper_only": True, "label": crypto_forward.LABEL, "summary": snap.get("summary"), "open_positions": snap.get("open_positions", []),
     }
