@@ -147,6 +147,7 @@ type JournalTrade = {
   entry_time: string;
   exit_time: string | null;
   fees: string | null;
+  fees_estimated?: boolean;
   strategy: string | null;
   setup?: string | null;
   notes?: string | null;
@@ -193,6 +194,7 @@ type JournalAnalytics = {
   wins: number;
   losses: number;
   unpriced_closed_trades: number;
+  includes_estimated_charges?: boolean;
   win_rate: string | null;
   net_pnl: string | null;
   expectancy: string | null;

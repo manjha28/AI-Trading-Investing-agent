@@ -14,6 +14,7 @@ from app.api.auth import get_current_user, require_csrf
 from app.db import get_db
 from app.models import DhanTradeMirror, JournalTrade, User, UserSession
 from app.services.strategy_contract import registry_payload
+from app.services.dhan_charge_estimate import estimate_missing_charges
 from app.services.trade_metrics import net_pnl, summarize_net_pnls
 
 router = APIRouter(prefix="/trades", tags=["trades"])
@@ -187,7 +188,9 @@ def _dhan_trade_rows(db: Session, user_id: UUID) -> list[DhanTradeMirror]:
         current = selected.get(row.trade_id)
         if current is None or (row.source == "dhan" and current.source == "dhan_csv"):
             selected[row.trade_id] = row
-    return sorted(selected.values(), key=lambda row: (row.trade_at, row.trade_id))
+    ordered = sorted(selected.values(), key=lambda row: (row.trade_at, row.trade_id))
+    # Charges Dhan has not supplied yet are ESTIMATED on display copies (never stored, always flagged); a row with real charges is untouched.
+    return estimate_missing_charges(ordered, lambda r: _classify_segment(r.exchange_segment, r.symbol) == "option")
 
 
 _DERIVATIVE_SEGMENTS = {"NSE_FNO", "BSE_FNO", "MCX_COMM"}
@@ -422,6 +425,7 @@ def _journal_trade_rows(
                 "entry_time": row.trade_at,
                 "exit_time": None,
                 "fees": row.charges,
+                "fees_estimated": bool(getattr(row, "charges_estimated", False)),
                 "planned_risk": None,
                 "strategy": row.strategy,
                 "setup": row.setup,
@@ -539,6 +543,7 @@ def _journal_trade_view_rows(
             "entry_fill_id": str(entry.id),
             "exit_fill_id": str(exit_fill.id),
             "fees": match["fees"],
+            "fees_estimated": bool(getattr(entry, "charges_estimated", False) or getattr(exit_fill, "charges_estimated", False)),
             "planned_risk": None,
             "strategy": entry.strategy,
             "setup": entry.setup,
@@ -647,6 +652,7 @@ def journal_trade_analytics(
     known_results = [result for _, _, result in closed_events if result is not None]
     unknown_count = len(closed_events) - len(known_results)
     metrics = summarize_net_pnls(known_results)
+    includes_estimates = currency == "INR" and any(getattr(r, "charges_estimated", False) for r in _dhan_trade_rows(db, user.id))
     for _, activity_date, result in closed_events:
         item = daily[activity_date]
         item["realized_count"] += 1
@@ -692,6 +698,7 @@ def journal_trade_analytics(
         "wins": metrics["wins"],
         "losses": metrics["losses"],
         "unpriced_closed_trades": unknown_count,
+        "includes_estimated_charges": includes_estimates,
         "win_rate": (
             metrics["win_rate"]
             if all_closed_known

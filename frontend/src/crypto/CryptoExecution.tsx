@@ -45,8 +45,12 @@ const checkLabels: Record<string, string> = {
 
 /** What an audit row means. Only guard-rail decisions carry approved/allowed; a switch change (arm, disarm, per-test Live) is a record of the change, not a blocked order. */
 function auditOutcome(row: { event_type: string; payload: Record<string, unknown>; mode: string }): string {
-  if (row.event_type !== 'decision') return '—';
   const p = row.payload;
+  if (row.event_type === 'broker_reply') {                       // what the broker answered: a refusal has no order id and never appears in the broker's own order list
+    const reason = typeof p.reason === 'string' && p.reason ? `: ${p.reason.replace(/_/g, ' ')}` : '';
+    return typeof p.status === 'string' ? `${p.status}${reason}` : '—';
+  }
+  if (row.event_type !== 'decision') return '—';
   if (typeof p.approved === 'boolean') return p.approved ? 'would pass' : 'blocked';
   if (typeof p.allowed === 'boolean') return p.allowed ? 'allowed' : 'blocked';
   if (typeof p.event === 'string') return p.event.includes('execute_live') ? `Live switch ${p.enabled ? 'turned on' : 'turned off'}` : p.event;
