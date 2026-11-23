@@ -302,6 +302,10 @@ class DeltaPublicCollector:
         # "unavailable" and retried at the capped interval, so it recovers on its own.
         while not self._stop.is_set():
             try:
+                symbols = await asyncio.to_thread(self._live_symbols)
+                while not symbols and not self._stop.is_set():        # a fresh store has no product list until the first REST fetch lands
+                    await asyncio.sleep(2)
+                    symbols = await asyncio.to_thread(self._live_symbols)
                 async with connect(
                     self.websocket_url,
                     open_timeout=10,
@@ -315,7 +319,7 @@ class DeltaPublicCollector:
                         "type": "subscribe",
                         "payload": {
                             "channels": [
-                                {"name": "v2/ticker", "symbols": ["all"]},
+                                {"name": "ticker", "symbols": symbols},
                                 {
                                     "name": "candlestick_1m",
                                     "symbols": ["perpetual_futures"],
@@ -375,13 +379,13 @@ class DeltaPublicCollector:
             return
         if message_type in {"subscriptions", "pong"}:
             return
-        if message_type == "v2/ticker":
-            symbol = str(message.get("symbol") or "")
+        if message_type == "ticker":
+            symbol = str(message.get("sy") or "")
             if symbol:
-                self._latest_ticks[symbol] = message     # only the newest tick per contract is kept; a batch writer stores them (cheap, and bounded)
+                self._latest_ticks[symbol] = message     # only the newest tick per contract is kept; a batch writer merges them into the stored quotes (cheap, and bounded)
                 await self._mark_event()
             return
-        if message_type not in {"ticker", "candlestick_1m"}:
+        if message_type != "candlestick_1m":
             return
         symbol = str(message.get("sy") or "")
         if not symbol:
@@ -413,9 +417,17 @@ class DeltaPublicCollector:
             except (OSError, RuntimeError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
                 await self._record_failure(exc, "storage")
 
+    def _live_symbols(self) -> list[str]:
+        """Live perpetuals from the stored product list (Delta's `ticker` channel returns nothing for \"all\"). Empty until the first product fetch lands; the loop then waits and retries."""
+        try:
+            with DeltaResearchStore(self.path, read_only=True) as store:
+                return store.live_symbols()
+        except (OSError, sqlite3.Error, RuntimeError):
+            return []
+
     def _persist_ticks(self, rows: list[dict[str, Any]]) -> None:
         with self._write_lock, DeltaResearchStore(self.path) as store:
-            store.save_quotes(rows, datetime.now(timezone.utc), "delta_public_ws_v2_ticker")
+            store.save_live_ticks(rows, datetime.now(timezone.utc), "delta_public_ws_ticker")
 
     async def _writer_loop(self) -> None:
         while not self._stop.is_set() or not self._write_queue.empty():
@@ -450,34 +462,7 @@ class DeltaPublicCollector:
         observed_at = _event_time(message.get("ts"))
         with self._write_lock, DeltaResearchStore(self.path) as store:
             product_id = store.product_id_for_symbol(symbol)
-            if message_type == "ticker":
-                store.save_event(
-                    "ticker", message, product_id=product_id, symbol=symbol,
-                    exchange_time=observed_at,
-                )
-                rows = message.get("d")
-                if isinstance(rows, list):
-                    quotes = []
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        ohlc = row.get("ohlc")
-                        if not isinstance(ohlc, list) or len(ohlc) != 4 or ohlc[3] is None:
-                            continue
-                        quotes.append({
-                            "product_id": row.get("i", product_id),
-                            "symbol": symbol,
-                            "close": ohlc[3],
-                            "mark_price": row.get("m"),
-                            "spot_price": message.get("sp"),
-                            "raw": row,
-                        })
-                    store.save_quotes(
-                        quotes,
-                        observed_at or datetime.now(timezone.utc),
-                        "delta_public_ws_ticker_24h_close",
-                    )
-            elif product_id is not None:
+            if product_id is not None:
                 required = {"o", "h", "l", "c", "res"}
                 if required.issubset(message):
                     observed_time = observed_at or datetime.now(timezone.utc)

@@ -201,18 +201,14 @@ def test_ticker_websocket_frame_updates_price_from_documented_ohlc_close(tmp_pat
         }],
     }
 
-    async def persist() -> None:
-        await collector._handle_frame(json.dumps(frame))
-        collector._persist_message(collector._write_queue.get_nowait())
-        collector._write_queue.task_done()
-
-    asyncio.run(persist())
+    asyncio.run(collector._handle_frame(json.dumps(frame)))
+    collector._persist_ticks(list(collector._latest_ticks.values()))
 
     with DeltaResearchStore(store_path, read_only=True) as store:
         row = store.list_products("", 10, 0)["items"][0]
         assert row["last_price"] == "65000.25"
         assert row["mark_price"] == "65002.00"
-        assert row["quote_source"] == "delta_public_ws_ticker_24h_close"
+        assert row["quote_source"] == "delta_public_ws_ticker"
 
 
 def test_research_store_read_connection_is_query_only(tmp_path) -> None:
@@ -230,6 +226,7 @@ def test_websocket_failures_back_off_with_jitter_report_unavailable_and_keep_ret
     attempts = 0
     delays: list[float] = []
     collector = DeltaPublicCollector(tmp_path / "not-created.sqlite3")
+    monkeypatch.setattr(collector, "_live_symbols", lambda: ["BTCUSD"])      # the store is empty here; the loop otherwise waits for the product list
     states: list[str] = []
 
     class FailedConnection:
@@ -275,6 +272,7 @@ def test_websocket_failures_back_off_with_jitter_report_unavailable_and_keep_ret
 
 def test_idle_websocket_without_heartbeat_forces_a_reconnect(tmp_path, monkeypatch) -> None:
     collector = DeltaPublicCollector(tmp_path / "idle.sqlite3")
+    monkeypatch.setattr(collector, "_live_symbols", lambda: ["BTCUSD"])      # an empty store would otherwise wait for the product list
     connects = 0
 
     class SilentSocket:
@@ -369,19 +367,25 @@ def test_all_delta_read_routes_require_authentication(client) -> None:
         assert client.get(f"/api/v1/delta-research{path}").status_code == 401
 
 
-def test_live_v2_ticker_frames_keep_only_the_newest_tick_per_contract_and_store_the_full_ticker(tmp_path) -> None:
+def test_live_ticker_frames_keep_the_newest_tick_per_contract_and_merge_into_the_full_quote(tmp_path) -> None:
     store_path = tmp_path / "delta-research.sqlite3"
     with DeltaResearchStore(store_path) as store:
         store.save_products([{"id": 123, "symbol": "BTCUSD", "contract_type": "perpetual_futures", "state": "live"}])
+        store.save_quotes([{"product_id": 123, "symbol": "BTCUSD", "close": "64900", "mark_price": "64901", "turnover_usd": "999", "funding_rate": "0.01", "contract_value": "0.001",
+                            "oi_change_usd_6h": "-5", "quotes": {"best_bid": "1", "best_ask": "2"}}], datetime(2026, 11, 23, tzinfo=timezone.utc), "delta_rest_ticker")
+        assert store.live_symbols() == ["BTCUSD"]
     collector = DeltaPublicCollector(store_path)
-    for price in ("65000.5", "65001.0"):                       # two ticks before the batch write: only the newest is kept
-        asyncio.run(collector._handle_frame(json.dumps({"type": "v2/ticker", "symbol": "BTCUSD", "product_id": 123, "close": price, "mark_price": "65000.9",
-                                                         "open": "64000", "high": "66000", "low": "63000", "oi_value_usd": "123456", "funding_rate": "0.01",
-                                                         "ltp_change_24h": "1.5", "turnover_usd": "999", "quotes": {"best_bid": "65000", "best_ask": "65001"}})))
+    for last in ("65000.5", "65001.0"):                         # two frames before the batch write: only the newest is kept
+        asyncio.run(collector._handle_frame(json.dumps({"type": "ticker", "sy": "BTCUSD", "sp": "65002", "ts": 1775814834503627,
+                                                         "d": [{"i": 123, "m": "65000.9", "m24hc": "1.2", "ohlc": ["64000", "66000", "63000", last], "oi": ["700000", "-5"],
+                                                                "q": ["65001.5", "10", "65000.5", "20", None]}]})))
     assert list(collector._latest_ticks) == ["BTCUSD"] and collector._write_queue.empty()
     collector._persist_ticks(list(collector._latest_ticks.values()))
     with DeltaResearchStore(store_path, read_only=True) as store:
         item = store.list_products("", 10, 0, True)["items"][0]
-    assert item["last_price"] == "65001.0" and item["quote_source"] == "delta_public_ws_v2_ticker"
-    assert item["ticker"]["oi_value_usd"] == "123456" and item["ticker"]["high"] == "66000" and item["ticker"]["best_bid"] == "65000"
-    assert "metadata" not in item                               # the slim list leaves the heavy product document out
+    t = item["ticker"]
+    assert item["last_price"] == "65001.0" and item["mark_price"] == "65000.9" and item["quote_source"] == "delta_public_ws_ticker"
+    assert t["high"] == "66000" and t["low"] == "63000" and t["open"] == "64000" and t["ltp_change_24h"] == "1.5641"      # (65001 - 64000) / 64000 = 1.56406
+    assert t["best_bid"] == "65000.5" and t["best_ask"] == "65001.5" and t["oi_value_usd"] == "45500.63"                     # 700000 x 0.001 x 65000.9
+    assert t["funding_rate"] == "0.01" and t["turnover_usd"] == "999" and t["oi_change_usd_6h"] == "-5"                      # fields a live frame lacks keep their last full value
+    assert "metadata" not in item

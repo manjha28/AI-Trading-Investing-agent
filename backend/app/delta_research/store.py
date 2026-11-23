@@ -205,6 +205,64 @@ class DeltaResearchStore:
                  volume_24h,raw_json) VALUES (?,?,?,?,?,?,?,?)
             """, values)
 
+    def live_symbols(self) -> list[str]:
+        """Symbols of live perpetuals, for the websocket subscription (Delta's `ticker` channel needs them listed; \"all\" returns nothing)."""
+        return [str(r[0]) for r in self.connection.execute("SELECT symbol FROM products WHERE contract_type='perpetual_futures' AND state='live' ORDER BY symbol")]
+
+    def save_live_ticks(self, messages: list[dict[str, Any]], observed_at: datetime, source: str) -> int:
+        """Merge compact live `ticker` frames into each contract's stored quote: price, mark, 24h range, open interest and best bid/ask move; everything else
+        (funding, turnover, 6h open-interest change) keeps the last full REST value. A field the frame lacks stays as it was, never zero."""
+        def dec(value: Any) -> Decimal | None:
+            try:
+                number = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError):
+                return None
+            return number if number.is_finite() else None
+
+        parsed: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        for message in messages:
+            for row in message.get("d") if isinstance(message.get("d"), list) else []:
+                ohlc = row.get("ohlc") if isinstance(row, dict) else None
+                if not isinstance(ohlc, list) or len(ohlc) != 4 or dec(ohlc[3]) is None:
+                    continue
+                product_id = row.get("i") if row.get("i") is not None else self.product_id_for_symbol(str(message.get("sy") or ""))
+                if product_id is not None:
+                    parsed.append((str(product_id), message, row))
+        if not parsed:
+            return 0
+        ids = [p[0] for p in parsed]
+        existing = {r[0]: r[1] for r in self.connection.execute(f"SELECT product_id,raw_json FROM quotes WHERE product_id IN ({','.join('?' * len(ids))})", ids)}
+        timestamp, values = _iso(observed_at), []
+        for product_id, message, row in parsed:
+            try:
+                raw = json.loads(existing.get(product_id) or "{}")
+            except ValueError:
+                raw = {}
+            o, h, low, c = (dec(x) for x in row["ohlc"])
+            mark = dec(row.get("m"))
+            raw.update(close=str(c), mark_price=str(mark) if mark is not None else raw.get("mark_price"), spot_price=str(message.get("sp")) if message.get("sp") is not None else raw.get("spot_price"))
+            for key, value in (("open", o), ("high", h), ("low", low)):
+                if value is not None:
+                    raw[key] = str(value)
+            if o is not None and o != 0:
+                raw["ltp_change_24h"] = str(((c - o) / o * 100).quantize(Decimal("0.0001")))
+            if dec(row.get("m24hc")) is not None:
+                raw["mark_change_24h"] = str(dec(row.get("m24hc")))
+            oi = row.get("oi")
+            contracts, value_unit = (dec(oi[0]) if isinstance(oi, list) and oi else None), dec(raw.get("contract_value"))
+            if contracts is not None and value_unit is not None and mark is not None:
+                raw["oi_contracts"] = str(contracts)
+                raw["oi_value_usd"] = str((contracts * value_unit * mark).quantize(Decimal("0.01")))
+            q = row.get("q")
+            if isinstance(q, list) and len(q) >= 4 and dec(q[0]) is not None and dec(q[2]) is not None:
+                raw["quotes"] = {**(raw.get("quotes") if isinstance(raw.get("quotes"), dict) else {}), "best_ask": str(dec(q[0])), "best_bid": str(dec(q[2])),
+                                 "ask_size": str(q[1]), "bid_size": str(q[3])}
+            raw["time"] = timestamp
+            values.append((product_id, timestamp, source, str(c), raw.get("mark_price"), raw.get("spot_price"), raw.get("turnover_usd"), json.dumps(raw, separators=(",", ":"), sort_keys=True, default=str)))
+        with self.connection:
+            self.connection.executemany("INSERT OR REPLACE INTO quotes (product_id,observed_at,source,last_price,mark_price,index_price,volume_24h,raw_json) VALUES (?,?,?,?,?,?,?,?)", values)
+        return len(values)
+
     def save_candle(
         self,
         product_id: str,

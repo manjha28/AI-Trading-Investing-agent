@@ -43,6 +43,16 @@ const checkLabels: Record<string, string> = {
   total_exposure_within_cap: 'Total exposure within cap',
 };
 
+/** What an audit row means. Only guard-rail decisions carry approved/allowed; a switch change (arm, disarm, per-test Live) is a record of the change, not a blocked order. */
+function auditOutcome(row: { event_type: string; payload: Record<string, unknown>; mode: string }): string {
+  if (row.event_type !== 'decision') return '—';
+  const p = row.payload;
+  if (typeof p.approved === 'boolean') return p.approved ? 'would pass' : 'blocked';
+  if (typeof p.allowed === 'boolean') return p.allowed ? 'allowed' : 'blocked';
+  if (typeof p.event === 'string') return p.event.includes('execute_live') ? `Live switch ${p.enabled ? 'turned on' : 'turned off'}` : p.event;
+  return '—';
+}
+
 /** Execution readiness, risk-check sandbox and audit trail. Orders go out only when armed. */
 export function CryptoExecution() {
   const [status, setStatus] = useState<ExecutionStatus | null>(null);
@@ -159,7 +169,7 @@ export function CryptoExecution() {
                 <td>{row.symbol}</td>
                 <td>{row.mode}</td>
                 <td><code>{row.client_order_id}</code></td>
-                <td>{row.event_type === 'decision' ? (row.payload.approved ? 'would pass' : 'blocked') : '—'}</td>
+                <td>{auditOutcome(row)}</td>
               </tr>
             ))}</tbody>
           </table></div>
