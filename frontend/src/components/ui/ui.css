@@ -120,3 +120,30 @@
 .dr-score { font: 600 var(--fs-3)/1 var(--font-mono); text-align: right; }
 .dr-detail { position: sticky; top: var(--space-2); min-width: 0; }
 @media (max-width: 1100px) { .dr-split { grid-template-columns: minmax(0, 1fr); } .dr-detail { position: static; } .dr-row { grid-template-columns: minmax(80px, 1fr) auto 36px; } .dr-nums { display: none; } }
+
+/* Overview: needs attention */
+.needs-attention { padding: var(--space-3) var(--space-4); background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.needs-attention h2 { display: flex; gap: var(--space-2); align-items: center; margin: 0 0 var(--space-2); font-size: var(--fs-3); }
+.needs-attention ul { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
+.needs-attention li { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; font-size: var(--fs-2); }
+.needs-attention li > span { flex: 1; min-width: 200px; }
+
+/* Inputs, filter bar, tooltip, card, sparkline, meter, toast */
+.ui-input { min-height: 32px; padding: 0 var(--space-3); color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: 400 var(--fs-2)/1 var(--font-ui); }
+.ui-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.ui-field { display: inline-flex; gap: var(--space-2); align-items: center; font-size: var(--fs-2); color: var(--text-muted); }
+.ui-filterbar { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
+.ui-fchip { display: inline-flex; gap: var(--space-1); align-items: center; height: 28px; padding: 0 var(--space-3); font: 500 var(--fs-2)/1 var(--font-ui); color: var(--text-muted); background: transparent; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); cursor: pointer; }
+.ui-fchip.on { color: var(--accent-contrast); background: var(--accent); border-color: var(--accent); } .ui-fchip span { font-family: var(--font-mono); opacity: .8; }
+.ui-fclear { all: unset; cursor: pointer; font-size: var(--fs-2); color: var(--text-muted); text-decoration: underline; }
+.ui-tip { position: relative; display: inline-block; }
+.ui-tip-body { position: absolute; z-index: 20; left: 0; top: 100%; display: none; width: max-content; max-width: 260px; margin-top: var(--space-1); padding: var(--space-2) var(--space-3); font-size: var(--fs-1); color: var(--text); background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: var(--shadow-pop); }
+.ui-tip:hover .ui-tip-body, .ui-tip:focus .ui-tip-body, .ui-tip:focus-within .ui-tip-body { display: block; }
+.ui-card { padding: var(--space-3) var(--space-4); background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.ui-card > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2); } .ui-card h3 { margin: 0; font-size: var(--fs-3); }
+.ui-spark.ui-tone-positive { color: var(--positive); } .ui-spark.ui-tone-negative { color: var(--negative); }
+.ui-meter { display: inline-flex; align-items: center; gap: var(--space-2); font: 500 var(--fs-1)/1 var(--font-mono); } .ui-meter i { display: inline-block; width: 64px; height: 6px; border-radius: var(--radius-pill); background: linear-gradient(to right, currentColor var(--meter, 0%), var(--border-strong) 0); }
+.ui-meter i.ui-tone-positive { color: var(--positive); } .ui-meter i.ui-tone-caution { color: var(--caution); } .ui-meter i.ui-tone-negative { color: var(--negative); }
+.ui-toasts { position: fixed; z-index: 60; right: var(--space-4); bottom: var(--space-4); display: grid; gap: var(--space-2); max-width: min(360px, calc(100vw - 32px)); }
+.ui-toast { display: flex; gap: var(--space-3); justify-content: space-between; align-items: center; padding: var(--space-3) var(--space-4); font-size: var(--fs-2); background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: var(--shadow-pop); }
+.ui-toast-positive { border-color: var(--positive-line); } .ui-toast-negative { border-color: var(--negative-line); background: var(--negative-soft); } .ui-toast button { all: unset; cursor: pointer; color: var(--text-muted); }
