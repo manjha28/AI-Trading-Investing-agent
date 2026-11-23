@@ -386,6 +386,6 @@ def test_live_ticker_frames_keep_the_newest_tick_per_contract_and_merge_into_the
     t = item["ticker"]
     assert item["last_price"] == "65001.0" and item["mark_price"] == "65000.9" and item["quote_source"] == "delta_public_ws_ticker"
     assert t["high"] == "66000" and t["low"] == "63000" and t["open"] == "64000" and t["ltp_change_24h"] == "1.5641"      # (65001 - 64000) / 64000 = 1.56406
-    assert t["best_bid"] == "65000.5" and t["best_ask"] == "65001.5" and t["oi_value_usd"] == "45500.63"                     # 700000 x 0.001 x 65000.9
+    assert t["best_bid"] == "65000.5" and t["best_ask"] == "65001.5" and t["oi_value_usd"] == "45500630.00"                # 700000 x 0.001 x 65000.9
     assert t["funding_rate"] == "0.01" and t["turnover_usd"] == "999" and t["oi_change_usd_6h"] == "-5"                      # fields a live frame lacks keep their last full value
     assert "metadata" not in item
