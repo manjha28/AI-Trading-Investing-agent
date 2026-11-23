@@ -4,6 +4,7 @@ No data is changed. Unknown (master unavailable) is NOT treated as a fund."""
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -58,6 +59,9 @@ def _warm_in_background() -> None:
     threading.Thread(target=run, name="dhan-master-warm", daemon=True).start()
 
 
+_FUND_NAME = re.compile(r"\b(ETF|MUTUAL FUND|INDEX FUND|LIQUID FUND)\b", re.IGNORECASE)
+
+
 def is_fund(instrument: Any) -> bool:
     """The kind stored on the instrument row (set when the master is synced) decides; only an unclassified row falls back to the in-memory master, so a fresh process never depends on it for a classified stock."""
     if (getattr(instrument, "asset_class", None) or "") == "etf":
@@ -95,6 +99,8 @@ def sync_kinds(db: Any, *, rows: Any = None) -> dict[str, int]:
     updated = 0
     for inst in db.scalars(select(Instrument).where(Instrument.country == "IN", Instrument.asset_class.in_(("equity", "etf")), Instrument.is_synthetic.is_(False))):
         k = "fund" if inst.asset_class == "etf" else kinds.get((inst.symbol or "").strip().upper())
+        if k is None and _FUND_NAME.search(inst.display_name or ""):
+            k = "fund"                                   # not in the master by this symbol, but the stored name says ETF / mutual fund (never the other way: an unknown name is not a stock)
         if k is not None and inst.instrument_kind != k:
             inst.instrument_kind = k
             updated += 1

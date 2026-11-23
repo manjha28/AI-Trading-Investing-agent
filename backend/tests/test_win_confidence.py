@@ -87,3 +87,15 @@ def test_setup_type_names_blue_sky_before_the_engine_setup():
     assert wc.setup_type({"selected_setup": "PULLBACK_ENTRY", "targets": [{"basis": "Blue sky: ATR multiple"}]}) == "blue_sky"
     assert wc.setup_type({"selected_setup": "BREAKOUT_ENTRY", "targets": [{"basis": "Resistance zone"}]}) == "breakout"
     assert wc.setup_type({"selected_setup": "NO_VALID_SETUP", "targets": []}) == "other"
+
+
+def test_the_shipped_model_file_is_well_formed_when_present():
+    """The stored model (built by the Phase 7b scripts from replay data) has the three horizons, base rates in (0,1), and every setup row carries bins and a win flag. Skipped before it is built."""
+    m = wc.load_model()
+    if not m:
+        pytest.skip("win_confidence_model.json is not built yet")
+    assert set(m["horizons"]) >= {"swing", "positional", "long_term"}
+    for hz, blk in m["horizons"].items():
+        assert 0 < blk["p0"] < 1 and blk["setups"] and blk["order"]
+        assert all(isinstance(r["win"], bool) and "bins" in r for r in blk["setups"][:50])
+        assert "separating" in (blk.get("validation") or {}), hz

@@ -101,3 +101,16 @@ def test_a_fresh_process_research_universe_excludes_a_known_etf(tmp_path):
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]), env={**__import__("os").environ, "DATABASE_URL": "sqlite://"})
     assert r.returncode == 0, r.stderr[-600:]
     assert json.loads(r.stdout.strip().splitlines()[-1]) == ["TCS"]
+
+
+def test_a_name_that_says_etf_classifies_a_symbol_the_master_does_not_list(tmp_path):
+    eng = create_engine(f"sqlite:///{tmp_path}/n.db")
+    Base.metadata.create_all(eng)
+    with Session(eng) as db:
+        a, b = _inst("SBINEQWETF"), _inst("MYSTERY")
+        a.display_name = "SBI Nifty 50 Equal Weight ETF"
+        db.add_all([a, b])
+        db.commit()
+        ik.sync_kinds(db, rows=MASTER)
+        kinds = {i.symbol: i.instrument_kind for i in db.query(Instrument)}
+    assert kinds == {"SBINEQWETF": "fund", "MYSTERY": None}
