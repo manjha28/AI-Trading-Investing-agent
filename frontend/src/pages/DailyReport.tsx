@@ -15,7 +15,7 @@ export type Levels = {
 export type WinConfidence = { line: string; band?: string | null; band_label?: string | null; tooltip?: string | null; expected_r?: number | null };
 export type Confidence = { score: number; win_confidence?: WinConfidence | null; band: string; kind?: 'factor_v2'; label?: string; grade?: string | null; measured_line?: string | null; factor_rank?: { rank: number; of: number; composite: number; percentile: number; as_of?: string; universe_size?: number; text: string } | null; setup?: { label: string; checks: { key: string; label: string; result: string; reason: string; veto: boolean }[]; failed_vetoes: string[] }; note: string; parts: { key: string; label: string; value: number; weight: number }[]; horizon?: string };
 type HorizonRec = { recommendation: string | null; score: number | null; confidence: number | null; buy_confidence?: Confidence | null; why_not: string[]; data_note?: string | null };
-type Bucket = 'buy' | 'setup_waiting' | 'radar' | 'hold' | 'no_new_entry' | 'not_enough_data';
+type Bucket = 'buy' | 'setup_waiting' | 'radar' | 'hold' | 'no_new_entry' | 'stale_data' | 'not_enough_data';
 export type Row = {
   instrument_id: string; symbol: string; name: string; held: boolean; quantity: string | null; bucket: Bucket; action: string; researched_at: string | null; stale: boolean;
   horizons: Record<string, HorizonRec>; levels: Record<string, Levels | null>; last_close?: string | null; confidence?: Confidence | null; researching?: boolean; data_note?: string | null; radar_reasons?: string[] | null;
@@ -27,7 +27,7 @@ const HORIZONS = ['swing', 'positional', 'long_term'] as const;
 const HORIZON_NAME: Record<string, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
 const HORIZON_SPAN: Record<string, string> = { swing: 'days to weeks', positional: 'weeks to months', long_term: 'months to years' };
 const TABS: { key: Bucket | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' }, { key: 'buy', label: 'Ready to buy' }, { key: 'setup_waiting', label: 'Set up, waiting' }, { key: 'radar', label: 'Radar' }, { key: 'hold', label: 'Hold' }, { key: 'no_new_entry', label: 'No new entry' }, { key: 'not_enough_data', label: 'Needs data' },
+  { key: 'all', label: 'All' }, { key: 'buy', label: 'Ready to buy' }, { key: 'setup_waiting', label: 'Set up, waiting' }, { key: 'radar', label: 'Radar' }, { key: 'hold', label: 'Hold' }, { key: 'no_new_entry', label: 'No new entry' }, { key: 'stale_data', label: 'Not current' }, { key: 'not_enough_data', label: 'Needs data' },
 ];
 const REC_TEXT: Record<string, string> = { BUY: 'Buy', HOLD: 'Hold', AVOID: 'Avoid', WAIT: 'Wait', INSUFFICIENT_EVIDENCE: 'No data' };
 const POLL_FAST_MS = 15_000;
@@ -247,7 +247,7 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
   const others = allOthers.slice(0, limit);
   const tiles: { key: Bucket; label: string; hint: string }[] = [
     { key: 'buy', label: 'Ready to buy', hint: hasWaiting ? 'in the band now' : 'with a range' }, ...(hasWaiting ? [{ key: 'setup_waiting' as Bucket, label: 'Set up, waiting', hint: 'levels set, price not in band' }] : []), { key: 'radar', label: 'Radar', hint: 'buy signal, no range yet' }, { key: 'hold', label: 'Hold', hint: 'in your portfolio' },
-    { key: 'no_new_entry', label: 'No new entry', hint: 'not a buy now' }, { key: 'not_enough_data', label: 'Needs data', hint: 'not current' },
+    { key: 'no_new_entry', label: 'No new entry', hint: 'not a buy now' }, { key: 'stale_data', label: 'Not current', hint: 'close or research is old' }, { key: 'not_enough_data', label: 'Needs data', hint: 'too little stored data' },
   ];
   return <section className="rt-daily" aria-label="Daily report">
     <div className="rt-daily-head">

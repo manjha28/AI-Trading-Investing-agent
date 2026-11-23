@@ -147,3 +147,14 @@ describe('DailyReport', () => {
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });
+
+describe('DailyReport · stale data is its own bucket', () => {
+  it('lists stocks whose stored close or research is old under Not current, with the reason, apart from Needs data', async () => {
+    const stale = { ...hold, instrument_id: 'i7', symbol: 'OLDCO', name: 'Old Co Ltd', held: false, quantity: null, bucket: 'stale_data', action: 'Not current: the last stored close is 2026-11-20, older than the last completed session (2026-11-23); levels are not built from it' };
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, stale_data: [stale] }, counts: { ...report.counts, stale_data: 1 } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    expect(await screen.findByText(/levels are not built from it/)).toBeTruthy();
+    expect(screen.getAllByText('Not current').length).toBeGreaterThan(0);
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
+});

@@ -900,7 +900,9 @@ def _capture_dhan_session_closes(captured_at: datetime) -> bool:
             for segment, rows in quotes.items():
                 for security_id, quote in rows.items():
                     instrument = instrument_by_key.get((segment, security_id))
-                    close = quote.session_close
+                    # Dhan's quote `ohlc.close` is the PREVIOUS session's close, not today's: using it stored yesterday's close as today's (JAMNAAUTO, PCJEWELLER showed a day change of exactly 0.00).
+                    # The last traded price after the close is today's close; the daily history refresh later replaces this provisional bar with the published candle.
+                    close = quote.close
                     observed_at = quote.provider_observed_at
                     close_boundary = datetime.combine(
                         session_date, time(15, 30), tzinfo=IST

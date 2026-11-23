@@ -25,6 +25,9 @@ def test_needs_refresh_only_when_the_newest_close_is_older_than_the_expected_ses
     assert dcr.needs_refresh(None, date(2026, 11, 23))
     assert dcr.needs_refresh(date(2026, 11, 20), date(2026, 11, 23))
     assert not dcr.needs_refresh(date(2026, 11, 23), date(2026, 11, 23))
+    # a bar of the expected session that came from the 15:33 IST quote snapshot is provisional: it is fetched again once the candle is published
+    assert dcr.needs_refresh(date(2026, 11, 23), date(2026, 11, 23), datetime(2026, 11, 23, 10, 3, tzinfo=timezone.utc))
+    assert not dcr.needs_refresh(date(2026, 11, 23), date(2026, 11, 23), datetime(2026, 11, 23, 18, 0, tzinfo=timezone.utc))
 
 
 def test_stale_instruments_are_found_stalest_first_and_current_ones_are_skipped(engine):  # noqa: F811

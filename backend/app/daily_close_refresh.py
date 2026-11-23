@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -21,11 +22,20 @@ from app.models import BrokerCredential, Instrument, MarketBar, User, UserMarket
 
 logger = logging.getLogger("daily_close_refresh")
 LOOKBACK_DAYS = 12
+IST = ZoneInfo("Asia/Kolkata")
 
 
-def needs_refresh(last_bar_date: date | None, expected: date) -> bool:
-    """True when the newest daily bar is missing or older than the session that should already be closed."""
-    return last_bar_date is None or last_bar_date < expected
+PUBLISHED_AFTER = time(16, 15)        # IST: a daily bar fetched before this on its own session day came from a quote snapshot, not the published candle
+
+
+def needs_refresh(last_bar_date: date | None, expected: date, retrieved_at: datetime | None = None) -> bool:
+    """True when the newest daily bar is missing, older than the session that should already be closed, or only a provisional quote snapshot of that session."""
+    if last_bar_date is None or last_bar_date < expected:
+        return True
+    if retrieved_at is None:
+        return False
+    local = (retrieved_at if retrieved_at.tzinfo else retrieved_at.replace(tzinfo=timezone.utc)).astimezone(IST)
+    return local.date() == expected and local.time() < PUBLISHED_AFTER
 
 
 def stale_instruments(db: Session, instruments: list[Instrument], now: datetime) -> list[tuple[Instrument, date | None]]:
@@ -33,9 +43,13 @@ def stale_instruments(db: Session, instruments: list[Instrument], now: datetime)
 
     if not instruments:
         return []
-    latest = {iid: ts for iid, ts in db.execute(select(MarketBar.instrument_id, func.max(MarketBar.timestamp)).where(
-        MarketBar.instrument_id.in_([i.id for i in instruments]), MarketBar.interval == "1d", MarketBar.source == "dhan", MarketBar.is_synthetic.is_(False)).group_by(MarketBar.instrument_id))}
-    out = [(i, latest[i.id].date() if i.id in latest else None) for i in instruments if needs_refresh(latest[i.id].date() if i.id in latest else None, md._expected_market_session_date(i, now))]
+    rows = db.execute(select(MarketBar.instrument_id, MarketBar.timestamp, MarketBar.retrieved_at).where(
+        MarketBar.instrument_id.in_([i.id for i in instruments]), MarketBar.interval == "1d", MarketBar.source == "dhan", MarketBar.is_synthetic.is_(False)).order_by(MarketBar.timestamp.desc())).all()
+    newest: dict = {}
+    for iid, ts, got in rows:
+        newest.setdefault(iid, (ts.date(), got))                                   # newest bar per instrument
+    out = [(i, newest[i.id][0] if i.id in newest else None) for i in instruments
+           if needs_refresh(newest[i.id][0] if i.id in newest else None, md._expected_market_session_date(i, now), newest[i.id][1] if i.id in newest else None)]
     return sorted(out, key=lambda pair: (pair[1] is not None, pair[1] or date.min))             # never fetched first, then the stalest
 
 
