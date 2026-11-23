@@ -59,7 +59,7 @@ def _warm_in_background() -> None:
     threading.Thread(target=run, name="dhan-master-warm", daemon=True).start()
 
 
-_FUND_NAME = re.compile(r"\b(ETF|MUTUAL FUND|INDEX FUND|LIQUID FUND)\b", re.IGNORECASE)
+_FUND_NAME = re.compile(r"\b(ETF|MUTUAL FUND|INDEX FUND|LIQUID FUND)\b|BEES|SETF|INAV|LIQUID|GILT", re.IGNORECASE)
 
 
 def is_fund(instrument: Any) -> bool:
@@ -85,20 +85,30 @@ def sync_kinds(db: Any, *, rows: Any = None) -> dict[str, int]:
             return {"updated": 0, "skipped_no_master": 1}
         rows = cached[1]
     kinds: dict[str, str] = {}
+    by_secid: dict[str, str] = {}                       # Dhan security id -> kind: the master's symbol can differ from ours (SBIMID150 vs SBINMID150) but the id is the same instrument
     for r in rows:
         if r.get("EXCH_ID") != "NSE" or r.get("SEGMENT") != "E":
             continue
         sym = (r.get("UNDERLYING_SYMBOL") or "").strip().upper()
         isin = (r.get("ISIN") or "").strip().upper()
-        if not sym or not isin:
+        if not isin:
             continue
-        if isin.startswith("INF"):
-            kinds[sym] = "fund"
-        elif sym not in kinds:
-            kinds[sym] = "stock"
+        kind = "fund" if isin.startswith("INF") else "stock" if isin.startswith("INE") else None   # INF = mutual fund / ETF units, INE = equity shares
+        if kind is None:
+            continue
+        if r.get("SECURITY_ID"):
+            by_secid[str(r["SECURITY_ID"]).strip()] = kind
+        if sym and (kind == "fund" or sym not in kinds):
+            kinds[sym] = kind
+    secid_of: dict[Any, str] = {}
+    from app.models import InstrumentProviderIdentifier
+    for iid, pid in db.execute(select(InstrumentProviderIdentifier.instrument_id, InstrumentProviderIdentifier.provider_instrument_id).where(InstrumentProviderIdentifier.provider == "dhan")):
+        secid_of[iid] = str(pid).split("|")[0].strip()
     updated = 0
     for inst in db.scalars(select(Instrument).where(Instrument.country == "IN", Instrument.asset_class.in_(("equity", "etf")), Instrument.is_synthetic.is_(False))):
         k = "fund" if inst.asset_class == "etf" else kinds.get((inst.symbol or "").strip().upper())
+        if k is None:
+            k = by_secid.get(secid_of.get(inst.id, ""))     # ISIN prefix through the Dhan security id when the symbol is not in the master
         if k is None and _FUND_NAME.search(inst.display_name or ""):
             k = "fund"                                   # not in the master by this symbol, but the stored name says ETF / mutual fund (never the other way: an unknown name is not a stock)
         if k is not None and inst.instrument_kind != k:

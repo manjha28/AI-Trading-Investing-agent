@@ -104,3 +104,23 @@ def test_run_if_due_stores_one_report_a_week_and_latest_reads_it(db):
     assert fr.run_if_due(db, uid, NOW) is True and fr.run_if_due(db, uid, NOW + timedelta(days=2)) is False
     rep = fr.latest(db, uid)
     assert rep["as_of"] == "2026-04-01" and "short_horizon" in rep and "Decision support, not investment advice" in rep["disclaimer"]
+
+
+def test_band_separation_needs_high_beating_low_with_non_overlapping_intervals_and_100_trades_each():
+    mk = lambda band, r, n: [{"band": band, "net_r": r + (i % 5 - 2) * 0.1} for i in range(n)]  # noqa: E731
+    assert fr.band_separation(mk("High", 0.8, 120) + mk("Low", -0.2, 120))["separating"] is True
+    assert fr.band_separation(mk("High", 0.8, 60) + mk("Low", -0.2, 120))["separating"] is False          # too few High trades
+    assert fr.band_separation(mk("High", 0.0, 120) + mk("Low", -0.02, 120))["separating"] is False        # intervals overlap
+    assert fr.band_separation([])["separating"] is False
+
+
+def test_a_live_separating_horizon_drops_the_not_yet_separating_label():
+    from app.services import win_confidence as wc
+    b = {"setup": "pullback"}
+    m = {"version": "t", "horizons": {"swing": {"p0": 0.3, "order": ["setup"], "setups": [{"bins": b, "win": i % 3 == 0, "net_r": 0.0} for i in range(60)], "cuts": {}, "validation": {"separating": False}}}}
+    try:
+        assert wc.score("swing", b, m)["band_label"].endswith("(not yet separating)")
+        wc.LIVE_SEPARATING["swing"] = True
+        assert "not yet separating" not in wc.score("swing", b, m)["band_label"]
+    finally:
+        wc.LIVE_SEPARATING.clear()

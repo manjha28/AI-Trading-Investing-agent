@@ -64,7 +64,7 @@ def _play(row: Any, frame: pd.DataFrame, now: datetime) -> dict[str, Any] | None
     d_in, d_out = after.index[r["k_in"]].date(), after.index[r["k_out"]].date()
     cf = so._cost_fraction(r["entry"], r["exit"], d_in, d_out)
     return {"state": "trade", "outcome": r["outcome"], "net_r": (r["exit"] - r["entry"]) / risk - cf * r["entry"] / risk, "fill_date": str(d_in), "exit_date": str(d_out), "blue_sky": _blue_sky(lv),
-            "predicted": ((row.reasons or {}).get("confidence") or {}).get("win_probability")}
+            "predicted": ((row.reasons or {}).get("confidence") or {}).get("win_probability"), "band": ((row.reasons or {}).get("confidence") or {}).get("band")}
 
 
 def _reliability(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -78,6 +78,20 @@ def _reliability(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
         part = xs[i * len(xs) // k:(i + 1) * len(xs) // k]
         out.append({"bucket": i + 1, "n": len(part), "predicted": round(sum(t["predicted"] for t in part) / len(part), 4), "actual": round(sum(1 for t in part if t["outcome"] == "t1") / len(part), 4)})
     return out
+
+
+MIN_BAND_TRADES = 100
+
+
+def band_separation(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    """Does the stored confidence band separate outcomes in the LIVE shadow record? True only when High's mean net R beats Low's with NON-overlapping 95% intervals and each band has at least 100 resolved trades."""
+    hi, lo = [t["net_r"] for t in trades if t.get("band") == "High"], [t["net_r"] for t in trades if t.get("band") == "Low"]
+    mh, hlo, hhi = so.mean_ci(hi)
+    ml, llo, lhi = so.mean_ci(lo)
+    ok = len(hi) >= MIN_BAND_TRADES and len(lo) >= MIN_BAND_TRADES and hlo == hlo and llo == llo and hlo > lhi
+    nz = lambda x: None if x != x else round(x, 3)  # noqa: E731
+    return {"separating": bool(ok), "high": {"n": len(hi), "net_r": nz(mh), "ci95": [nz(hlo), nz(hhi)]}, "low": {"n": len(lo), "net_r": nz(ml), "ci95": [nz(llo), nz(lhi)]},
+            "rule": f"High beats Low on net R with non-overlapping 95% CIs and at least {MIN_BAND_TRADES} resolved trades in each"}
 
 
 def short_horizon(db: Any, user_id: Any, now: datetime) -> dict[str, Any]:
@@ -118,6 +132,7 @@ def short_horizon(db: Any, user_id: Any, now: datetime) -> dict[str, Any]:
                      "not_blue_sky": _stats([t for t in ht if not t["blue_sky"]])}
             if scope == "episodes":
                 block["reliability"] = _reliability(ht)
+                block["band_separation"] = band_separation(ht)
             out["by_horizon"].setdefault(h, {})[scope] = block
     out["first_signal"] = None if not rows else str(rows[0].as_of)
     return out
@@ -202,7 +217,11 @@ def run_if_due(db: Any, user_id: Any, now: datetime | None = None) -> bool:
         else:
             row.computed_at, row.payload = now, _clean(payload)
         db.commit()
-        logger.info("forward_record_stored as_of=%s", now.date())
+        sep = {h: ((payload["short_horizon"]["by_horizon"].get(h) or {}).get("episodes") or {}).get("band_separation") for h in MIN_SESSIONS}
+        logger.info("forward_record_stored as_of=%s band_separation=%s", now.date(), {h: (v or {}).get("separating") for h, v in sep.items()})
+        for h, v in sep.items():
+            if v:
+                logger.info("forward_record_band_check horizon=%s separating=%s high_n=%s low_n=%s high_net_r=%s low_net_r=%s", h, v["separating"], v["high"]["n"], v["low"]["n"], v["high"]["net_r"], v["low"]["net_r"])
         return True
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -224,3 +243,13 @@ def latest(db: Any, user_id: Any) -> dict[str, Any] | None:
     from app.models.forward_record import ForwardRecordReport
     row = db.scalar(select(ForwardRecordReport).where(ForwardRecordReport.user_id == user_id).order_by(ForwardRecordReport.as_of.desc()).limit(1))
     return None if row is None else {"as_of": str(row.as_of), "computed_at": row.computed_at.isoformat(), **row.payload}
+
+
+def live_separation(db: Any, user_id: Any) -> dict[str, bool]:
+    """Horizons whose stored band check passed in the latest weekly report (used to drop the 'not yet separating' label)."""
+    rep = latest(db, user_id)
+    out: dict[str, bool] = {}
+    for h in MIN_SESSIONS:
+        sep = ((((rep or {}).get("short_horizon") or {}).get("by_horizon") or {}).get(h) or {}).get("episodes", {}).get("band_separation") or {}
+        out[h] = bool(sep.get("separating"))
+    return out

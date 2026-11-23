@@ -200,6 +200,17 @@ def _recent_headlines(sections: dict[str, Any], now: Any, days: int) -> list[str
     return out
 
 
+SWING_NO_EDGE = "Swing has no proven edge yet (the replay shows no subset that is positive on both 2020-24 and 2025-26), so it is not offered as a buy now."
+
+
+def swing_guard(horizon: str, d: dict[str, Any]) -> dict[str, Any]:
+    """Phase 7b: swing has no proven edge, so while ``stock_verdict_enabled`` is off (its default) a swing verdict is never buy_now: it is shown as watch (buy_on_trigger and watch pass through)."""
+    from app.config import settings
+    if horizon == "swing" and d.get("verdict") == "buy_now" and not settings.stock_verdict_enabled:
+        return {**d, "verdict": "watch", "reasons": [SWING_NO_EDGE] + list(d.get("reasons") or []), "size": 0.0}
+    return d
+
+
 def _win_confidence(h: str, card: dict[str, Any] | None, daily: Any, index_close: Any, regime: str | None, required_unknown: bool, mb: dict[str, Any] | None) -> dict[str, Any]:
     """The measured win probability (win_confidence) for one horizon; the old evidence-score map (confidence_line) is no longer the confidence. Never raises: an error is an unavailable confidence, not a number."""
     import logging
@@ -259,6 +270,7 @@ def compose(*, sections: dict[str, Any], ev: dict[str, Any], mb: dict[str, Any] 
         ipo_ok = bool((((mb or {}).get("new_listing") or {}).get("horizons") or {}).get("swing", {}).get("allowed")) if (mb or {}).get("class") == "new_listing" else None
         d = decide(h, tech_ok=tech_ok, liquidity=liq, news=news, mb=mb, chart_ok=chart_ok, chart_reason=chart_reason, grade=grade, ready_to_buy=card.get("ready_to_buy") if have_card else None,
                    valuation_v=((mb or {}).get("scores") or {}).get("V"), ipo_base_ok=ipo_ok, cfg=cfg)
+        d = swing_guard(h, d)
         e = evidence(h, lenses, setup, factor_pct, regime.get("regime"), d["unknown_veto"], cfg)
         calib = _win_confidence(h, card if have_card else None, daily, index_close if index_close is not None else bench, regime.get("regime"), bool(d["unknown_veto"]), mb)
         reasons = (d["reasons"] + [f for lens in ("chart", "fundamentals", "financial_trends") for f in lenses[lens].get("facts", [])[:1]])[:3]
@@ -304,6 +316,11 @@ def run_universe(db: Any, user_id: Any, *, now: Any = None, store: bool = True, 
     bench = rp._benchmark_series(db)
     regime = sl.market_regime(nifty, _breadth(frames))
     calibration = load_calibration()
+    try:
+        from app.services import forward_record, win_confidence
+        win_confidence.LIVE_SEPARATING.update(forward_record.live_separation(db, user_id))
+    except Exception:  # noqa: BLE001 - the label stays 'not yet separating'
+        db.rollback()
     results = []
     for inst in universe:
         try:

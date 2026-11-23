@@ -151,3 +151,20 @@ def test_roles_table_matches_the_specification():
     assert r["fundamentals"]["swing"] == "context" and r["fundamentals"]["positional"] == "context" and r["fundamentals"]["long_term"] == "veto_requirement"
     assert r["valuation"]["long_term"] == "score_block" and r["news_events"] == {"swing": "veto", "positional": "veto", "long_term": "veto"}
     assert r["financial_trends"] == {"swing": "context", "positional": "score", "long_term": "score"}
+
+
+def test_swing_never_shows_buy_now_while_the_verdict_flag_is_off():
+    from app.config import settings
+    from app.services import stock_verdict as sv
+    d = {"verdict": "buy_now", "reasons": ["in the band"], "veto": None, "size": 1.0, "unknown_veto": []}
+    old = settings.stock_verdict_enabled
+    try:
+        settings.stock_verdict_enabled = False
+        g = sv.swing_guard("swing", d)
+        assert g["verdict"] == "watch" and g["size"] == 0.0 and g["reasons"][0] == sv.SWING_NO_EDGE
+        assert sv.swing_guard("positional", d)["verdict"] == "buy_now"
+        assert sv.swing_guard("swing", {**d, "verdict": "buy_on_trigger"})["verdict"] == "buy_on_trigger"
+        settings.stock_verdict_enabled = True
+        assert sv.swing_guard("swing", d)["verdict"] == "buy_now"
+    finally:
+        settings.stock_verdict_enabled = old

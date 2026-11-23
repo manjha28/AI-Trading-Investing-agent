@@ -114,3 +114,23 @@ def test_a_name_that_says_etf_classifies_a_symbol_the_master_does_not_list(tmp_p
         ik.sync_kinds(db, rows=MASTER)
         kinds = {i.symbol: i.instrument_kind for i in db.query(Instrument)}
     assert kinds == {"SBINEQWETF": "fund", "MYSTERY": None}
+
+
+def test_the_five_unclassified_etfs_are_classified_by_dhan_security_id_isin_then_name(tmp_path):
+    """SBINMID150 / SETFNIF50 / SETFNIFBK / SETFNN50 / SBINEQINAV: the master lists some under another symbol (found through the Dhan security id and its INF ISIN); the rest by name pattern. A plain INE company stays a stock."""
+    from app.models import InstrumentProviderIdentifier
+    master = MASTER + [{"EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "761741", "UNDERLYING_SYMBOL": "SBIMID150", "ISIN": "INF200KA1234"},
+                       {"EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "5", "UNDERLYING_SYMBOL": "SBIMIDCO", "ISIN": "INE000A01011"}]
+    eng = create_engine(f"sqlite:///{tmp_path}/five.db")
+    Base.metadata.create_all(eng)
+    with Session(eng) as db:
+        names = ["SBINMID150", "SETFNIF50", "SETFNIFBK", "SETFNN50", "SBINEQINAV", "ACMECO"]
+        objs = [_inst(n) for n in names]
+        db.add_all(objs)
+        db.flush()
+        db.add(InstrumentProviderIdentifier(instrument_id=objs[0].id, provider="dhan", provider_instrument_id="761741|NSE_EQ", provider_symbol="SBIMID150", is_verified=True, last_seen_at=datetime.now(timezone.utc)))
+        db.add(InstrumentProviderIdentifier(instrument_id=objs[5].id, provider="dhan", provider_instrument_id="5|NSE_EQ", provider_symbol="SBIMIDCO", is_verified=True, last_seen_at=datetime.now(timezone.utc)))
+        db.commit()
+        ik.sync_kinds(db, rows=master)
+        kinds = {i.symbol: i.instrument_kind for i in db.query(Instrument)}
+    assert kinds == {"SBINMID150": "fund", "SETFNIF50": "fund", "SETFNIFBK": "fund", "SETFNN50": "fund", "SBINEQINAV": "fund", "ACMECO": "stock"}

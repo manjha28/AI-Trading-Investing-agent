@@ -194,7 +194,7 @@ def score(horizon: str, bins: dict[str, str | None], model: dict[str, Any], *, r
     band = "Low" if conf <= p0 else "High" if (conf - p0 >= cfg.high_margin and n >= cfg.high_min_n) else "Medium"
     nets = [r["net_r"] for r in matches if r.get("net_r") is not None]
     ev = None if not nets else sum(nets) / len(nets)
-    separating = bool((hz.get("validation") or {}).get("separating"))
+    separating = bool((hz.get("validation") or {}).get("separating")) or bool(LIVE_SEPARATING.get(horizon))
     pct, base = round(conf * 100), round(p0 * 100)
     win_text = {"swing": "reached T1 before the stop within 15 sessions", "positional": "reached T1 before the stop within 60 sessions", "long_term": "beat the NIFTY 500 over the next 12 months"}[horizon]
     return {"available": True, "calibrated": pct, "win_probability": round(conf, 4), "base_rate": round(p0, 4), "base_rate_pct": base, "n_matches": n_raw, "n_effective": round(n, 1), "wins": w_raw,
@@ -206,6 +206,7 @@ def score(horizon: str, bins: dict[str, str | None], model: dict[str, Any], *, r
 
 
 _MODEL: dict[str, Any] | None = None
+LIVE_SEPARATING: dict[str, bool] = {}          # set from the weekly forward record: a horizon whose live High band beat Low (see forward_record.band_separation)
 
 
 def load_model(path: Path | None = None) -> dict[str, Any]:
