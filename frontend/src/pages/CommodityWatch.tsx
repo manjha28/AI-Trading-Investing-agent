@@ -19,12 +19,16 @@ const signed = (value: string | null | undefined, suffix = '') => { const n = nu
 const compact = (value: string | null | undefined) => { const n = numeric(value); return n === null ? '—' : new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 2 }).format(n); };
 const tone = (value: string | null | undefined) => { const n = numeric(value); return n === null || n === 0 ? '' : n > 0 ? 'positive' : 'negative'; };
 const clock = (ms: number) => new Date(ms).toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
-/** MCX trades Mon-Fri 09:00-23:30 IST (display hint; exchange holidays are caught by the tick-recency check below). */
+/** MCX trades Mon-Fri 09:00-23:30 IST, until 23:55 once US daylight saving has ended (display hint; exchange holidays are caught by the tick-recency check below). */
+function mcxCloseMinutes(at: Date): number {
+  const zone = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'short' }).formatToParts(at).find((p) => p.type === 'timeZoneName')?.value ?? '';
+  return zone === 'EST' ? 23 * 60 + 55 : 23 * 60 + 30;
+}
 export function mcxSessionOpen(at: Date): boolean {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(at);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
   const minutes = Number(get('hour')) * 60 + Number(get('minute'));
-  return !['Sat', 'Sun'].includes(get('weekday')) && minutes >= 9 * 60 && minutes < 23 * 60 + 30;
+  return !['Sat', 'Sun'].includes(get('weekday')) && minutes >= 9 * 60 && minutes < mcxCloseMinutes(at);
 }
 const STALE_AFTER_MS = 120_000;
 const messageOf = (error: unknown) => (error instanceof ApiRequestError || error instanceof Error ? error.message : 'Request failed.');
@@ -75,7 +79,7 @@ export function CommodityWatch() {
   const newestTick = Math.max(0, ...Object.values(ticks).map((t) => t.receivedAt));
   const quiet = open && streamStatus === 'active' && newestTick > 0 && now - newestTick > STALE_AFTER_MS;
   const status: CommodityStreamStatus = !open ? 'market_closed' : quiet ? 'stale' : streamStatus;
-  const message = !open ? 'MCX is closed (09:00–23:30 IST, Mon–Fri); showing the last received prices.'
+  const message = !open ? 'MCX is closed (09:00–23:30 IST, 23:55 in the US winter, Mon–Fri); showing the last received prices.'
     : quiet ? 'No ticks for over 2 minutes — the exchange may be on a break or holiday. Prices shown are the last received.' : streamMessage;
 
   useEffect(() => {

@@ -7477,10 +7477,16 @@ def _universe_instrument_ids(db: Session) -> set[UUID]:
 MCX_HOURS_IST = (datetime_time(9, 0), datetime_time(23, 30))
 
 
+def _mcx_close_time(now: datetime) -> datetime_time:
+    """MCX closes at 23:30 IST while US daylight saving is on and at 23:55 IST once it ends (early Nov to mid Mar)."""
+    us_standard = not _utc(now).astimezone(ZoneInfo("America/New_York")).dst()
+    return datetime_time(23, 55) if us_standard else MCX_HOURS_IST[1]
+
+
 def _mcx_session_open(now: datetime) -> bool:
-    """MCX trades Mon-Fri 09:00-23:30 IST (display hint only; the feed itself is the source of truth)."""
+    """MCX trades Mon-Fri 09:00 to 23:30 IST (23:55 in the US winter); display hint only, the feed is the source of truth."""
     local = _utc(now).astimezone(ZoneInfo("Asia/Kolkata"))
-    return local.weekday() < 5 and MCX_HOURS_IST[0] <= local.time() < MCX_HOURS_IST[1]
+    return local.weekday() < 5 and MCX_HOURS_IST[0] <= local.time() < _mcx_close_time(now)
 
 
 def _mcx_front_contracts(db: Session, today: date) -> list[Any]:
@@ -7517,7 +7523,7 @@ def get_commodities(
     return {
         "count": len(contracts),
         "exchange": "MCX",
-        "hours_ist": f"{MCX_HOURS_IST[0].strftime('%H:%M')}–{MCX_HOURS_IST[1].strftime('%H:%M')} Mon–Fri",
+        "hours_ist": f"{MCX_HOURS_IST[0].strftime('%H:%M')}–{_mcx_close_time(now).strftime('%H:%M')} Mon–Fri",
         "session_open": _mcx_session_open(now),
         "instruments": [
             {
@@ -7809,7 +7815,7 @@ async def dhan_commodity_quote_stream(
     try:
         await websocket.send_json({
             "type": "status", "status": "active" if _mcx_session_open(now) else "market_closed",
-            "message": None if _mcx_session_open(now) else "MCX is closed (09:00–23:30 IST, Mon–Fri); showing the last feed values.",
+            "message": None if _mcx_session_open(now) else "MCX is closed (09:00–23:30 IST, 23:55 in the US winter, Mon–Fri); showing the last feed values.",
         })
         for key, bar in snapshot.items():
             await websocket.send_json(tick_message(key, bar))

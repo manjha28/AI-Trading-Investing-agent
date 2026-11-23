@@ -82,13 +82,13 @@ describe('CommodityWatch', () => {
   });
 
   it('labels a closed market from the clock even if the stream still says active, and a refused feed plainly', async () => {
-    vi.setSystemTime(Date.UTC(2026, 10, 20, 18, 5));   // Fri 23:35 IST: five minutes after the close
+    vi.setSystemTime(Date.UTC(2026, 10, 20, 18, 30));  // Sat 00:00 IST: closed (Friday's winter close was 23:55)
     stream.value = { status: 'active', message: null, ticks: { 'mcx:2': tick('mcx:2', 'GOLD', { receivedAt: Date.UTC(2026, 10, 20, 17, 59) }) } };
     const { unmount } = render(<CommodityWatch />);
     await screen.findByText('GOLD');
     expect(screen.getByText('● MCX CLOSED')).toBeTruthy();
     expect(screen.queryByText('● LIVE')).toBeNull();
-    expect(screen.getByText(/MCX is closed \(09:00–23:30 IST, Mon–Fri\)/)).toBeTruthy();
+    expect(screen.getByText(/MCX is closed \(09:00–23:30 IST, 23:55 in the US winter, Mon–Fri\)/)).toBeTruthy();
     expect(rowOf('GOLD').querySelector('.watch-dot.live')).toBeNull();        // no live dot after the close
     expect(document.querySelector('.watch-strip')?.textContent).toMatch(/1 with prices/);
     unmount();
@@ -161,12 +161,14 @@ describe('CommodityWatch sorting', () => {
 
 describe('mcxSessionOpen', () => {
   const at = (iso: string) => mcxSessionOpen(new Date(iso));
-  it('is open Mon-Fri 09:00-23:30 IST and closed otherwise', () => {
+  it('is open Mon-Fri 09:00-23:30 IST (23:55 in the US winter) and closed otherwise', () => {
     expect(at('2026-11-17T03:30:00Z')).toBe(true);    // Tue 09:00 IST (opens)
     expect(at('2026-11-17T03:29:00Z')).toBe(false);   // 08:59
-    expect(at('2026-11-17T18:00:00Z')).toBe(false);   // 23:30 IST is the close (end exclusive)
-    expect(at('2026-11-17T17:59:00Z')).toBe(true);    // 23:29 still open
-    expect(at('2026-11-17T18:01:00Z')).toBe(false);   // 23:31 closed
+    expect(at('2026-11-17T18:00:00Z')).toBe(true);    // 23:30 IST: still open in the US winter
+    expect(at('2026-11-17T18:24:00Z')).toBe(true);    // 23:54
+    expect(at('2026-11-17T18:25:00Z')).toBe(false);   // 23:55 IST is the winter close (end exclusive)
+    expect(at('2026-07-15T17:59:00Z')).toBe(true);    // summer: 23:29 open
+    expect(at('2026-07-15T18:00:00Z')).toBe(false);   // summer: 23:30 closed
     expect(at('2026-11-21T06:30:00Z')).toBe(false);   // Saturday midday
     expect(at('2026-11-22T06:30:00Z')).toBe(false);   // Sunday midday
   });

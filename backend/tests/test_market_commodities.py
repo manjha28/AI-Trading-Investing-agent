@@ -86,7 +86,7 @@ def test_commodities_list_the_nearest_unexpired_contract_per_underlying(client, 
     assert [(r["symbol"], r["security_id"]) for r in body["instruments"]] == [("CRUDEOIL", "2"), ("GOLD", "4")]
     crude = body["instruments"][0]
     assert crude["key"] == "mcx:2" and crude["days_to_expiry"] == 28 and crude["expiry"] == (TODAY + timedelta(days=28)).isoformat()
-    assert body["count"] == 2 and body["exchange"] == "MCX" and body["hours_ist"] == "09:00–23:30 Mon–Fri"
+    assert body["count"] == 2 and body["exchange"] == "MCX" and body["hours_ist"].startswith("09:00–23:") and body["hours_ist"].endswith(" Mon–Fri")
     assert isinstance(body["session_open"], bool)
     assert client.get("/api/v1/market-data/commodities").status_code == 200
 
@@ -100,7 +100,11 @@ def test_mcx_session_hint_follows_the_exchange_hours():
     at = lambda d, h, m: datetime(2026, 11, d, h, m, tzinfo=ist)  # noqa: E731
     assert market_data._mcx_session_open(at(20, 21, 0))          # Fri evening: MCX is open
     assert market_data._mcx_session_open(at(20, 23, 29))
-    assert not market_data._mcx_session_open(at(20, 23, 30))     # closed from 23:30
+    assert market_data._mcx_session_open(at(20, 23, 30))         # US winter (after early Nov): open until 23:55
+    assert market_data._mcx_session_open(at(20, 23, 54))
+    assert not market_data._mcx_session_open(at(20, 23, 55))
+    summer = lambda h, m: datetime(2026, 7, 15, h, m, tzinfo=ist)  # noqa: E731
+    assert market_data._mcx_session_open(summer(23, 29)) and not market_data._mcx_session_open(summer(23, 30))
     assert not market_data._mcx_session_open(at(20, 8, 59))      # opens 09:00
     assert not market_data._mcx_session_open(at(21, 12, 0))      # Saturday
 
