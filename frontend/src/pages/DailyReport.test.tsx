@@ -58,7 +58,7 @@ describe('DailyReport', () => {
 
   it('shows the measured win probability with its sample, band label and expected R, and nothing when the backend sends none', async () => {
     const win = { line: 'Confidence 38% (avg setup 27%) · based on 212 similar past setups', band_label: 'High (not yet separating)', tooltip: '80% interval 31-45%.', expected_r: 0.21 };
-    const card = (c: typeof confV2) => ({ ...buy, horizons: { positional: { recommendation: 'BUY', score: 80, confidence: 80, buy_confidence: c, why_not: [] } }, confidence: c });
+    const card = (c: typeof confV2 & { win_confidence?: typeof win }) => ({ ...buy, horizons: { positional: { recommendation: 'BUY', score: 80, confidence: 80, buy_confidence: c, why_not: [] } }, confidence: c });
     mockApi.mockImplementation(() => Promise.resolve({ ...reportV2, buckets: { ...reportV2.buckets, buy: [card({ ...confV2, win_confidence: win })], setup_waiting: [] } }));
     const first = render(<DailyReport onOpen={vi.fn()} />);
     await waitFor(() => expect(screen.getByText(/Confidence 38% \(avg setup 27%\) · based on 212 similar past setups · High \(not yet separating\) · expected \+0.21R/)).toBeTruthy());
