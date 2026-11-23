@@ -224,3 +224,4 @@
 - Phase 7b: Overview takes a snapshot-only Dhan sync when it opens (closed positions no longer wait for the Sync button); long-term PIT statements module, swing/delivery/feature-drop analyses (report in diagnostics/nexus-v2/phase-7b-report.md).
 - MCX session follows the exchange: closes 23:55 IST in the US winter (23:30 in the US summer), backend hint and Commodity watch
 - Delta forward test: paper 5 EMA alert-candle test on perpetuals (5m/15m/1h), taker fees and slippage, owner-scoped, runs once per closed candle; new table crypto_forward_tests
+- Delta research feed: first product fetch no longer skipped on a freshly booted machine (monotonic clock bug)

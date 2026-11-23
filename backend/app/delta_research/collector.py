@@ -191,10 +191,10 @@ class DeltaPublicCollector:
         return messages()
 
     async def _rest_loop(self, client: httpx.AsyncClient) -> None:
-        last_products = 0.0
+        last_products: float | None = None      # None = never fetched (time.monotonic() counts from boot, so 0.0 would skip the first fetch on a young machine)
         while not self._stop.is_set():
             try:
-                if time.monotonic() - last_products >= PRODUCT_REFRESH_SECONDS:
+                if last_products is None or time.monotonic() - last_products >= PRODUCT_REFRESH_SECONDS:
                     products = await self._fetch_products(client)
                     await asyncio.to_thread(self._persist_products, products)
                     last_products = time.monotonic()
