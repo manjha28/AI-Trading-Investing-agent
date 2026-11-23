@@ -140,12 +140,16 @@ def _buy_conf(sections: dict[str, Any], horizon: str) -> dict[str, Any] | None:
 def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     verdict_by_instrument: dict[Any, dict[str, str]] = {}
-    if settings.stock_verdict_enabled:
-        from app.models.stock_verdict import StockVerdict
-        latest_day = db.scalar(select(func.max(StockVerdict.as_of)).where(StockVerdict.user_id == user_id))
-        if latest_day is not None:
-            for v in db.scalars(select(StockVerdict).where(StockVerdict.user_id == user_id, StockVerdict.as_of == latest_day)):
+    win_by_instrument: dict[Any, dict[str, dict[str, Any]]] = {}
+    from app.models.stock_verdict import StockVerdict
+    latest_day = db.scalar(select(func.max(StockVerdict.as_of)).where(StockVerdict.user_id == user_id))
+    if latest_day is not None:
+        for v in db.scalars(select(StockVerdict).where(StockVerdict.user_id == user_id, StockVerdict.as_of == latest_day)):
+            if settings.stock_verdict_enabled:
                 verdict_by_instrument.setdefault(v.instrument_id, {})[v.horizon] = v.verdict
+            wc = (v.reasons or {}).get("confidence") or {}
+            if wc.get("line"):                                   # the measured win probability (Phase 7b), whatever the verdict flag says: a number with its sample, never an order
+                win_by_instrument.setdefault(v.instrument_id, {})[v.horizon] = {k: wc.get(k) for k in ("line", "band", "band_label", "tooltip", "expected_r", "calibrated", "n_matches", "base_rate_pct")}
     held_info = held_details(db, user_id)
     held = {sym: d["quantity"] for sym, d in held_info.items()}
     rows: list[dict[str, Any]] = []
@@ -193,6 +197,7 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
                 elif bucket in ("buy", "setup_waiting", "radar"):
                     bucket, action = ("hold", "In your portfolio: keep holding.") if row["held"] else ("no_new_entry", "Do not make a new entry now: the stock verdict has no buy horizon.")
         held_buy = bool(row["held"] and bucket in ("buy", "setup_waiting"))
+        row["_win"] = win_by_instrument.get(instrument.id, {})
         if held_buy:      # already held (manual ledger or Dhan): not a new purchase candidate, so it is listed under Hold with the buy levels kept for adding
             bucket, action = "hold", f"Already held ({row.get('held_text') or 'in your portfolio'}): a buy signal exists, so adding is possible at the levels below. Listed under Hold, not Ready to buy."
         row.update(
@@ -206,6 +211,14 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
             confidence=research_alerts.headline_confidence(sections) if bucket == "buy" else None,
             data_note=(((sections.get("market_data_recovery") or {}).get("latest_candle") or {}).get("reason") if stale else None),
         )
+        win = row.pop("_win", {})
+        for h, hv in row["horizons"].items():
+            if isinstance(hv.get("buy_confidence"), dict) and win.get(h):
+                hv["buy_confidence"]["win_confidence"] = win[h]
+        if isinstance(row.get("confidence"), dict):
+            best = next((win[h] for h in HORIZONS if win.get(h) and isinstance((row["horizons"].get(h) or {}).get("buy_confidence"), dict)), None)
+            if best:
+                row["confidence"]["win_confidence"] = best
         rows.append(row)
     researched = [r["researched_at"] for r in rows if r.get("researched_at")]
     coverage = {"universe": len(rows), "researched_current": sum(1 for r in rows if r.get("researched_at") and not r.get("stale")),

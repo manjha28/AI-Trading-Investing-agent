@@ -10,7 +10,8 @@ export type Levels = {
   pivot_support?: { name: string; price: string } | null; pivot_resistance?: { name: string; price: string } | null; pivots?: Record<string, Record<string, string>> | null;
   targets?: { label: string; price: string; risk_reward?: number; basis?: string }[]; derivation?: { rule: string; inputs: Record<string, number>; tick: string };
 };
-export type Confidence = { score: number; band: string; kind?: 'factor_v2'; label?: string; grade?: string | null; measured_line?: string | null; factor_rank?: { rank: number; of: number; composite: number; percentile: number; as_of?: string; universe_size?: number; text: string } | null; setup?: { label: string; checks: { key: string; label: string; result: string; reason: string; veto: boolean }[]; failed_vetoes: string[] }; note: string; parts: { key: string; label: string; value: number; weight: number }[]; horizon?: string };
+export type WinConfidence = { line: string; band?: string | null; band_label?: string | null; tooltip?: string | null; expected_r?: number | null };
+export type Confidence = { score: number; win_confidence?: WinConfidence | null; band: string; kind?: 'factor_v2'; label?: string; grade?: string | null; measured_line?: string | null; factor_rank?: { rank: number; of: number; composite: number; percentile: number; as_of?: string; universe_size?: number; text: string } | null; setup?: { label: string; checks: { key: string; label: string; result: string; reason: string; veto: boolean }[]; failed_vetoes: string[] }; note: string; parts: { key: string; label: string; value: number; weight: number }[]; horizon?: string };
 type HorizonRec = { recommendation: string | null; score: number | null; confidence: number | null; buy_confidence?: Confidence | null; why_not: string[]; data_note?: string | null };
 type Bucket = 'buy' | 'setup_waiting' | 'radar' | 'hold' | 'no_new_entry' | 'not_enough_data';
 export type Row = {
@@ -34,9 +35,16 @@ export const inr = (v?: string | number | null) => (v == null ? '—' : `₹${ti
 export const when = (iso: string | null) => formatIST(iso, 'not yet');
 const bandClass = (band?: string) => (band === 'High' ? 'good' : band === 'Medium' ? 'mid' : 'bad');
 
+export function WinLine({ conf }: { conf: Confidence }) {      // Phase 7b: the measured win probability with its sample, base rate and expected R; the tooltip carries the 80% interval
+  const w = conf.win_confidence;
+  if (!w?.line) return null;
+  return <small className="rt-measured" title={w.tooltip ?? undefined}>{w.line}{w.band_label ? ` · ${w.band_label}` : ''}{w.expected_r != null ? ` · expected ${w.expected_r > 0 ? '+' : ''}${w.expected_r.toFixed(2)}R` : ''}</small>;
+}
+
 export function RankBadge({ conf }: { conf: Confidence }) {      // Nexus v2: a neutral factor rank plus the setup grade; no confidence wording, no colour scale
   return <div className="rt-rankbadge" role="img" aria-label={`${conf.factor_rank?.text ?? 'Factor rank unavailable'}; ${conf.setup?.label ?? ''}`}>
     <b>{conf.label === 'High' ? 'High' : conf.setup?.label ?? 'Not ready'}</b><small>{conf.factor_rank?.text ?? 'Factor rank unavailable'}</small>
+    <WinLine conf={conf} />
     {conf.measured_line && <small className="rt-measured" title="Hypothetical past results of similar setups on a survivor-free replay; not a forecast">{conf.measured_line}</small>}
   </div>;
 }
@@ -95,7 +103,7 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
     <header>
       <div><button type="button" className="rt-sym" onClick={() => onOpen(row)}>{row.symbol}</button><span className="rt-name">{row.name}</span>
         <div className="rt-chips">{row.held && <span className="rt-chip rt-chip-held" title={`You hold ${row.quantity}`}>In portfolio</span>}{row.stale && <span className="rt-chip rt-chip-warn">Not current</span>}</div></div>
-      {conf && (conf.kind === 'factor_v2' ? <RankBadge conf={conf} /> : <Ring score={conf.score} band={conf.band} />)}
+      {conf && (conf.kind === 'factor_v2' ? <RankBadge conf={conf} /> : <><Ring score={conf.score} band={conf.band} /><WinLine conf={conf} /></>)}
     </header>
     <div className="rt-seg" role="tablist" aria-label={`${row.symbol} horizon`}>
       {HORIZONS.map((h) => {

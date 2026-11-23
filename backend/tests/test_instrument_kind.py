@@ -73,3 +73,31 @@ def test_a_fresh_process_without_the_master_still_excludes_a_known_etf(tmp_path)
                        env={**__import__("os").environ, "DATABASE_URL": "sqlite://"})
     assert r.returncode == 0, r.stderr[-500:]
     assert json.loads(r.stdout.strip().splitlines()[-1]) == {"NIFTYBEES": True, "TCS": False}
+
+
+def test_a_fresh_process_research_universe_excludes_a_known_etf(tmp_path):
+    """The research universe (the one the nightly verdict job iterates) is built in a NEW process with no Dhan master loaded: the ETF on the watchlist is left out because its kind is stored on the row."""
+    from app.models import User, Watchlist, WatchlistInstrument
+    db_file = tmp_path / "universe.db"
+    eng = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(eng)
+    uid = None
+    with Session(eng) as db:
+        u = User(email="kind@example.invalid", password_hash="x", email_verified=True, created_at=datetime.now(timezone.utc))
+        db.add(u)
+        etf, stock = _inst("NIFTYBEES"), _inst("TCS")
+        db.add_all([etf, stock])
+        db.flush()
+        wl = Watchlist(user_id=u.id, name="w", created_at=datetime.now(timezone.utc))
+        db.add(wl)
+        db.flush()
+        db.add_all([WatchlistInstrument(user_id=u.id, watchlist_id=wl.id, instrument_id=i.id, created_at=datetime.now(timezone.utc)) for i in (etf, stock)])
+        db.commit()
+        ik.sync_kinds(db, rows=MASTER)
+        uid = str(u.id)
+    code = ("import json, uuid\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import Session\nfrom app.broker_adapters import DhanAdapter\nfrom app.research_daily import user_universe\n"
+            "assert DhanAdapter._scrip_master_cache is None\n"
+            f"with Session(create_engine('sqlite:///{db_file}')) as db:\n    print(json.dumps([i.symbol for i in user_universe(db, uuid.UUID('{uid}'), include_master=False)]))\n")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]), env={**__import__("os").environ, "DATABASE_URL": "sqlite://"})
+    assert r.returncode == 0, r.stderr[-600:]
+    assert json.loads(r.stdout.strip().splitlines()[-1]) == ["TCS"]

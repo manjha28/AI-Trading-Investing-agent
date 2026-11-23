@@ -1,4 +1,4 @@
-import { Ladder, Ring, inr, when, type Confidence, type Levels } from './DailyReport';
+import { Ladder, Ring, WinLine, inr, when, type Confidence, type Levels } from './DailyReport';
 import type { Brief, HorizonKey, Instrument } from './researchTypes';
 import { formatIST } from '../lib/formatIST';
 
@@ -61,7 +61,7 @@ export function StockHero({ instrument, brief, horizon, onHorizon, busy, watched
       <div className="rt-stock-detail">
         <div className="rt-card rt-verdict-card">
           <h3>{NAME[horizon]} view: {(REC[active?.recommendation ?? ''] ?? REC.INSUFFICIENT_EVIDENCE).text}</h3>
-          {active?.recommendation === 'BUY' && conf && <div className="rt-conf-row"><Ring score={conf.score} band={conf.band} /><div><b>{conf.band} confidence</b><p className="rt-note">{conf.note}</p></div></div>}
+          {active?.recommendation === 'BUY' && conf && <div className="rt-conf-row"><Ring score={conf.score} band={conf.band} /><div><b>{conf.band} confidence</b><p className="rt-note">{conf.note}</p><WinLine conf={conf} /></div></div>}
           {conf && <ul className="rt-parts">{conf.parts.map((p) => <li key={p.key}><span>{p.label}</span><div className="rt-bar"><i style={{ width: `${p.value}%` }} /></div><b>{Math.round(p.value)}</b></li>)}</ul>}
           {active && active.recommendation !== 'BUY' && <ul className="rt-why-not">{(active.blockers.length ? active.blockers : active.gates.map((g) => g.detail)).slice(0, 3).map((x) => <li key={x}>{x}</li>)}
             {active.blockers.length === 0 && active.gates.length === 0 && <li>The combined score does not support a new purchase on this horizon.</li>}</ul>}
