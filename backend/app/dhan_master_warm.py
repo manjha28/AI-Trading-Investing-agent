@@ -21,10 +21,12 @@ def warm_once() -> str:
     cache = DhanAdapter._scrip_master_cache
     age = None if cache is None else time.monotonic() - cache[0]
     if age is not None and age < REFRESH_AFTER_SECONDS:
+        DhanAdapter._tick_index()  # built once here, so the first live tick of an instrument never pays for it
         return "fresh"
     try:
         DhanAdapter._scrip_master(force=True)
         DhanAdapter._equity_lookup()
+        DhanAdapter._tick_index()
         return "refreshed"
     except Exception:  # noqa: BLE001 - the previous copy (if any) keeps serving
         logger.warning("dhan_master_warm_failed", exc_info=True)

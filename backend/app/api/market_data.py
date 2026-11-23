@@ -7156,6 +7156,33 @@ def _persist_dhan_packets(ticks: list[tuple[str, HistoricalBar]]) -> None:
             for instrument_id, bar in ticks
         ])
         db.commit()
+        # Latest quote per instrument (what the stream used to write on every tick), one batched upsert.
+        try:
+            latest: dict[UUID, HistoricalBar] = {}
+            for instrument_id, bar in ticks:
+                latest[UUID(instrument_id)] = bar
+            existing = {
+                quote.instrument_id: quote
+                for quote in db.scalars(select(MarketQuote).where(
+                    MarketQuote.instrument_id.in_(list(latest)), MarketQuote.source == "dhan_ws",
+                ))
+            }
+            for instrument_uuid, bar in latest.items():
+                quote = existing.get(instrument_uuid)
+                if quote is None:
+                    quote = MarketQuote(instrument_id=instrument_uuid, source="dhan_ws")
+                    db.add(quote)
+                elif _utc(quote.timestamp) > _utc(bar.timestamp):
+                    continue
+                quote.timestamp = bar.timestamp
+                quote.open, quote.high, quote.low, quote.close = bar.open, bar.high, bar.low, bar.close
+                quote.volume = bar.volume
+                quote.retrieved_at = received_at
+                quote.is_synthetic = False
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning("Dhan latest-quote upsert failed", exc_info=True)
 
 
 def _persist_dhan_packet(instrument_id: str, bar: HistoricalBar) -> None:
@@ -7172,6 +7199,94 @@ def _persist_dhan_packet(instrument_id: str, bar: HistoricalBar) -> None:
             volume=bar.volume,
         ))
         db.commit()
+
+
+def _load_universe_fast_cache_sync(
+    instrument_ids: list[str],
+) -> dict[str, tuple[Instrument, PriorCloseValue | None, date | None]]:
+    """One DB pass for the Market watch fast path: each instrument, its stored prior close and the venue's last
+    completed session, so a live tick needs no database work at all."""
+    from sqlalchemy.orm import Session as WorkerSession
+
+    ids = [UUID(value) for value in instrument_ids]
+    out: dict[str, tuple[Instrument, PriorCloseValue | None, date | None]] = {}
+    if not ids:
+        return out
+    now = datetime.now(timezone.utc)
+    with WorkerSession(engine) as worker_db:
+        instruments = list(worker_db.scalars(
+            select(Instrument).where(Instrument.id.in_(ids)).options(selectinload(Instrument.provider_identifiers))
+        ))
+        if not instruments:
+            return out
+        today_ist = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
+        day_start = datetime.combine(today_ist, datetime.min.time(), tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc)
+        bars = worker_db.scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.instrument_id.in_(ids),
+                MarketBar.interval == "1d",
+                MarketBar.source == "dhan",
+                MarketBar.is_synthetic.is_(False),
+                MarketBar.timestamp < day_start,
+                MarketBar.timestamp >= day_start - timedelta(days=12),   # bounded scan; a prior session is always within 12 days
+            )
+            .distinct(MarketBar.instrument_id)
+            .order_by(MarketBar.instrument_id, MarketBar.timestamp.desc())
+        ).all()
+        prior_by_id = {bar.instrument_id: bar for bar in bars}
+        last_session = venue_last_completed_session(worker_db, instruments[0], "dhan_ws")
+        for instrument in instruments:
+            out[str(instrument.id)] = (
+                instrument,
+                _prior_close_value(prior_by_id.get(instrument.id), instrument.timezone),
+                last_session,
+            )
+        worker_db.expunge_all()
+    return out
+
+
+def _fast_universe_quote(
+    entry: tuple[Instrument, PriorCloseValue | None, date | None],
+    bar: HistoricalBar,
+    feed_previous_close: Decimal | None,
+) -> QuoteResponse | None:
+    """Quote payload for one live tick built entirely in memory (None when the market is closed). The change is
+    Decimal arithmetic against the feed's previous-close packet, else the stored prior daily close."""
+    instrument, prior, last_session = entry
+    now = datetime.now(timezone.utc)
+    raw_ltt = int(
+        bar.timestamp.astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=timezone.utc).timestamp()
+    )
+    if _market_session_state(instrument, now, raw_ltt=raw_ltt, parsed_ltt_utc=bar.timestamp) == "closed":
+        return None
+    quote = MarketQuote(
+        instrument_id=instrument.id, source="dhan_ws", timestamp=bar.timestamp,
+        open=bar.open, high=bar.high, low=bar.low, close=bar.close, volume=bar.volume,
+        retrieved_at=now, is_synthetic=False,
+    )
+    previous: Decimal | None
+    if feed_previous_close is not None and feed_previous_close > 0:
+        previous, basis = feed_previous_close, "live · Dhan previous-close packet · not adjusted for corporate actions"
+    elif prior is not None and prior.close > 0:
+        previous, basis = prior.close, f"live · stored daily close of {prior.session_date.isoformat()}"
+    else:
+        previous, basis = None, None
+    absolute_change = bar.close - previous if previous is not None else None
+    percent_change = (
+        (absolute_change / previous * Decimal("100")).quantize(Decimal("0.0001"))
+        if absolute_change is not None and previous else None
+    )
+    return _quote_response(
+        instrument, quote, freshness="fresh",
+        freshness_message="Live Dhan WebSocket quote packet received.",
+        is_cached=False, is_verified=True, provider_request_status="succeeded",
+        last_completed_session=last_session,
+    ).model_copy(update={
+        "delivery_mode": "websocket_tick", "stream_status": "active",
+        "provider_connection_status": "connected", "feed_active": True,
+        "absolute_change": absolute_change, "percent_change": percent_change, "change_basis": basis,
+    })
 
 
 _STREAM_SESSION_CACHE: dict[tuple[str, str], tuple[float, date | None]] = {}
@@ -8393,6 +8508,7 @@ async def _dhan_quote_stream(
             client_messages_sent = 0
 
     client_counter_task = asyncio.create_task(log_watchlist_counters())
+    universe_cache: dict[str, tuple[Instrument, PriorCloseValue | None, date | None]] = {}
     try:
         while True:
             event = await feed_queue.get()
@@ -8437,19 +8553,44 @@ async def _dhan_quote_stream(
             tick_now = time.monotonic()
             price_interval = settings.watchlist_price_update_interval_ms / 1000
             aggregate_interval = settings.watchlist_aggregate_update_interval_ms / 1000
-            if watchlist_id is None:
-                # Market watch universe (hundreds of instruments): every pushed tick costs several DB queries,
-                # and the portfolio summary is heavier still. Unthrottled, this starves the feed's socket
-                # (unanswered pings -> keepalive timeout), so the universe view updates each row about every 2 s.
-                price_interval = max(price_interval, 2.0)
-                aggregate_interval = max(aggregate_interval, 5.0)
             push_price = (
                 tick_now - last_price_push_at.get(instrument_id, 0.0)
-                >= price_interval
+                >= (1.0 if watchlist_id is None else price_interval)
             )
             push_aggregates = tick_now - last_aggregate_push_at >= aggregate_interval
             if watchlist_id is None:
-                push_aggregates = False  # Market watch does not show portfolio values; the summary took ~6 s per call
+                # Market watch universe: a tick is turned into a quote in memory (no DB, no portfolio summary)
+                # and each row is pushed at most once a second. The hub saves ticks and the latest quote in batches.
+                if not push_price:
+                    continue
+                try:
+                    if not universe_cache:
+                        universe_cache.update(await asyncio.to_thread(
+                            _load_universe_fast_cache_sync, list(current_market_instrument_ids)
+                        ))
+                    entry = universe_cache.get(instrument_id)
+                    if entry is None:
+                        continue
+                    fast_quote = _fast_universe_quote(entry, bar, feed_previous_closes.get(instrument_id))
+                    if fast_quote is None:
+                        if not market_closed_status_sent:
+                            await send_status("market_closed", "Market closed - live feed resumes at 09:15 IST")
+                            market_closed_status_sent = True
+                        continue
+                    last_price_push_at[instrument_id] = tick_now
+                    await websocket.send_json(jsonable_encoder({
+                        "type": "tick",
+                        "feed_health": event.get("feed_health"),
+                        "instrument_id": instrument_id,
+                        "security_id": current_market_security_ids.get(instrument_id),
+                        "quote": fast_quote.model_dump(mode="python"),
+                    }, custom_encoder={Decimal: str}))
+                    client_messages_sent += 1
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    logger.exception("Market watch fast tick failed instrument_id=%s", instrument_id)
+                continue
             if not push_price and not push_aggregates:
                 continue
             instrument_symbol = current_market_symbols.get(instrument_id, instrument_id)

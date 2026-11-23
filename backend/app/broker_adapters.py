@@ -2499,12 +2499,10 @@ class DhanAdapter(BrokerAdapter):
                                 if not isinstance(message, bytes):
                                     continue
                                 try:
+                                    # Decoding is microseconds of pure CPU. Sending every frame through the
+                                    # (small) default thread pool queued the feed behind unrelated database jobs.
                                     quotes, retained_packets, unknown_response_count = (
-                                        await asyncio.to_thread(
-                                            self.decode_market_feed_frame,
-                                            message,
-                                            current,
-                                        )
+                                        self.decode_market_feed_frame(message, current)
                                     )
                                 except BrokerAdapterError as error:
                                     _log_dhan_bad_frame_once(message)
