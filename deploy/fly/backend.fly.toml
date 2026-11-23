@@ -1,6 +1,6 @@
-# Fly.io backend app. Replace APP_NAME (must be globally unique) before `fly launch --no-deploy --copy-config`.
-app = "APP_NAME-api"
-primary_region = "bom"        # Mumbai: closest to NSE / Dhan
+# Fly.io backend app. Replace finbyte-nexus (must be globally unique) before `fly launch --no-deploy --copy-config`.
+app = "finbyte-nexus-api"
+primary_region = "sin"        # Singapore: the nearest region to India that offers Managed Postgres (bom does not)
 
 [build]
   dockerfile = "backend.Dockerfile"

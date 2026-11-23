@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -176,6 +176,16 @@ class Settings(BaseSettings):
         default="127.0.0.1,::1", validation_alias="TRUSTED_PROXY_HOSTS"
     )
     database_url: str = "postgresql+psycopg://copilot:copilot@postgres:5432/trading_copilot"
+
+    @field_validator("database_url")
+    @classmethod
+    def _psycopg_driver(cls, value: str) -> str:
+        """Hosted Postgres (Fly Managed Postgres) hands out ``postgres://`` URLs; SQLAlchemy needs the psycopg driver named."""
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+psycopg://" + value[len(prefix):]
+        return value
+
     db_pool_size: int = 20                                          # the default pool (5 + 10 overflow) was smaller than the 40-thread request pool: slow reports starved every other request
     db_max_overflow: int = 20
     db_pool_timeout_seconds: float = 20.0

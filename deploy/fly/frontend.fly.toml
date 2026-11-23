@@ -1,12 +1,12 @@
-# Fly.io frontend app. Replace APP_NAME as in backend.fly.toml.
-app = "APP_NAME-web"
-primary_region = "bom"
+# Fly.io frontend app. Replace finbyte-nexus as in backend.fly.toml.
+app = "finbyte-nexus-web"
+primary_region = "sin"        # Singapore: the nearest region to India that offers Managed Postgres (bom does not)
 
 [build]
   dockerfile = "frontend.Dockerfile"
 
 [env]
-  BACKEND_HOST = "APP_NAME-api.internal"
+  BACKEND_HOST = "finbyte-nexus-api.internal"
 
 [http_service]
   internal_port = 8080
