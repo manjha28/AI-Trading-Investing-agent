@@ -1,3 +1,4 @@
+- Live feed: Market watch equities now stream (batched tick saves, one-pass tick-size index, live status on first tick, no portfolio summary or blocking history backfill in the universe stream); forward-test concurrency capped at 100.
 - P0-K: style Strategies with shared panels and controls, keep coverage sync status/reason interval-scoped, and arrange Overview metrics 2x2.
 - P0-F3: record forward-only owner valuation snapshots during NSE sessions and render stored history without backfilling.
 - Valuation (P0-F1b): one vocabulary module for price states and bases (backend `price_states.py`, frontend `lib/priceStates.ts`); batch quotes quantised to tick; prior-close day change and provider timestamp on ledger valuation rows; Overview shows the valued price with its basis and reason for missing day change; status derived by one function; Dhan-only valuation with no yfinance fallback; README and AGENTS.md scope corrected to read-only.

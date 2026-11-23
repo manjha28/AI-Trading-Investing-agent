@@ -150,7 +150,7 @@ def replay(db: Session, ft: ForwardTest, instruments: list[Instrument], now: dat
     defn = _defn(ft)
     start = start_of(ft.start_date)
     # a test registered well ahead of its start date must still have a valid (if empty) data window
-    cfg = BacktestConfig(start=min(start - timedelta(days=WARMUP_CALENDAR_DAYS), now - timedelta(days=1)), end=now, initial_capital=Decimal("1000000"), max_concurrent=max(1, len(instruments)),
+    cfg = BacktestConfig(start=min(start - timedelta(days=WARMUP_CALENDAR_DAYS), now - timedelta(days=1)), end=now, initial_capital=Decimal("1000000"), max_concurrent=min(100, max(1, len(instruments))),
                          slippage_bps=ft.slippage_bps, cost_profile=ft.cost_profile)
     runs, refused = runner.prepare_runs(db, defn, instruments, cfg, now)
     universe: list[dict[str, Any]] = []

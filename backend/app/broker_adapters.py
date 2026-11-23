@@ -117,6 +117,7 @@ _DHAN_DERIVATIVE_NAME_MEMO: dict[tuple[int, str, str], str | None] = {}
 _DHAN_TICK_DERIVATIVE_INSTRUMENTS = ("OPTSTK", "OPTIDX", "FUTSTK", "FUTIDX")
 _DHAN_TICK_MCX_INSTRUMENTS = ("FUTCOM", "FUTIDX")  # MCX commodity/index futures only (the Market watch commodity section)
 _DHAN_TICK_CACHE: dict[tuple[str, str], Decimal | None] = {}
+_DHAN_TICK_INDEX: dict[str, tuple[int, dict[tuple[str, str], set[str]]]] = {}
 
 
 def _float32_wire_to_price(raw: float, tick: Decimal) -> Decimal:
@@ -1494,6 +1495,40 @@ class DhanAdapter(BrokerAdapter):
         return sorted({bar.timestamp: bar for bar in bars}.values(), key=lambda bar: bar.timestamp)
 
     @staticmethod
+    def _tick_index() -> dict[tuple[str, str], set[str]]:
+        """Tick sizes by (segment, security id), built in ONE pass over the scrip master per master copy.
+
+        A per-security scan of the whole master, repeated for every newly seen instrument, held the GIL long enough
+        to starve the live-feed socket (unanswered pings) when a few hundred instruments were subscribed at once."""
+        master = DhanAdapter._scrip_master()
+        cached = _DHAN_TICK_INDEX.get("index")
+        if cached is not None and cached[0] == id(master):
+            return cached[1]
+        by_exchange: dict[str, list[str]] = {}
+        for segment, exch in _DHAN_TICK_EXCHANGES.items():
+            by_exchange.setdefault(exch, []).append(segment)
+        index: dict[tuple[str, str], set[str]] = {}
+        for row in master:
+            segments = by_exchange.get((row.get("EXCH_ID") or "").strip().upper())
+            if not segments:
+                continue
+            security_id = (row.get("SECURITY_ID") or "").strip()
+            instrument = (row.get("INSTRUMENT") or "").strip().upper()
+            row_segment = (row.get("SEGMENT") or "").strip().upper()
+            tick_text = (row.get("TICK_SIZE") or "").strip()
+            for segment in segments:
+                if segment.endswith("_EQ"):
+                    ok = instrument == "EQUITY"
+                elif segment == "MCX_COMM":
+                    ok = row_segment == "M" and instrument in _DHAN_TICK_MCX_INSTRUMENTS
+                else:
+                    ok = row_segment == "D" and instrument in _DHAN_TICK_DERIVATIVE_INSTRUMENTS
+                if ok:
+                    index.setdefault((segment, security_id), set()).add(tick_text)
+        _DHAN_TICK_INDEX["index"] = (id(master), index)
+        return index
+
+    @staticmethod
     def price_tick_for(exchange_segment: str, security_id: str) -> Decimal | None:
         """Tick size from the Dhan scrip master for an NSE/BSE equity or an NSE/BSE F&O contract, or None (fail closed).
 
@@ -1507,21 +1542,7 @@ class DhanAdapter(BrokerAdapter):
         tick: Decimal | None = None
         reason = "segment_not_resolvable"
         if exchange is not None and security_id.isdigit():
-            ticks = {
-                (row.get("TICK_SIZE") or "").strip()
-                for row in DhanAdapter._scrip_master()
-                if (row.get("EXCH_ID") or "").strip().upper() == exchange
-                and (row.get("SECURITY_ID") or "").strip() == security_id
-                and (
-                    (row.get("INSTRUMENT") or "").strip().upper() == "EQUITY"
-                    if exchange_segment.endswith("_EQ")
-                    else (row.get("SEGMENT") or "").strip().upper() == "M"
-                    and (row.get("INSTRUMENT") or "").strip().upper() in _DHAN_TICK_MCX_INSTRUMENTS
-                    if exchange_segment == "MCX_COMM"
-                    else (row.get("SEGMENT") or "").strip().upper() == "D"
-                    and (row.get("INSTRUMENT") or "").strip().upper() in _DHAN_TICK_DERIVATIVE_INSTRUMENTS
-                )
-            }
+            ticks = set(DhanAdapter._tick_index().get(key, ()))
             ticks.discard("")
             if len(ticks) == 1:
                 try:
@@ -2484,7 +2505,10 @@ class DhanAdapter(BrokerAdapter):
                                     acknowledgement_complete = True
                                     retry_delay = 1
                                     await status_callback("packet_received")
-                                elif acknowledgement_complete:
+                                elif acknowledgement_complete or quotes:
+                                    # A decoded price tick is proof data is flowing. Waiting for EVERY instrument
+                                    # to acknowledge first left the feed "connecting" forever whenever one
+                                    # subscribed instrument (suspended/illiquid, e.g. LAL, REPL) never answers.
                                     retry_delay = 1
                                     await status_callback("packet_received")
                                 for _ in range(unknown_response_count):

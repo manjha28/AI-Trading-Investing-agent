@@ -334,6 +334,9 @@ def _depth_failure_is_retryable(error: BrokerAdapterError) -> bool:
     return code is None or 1000 <= code <= 1015 or code == 429 or 500 <= code <= 599
 
 
+MAX_GAP_BACKFILLS_PER_RUN = 5
+
+
 class DhanLiveFeedHub:
     def __init__(self) -> None:
         self._adapter = DhanAdapter()
@@ -695,6 +698,9 @@ class DhanLiveFeedHub:
             )
             self._log_counts(feed)
 
+        tick_buffer: list[tuple[str, HistoricalBar]] = []
+        gap_task: asyncio.Task[None] | None = None
+        last_flush = last_gap_check = time.monotonic()
         try:
             if feed == "ticker":
                 async for feed_event in self._adapter.stream_watchlist_market_quotes(
@@ -722,16 +728,26 @@ class DhanLiveFeedHub:
                         continue
                     instrument_id, bar = feed_event
                     self._tick_counters["upstream_received"] += 1
-                    try:
-                        await asyncio.to_thread(_persist_dhan_packet, instrument_id, bar)
-                    except Exception as error:
-                        logger.error(
-                            "Dhan packet persistence failed instrument_id=%s error_class=%s",
-                            instrument_id,
-                            type(error).__name__,
-                        )
-                        continue
-                    await asyncio.to_thread(self._close_feed_gaps, feed)
+                    # One DB transaction per tick cannot keep up with a full-market feed and starves
+                    # the socket read loop (unanswered pings -> keepalive timeout). Buffer ticks and
+                    # write them in batches; close gaps at most every few seconds.
+                    tick_buffer.append((instrument_id, bar))
+                    now_mono = time.monotonic()
+                    if len(tick_buffer) >= 200 or now_mono - last_flush >= 1.0:
+                        batch, tick_buffer = tick_buffer, []
+                        last_flush = now_mono
+                        try:
+                            await asyncio.to_thread(_persist_dhan_packets, batch)
+                        except Exception as error:
+                            logger.error(
+                                "Dhan packet persistence failed ticks=%d error_class=%s",
+                                len(batch),
+                                type(error).__name__,
+                            )
+                    if now_mono - last_gap_check >= 5.0 and (gap_task is None or gap_task.done()):
+                        last_gap_check = now_mono
+                        # Background, single-flight: gap bookkeeping must never stall the tick loop.
+                        gap_task = asyncio.create_task(asyncio.to_thread(self._close_feed_gaps, feed))
                     self._tick_counters["clients_fanned_out"] += self._publish(
                         feed,
                         {"type": "tick", "instrument_id": instrument_id, "bar": bar},
@@ -865,7 +881,10 @@ class DhanLiveFeedHub:
             owner_id = self._owner_ids.get(feed)
             if owner_id is not None:
                 user = db.get(User, owner_id)
-                for gap in closed:
+                # Backfilling every gap over Dhan's REST history is one request per instrument: with a few
+                # hundred subscribed (Market watch) that is rate limited (DH-904) and takes minutes. Gaps are
+                # always closed and recorded; only the first few are backfilled here, the rest stay un-backfilled.
+                for gap in closed[:MAX_GAP_BACKFILLS_PER_RUN]:
                     instrument = db.get(Instrument, gap.instrument_id)
                     if user is None or instrument is None:
                         continue
@@ -7120,6 +7139,21 @@ def _daily_close_change(
     return absolute_change, percent_change, change_basis, None
 
 
+def _persist_dhan_packets(ticks: list[tuple[str, HistoricalBar]]) -> None:
+    received_at = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        db.add_all([
+            DhanMarketTick(
+                instrument_id=UUID(instrument_id),
+                timestamp=_utc(bar.timestamp),
+                received_at=received_at,
+                open=bar.open, high=bar.high, low=bar.low, close=bar.close, volume=bar.volume,
+            )
+            for instrument_id, bar in ticks
+        ])
+        db.commit()
+
+
 def _persist_dhan_packet(instrument_id: str, bar: HistoricalBar) -> None:
     received_at = datetime.now(timezone.utc)
     with Session(engine) as db:
@@ -7134,6 +7168,22 @@ def _persist_dhan_packet(instrument_id: str, bar: HistoricalBar) -> None:
             volume=bar.volume,
         ))
         db.commit()
+
+
+_STREAM_SESSION_CACHE: dict[tuple[str, str], tuple[float, date | None]] = {}
+
+
+def _stream_last_completed_session(db: Session, instrument: Instrument, source: str) -> date | None:
+    """venue_last_completed_session is a venue-wide MAX over all stored daily bars; it changes at most once a
+    day, so the per-tick stream path reuses it for 60 s instead of re-running that query on every tick."""
+    key = ((instrument.country or "").upper(), source)
+    cached = _STREAM_SESSION_CACHE.get(key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < 60.0:
+        return cached[1]
+    value = venue_last_completed_session(db, instrument, source)
+    _STREAM_SESSION_CACHE[key] = (now, value)
+    return value
 
 
 def _process_stream_tick(
@@ -7228,7 +7278,7 @@ def _process_stream_tick(
             is_cached=False,
             is_verified=True,
             provider_request_status="succeeded",
-            last_completed_session=venue_last_completed_session(
+            last_completed_session=_stream_last_completed_session(
                 worker_db, instrument, quote.source
             ),
         ).model_copy(update=update)
@@ -8383,11 +8433,19 @@ async def _dhan_quote_stream(
             tick_now = time.monotonic()
             price_interval = settings.watchlist_price_update_interval_ms / 1000
             aggregate_interval = settings.watchlist_aggregate_update_interval_ms / 1000
+            if watchlist_id is None:
+                # Market watch universe (hundreds of instruments): every pushed tick costs several DB queries,
+                # and the portfolio summary is heavier still. Unthrottled, this starves the feed's socket
+                # (unanswered pings -> keepalive timeout), so the universe view updates each row about every 2 s.
+                price_interval = max(price_interval, 2.0)
+                aggregate_interval = max(aggregate_interval, 5.0)
             push_price = (
                 tick_now - last_price_push_at.get(instrument_id, 0.0)
                 >= price_interval
             )
             push_aggregates = tick_now - last_aggregate_push_at >= aggregate_interval
+            if watchlist_id is None:
+                push_aggregates = False  # Market watch does not show portfolio values; the summary took ~6 s per call
             if not push_price and not push_aggregates:
                 continue
             instrument_symbol = current_market_symbols.get(instrument_id, instrument_id)
@@ -8470,6 +8528,8 @@ async def _dhan_quote_stream(
                 )
                 logger.info("ws_send_ok instrument=%s", instrument_id)
                 client_messages_sent += 1
+            except WebSocketDisconnect:
+                raise  # the client left mid-send: not an instrument failure
             except Exception as error:
                 reason = f"{type(error).__name__}: {error}"[:240]
                 failed_at = datetime.now(timezone.utc)
@@ -8485,7 +8545,7 @@ async def _dhan_quote_stream(
                     "reason": reason,
                     "failed_at": failed_at.isoformat(),
                 }
-                await websocket.send_json({
+                await websocket.send_json(jsonable_encoder({
                     "type": "instrument_error",
                     "instrument_id": instrument_id,
                     "symbol": instrument_symbol,
@@ -8493,7 +8553,7 @@ async def _dhan_quote_stream(
                     "provider_timestamp": bar.timestamp,
                     "failed_at": failed_at.isoformat(),
                     "feed_health": dhan_live_feed_hub.health("ticker"),
-                })
+                }, custom_encoder={Decimal: str}))
     except WebSocketDisconnect:
         client_exit_reason = "client_disconnect"
         return
