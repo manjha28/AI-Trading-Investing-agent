@@ -93,6 +93,10 @@ def _leader(loop_factory, name: str) -> "asyncio.Task":
     return asyncio.create_task(run_as_leader(scheduler_election, loop_factory, name))
 
 
+import logging as _logging
+_logging.getLogger("yfinance").setLevel(_logging.CRITICAL)   # Yahoo's own 401 spam; the shared circuit breaker (app/yahoo_guard.py) reports the pause once
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await dhan_live_feed_hub.start()
@@ -106,6 +110,7 @@ async def lifespan(_app: FastAPI):
     corporate_task = None
     news_ingest_task = None
     research_daily_task = None
+    keepalive_task = None
     valuation_task = None
     universe_task = None
     forward_task = None
@@ -128,6 +133,9 @@ async def lifespan(_app: FastAPI):
     if settings.news_ingest_enabled and "pytest" not in sys.modules:
         from app.news_ingestion import news_ingest_loop
         news_ingest_task = _leader(news_ingest_loop, 'news_ingest')
+    if "pytest" not in sys.modules:
+        from app.dhan_token_keepalive import dhan_token_keepalive_loop
+        keepalive_task = _leader(dhan_token_keepalive_loop, 'dhan_token_keepalive')
     if settings.valuation_refresh_enabled and "pytest" not in sys.modules:
         from app.valuation_refresh import valuation_refresh_loop
         valuation_task = _leader(valuation_refresh_loop, 'valuation_refresh')
@@ -227,6 +235,12 @@ async def lifespan(_app: FastAPI):
                 await corporate_task
             except asyncio.CancelledError:
                 pass
+        if keepalive_task is not None:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
         if valuation_task is not None:
             valuation_task.cancel()
             try:
@@ -271,6 +285,7 @@ from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
 from app.request_timeout import RequestTimeoutMiddleware  # noqa: E402
 
 app.add_middleware(GZipMiddleware, minimum_size=2048)
+
 app.add_middleware(RequestTimeoutMiddleware, seconds=settings.request_timeout_seconds)
 app.add_middleware(
     CORSMiddleware,
@@ -308,4 +323,4 @@ app.include_router(market_stream_router, prefix="/api/v1")
 
 @app.get("/")
 def root() -> dict[str, str]:
-    return {"message": "Trading Copilot API is running", "docs": "/docs"}
+    return {"message": "FinByte Nexus API is running", "docs": "/docs"}

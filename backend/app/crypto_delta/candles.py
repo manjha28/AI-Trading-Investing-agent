@@ -81,7 +81,7 @@ def fetch_range(
     rejected = 0
     window_start = int(_utc(start).timestamp())
     final = int(_utc(end).timestamp())
-    with httpx.Client(timeout=20, transport=transport, headers={"User-Agent": "TradingCopilot/1.0 (research)"}) as client:
+    with httpx.Client(timeout=20, transport=transport, headers={"User-Agent": "FinByteNexus/1.0 (research)"}) as client:
         while window_start < final:
             window_end = min(window_start + MAX_PER_REQUEST * step, final)
             response = client.get(

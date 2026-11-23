@@ -37,7 +37,7 @@ class KafkaEventPublisher:
                 "bootstrap.servers": bootstrap_servers,
                 "enable.idempotence": True,
                 "acks": "all",
-                "client.id": "trading-copilot-market-stream",
+                "client.id": "finbyte-nexus-market-stream",
                 "socket.timeout.ms": 10_000,
             }
         )

@@ -70,7 +70,7 @@ export function StockHero({ instrument, brief, horizon, onHorizon, busy, watched
         <div className="rt-card rt-levels-card">
           <h3>Buy levels · {NAME[horizon]}</h3>
           {active?.recommendation !== 'BUY' ? <p className="rt-empty">Levels are shown only when the horizon is a buy.</p>
-            : levels?.status === 'available' ? <><Ladder levels={levels} /><p className="rt-note"><span className={`rt-chip ${levels.entry_status === 'ENTER_NOW' ? 'rt-chip-ok' : 'rt-chip-warn'}`}>{levels.entry_status === 'ENTER_NOW' ? 'Enter now' : 'Wait for entry'}</span> {(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}{levels.breakout_trigger ? ` · trigger ${inr(levels.breakout_trigger)}` : ''} · last close {inr(levels.reference_close)}</p>
+            : levels?.status === 'available' ? <><Ladder levels={levels} /><p className="rt-note"><span className={`rt-chip ${levels.entry_status === 'ENTER_NOW' ? 'rt-chip-ok' : 'rt-chip-warn'}`}>{levels.entry_status === 'ENTER_NOW' ? 'In buy band' : 'Wait for entry'}</span> {(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}{levels.breakout_trigger ? ` · trigger ${inr(levels.breakout_trigger)}` : ''} · last close {inr(levels.reference_close)}</p>
               {levels.explanation && <p className="rt-note">{levels.explanation}</p>}
 
               {levels.derivation && <details className="rt-fold"><summary>How these levels are derived</summary><p className="rt-note">{levels.derivation.rule}</p></details>}</>

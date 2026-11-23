@@ -166,7 +166,7 @@ class NewListingConfig:
 
 
 class Settings(BaseSettings):
-    app_name: str = "Trading Copilot API"
+    app_name: str = "FinByte Nexus API"
     environment: str = "development"
     frontend_origin: str = "http://localhost:5173"
     allowed_origins_setting: str = Field(

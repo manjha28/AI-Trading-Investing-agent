@@ -22,7 +22,7 @@ from app.models import (
 MAX_SOURCES_PER_RUN = 10
 REQUESTS_PER_HOST_PER_SECOND = 1
 USER_AGENT = (
-    "TradingCopilotResearch/1.0 "
+    "FinByteNexusResearch/1.0 "
     "(+https://github.com/manjha28/AI-Trading-Investing-agent)"
 )
 

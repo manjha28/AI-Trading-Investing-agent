@@ -32,7 +32,7 @@ def clean_state(monkeypatch):
     # freeze "now" inside the technical section so the test is not tied to the wall clock
     monkeypatch.setattr(rp, "daily_bar_staleness", lambda ts, _now, **kw: real(ts, NOW, **kw))
     monkeypatch.setattr(rp, "_exclusive_selected_source", lambda *_a: None)
-    monkeypatch.setattr(rp, "market_data_provider_for_user", lambda *_a: object())
+    monkeypatch.setattr(rp, "dhan_only_provider", lambda *_a: object())
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ def test_existing_valid_candle_triggers_no_request_at_all(db, monkeypatch):
     db.add(bar(instrument, SESSION))
     db.flush()
     calls = stub_sync(monkeypatch, lambda _k: pytest.fail("must not request history when the candle is stored"))
-    monkeypatch.setattr(rp, "market_data_provider_for_user", lambda *_a: pytest.fail("must not even build a provider"))
+    monkeypatch.setattr(rp, "dhan_only_provider", lambda *_a: pytest.fail("must not even build a provider"))
     result = rp.ensure_latest_daily_candle(db, instrument, uuid4(), now=NOW)
     assert result["action"] == "none" and result["state_before"] == "present" and calls == []
 

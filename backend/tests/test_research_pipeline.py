@@ -383,23 +383,19 @@ def test_failed_news_source_keeps_usable_technical_report_partial(
     assert brief["failures"][0]["reason"] == "The source responded with HTTP 503."
 
 
-def test_synthetic_bars_are_not_used_for_real_instrument_technicals(
+def test_synthetic_bars_cannot_be_stored_and_technicals_stay_unavailable(
     client, test_engine, monkeypatch, network_fixtures
 ) -> None:
+    """Synthetic bars are refused by the database itself (ck_market_bars_real_only), so they can never reach a real instrument's technicals."""
+    from sqlalchemy.exc import IntegrityError
     register(client, test_engine, "synthetic-bars@example.com")
     instrument_id = get_instrument_id(client)
     set_instrument_real(test_engine, instrument_id)
-    add_daily_bars(test_engine, instrument_id, 15, synthetic=True)
+    with pytest.raises(IntegrityError):
+        add_daily_bars(test_engine, instrument_id, 15, synthetic=True)
     with Session(test_engine) as db:
-        instrument = db.get(Instrument, UUID(instrument_id))
-        synthetic_count = db.scalar(
-            select(func.count()).select_from(MarketBar).where(
-                MarketBar.instrument_id == UUID(instrument_id),
-                MarketBar.is_synthetic.is_(True),
-            )
-        )
-        assert instrument is not None and not instrument.is_synthetic
-        assert synthetic_count == 15
+        assert db.scalar(select(func.count()).select_from(MarketBar).where(
+            MarketBar.instrument_id == UUID(instrument_id), MarketBar.is_synthetic.is_(True))) == 0
     set_candidates(monkeypatch)
 
     response = client.post(
@@ -411,7 +407,6 @@ def test_synthetic_bars_are_not_used_for_real_instrument_technicals(
     technicals = brief["sections"]["technicals"]
     assert technicals["status"] == "unavailable"
     assert technicals["bars_available"] == 0
-    assert "Only synthetic daily bars are stored" in technicals["message"]
 
 
 def test_insufficient_real_history_is_reported_without_fabricating_bars(

@@ -166,7 +166,7 @@ class _HttpProvider:
                 timeout=REQUEST_TIMEOUT,
                 follow_redirects=False,
                 transport=self._transport,
-                headers={"User-Agent": "TradingCopilot/1.0 (market data)"},
+                headers={"User-Agent": "FinByteNexus/1.0 (market data)"},
             ) as client:
                 with client.stream("GET", url, params=params) as response:
                     self.last_response_status = response.status_code
@@ -629,6 +629,8 @@ class DhanReadOnlyAccountAdapter:
                 and error_payload.get("errorCode") == "DH-1111"
             ):
                 return []
+        if response.status_code >= 400:
+            self._log_failure(path, response)
         if response.status_code in {401, 403}:
             raise DhanAccountRequestError(
                 "provider_authentication_failed", response.status_code
@@ -649,6 +651,18 @@ class DhanReadOnlyAccountAdapter:
             raise DhanAccountRequestError(
                 "invalid_provider_response", response.status_code
             ) from None
+
+    @staticmethod
+    def _log_failure(path: str, response: httpx.Response) -> None:
+        """One sanitized warning per failed Dhan account request: endpoint stage, status and the provider's own error code (never tokens or amounts)."""
+        from app.broker_adapters import _log_dhan_request_failure
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        stage = {"/holdings": "holdings_api_request", "/positions": "positions_api_request", "/fundlimit": "fundlimit_api_request", "/ledger": "ledger_api_request"}.get(path, "trades_api_request")
+        _log_dhan_request_failure(stage, f"/v2{path.split('?')[0]}", status_code=response.status_code, error_class="HTTPStatusError",
+                                  description="Upstream request returned an HTTP error.", payload=payload)
 
     def _record_http_diagnostic(
         self,
@@ -943,7 +957,7 @@ class AngelOneProvider(_HttpProvider):
                 timeout=REQUEST_TIMEOUT,
                 follow_redirects=False,
                 transport=transport,
-                headers={"User-Agent": "TradingCopilot/1.0"},
+                headers={"User-Agent": "FinByteNexus/1.0"},
             ) as client:
                 with client.stream("GET", cls.scrip_master_url) as response:
                     response.raise_for_status()
@@ -1597,7 +1611,7 @@ class UpstoxProvider(_HttpProvider):
                 headers={
                     "Authorization": f"Bearer {self._access_token}",
                     "Accept": "application/json",
-                    "User-Agent": "TradingCopilot/1.5 (market data)",
+                    "User-Agent": "FinByteNexus/1.5 (market data)",
                 },
             ) as client:
                 response = client.get(url, params=params)
@@ -1625,7 +1639,7 @@ class UpstoxProvider(_HttpProvider):
                 timeout=REQUEST_TIMEOUT,
                 follow_redirects=False,
                 transport=self._transport,
-                headers={"User-Agent": "TradingCopilot/1.5 (market data)"},
+                headers={"User-Agent": "FinByteNexus/1.5 (market data)"},
             ) as client:
                 response = client.get(self._master_url)
                 response.raise_for_status()
@@ -1931,7 +1945,7 @@ class YahooFinanceProvider(_HttpProvider):
     def _session():
         return curl_requests.Session(
             impersonate="chrome",
-            headers={"User-Agent": "TradingCopilot/1.5 (market-data; contact: local deployment)"},
+            headers={"User-Agent": "FinByteNexus/1.5 (market-data; contact: local deployment)"},
         )
 
     @classmethod

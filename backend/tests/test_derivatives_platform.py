@@ -573,7 +573,7 @@ def test_derivatives_api_auth_universe_contracts_coverage_and_jobs(client, engin
         db.commit()
     fut_page = client.get("/api/v1/derivatives/contracts?kind=futures&underlying=ZEDX").json()
     covered = next(i for i in fut_page["items"] if i["security_id"] == "9100")["coverage"]
-    assert covered["candles_1m"] == 2 and covered["first"] == rows[0].ts.isoformat() and covered["last"] == rows[-1].ts.isoformat()
+    assert covered["candles_1m"] == 2 and covered["first"].replace("+00:00", "") == rows[0].ts.isoformat().replace("+00:00", "") and covered["last"].replace("+00:00", "") == rows[-1].ts.isoformat().replace("+00:00", "")   # sqlite drops the tz suffix; Postgres keeps it
     assert covered["provider"] == "dhan" and covered["status"] == "available" and covered["missing_intervals"] is not None
     c = client.get("/api/v1/derivatives/contracts?kind=options&underlying=ZEDX&option_type=CE").json()
     assert c["total"] == 2 and {i["strike"] for i in c["items"]} == {"1000.0000", "1030.0000"} and all(i["lot_size"] == "40" for i in c["items"])

@@ -1,5 +1,6 @@
 """NIFTY options buying: underlying signal, contract selection, option execution, look-ahead, missing data, integration.
 All market data below is synthetic and exists only to test logic; it is never market evidence."""
+from app.services.starter_strategies import STARTERS
 import copy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
@@ -24,6 +25,20 @@ UTC = timezone.utc
 T0 = datetime(2025, 1, 7, 4, 46, tzinfo=UTC)          # 10:16 IST
 E1, E2 = datetime(2025, 1, 9, 10, 0, tzinfo=UTC), datetime(2025, 1, 16, 10, 0, tzinfo=UTC)
 MASTER = datetime(2025, 1, 1, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _clock_at_fixture_time(monkeypatch):
+    """Option data in this module is dated January 2025: freshness checks must see the clock at that moment, and the NSE calendar (which only covers
+    verified years and otherwise fails closed) must treat 2025 as covered. Both are fixture-level assumptions for this module only."""
+    import time_machine
+    from app import config as app_config
+    from app.services import intraday_options, options_data, trading_calendar
+    years = frozenset(app_config.NSE_CALENDAR_YEARS | {2025})
+    for module in (app_config, trading_calendar, intraday_options, options_data):
+        monkeypatch.setattr(module, "NSE_CALENDAR_YEARS", years)
+    with time_machine.travel(T0, tick=True):
+        yield
 
 
 def mkc(strike, typ, expiry=E1, lot=25, valid_from=MASTER, valid_to=None, master="master-2025-01"):
@@ -486,6 +501,21 @@ def test_options_report_contents_and_validation_modes():
     assert len(sens["grid"]) == 12 and sens["window"] == "in-sample only"                          # stops 8/10/12/15 x targets 1.25/1.5/2
 
 
+
+def _futures_candles(db, fut, rows):
+    """Futures 1-minute candles live in the derivatives tables (contract + futures_candles_1m); a futures Instrument reaches them through its verified Dhan identifier."""
+    from app.models import DerivativeContract, FuturesCandle1m, InstrumentProviderIdentifier
+    sid = f"TESTFUT{str(fut.id)[:6]}"
+    db.add(InstrumentProviderIdentifier(instrument_id=fut.id, provider="dhan", provider_instrument_id=f"{sid}|NSE_FNO", provider_symbol=fut.symbol, is_verified=True, last_seen_at=T0))
+    contract = DerivativeContract(exchange="NSE", segment="NSE_FNO", master_segment="D", instrument_type="FUTIDX", security_id=sid, underlying_symbol="NIFTY", trading_symbol=fut.symbol,
+                                  expiry=E1.date(), lot_size=D(25), tick_size=D("0.05"), status="active", valid_from=MASTER, first_seen_at=T0, last_seen_at=T0, spec_hash="0" * 40,
+                                  source="test", master_version="t1", ingested_at=T0)
+    db.add(contract)
+    db.flush()
+    db.add_all(FuturesCandle1m(contract_id=contract.id, ts=ts, open=D(repr(o)), high=D(repr(h)), low=D(repr(l)), close=D(repr(c)), volume=int(v), source="test", retrieved_at=T0)
+               for ts, o, h, l, c, v in rows)
+
+
 # ───────────── data coverage, API and Strategy Library integration ─────────────
 def test_coverage_report_on_an_empty_database_refuses_and_lists_blockers(client, engine):
     with Session(engine) as db:
@@ -502,8 +532,8 @@ def test_coverage_report_distinguishes_candle_only_from_quote_accurate(client, e
         fut = Instrument(symbol="NIFTY25JANFUT", display_name="NIFTY Jan FUT", asset_class="future", venue="NSE", currency="INR", country="IN", timezone="Asia/Kolkata", multiplier=D(25), expiry=E1.date(), created_at=T0)
         db.add(fut)
         db.flush()
-        db.add(MarketBar(instrument_id=fut.id, interval="1m", timestamp=T0, open=D(1), high=D(1), low=D(1), close=D(1), volume=D(1), source="test", retrieved_at=T0, is_synthetic=False))
-        oc = OptionContract(underlying="NIFTY", trading_symbol="NIFTY 09JAN2025 23000 CE", expiry=E1, strike=D(23000), option_type="CE", lot_size=25, valid_from=MASTER, source="test", master_version="m1", ingested_at=T0)
+        _futures_candles(db, fut, [(T0, 1.0, 1.0, 1.0, 1.0, 1)])
+        oc = OptionContract(underlying="NIFTY", security_id="TEST23000CE", trading_symbol="NIFTY 09JAN2025 23000 CE", expiry=E1, strike=D(23000), option_type="CE", lot_size=25, valid_from=MASTER, source="test", master_version="m1", ingested_at=T0)
         db.add(oc)
         db.flush()
         db.commit()
@@ -524,7 +554,7 @@ def test_starter_is_in_the_library_opens_edits_versions_and_blocks_backtests_wit
     post(client, "/starters/install", {}, 200)
     rows = client.get(f"{API}/strategies").json()
     opt = next(r for r in rows if r["name"] == "NIFTY Momentum Options Scalper")
-    assert len(rows) == 14 and opt["origin"] == "starter" and opt["origin_label"] == "Built-in Starter Strategy" and opt["strategy_type"] == "options_buying" and opt["tested"] is False and opt["last_backtest"] is None
+    assert len(rows) == len(STARTERS) and opt["origin"] == "starter" and opt["origin_label"] == "Built-in Starter Strategy" and opt["strategy_type"] == "options_buying" and opt["tested"] is False and opt["last_backtest"] is None
     s = opt["options_summary"]
     assert (s["market"], s["type"], s["directions"], s["base_data"], s["trend_timeframe"], s["max_duration_minutes"]) == ("NIFTY options", "Options buying", ["CE", "PE"], "1-minute", "5m", 5.0)
     assert opt["data_coverage"]["mode"] == "unavailable" and opt["data_coverage"]["ready"] is False and opt["data_coverage"]["blockers"]
@@ -559,9 +589,10 @@ def test_starter_is_in_the_library_opens_edits_versions_and_blocks_backtests_wit
     assert post(client, "/options/compile", {"ema_fast": 1}).status_code == 422
 
 
-def test_backtest_and_live_scan_share_the_same_conditions(client, engine):
+def test_backtest_and_live_scan_share_the_same_conditions(client, engine, monkeypatch):
     from app.services import intraday_runner as runner
     from app.models.strategies import IntradaySignal, OptionContract, OptionQuote, Strategy, StrategyVersion
+    monkeypatch.setattr(runner, "LIVE_MAX_MISSING_PCT", 100.0)      # this test checks that backtest and live scan fire on the same conditions; the data-quality gate has its own tests
     login(client, engine)
     with Session(engine) as db:
         fut0 = Instrument(symbol="NIFTY25JANFUT", display_name="NIFTY FUT", asset_class="future", venue="NSE", currency="INR", country="IN", timezone="Asia/Kolkata", multiplier=D(25), expiry=E1.date(), created_at=T0)
@@ -576,12 +607,11 @@ def test_backtest_and_live_scan_share_the_same_conditions(client, engine):
     with Session(engine) as db:
         fut = db.scalar(select(Instrument).where(Instrument.symbol == "NIFTY25JANFUT"))
         sub = f.iloc[: i + 1]
-        db.add_all(MarketBar(instrument_id=fut.id, interval="1m", timestamp=r.time.to_pydatetime(), open=D(repr(round(r.open, 2))), high=D(repr(round(r.high, 2))), low=D(repr(round(r.low, 2))),
-                             close=D(repr(round(r.close, 2))), volume=D(repr(r.volume)), source="test", retrieved_at=T0, is_synthetic=False) for r in sub.itertuples())
+        _futures_candles(db, fut, [(r.time.to_pydatetime(), round(r.open, 2), round(r.high, 2), round(r.low, 2), round(r.close, 2), r.volume) for r in sub.itertuples()])
         exp = sig_t + timedelta(days=3)
         cs = []
         for strike in (22000 + 100 * k for k in range(-5, 6)):
-            oc = OptionContract(underlying="NIFTY", trading_symbol=f"NIFTY {strike} CE", expiry=exp, strike=D(strike), option_type="CE", lot_size=25, valid_from=sig_t - timedelta(days=5), source="test", master_version="t1", ingested_at=T0)
+            oc = OptionContract(underlying="NIFTY", security_id=f"TEST{strike}CE", trading_symbol=f"NIFTY {strike} CE", expiry=exp, strike=D(strike), option_type="CE", lot_size=25, valid_from=sig_t - timedelta(days=5), source="test", master_version="t1", ingested_at=T0)
             db.add(oc)
             db.flush()
             db.add(OptionQuote(contract_id=oc.id, quote_time=sig_t - timedelta(seconds=3), ingested_at=T0, bid=D(100), ask=D("100.5"), bid_qty=500, ask_qty=500, delta=D("0.52"), greeks_source="provider", source="test"))
@@ -592,7 +622,9 @@ def test_backtest_and_live_scan_share_the_same_conditions(client, engine):
         us.status = "active"
         db.commit()
         defn = StrategyDefinition.model_validate(v.definition)
-        rows = runner.scan_instrument(db, us, v, defn, fut, sig_t)
+        import time_machine
+        with time_machine.travel(sig_t + timedelta(minutes=2), tick=True):       # the scan runs just after the signal candle closes
+            rows = runner.scan_instrument(db, us, v, defn, fut, sig_t)
         db.commit()
         longs = [(r.signal_time, r.option, r.status) for r in rows if r.direction == "long"]
     assert full.signals["long_entry"][i]                                                         # the backtest-side evaluation fires at this candle ...

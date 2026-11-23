@@ -365,7 +365,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
             <label className="broker-secret-field">Dhan client ID<input value={clientId} onChange={(event) => setClientId(event.target.value)} autoComplete="off" /></label>
           )}
           {broker.integration_status === 'pending' && (
-            <p className="broker-sync-time">Authentication is not available yet. Trading Copilot never collects your broker password, PIN, or OTP.</p>
+            <p className="broker-sync-time">Authentication is not available yet. FinByte Nexus never collects your broker password, PIN, or OTP.</p>
           )}
           {broker.integration_status === 'setup_required' && (
             <p className="broker-sync-time">Requires a developer app, registered redirect URL, and server-side API credentials.</p>
@@ -504,7 +504,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
   return (
     <section className="brokers-page">
       <div className="broker-disclaimer" role="note">
-        <strong>Broker connections are read-only.</strong> Trading Copilot reads your profile, holdings, positions,
+        <strong>Broker connections are read-only.</strong> FinByte Nexus reads your profile, holdings, positions,
         order history, and funds here. Nothing on this page can place, modify, or cancel an order; the only order path in the app is Signals &gt; Forward Test, for allowlisted Dhan strategies and only when live execution is armed. Broker data
         stays in a separate mirror and never overwrites your manual portfolio. Any reconciliation import
         creates a manual ledger transaction only after you confirm it.

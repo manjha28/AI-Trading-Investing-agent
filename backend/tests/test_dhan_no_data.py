@@ -69,3 +69,21 @@ def test_trade_book_fills_are_added_once_and_a_trade_book_failure_never_fails_th
     assert [r["exchangeTradeId"] for r in merged] == ["1", "2"] and "1 fill" in note       # the fill history already lists is not added twice
     merged, note = _merge_trade_book(Reader(error=RuntimeError("down")), history)
     assert merged == history and "could not be read" in note
+
+
+def _jwt(exp: int) -> str:  # test data only
+    import base64, json
+    part = lambda obj: base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()    # noqa: E731
+    return f"{part({'alg': 'none'})}.{part({'exp': exp})}.sig"
+
+
+def test_stored_session_expiry_never_outlives_the_token_itself():
+    from datetime import datetime, timedelta, timezone
+
+    from app.broker_adapters import clamp_to_token_expiry, jwt_expiry
+    exp = datetime(2026, 11, 21, 9, 51, tzinfo=timezone.utc)
+    token = _jwt(int(exp.timestamp()))
+    assert jwt_expiry(token) == exp
+    assert clamp_to_token_expiry(token, exp + timedelta(hours=5, minutes=30)) == exp          # the 15:21 vs 09:51 mismatch that left the app "connected" with a dead token
+    assert clamp_to_token_expiry(token, exp - timedelta(hours=1)) == exp - timedelta(hours=1)  # an earlier stored expiry is kept
+    assert jwt_expiry("not-a-jwt") is None and clamp_to_token_expiry("not-a-jwt", exp) == exp

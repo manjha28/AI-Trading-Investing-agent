@@ -15,7 +15,7 @@ from app.api import market_data
 from app.api.market_data import OptionChainResponse, require_verified_market_session
 from app.db import Base, get_db
 from app.main import app
-from app.models import Instrument
+from app.models import Instrument, User
 
 
 def _instrument(session: Session) -> Instrument:
@@ -91,10 +91,13 @@ def test_signal_endpoint_returns_no_trade_when_real_intraday_bars_are_missing(mo
             yield session
 
         monkeypatch.setitem(app.dependency_overrides, get_db, override_db)
+        owner = User(email=f"{uuid4()}@example.com", password_hash="x", created_at=datetime.now(timezone.utc), email_verified=True)    # the endpoint loads its user row
+        session.add(owner)
+        session.flush()
         monkeypatch.setitem(
             app.dependency_overrides,
             require_verified_market_session,
-            lambda: SimpleNamespace(user_id=uuid4()),
+            lambda: SimpleNamespace(user_id=owner.id),
         )
         monkeypatch.setitem(
             app.dependency_overrides,

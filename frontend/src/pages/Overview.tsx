@@ -732,7 +732,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
       painted(apiRequest<BrokerPortfolioSummary>('/brokers/portfolio-summary'), setBrokerSummary),
       painted(apiRequest<DhanPortfolio>('/brokers/dhan/portfolio'), setDhanPortfolio),
     ]);
-  }, [portfolioId]);
+  };
 
   // Day change needs the previous session's stored real daily close. When the backend reports
   // a holding whose previous session was never requested, ask the history-sync endpoint (real

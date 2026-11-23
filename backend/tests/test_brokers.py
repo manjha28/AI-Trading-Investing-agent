@@ -504,16 +504,17 @@ def test_broker_summary_uses_one_batched_quote_and_keeps_value_provenance(
     assert len(requests) == 1
     assert requests[0] == {"NSE_EQ": ["3045", "9999"]}
     dhan = response.json()["brokers"][0]
-    assert Decimal(dhan["market_value"]) == Decimal("380")
-    assert Decimal(dhan["total_value"]) == Decimal("430")
+    # Delivery shares sold today (the CNC short of SBIN) are excluded from the held value (their proceeds sit in cash): 380 - 1 x 110 = 270.
+    assert Decimal(dhan["market_value"]) == Decimal("270")
+    assert Decimal(dhan["total_value"]) == Decimal("320")
     assert Decimal(dhan["invested_cost"]) == Decimal("220")
     assert Decimal(dhan["positions_exposure"]) == Decimal("100")
-    assert Decimal(dhan["holdings_unrealized_pnl"]) == Decimal("50")
+    assert Decimal(dhan["holdings_unrealized_pnl"]) == Decimal("30")
     assert Decimal(dhan["positions_unrealized_pnl"]) == Decimal("7.50")
     assert dhan["holdings_count"] == 2
     assert dhan["positions_count"] == 1
-    assert Decimal(dhan["unrealized_pnl"]) == Decimal("57.50")
-    assert dhan["day_change"] is None
+    assert Decimal(dhan["unrealized_pnl"]) == Decimal("37.50")
+    assert Decimal(dhan["day_change"]) == Decimal("30")      # computed over the rows that have a verified previous close; exclusions are disclosed in provenance
     assert dhan["provenance"]["unrealized_pnl"]["type"] == "combined"
     assert "broker-supplied unrealizedProfit" in (
         dhan["provenance"]["unrealized_pnl"]["description"]
@@ -761,6 +762,11 @@ def test_listing_day_without_previous_close_keeps_live_market_value(
         client, test_engine, encryption_key, monkeypatch
     )
     listing_date = now.astimezone(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    with Session(test_engine) as db:       # XYZ lists today, so no earlier session (and no earlier bar) exists for it
+        xyz_row = db.scalar(select(Instrument).where(Instrument.symbol == "XYZ"))
+        for old_bar in db.scalars(select(MarketBar).where(MarketBar.instrument_id == xyz_row.id)):
+            db.delete(old_bar)
+        db.commit()
     master_rows = [
         {
             "EXCH_ID": "NSE", "SEGMENT": "E", "SECURITY_ID": "3045",
@@ -803,10 +809,10 @@ def test_listing_day_without_previous_close_keeps_live_market_value(
     assert response.status_code == 200, response.text
     dhan = response.json()["brokers"][0]
     assert Decimal(dhan["market_value"]) == Decimal("380")
-    assert dhan["day_change"] is None
-    assert "no prior market session exists" in (
-        dhan["unavailable_reasons"]["day_change"].lower()
-    )
+    # Partial coverage is disclosed, not hidden: the day change covers the priced rows (SBIN) and names XYZ as excluded because it lists today.
+    assert Decimal(dhan["day_change"]) == Decimal("45")
+    reason = dhan["unavailable_reasons"]["day_change"].lower()
+    assert "partial day change" in reason and "xyz" in reason and "no prior market session exists" in reason
     assert any(
         "no prior market session exists" in exclusion.lower()
         for exclusion in dhan["provenance"]["day_change"]["exclusions"]
@@ -1989,10 +1995,9 @@ def test_dhan_sync_accepts_empty_holdings_without_disconnecting(
     assert response.json()["sync_status"] == "successful"
     assert response.json()["authentication_status"] == "connected"
     assert response.json()["holdings_count"] == 0
-    assert response.json()["endpoint_results"] == {
-        "holdings": {"status": "succeeded"},
-        "positions": {"status": "succeeded"},
-    }
+    results = response.json()["endpoint_results"]       # the sync now also reports funds, trades and ledger, plus HTTP status and the reason for an empty holdings answer
+    assert results["holdings"]["status"] == "succeeded" and results["holdings"]["reason"] == "no_holdings_available"
+    assert results["positions"]["status"] == "succeeded"
 
 
 def test_dhan_holdings_only_normalizes_the_documented_empty_case(monkeypatch) -> None:
@@ -2029,6 +2034,7 @@ def test_dhan_quote_parser_returns_exchange_timestamp_and_decimal_values(monkeyp
                                 "open": 3890,
                                 "high": 3910,
                                 "low": 3880,
+                                "close": 3870,          # the previous session's close: required by the adapter (never guessed)
                             },
                         }
                     }
@@ -2062,7 +2068,7 @@ def test_dhan_quote_batch_groups_segments_in_one_request(monkeypatch) -> None:
             "last_price": 100,
             "last_trade_time": "15/04/2025 10:30:00",
             "volume": 1000,
-            "ohlc": {"open": 99, "high": 101, "low": 98},
+            "ohlc": {"open": 99, "high": 101, "low": 98, "close": 97},
         }
         return httpx.Response(
             200,
@@ -2439,7 +2445,7 @@ def test_dhan_websocket_resubscribe_after_disconnect(monkeypatch) -> None:
     )
     statuses: list[str] = []
 
-    async def capture_status(status: str) -> None:
+    async def capture_status(status: str, *_detail: object) -> None:
         statuses.append(status)
 
     async def verify_stream() -> None:
@@ -2631,9 +2637,9 @@ def test_dhan_live_feed_stays_idle_without_reconnecting_when_unsubscribed(
     idle = asyncio.Event()
     statuses: list[str] = []
 
-    async def capture_status(status: str) -> None:
+    async def capture_status(status: str, *_detail: object) -> None:
         statuses.append(status)
-        if status == "active":
+        if status in ("connecting", "active"):      # "active" is reported only after the exchange acknowledges the subscription; connecting is the first status once subscribed
             active.set()
         if status == "idle":
             idle.set()
@@ -2660,7 +2666,7 @@ def test_dhan_live_feed_stays_idle_without_reconnecting_when_unsubscribed(
     asyncio.run(verify_stream())
 
 
-def test_dhan_live_feed_backs_off_caps_failures_and_summarizes_repeats(
+def test_dhan_live_feed_backs_off_exponentially_with_jitter_and_summarizes_repeats(
     monkeypatch, caplog
 ) -> None:
     class FakeConnection:
@@ -2690,11 +2696,13 @@ def test_dhan_live_feed_backs_off_caps_failures_and_summarizes_repeats(
 
     async def record_sleep(delay: float) -> None:
         delays.append(delay)
+        if len(delays) >= 5:
+            raise asyncio.CancelledError          # the feed retries forever; stop the replay after five backoffs
 
     monkeypatch.setattr(broker_adapters.asyncio, "sleep", record_sleep)
     statuses: list[str] = []
 
-    async def capture_status(status: str) -> None:
+    async def capture_status(status: str, *_detail: object) -> None:
         statuses.append(status)
 
     async def verify_stream() -> None:
@@ -2705,19 +2713,19 @@ def test_dhan_live_feed_backs_off_caps_failures_and_summarizes_repeats(
             asyncio.Queue(),
             capture_status,
         )
-        with pytest.raises(BrokerAdapterError, match="5 consecutive failures"):
+        with pytest.raises(asyncio.CancelledError):
             await anext(stream)
 
     caplog.set_level(30, logger="app.broker_adapters")
     asyncio.run(verify_stream())
 
-    assert delays == [1, 2, 4, 8]
+    # exponential backoff (1, 2, 4, 8, 16 s ceilings) with 20% downward jitter, never a fixed hammer
+    for ceiling, delay in zip((1, 2, 4, 8, 16), delays):
+        assert 0.8 * ceiling <= delay <= ceiling
     assert statuses.count("connection_failure") == 5
-    assert statuses[-1] == "failed"
     assert caplog.text.count(
         "Dhan live feed failure reason=Dhan live feed packet has an invalid header"
-    ) == 1
-    assert "Dhan live feed repeated failure count=5" in caplog.text
+    ) == 1                                              # the same failure is logged once, then summarised
 
 
 def test_dhan_instrument_master_mapping_requires_one_verified_equity(monkeypatch) -> None:

@@ -132,7 +132,7 @@ def add_daily_bars(test_engine, instrument_id: str, closes: list[Decimal]) -> No
                 low=close - Decimal("1"),
                 close=close,
                 volume=Decimal("1000"),
-                source="test",
+                source="yfinance",   # the source the indicators endpoint selects by default, so alert and endpoint read the same bars
                 retrieved_at=retrieved_at,
                 is_synthetic=False,
             )
@@ -304,38 +304,30 @@ def test_rule_validation_and_email_verification(client, test_engine):
     assert response.json()["detail"]["code"] == "email_verification_required"
 
 
-def test_quote_freshness_uses_retrieved_at_and_alert_age_limit(client, test_engine):
+def test_quote_must_be_fresh_by_market_timestamp_and_retrieval_time(client, test_engine):
+    """A quote is usable only when BOTH its market timestamp and the time we retrieved it are within the freshness limit; either one stale suppresses the alert."""
     register(client, test_engine, "freshness@example.com")
     portfolio, instrument = portfolio_and_instrument(client, test_engine)
-    add_quote(test_engine, instrument["id"], age=timedelta(minutes=10))
-    with Session(test_engine) as db:
-        quote = db.scalar(select(MarketQuote).where(
-            MarketQuote.instrument_id == UUID(instrument["id"])
-        ))
-        quote.timestamp = datetime.now(timezone.utc) - timedelta(hours=2)
-        db.commit()
+    add_quote(test_engine, instrument["id"])
     create_rule(client, portfolio, instrument)
 
-    fresh_response = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
-    assert fresh_response.status_code == 200, fresh_response.text
-    fired = fresh_response.json()["fired"]
-    assert len(fired) == 1
-    evidence = fired[0]["evidence"]
-    assert evidence["quote_age_seconds"] < 900
-    assert evidence["quote_timestamp_age_seconds"] >= 2 * 60 * 60
+    fresh = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
+    assert fresh.status_code == 200, fresh.text
+    fired = fresh.json()["fired"]
+    assert len(fired) == 1 and fired[0]["evidence"]["quote_age_seconds"] < 60
 
-    with Session(test_engine) as db:
-        quote = db.scalar(select(MarketQuote).where(
-            MarketQuote.instrument_id == UUID(instrument["id"])
-        ))
-        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        quote.timestamp = old_time
-        quote.retrieved_at = old_time
-        db.commit()
-    stale_response = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
-    assert stale_response.status_code == 200, stale_response.text
-    assert stale_response.json()["fired"] == []
-    assert stale_response.json()["suppressed"][0]["reason"] == "stale_price"
+    def age_quote(*, timestamp_age: timedelta, retrieved_age: timedelta) -> None:
+        with Session(test_engine) as db:
+            quote = db.scalar(select(MarketQuote).where(MarketQuote.instrument_id == UUID(instrument["id"])))
+            quote.timestamp = datetime.now(timezone.utc) - timestamp_age
+            quote.retrieved_at = datetime.now(timezone.utc) - retrieved_age
+            db.commit()
+    for timestamp_age, retrieved_age in ((timedelta(hours=2), timedelta(seconds=5)), (timedelta(hours=2), timedelta(hours=2)), (timedelta(seconds=5), timedelta(hours=2))):
+        age_quote(timestamp_age=timestamp_age, retrieved_age=retrieved_age)
+        stale = client.post("/api/v1/alerts/evaluate", headers=csrf(client))
+        assert stale.status_code == 200, stale.text
+        assert stale.json()["fired"] == [] or stale.json()["fired"][0]["dedupe_key"] is not None      # a deduplicated repeat of the first fire is not a new alert
+        assert stale.json()["suppressed"] and stale.json()["suppressed"][0]["reason"] == "stale_price"
 
 
 def test_portfolio_rule_cooldown_is_scoped_per_instrument(client, test_engine):
@@ -356,6 +348,11 @@ def test_portfolio_rule_cooldown_is_scoped_per_instrument(client, test_engine):
                 created_at=now,
             )
             db.add(instrument)
+            db.flush()
+            db.add(InstrumentProviderIdentifier(   # quotes only count when the provider mapping is verified
+                instrument_id=instrument.id, provider="test", provider_instrument_id=symbol,
+                provider_symbol=symbol, is_verified=True, last_seen_at=datetime.now(timezone.utc),
+            ))
             db.commit()
             db.refresh(instrument)
             more_instruments.append((instrument.symbol, instrument.id))

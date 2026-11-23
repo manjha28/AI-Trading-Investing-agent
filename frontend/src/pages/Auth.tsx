@@ -1,4 +1,5 @@
-import { Activity, CircleAlert, ShieldCheck } from 'lucide-react';
+import { CircleAlert, ShieldCheck } from 'lucide-react';
+import { BrandLockup } from '../components/BrandLockup';
 import type { WorkspaceState } from '../components/useWorkspace';
 
 export function AuthPage({ workspace }: { workspace: Pick<WorkspaceState, 'error' | 'registering' | 'setError' | 'setRegistering' | 'submitAuth' | 'verificationStatus' | 'verificationToken'> }) {
@@ -27,7 +28,7 @@ export function AuthPage({ workspace }: { workspace: Pick<WorkspaceState, 'error
     return (
       <main className="auth-layout">
         <section className="auth-panel" aria-live="polite">
-          <div className="brand-lockup"><span className="brand-symbol"><Activity size={20} /></span><span>Trading Copilot</span></div>
+          <BrandLockup />
           <h1>Email verification</h1>
           <p>{message}</p>
           {verificationStatus !== 'verifying' && (
@@ -41,7 +42,7 @@ export function AuthPage({ workspace }: { workspace: Pick<WorkspaceState, 'error
   return (
     <main className="auth-layout">
       <section className="auth-panel">
-        <div className="brand-lockup"><span className="brand-symbol"><Activity size={20} /></span><span>Trading Copilot</span></div>
+        <BrandLockup tagline />
         <p className="eyebrow">PERSONAL INVESTMENT WORKSPACE</p>
         <h1>{registering ? 'Create your account' : 'Sign in'}</h1>
         {registering && <p>We’ll email a verification link. Verify your address, then sign in to connect a broker.</p>}

@@ -183,7 +183,7 @@ def test_instrument_indicators_endpoint_uses_stored_bars_only(
                     low=close - 1,
                     close=close,
                     volume=Decimal("100"),
-                    source="test_fixture",
+                    source="yfinance",       # the endpoint reads stored bars of the provider it selects (default chain: Yahoo for this US fixture); no fetch is made
                     retrieved_at=observed_at,
                     is_synthetic=False,
                 )
@@ -194,7 +194,7 @@ def test_instrument_indicators_endpoint_uses_stored_bars_only(
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["source"] == "test_fixture"
+    assert payload["source"] == "yfinance"
     assert Decimal(payload["indicators"]["sma_20"]["value"]) == Decimal("109.5")
     assert payload["indicators"]["sma_20"]["status"] == "available"
     assert payload["indicators"]["rsi_14"]["is_synthetic"] is False
@@ -295,7 +295,7 @@ def test_split_adjusted_lot_preserves_ltcg_boundary_date(
     assert position["quantity"] == "20.00000000"
     assert position["lots"][0]["quantity"] == "20.00000000"
     assert datetime.fromisoformat(position["lots"][0]["acquired_at"]).date() == acquired_date
-    assert position["days_held"] == 360
+    assert position["lots"][0]["days_held"] == 360      # days held is reported per acquisition lot
     assert position["ltcg_boundary_flag"] is True
     assert metrics["ltcg_boundary_positions"][0]["symbol"] == "SPLT"
 

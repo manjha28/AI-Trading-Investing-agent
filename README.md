@@ -1,4 +1,6 @@
-# Trading Copilot
+# FinByte Nexus
+
+> Intelligence Beyond the Trade. A unified intelligence platform for trading, investing and market research.
 
 A mobile-first foundation for an integrated AI trading and investing copilot, evolving as a read-only research tool. Broker APIs are read-only by design: order placement, modification, cancellation, live execution, paper trading, and simulated fills are excluded from scope, not pending.
 
@@ -157,7 +159,7 @@ For email verification, create a Resend account, add and verify a domain you con
 
 ```dotenv
 RESEND_API_KEY=
-RESEND_FROM_EMAIL=Trading Copilot <accounts@mail.example.com>
+RESEND_FROM_EMAIL=FinByte Nexus <accounts@mail.example.com>
 EMAIL_VERIFICATION_URL=https://app.example.com/
 ```
 
@@ -215,7 +217,7 @@ Read-only broker access keeps verified authentication, CSRF protection on mutati
 Broker API routes are under `/api/v1/brokers`:
 
 - `GET /api/v1/brokers` — supported brokers and the current user's connection status.
-- `POST /api/v1/brokers/{slug}/connect` — starts the broker's official redirect/consent flow. Angel One is explicitly pending; Trading Copilot never collects broker passwords, PINs, or OTPs.
+- `POST /api/v1/brokers/{slug}/connect` — starts the broker's official redirect/consent flow. Angel One is explicitly pending; FinByte Nexus never collects broker passwords, PINs, or OTPs.
 - `GET /api/v1/brokers/{slug}/callback` — handles broker callback and stores encrypted tokens.
 - `POST /api/v1/brokers/{slug}/sync` — refreshes the current read-only holdings/positions mirror idempotently.
 - `GET /api/v1/brokers/{slug}/mirror?kind=holding|position` — reads the current user's mirror.
@@ -280,3 +282,22 @@ This dated checkpoint records an earlier source snapshot: email verification, ap
 - **Validation performed:** `cd frontend && npm run build` passed (TypeScript and Vite production build); Vite reported existing non-blocking dependency-directive and bundle-size warnings. `git diff --check` passed. No lint script or UI test was named or run.
 - **Known issues:** No authenticated OrderBlock board or provider documentation was available to verify its data vendor or transport. Its public features page says the board updates every minute during trading hours, not every second. The rendered app was not browser-checked; provider freshness/entitlements and live broker access remain unverified.
 - **Next steps:** 1. Review desktop and mobile appearance in a signed-in browser. 2. Confirm keyboard interaction and sidebar collapse at narrow widths. 3. If needed, apply the shared theme refinements to page-specific controls after visual review. 4. Verify any live-data cadence against the app's actual provider entitlements; do not infer it from frontend refresh behavior.
+
+## Operations and diagnostics (FinByte Nexus)
+
+Run from `backend/` so `.env` loads. None of these place orders; they are read-only unless stated.
+
+| Task | Command |
+|---|---|
+| Why is a stock's latest daily candle missing? | `python -m app.services.candle_diag HDFCBANK` |
+| Why does a journal trade not pair / close? | `python -m app.services.trade_diag ONGC --dhan 2026-11-10` |
+| Do the technical entry levels work out of sample? | `python -m app.services.technical_validation --horizon swing --stocks 50` |
+| Engine vs previous rule on chosen stocks | `python -m app.services.technical_backtest --symbols RELIANCE,HDFCBANK --horizon swing` |
+| Fill daily history in bulk (6 years) | `python -m app.services.history_backfill` |
+
+Background jobs run on their own (leader-elected): nightly research over the watchlist, holdings and Market watch master list, valuation-input refresh every 24 h,
+scheduled news ingestion and the universe close refresh. They catch up automatically after the app has been down. Price data comes from Dhan only
+(`MARKET_DATA_DHAN_ONLY=true`); Yahoo is limited to fundamentals and news and is guarded by a circuit breaker.
+
+Tests: `python -m pytest tests -q`. The suite is hermetic: it never touches the real database (a guard fails any test that tries), ignores the local `.env`, and
+runs on the real clock unless a test pins its own (`time_machine`).

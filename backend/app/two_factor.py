@@ -25,7 +25,7 @@ def decrypt_secret(encrypted_secret: str, key: str) -> str:
 
 
 def provisioning_uri(secret: str, account: str) -> str:
-    label = quote(f"Trading Copilot:{account}", safe="")
+    label = quote(f"FinByte Nexus:{account}", safe="")
     return (
         f"otpauth://totp/{label}?secret={secret}&issuer=Trading%20Copilot"
         "&algorithm=SHA1&digits=6&period=30"

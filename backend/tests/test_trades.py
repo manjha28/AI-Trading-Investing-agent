@@ -10,6 +10,15 @@ from app.db import Base, get_db
 from app.main import app
 
 
+@pytest.fixture(autouse=True)
+def _clock_for_trade_dates():
+    """Trades here are dated October 2026 and analytics windows are relative to today: run on a day shortly after them."""
+    import datetime as _dt
+    import time_machine
+    with time_machine.travel(_dt.datetime(2026, 10, 10, 12, 0, tzinfo=_dt.timezone.utc), tick=True):
+        yield
+
+
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     test_engine = create_engine(
@@ -48,7 +57,7 @@ def create_trade(client: TestClient, **payload):
     return client.post(
         "/api/v1/trades",
         headers={"X-CSRF-Token": client.cookies.get("csrf_token")},
-        json=payload,
+        json={"currency": "USD", **payload},       # the API now defaults new trades to INR; these tests are written in USD
     )
 
 
@@ -99,7 +108,7 @@ def test_trade_net_pnl_supports_long_short_and_open_positions(client: TestClient
     assert open_trade.status_code == 201, open_trade.text
     assert open_trade.json()["net_pnl"] is None
 
-    analytics = client.get("/api/v1/trades/analytics/summary").json()
+    analytics = client.get("/api/v1/trades/analytics/summary?currency=USD").json()
     assert analytics == {
         "currency": "USD",
         "closed_trades": 2,
@@ -233,12 +242,13 @@ def test_trade_update_recalculates_pnl_and_is_user_scoped(client: TestClient) ->
             "exit_time": "2026-10-01T15:00:00Z",
             "fees": "2.00",
             "strategy": "reversal",
+            "currency": "USD",
         },
     )
     assert updated.status_code == 200, updated.text
     assert updated.json()["side"] == "short"
     assert updated.json()["net_pnl"] == "7.00"
-    assert client.get("/api/v1/trades/analytics/summary").json()["net_pnl"] == "7.00"
+    assert client.get("/api/v1/trades/analytics/summary?currency=USD").json()["net_pnl"] == "7.00"
 
     other_client = TestClient(app)
     register(other_client, "trade-update-other@example.com")
@@ -299,7 +309,7 @@ def test_trade_analytics_breakdown_groups_by_strategy(client: TestClient) -> Non
             "profit_factor": "1.33",
         },
         {
-            "key": "Unspecified",
+            "key": "untagged",
             "closed_trades": 1,
             "wins": 1,
             "losses": 0,
@@ -313,7 +323,7 @@ def test_journal_analytics_follow_date_and_trade_filters(client: TestClient) -> 
     from decimal import Decimal
 
     register(client, "filters@example.com")
-    base = {"multiplier": "1", "fees": "0"}
+    base = {"multiplier": "1", "fees": "0", "currency": "INR"}
     for payload in (
         {"instrument": "AAA", "side": "long", "asset_class": "equity", "strategy": "alpha", "quantity": "10",
          "entry_price": "10", "exit_price": "15", "entry_time": "2024-03-05T14:00:00Z", "exit_time": "2024-03-05T15:00:00Z"},   # +50

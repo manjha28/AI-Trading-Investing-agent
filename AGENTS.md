@@ -1,4 +1,4 @@
-# AGENTS.md — Trading Copilot
+# AGENTS.md — FinByte Nexus
 
 ## Product
 A private, portfolio-aware research analyst for one user. It reports daily, with checkable

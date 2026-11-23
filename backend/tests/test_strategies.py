@@ -21,6 +21,13 @@ FAST_SLOW = {"fast_period": 3, "slow_period": 5}
 NOW = datetime.now(timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _now_is_the_start_of_each_test(monkeypatch):
+    """NOW was evaluated once at collection; in a long suite it would be minutes old by the time the test runs."""
+    import sys
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(timezone.utc))
+
+
 @pytest.fixture
 def test_engine():
     engine = create_engine(
@@ -48,7 +55,7 @@ def bar(timestamp: datetime, close: str, *, synthetic: bool = False) -> SimpleNa
     value = Decimal(close)
     return SimpleNamespace(
         timestamp=timestamp, open=value, high=value, low=value, close=value,
-        volume=Decimal("1000"), is_synthetic=synthetic,
+        volume=Decimal("1000"), is_synthetic=synthetic, source="test_fixture", instrument_id="fixture-instrument",
     )
 
 

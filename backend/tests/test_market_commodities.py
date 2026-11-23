@@ -19,6 +19,13 @@ from app.models import User, UserSession
 from app.models.derivatives import DerivativeContract
 
 NOW = datetime.now(timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _now_is_the_start_of_each_test(monkeypatch):
+    """NOW was evaluated once at collection; in a long suite it would be minutes old by the time the test runs."""
+    import sys
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(timezone.utc))
 TODAY = NOW.astimezone(market_data.ZoneInfo("Asia/Kolkata")).date()
 
 

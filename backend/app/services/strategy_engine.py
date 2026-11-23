@@ -83,7 +83,7 @@ def _insufficient_history(
         state=STATE_INSUFFICIENT_HISTORY,
         data_sufficiency={
             "instrument": instrument.symbol if instrument is not None else (
-                str(bars[0].instrument_id) if bars else "unavailable"
+                str(getattr(bars[0], "instrument_id", "unavailable")) if bars else "unavailable"
             ),
             "interval": DAILY_INTERVAL,
             "source": bars[-1].source if bars else "unavailable",

@@ -23,7 +23,7 @@ def expected_migration_heads() -> set[str]:
 
 @router.get("/health")
 def health_check() -> dict[str, str]:
-    return {"status": "ok", "service": "trading-copilot-api"}
+    return {"status": "ok", "service": "finbyte-nexus-api"}
 
 
 @router.get("/healthz")

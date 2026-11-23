@@ -28,7 +28,7 @@ def send_verification_email(email: str, token: str) -> None:
             json={
                 "from": settings.resend_from_email,
                 "to": [email],
-                "subject": "Verify your Trading Copilot email",
+                "subject": "Verify your FinByte Nexus email",
                 "text": (
                     "Verify your email address to unlock broker connections: "
                     f"{verification_url}\n\nThis link expires in 24 hours."

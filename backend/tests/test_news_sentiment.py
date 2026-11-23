@@ -1,3 +1,5 @@
+import pytest
+import time_machine
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -28,6 +30,13 @@ from app.services.news_sentiment import (
 )
 
 NOW = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _clock_at_fixture_time():
+    """Fixtures are dated NOW; code that reads the wall clock (source staleness) must see that same moment, not whenever the suite happens to run."""
+    with time_machine.travel(NOW, tick=True):
+        yield
 
 
 def _news(source="google_news", headline="Company reports update", *, body=None, stamp=NOW,

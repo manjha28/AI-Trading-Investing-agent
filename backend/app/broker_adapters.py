@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from email.utils import parsedate_to_datetime
 import hashlib
 import csv
+import base64
 import json
 import logging
 import math
@@ -235,6 +236,24 @@ class BrokerAdapterError(Exception):
         super().__init__(message)
         self.category = category
         self.status_code = status_code
+
+
+def jwt_expiry(token: str) -> datetime | None:
+    """The 'exp' claim of a JWT access token (Dhan tokens), or None when it cannot be read. Used so a stored expiry can never outlive the token itself."""
+    try:
+        part = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        value = claims.get("exp")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return datetime.fromtimestamp(value, timezone.utc)
+    except (IndexError, ValueError, TypeError, OverflowError, json.JSONDecodeError):
+        return None
+
+
+def clamp_to_token_expiry(token: str, expires_at: datetime) -> datetime:
+    actual = jwt_expiry(token)
+    return min(expires_at, actual) if actual is not None else expires_at
 
 
 class DhanNoData(BrokerAdapterError):
@@ -829,7 +848,7 @@ class DhanAdapter(BrokerAdapter):
         for key in ("dhanClientName", "dhanClientUcc", "givenPowerOfAttorney"):
             if data.get(key) is not None:
                 tokens[key] = str(data[key])
-        return tokens, _expires_at(data, timedelta(hours=24))
+        return tokens, clamp_to_token_expiry(tokens["access_token"], _expires_at(data, timedelta(hours=24)))
 
     def refresh_token(self, tokens: Mapping[str, str]) -> tuple[dict[str, str], datetime]:
         if not self.enabled or not tokens.get("client_id"):
@@ -848,7 +867,7 @@ class DhanAdapter(BrokerAdapter):
             raise BrokerReconnectRequired("Reconnect to this broker to renew the session")
         renewed_tokens = dict(tokens)
         renewed_tokens["access_token"] = str(access_token)
-        return renewed_tokens, _expires_at(data, timedelta(hours=24))
+        return renewed_tokens, clamp_to_token_expiry(renewed_tokens["access_token"], _expires_at(data, timedelta(hours=24)))
 
     def account_headers(self, access_token: str, tokens: Mapping[str, str]) -> dict[str, str]:
         return {

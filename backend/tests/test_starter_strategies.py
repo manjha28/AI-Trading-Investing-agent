@@ -48,7 +48,9 @@ def by_key(key):
 
 
 def test_catalog_has_exactly_the_thirteen_strategies_and_each_validates():
-    assert [s["source"]["provenance"]["starter_key"] for s in STARTERS] == KEYS + ["nifty_options_scalper"]   # 13 equity starters + the options scalper
+    keys = [s["source"]["provenance"]["starter_key"] for s in STARTERS]
+    assert keys[:13] == KEYS and "nifty_options_scalper" in keys and len(keys) == len(set(keys))   # the 13 equity starters, the options scalp, then the registry strategies (reg_*)
+    assert all(k.startswith("reg_") for k in keys if k not in KEYS and k != "nifty_options_scalper")
     for s in STARTERS[:13]:
         d = StrategyDefinition.model_validate(s)
         issues, req = validate_definition(d)
@@ -153,17 +155,17 @@ def test_install_is_idempotent_preserves_existing_strategies_and_reports_unteste
     mine = post(client, "/strategies", {"definition": {"schema_version": "intraday-strategy/1", "name": "My own", "market": "equity_in", "universe": [iid], "decision_timeframe": "5m",
                 "indicators": [], "long_entry": {"type": "compare", "left": {"kind": "price", "field": "close", "timeframe": "5m"}, "op": ">", "right": {"kind": "const", "value": 1}}}}, 201).json()
     first = post(client, "/starters/install", {}, 200).json()
-    assert first["installed"] == 14 and first["skipped"] == []
+    assert first["installed"] == len(STARTERS) and first["skipped"] == []
     again = post(client, "/starters/install", {}, 200).json()
     assert again["installed"] == 0
     rows = client.get(f"{API}/strategies").json()
     starter = [r for r in rows if r["origin"] == "starter"]
-    assert len(starter) == 14 and len(rows) == 15
+    assert len(starter) == len(STARTERS) and len(rows) == len(STARTERS) + 1
     assert all(r["tested"] is False and r["last_backtest"] is None and r["status"] == "suspended" and r["origin_label"] == "Built-in Starter Strategy" for r in starter)
     assert all(r["indicator_summary"] and r["source_type"] == "starter" and r["current_version"] == 1 for r in starter)
     assert next(r for r in rows if r["id"] == mine["id"])["status"] == "suspended" and next(r for r in rows if r["id"] == mine["id"])["current_version"] == 1
     cat = client.get(f"{API}/starters").json()
-    assert len(cat["catalog"]) == 14 and all(c["installed_strategy_id"] for c in cat["catalog"]) and "crypto" not in cat["readiness"]  # crypto has its own system (/crypto-delta)
+    assert len(cat["catalog"]) == len(STARTERS) and all(c["installed_strategy_id"] for c in cat["catalog"]) and "crypto" not in cat["readiness"]  # crypto has its own system (/crypto-delta)
 
 
 def test_install_never_overwrites_a_same_named_user_strategy(client, engine):
@@ -173,7 +175,7 @@ def test_install_never_overwrites_a_same_named_user_strategy(client, engine):
          "long_entry": {"type": "compare", "left": {"kind": "price", "field": "close", "timeframe": "5m"}, "op": ">", "right": {"kind": "const", "value": 1}}}
     mine = post(client, "/strategies", {"definition": d}, 201).json()
     res = post(client, "/starters/install", {}, 200).json()
-    assert res["installed"] == 13 and res["skipped"][0]["name"] == "Starter: VWAP Reversal"
+    assert res["installed"] == len(STARTERS) - 1 and res["skipped"][0]["name"] == "Starter: VWAP Reversal"
     assert client.get(f"{API}/strategies/{mine['id']}").json()["origin"] is None
     assert post(client, "/starters/install", {}, 200).json()["installed"] == 0
 

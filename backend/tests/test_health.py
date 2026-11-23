@@ -20,7 +20,7 @@ def test_health_is_live_without_database(monkeypatch) -> None:
     response = client.get("/api/v1/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "trading-copilot-api"}
+    assert response.json() == {"status": "ok", "service": "finbyte-nexus-api"}
 
 
 def _sqlite_engine():
@@ -68,7 +68,7 @@ def test_readiness_fails_when_migrations_behind(monkeypatch) -> None:
         "current_revisions": ["0013_app_two_factor"],
         "expected_revisions": sorted(health.expected_migration_heads()),
     }
-    assert "0023_md_provider_settings" in payload["expected_revisions"]
+    assert len(payload["expected_revisions"]) == 1 and payload["expected_revisions"][0][:4].isdigit()   # the single current alembic head
     test_engine.dispose()
 
 

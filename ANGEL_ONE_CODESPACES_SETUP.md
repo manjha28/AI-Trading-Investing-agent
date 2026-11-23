@@ -1,6 +1,6 @@
 # Angel One SmartAPI setup in GitHub Codespaces
 
-This guide configures Angel One for **market data** in Trading Copilot. It does
+This guide configures Angel One for **market data** in FinByte Nexus. It does
 not configure an Angel One execution account or perform any order operation;
 follow only the market-data steps below. The current broker API surface remains
 read-only. The separately authorized Dhan/Delta execution direction is not
@@ -13,7 +13,7 @@ support, not investment advice.
 
 1. Sign in to the official [Angel One SmartAPI developer portal](https://smartapi.angelone.in/).
 2. Open **My Apps** (or the app/API-key section shown in your portal account).
-3. Open an existing application or create one for Trading Copilot. Copy its
+3. Open an existing application or create one for FinByte Nexus. Copy its
    **API Key**. The API key is not your client code, PIN, or authenticator code.
 4. Confirm the application and your Angel One account are permitted to use
    SmartAPI market-data endpoints. If the portal labels differ, use its API-key
@@ -64,7 +64,7 @@ Do not use the IP address shown by your browser or home router.
 
 4. In the SmartAPI application settings, register the public IP and MAC if the
    portal asks for them. The exact IP/MAC allowlist UI is controlled by Angel
-   One. Trading Copilot sends the local IP, public IP, and MAC in the SmartAPI
+   One. FinByte Nexus sends the local IP, public IP, and MAC in the SmartAPI
    request headers; it does not infer or replace them.
 
 ## 3. Set backend environment variables
@@ -126,7 +126,7 @@ Before connecting:
 2. Set up the authenticator app for the Angel One account and make sure the
    device clock is correct. Use a newly generated six-digit code; never reuse
    an expired code.
-3. In Trading Copilot, sign in with a verified email and complete the
+3. In FinByte Nexus, sign in with a verified email and complete the
    application's own app-based two-factor verification for this session.
    Angel One connection is blocked unless both conditions are met.
 
@@ -181,7 +181,7 @@ or migrations are not ready; resolve that before connecting a provider.
 
 ## 7. Connect and test market data
 
-1. Sign in to Trading Copilot using a verified account and complete its
+1. Sign in to FinByte Nexus using a verified account and complete its
    app-based two-factor verification.
 2. Open **Market Data** and the market-data source/settings panel.
 3. Enter your Angel One **client code**, account **PIN**, and current
@@ -233,6 +233,6 @@ validate trading execution.
 
 For current provider-side requirements and account entitlements, use the
 [official SmartAPI portal](https://smartapi.angelone.in/) and its
-[documentation](https://smartapi.angelone.in/docs). Trading Copilot does not
+[documentation](https://smartapi.angelone.in/docs). FinByte Nexus does not
 verify or guarantee a user's Angel One entitlements or Codespaces egress-IP
 stability.

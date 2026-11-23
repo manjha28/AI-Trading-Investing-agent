@@ -1,5 +1,5 @@
 {
-  "name": "Trading Copilot",
+  "name": "FinByte Nexus",
   "dockerComposeFile": "docker-compose.yml",
   "service": "workspace",
   "workspaceFolder": "/workspaces/AI-Trading-Investing-agent",
@@ -11,7 +11,7 @@
   "forwardPorts": [5173, 8000],
   "portsAttributes": {
     "8000": { "label": "FastAPI API", "onAutoForward": "notify", "visibility": "private" },
-    "5173": { "label": "Trading Copilot", "onAutoForward": "openBrowser", "visibility": "private" }
+    "5173": { "label": "FinByte Nexus", "onAutoForward": "openBrowser", "visibility": "private" }
   },
   "postCreateCommand": "python -m pip install -r backend/requirements.txt && cd frontend && npm install"
 }

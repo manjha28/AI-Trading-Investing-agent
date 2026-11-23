@@ -252,7 +252,7 @@ def _fetch_body(
 def fetch_document(
     url: str,
     *,
-    user_agent: str = "TradingCopilotResearch/1.0",
+    user_agent: str = "FinByteNexusResearch/1.0",
     transport: httpx.BaseTransport | None = None,
 ) -> FetchedDocument:
     """Fetch an https document with size, time and redirect limits.

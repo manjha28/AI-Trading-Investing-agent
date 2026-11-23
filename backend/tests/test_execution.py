@@ -279,6 +279,7 @@ def test_no_code_path_can_reach_a_broker_order_endpoint():
         ), f"{path.name} defines an order path"
 
     paths = list(app.openapi()["paths"])
-    assert not [path for path in paths if "order" in path.lower() and "/execution/" not in path]
+    # The owner-approved Dhan live-execution exception (AGENTS.md, 2026-11-21) is the only place order routes may exist, and only under /dhan-live/.
+    assert not [path for path in paths if "order" in path.lower() and "/execution/" not in path and "/dhan-live/" not in path]
     assert {path for path in paths if "/execution/" in path} == {
         "/api/v1/execution/status", "/api/v1/execution/dry-run", "/api/v1/execution/audit"}

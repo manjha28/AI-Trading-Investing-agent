@@ -30,6 +30,13 @@ from app.market_stream.transport import (
 from app.models import Instrument, MarketBar, User
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
+
+
+@pytest.fixture(autouse=True)
+def _now_is_the_start_of_each_test(monkeypatch):
+    """NOW was evaluated once at collection; in a long suite it would be minutes old by the time the test runs."""
+    import sys
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(timezone.utc).replace(microsecond=0))
 PROVIDER_ID = "1333|NSE_EQ"
 
 
@@ -442,7 +449,7 @@ def test_snapshot_rejects_malformed_or_oversized_requests(client, test_engine, e
 def test_poll_requires_csrf_and_verified_dhan_identifier(client, test_engine, enabled):
     register(client, test_engine, "poll@example.com", verified=True)
     instrument_id = add_instrument(test_engine, "POLL")
-    body = {"instrument_id": str(instrument_id), "interval": "5m"}
+    body = {"instrument_id": str(instrument_id), "interval": "1m"}
     app.dependency_overrides[get_event_publisher] = lambda: InMemoryEventPublisher()
     try:
         assert client.post("/api/v1/market-stream/poll", json=body).status_code == 403
@@ -459,7 +466,7 @@ def test_poll_rejects_unknown_instrument_and_bad_interval(client, test_engine, e
     try:
         unknown = client.post(
             "/api/v1/market-stream/poll",
-            json={"instrument_id": str(uuid4()), "interval": "5m"},
+            json={"instrument_id": str(uuid4()), "interval": "1m"},      # the stream polls 1-minute bars only
             headers=csrf(client),
         )
         invalid = client.post(

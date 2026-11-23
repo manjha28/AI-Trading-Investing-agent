@@ -1,4 +1,5 @@
 import asyncio
+import time
 import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
@@ -187,7 +188,7 @@ def refresh_stale_universe_closes(
                 failed += 1
                 attempts = getattr(result, "provider_attempts", None) or []
                 why = "; ".join(sorted({f"{getattr(a, 'provider', '?')}: {getattr(a, 'reason', None) or getattr(a, 'reason_category', None) or getattr(a, 'outcome', 'unavailable')}" for a in attempts})) or "provider returned no candle"
-                reasons.setdefault(why, []).append(instrument.symbol)
+                reasons.setdefault(f"{why}; asked for {start:%Y-%m-%d}..{now:%Y-%m-%d}", []).append(instrument.symbol)
         except Exception as error:
             db.rollback()
             failed += 1
@@ -249,6 +250,7 @@ async def corporate_action_sync_loop() -> None:
 
 
 ALERT_QUOTE_REFRESH_SECONDS = 300
+_ALERT_REFRESH_WARNED: dict[UUID, float] = {}
 
 
 def _refresh_alert_rule_quotes(db: Session, user_id: UUID, now: datetime | None = None) -> int:
@@ -276,6 +278,13 @@ def _refresh_alert_rule_quotes(db: Session, user_id: UUID, now: datetime | None 
         provider = market_data_provider_for_user(db, user_id)
     except HTTPException as error:
         logger.warning("Alert quote refresh skipped user_id=%s (HTTP %s)", user_id, error.status_code)
+        return 0
+    if hasattr(provider, "providers") and not provider.providers:
+        # No usable provider (typically an expired Dhan session): say so ONCE per 15 minutes instead of one failure line per instrument per minute.
+        if time.monotonic() - _ALERT_REFRESH_WARNED.get(user_id, -1e9) > 900:
+            _ALERT_REFRESH_WARNED[user_id] = time.monotonic()
+            reasons = "; ".join(f"{u.get('provider')}: {u.get('reason')}" for u in getattr(provider, "unavailable_providers", []) or []) or "no provider available"
+            logger.warning("Alert quote refresh paused for %d instrument(s): %s. Reconnect Dhan in the app to resume live alerts.", len(instrument_ids), reasons)
         return 0
     user = db.get(User, user_id)
     refreshed = 0

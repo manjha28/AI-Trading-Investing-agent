@@ -1,5 +1,5 @@
-const CACHE_NAME = 'trading-copilot-shell-v2';
-const SHELL_FILES = ['/', '/manifest.webmanifest', '/icons/app-icon.svg'];
+const CACHE_NAME = 'finbyte-nexus-shell-v3';
+const SHELL_FILES = ['/', '/manifest.webmanifest', '/brand/icon-192.png', '/favicon.ico'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)));

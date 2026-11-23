@@ -430,6 +430,9 @@ def _fresh_tokens(
     if expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=timezone.utc)
     renewal_window = timedelta(minutes=5) if adapter.slug in {"dhan", "angel_one"} else timedelta(0)
+    if adapter.slug == "dhan":          # the stored expiry must never outlive the token's own expiry, or renewal is never attempted before it dies
+        from app.broker_adapters import clamp_to_token_expiry
+        expiry = clamp_to_token_expiry(tokens.get("access_token", ""), expiry)
     if expiry <= _now() + renewal_window:
         try:
             tokens, expires_at = adapter.refresh_token(tokens)
@@ -1541,7 +1544,7 @@ def sync_broker(
         except DhanAccountRequestError as error:
             endpoint_results[endpoint] = {
                 "status": "failed",
-                "reason": error.code,
+                "reason": "authentication_expired" if error.code == "provider_authentication_failed" else error.code,
             }
             if error.status_code is not None:
                 endpoint_results[endpoint]["http_status"] = str(error.status_code)
@@ -1557,7 +1560,7 @@ def sync_broker(
                     502, "broker_provider_error", "Broker account sync failed."
                 ) from error
 
-    if dhan_reader is not None and not snapshot_only:
+    if dhan_reader is not None and not snapshot_only and not authentication_expired:   # an expired session fails every further call; do not hammer Dhan
         trade_records: list[dict[str, Any]] = []
         try:
             for page in range(100):

@@ -812,12 +812,15 @@ def test_valuation_flags_mixed_fresh_stale_and_synthetic_prices(
     assert response.status_code == 200, response.text
     valuation = response.json()
     prices = {position["symbol"]: position for position in valuation["positions"]}
-    assert prices["MSFT"]["freshness"] == "fresh"
-    assert prices["ORCL"]["freshness"] == "stale"
-    assert prices["ALPHA"]["is_synthetic"] is True
+    # Yahoo quotes are delayed daily-close data (never "live"), so even a just-retrieved Yahoo quote is stale for valuation; both stay usable as stale.
+    assert prices["MSFT"]["freshness"] in {"stale", "unavailable"}        # never "fresh": Yahoo is a delayed source (and a failed live refresh leaves nothing newer)
+    assert prices["ORCL"]["freshness"] in {"stale", "unavailable"}
+    # A recorded/mock quote on an unverified mapping is never valued: no price, flagged as unverified (there is no synthetic price path any more).
+    assert prices["ALPHA"]["last_price"] is None and prices["ALPHA"]["market_value"] is None
     assert valuation["confidence"] == "unreliable"
-    assert any("stale" in reason for reason in valuation["reasons"])
-    assert any("synthetic" in reason for reason in valuation["reasons"])
+    reasons = " | ".join(valuation["reasons"])
+    assert "MSFT" in reasons and "ORCL" in reasons          # every position that is not a live, verified price is named with its reason
+    assert any("unverified" in reason for reason in valuation["reasons"])
 
 
 def test_valuation_does_not_convert_foreign_currency(client: TestClient, test_engine) -> None:

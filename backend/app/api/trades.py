@@ -854,7 +854,7 @@ def delete_trade(
 
 @router.get("/analytics/summary", response_model=TradeAnalytics)
 def trade_analytics(
-    currency: Literal["USD", "INR"] = Query(default="USD"),
+    currency: Literal["USD", "INR"] = Query(default="INR"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -884,7 +884,7 @@ def trade_analytics(
 
 @router.get("/analytics/breakdown", response_model=list[TradeBreakdownRow])
 def trade_analytics_breakdown(
-    currency: Literal["USD", "INR"] = Query(default="USD"),
+    currency: Literal["USD", "INR"] = Query(default="INR"),
     group_by: Literal["strategy", "instrument", "asset_class"] = Query(default="strategy"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

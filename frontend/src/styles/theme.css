@@ -1,4 +1,4 @@
-/* Trading Copilot — "terminal-pro" theme.
+/* FinByte Nexus — "terminal-pro" theme.
    Graphite surfaces, thin lines, mono numerics, tight radii, dense spacing.
    GREEN = primary action / gains / live   AMBER = caution, stale, labels   RED = losses, danger
    Fonts are unchanged (DM Sans UI, IBM Plex Mono numerics). Loaded last. */
@@ -363,3 +363,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .bell-menu ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; } .bell-head { display: flex; justify-content: space-between; align-items: center; }
 .bell-item { width: 100%; text-align: left; display: grid; gap: 2px; padding: 8px; border: 1px solid var(--tc-line); border-radius: 4px; background: none; color: var(--tc-text); cursor: pointer; } .bell-item:hover { background: var(--tc-raised); } .bell-item small { color: var(--tc-muted); }
 .watch-alert-dot { vertical-align: -1px; } .secondary-button svg { vertical-align: -2px; }
+
+
+/* ---------- FinByte Nexus brand ---------- */
+.brand-block { display: grid; gap: 4px; }
+.brand-lockup { gap: 11px; }
+.brand-symbol { width: 38px; height: 38px; padding: 0; border: 0; background: transparent; border-radius: 10px; overflow: hidden; flex: none; box-shadow: 0 0 0 1px #1ec8a033; }
+.brand-symbol img { display: block; width: 100%; height: 100%; }
+.brand-text { display: grid; line-height: 1; gap: 4px; }
+.brand-text b { font-size: 18px; font-weight: 700; letter-spacing: -.01em; color: #f2f5f8; }
+.brand-text i { font-style: normal; font-size: 11.5px; font-weight: 800; letter-spacing: .24em; color: #1ec8a0; }
+.brand-tagline { margin: 22px 0 4px; font-size: 21px; font-weight: 700; color: #f2f5f8; letter-spacing: -.01em; }
+.brand-sub { margin: 0 0 12px; font-size: 13px; line-height: 1.45; color: #9aa6b4; }
+.brand-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 26px; padding: 0; list-style: none; }
+.brand-chips li { padding: 4px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.brand-chips .chip-green { color: #19d38a; background: #0f2a22; }
+.brand-chips .chip-blue { color: #4da3ff; background: #0f2036; }
+.auth-panel { background: #111826; border-radius: 16px; width: min(100%, 440px); }
+.auth-panel .brand-lockup { margin-bottom: 0; }

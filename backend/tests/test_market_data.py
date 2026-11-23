@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
 import pytest
+import time_machine
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from pydantic import SecretStr, ValidationError
@@ -1003,7 +1004,7 @@ def test_history_request_bounds_and_timezone_are_validated(client: TestClient) -
     assert too_many.status_code == 422
 
 
-def test_removed_25_minute_interval_is_rejected(
+def test_malformed_interval_is_rejected_without_recording_anything(
     client: TestClient, test_engine
 ) -> None:
     register(client, "removed-interval@example.com")
@@ -1012,7 +1013,7 @@ def test_removed_25_minute_interval_is_rejected(
     response = client.post(
         f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
         params={
-            "interval": "25m",
+            "interval": "0m",           # 25m is a supported derived interval now; a zero-length or malformed one must still be refused
             "start": "2026-01-01T00:00:00Z",
             "end": "2026-01-02T00:00:00Z",
         },
@@ -1053,6 +1054,16 @@ def test_unsupported_provider_interval_and_lookback_are_reported_without_request
             "start": old_start.isoformat(),
             "end": recent_end.isoformat(),
         },
+    )
+    class NoMinuteHistoryProvider:
+        name = "twelve_data"
+        is_mock = False
+
+        def get_historical_bars(self, *_args, **_kwargs):
+            raise AssertionError("unsupported history must be skipped")
+
+    app.dependency_overrides[get_market_data_provider] = lambda: MarketDataProviderChain(
+        [NoMinuteHistoryProvider()]
     )
     unsupported = client.post(
         f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
@@ -1868,12 +1879,12 @@ def test_history_reports_unsupported_provider_interval(client: TestClient) -> No
         "/api/v1/market-data/instruments?query=ALPHA"
     ).json()[0]["id"]
 
-    class YahooOnlyProvider:
-        name = "yfinance"
+    class NoMinuteHistoryProvider:      # intraday intervals are derived from 1-minute candles, so a provider without 1m cannot serve any of them
+        name = "twelve_data"
         is_mock = False
 
     app.dependency_overrides[get_market_data_provider] = lambda: MarketDataProviderChain(
-        [YahooOnlyProvider()]
+        [NoMinuteHistoryProvider()]
     )
     response = client.post(
         f"/api/v1/market-data/instruments/{instrument_id}/history/sync",
@@ -1886,7 +1897,7 @@ def test_history_reports_unsupported_provider_interval(client: TestClient) -> No
 
     assert response.status_code == 422
     assert response.json()["detail"]["providers"] == [
-        {"provider": "yfinance", "reason": "unsupported_interval"}
+        {"provider": "twelve_data", "reason": "unsupported_interval"}
     ]
 
 
@@ -2165,13 +2176,13 @@ def test_dhan_v2_intraday_epoch_is_parsed_as_utc_for_option_candles(monkeypatch)
     bars = adapter.get_historical_bars(
         "NSE_EQ",
         "3045",
-        "5m",
+        "1m",           # Dhan is asked for 1-minute candles only; every other intraday interval is derived from them
         datetime(2026, 10, 26, 3, 45, tzinfo=timezone.utc),
         datetime(2026, 10, 26, 3, 50, tzinfo=timezone.utc),
     )
 
     assert requests[0][0] == "/charts/intraday"
-    assert requests[0][1]["interval"] == "5"
+    assert requests[0][1]["interval"] == "1"
     assert bars[0].timestamp == datetime(2026, 10, 26, 3, 46, tzinfo=timezone.utc)
     assert bars[0].timestamp.astimezone(ZoneInfo("Asia/Kolkata")) == datetime(
         2026, 10, 26, 9, 16, tzinfo=ZoneInfo("Asia/Kolkata")
@@ -2762,6 +2773,9 @@ def test_eod_close_requires_a_verified_provider_mapping(monkeypatch) -> None:
         symbol="SBIN",
         currency="INR",
         country="IN",
+        timezone="Asia/Kolkata",
+        venue="NSE",
+        asset_class="equity",
         provider_identifiers=[
             SimpleNamespace(provider="yfinance", is_verified=False)
         ],

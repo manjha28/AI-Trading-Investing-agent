@@ -6,6 +6,7 @@ import { footerWording, sidebarWording, type LiveCapability } from './lib/liveCa
 import { useWorkspace } from './components/useWorkspace';
 import { AlertsBell } from './components/AlertsBell';
 import { MobileNav } from './components/MobileNav';
+import { BrandLockup } from './components/BrandLockup';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
 import { CryptoDeltaPage } from './pages/CryptoDelta';
@@ -24,8 +25,8 @@ export default function App() {
   const [brokerStatusChecked, setBrokerStatusChecked] = useState(false);
   const [headerSyncing, setHeaderSyncing] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
-  const {
   const [liveCapability, setLiveCapability] = useState<LiveCapability>(null);
+  const {
     user,
     checkingSession,
     activeView,
@@ -63,7 +64,6 @@ export default function App() {
   const [researchFocus, setResearchFocus] = useState<{ instrumentId: string; nonce: number } | null>(null);
   const openStock = (instrumentId: string, tab: WatchFocus['tab'] = 'alerts') => { setWatchFocus((cur) => ({ instrumentId, tab, nonce: (cur?.nonce ?? 0) + 1 })); setActiveView('market-watch'); };
 
-  // The header search opens the Market watch with that term (n makes repeating a search re-run it).
   // What the sidebar and footer say about live orders comes from the server's real capability, read once the session is verified (no 403 beforehand)
   const sessionVerified = !!twoFactorStatus?.session_verified && !!user?.email_verified;
   useEffect(() => {
@@ -73,6 +73,7 @@ export default function App() {
     return () => { active = false; };
   }, [sessionVerified]);
 
+  // The header search opens the Market watch with that term (n makes repeating a search re-run it).
   const [watchSearch, setWatchSearch] = useState({ q: '', n: 0 });
 
   // Success notices are transient; errors stay until dismissed.
@@ -159,7 +160,7 @@ export default function App() {
         <span>
           {twoFactorStatus?.enabled
             ? ' Enter the current six-digit code from your authenticator app to unlock read-only broker access.'
-            : ' Broker connections require app-based two-factor authentication. Use an authenticator app; Trading Copilot never asks for your broker PIN or OTP.'}
+            : ' Broker connections require app-based two-factor authentication. Use an authenticator app; FinByte Nexus never asks for your broker PIN or OTP.'}
         </span>
         {twoFactorSecret && (
           <div className="form-stack">
@@ -219,7 +220,7 @@ export default function App() {
   return (
     <div className={sidebarCollapsed ? 'app-frame sidebar-collapsed' : 'app-frame'}>
       <aside className="sidebar">
-        <div className="brand-lockup"><span className="brand-symbol"><Activity size={20} /></span><span>Trading Copilot</span></div>
+        <BrandLockup />
         <button
           className="sidebar-collapse"
           type="button"

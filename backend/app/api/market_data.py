@@ -7032,7 +7032,10 @@ def _live_quote_change(
         )
         return absolute_change, percent_change, change_basis
     cache_key = (instrument.id, quote_bar_source, expected_previous_date)
-    if cache_key not in _PRIOR_CLOSE_CACHE:
+    previous_close = _PRIOR_CLOSE_CACHE.get(cache_key)
+    if previous_close is None:
+        # Only FOUND prior closes are cached: a miss (the bar has not been fetched yet) must be looked up again next time, or the day change would stay
+        # blank until the process restarts even after the bar arrives.
         previous_bar = db.scalar(
             select(MarketBar)
             .where(
@@ -7050,10 +7053,11 @@ def _live_quote_change(
             )
             .order_by(MarketBar.retrieved_at.desc())
         )
-        _PRIOR_CLOSE_CACHE[cache_key] = _prior_close_value(
-            previous_bar, instrument.timezone
-        )
-    previous_close = _PRIOR_CLOSE_CACHE[cache_key]
+        previous_close = _prior_close_value(previous_bar, instrument.timezone)
+        if previous_close is not None:
+            if len(_PRIOR_CLOSE_CACHE) > 20_000:      # bounded: one entry per instrument, source and session
+                _PRIOR_CLOSE_CACHE.clear()
+            _PRIOR_CLOSE_CACHE[cache_key] = previous_close
     absolute_change, percent_change, basis, _reason = _daily_close_change(
         db,
         user_id,
@@ -9480,15 +9484,22 @@ def sync_history(
                         "start": range_start.isoformat(),
                         "end": range_end.isoformat(),
                     })
-                provider_bars.extend(_fetch_provider_history(
-                    active_provider,
-                    candidate,
-                    fetch_interval,
-                    range_start,
-                    range_end,
-                    remaining,
-                    rows_returned=provider_rows_returned,
-                ))
+                try:
+                    provider_bars.extend(_fetch_provider_history(
+                        active_provider,
+                        candidate,
+                        fetch_interval,
+                        range_start,
+                        range_end,
+                        remaining,
+                        rows_returned=provider_rows_returned,
+                    ))
+                except MarketDataProviderError as gap_error:
+                    # A gap range can contain no trading day at all (a weekend or holiday between stored sessions); the provider answers
+                    # "no data" for it. That must not discard the ranges that did return candles. If nothing at all came back,
+                    # the check after this loop still reports provider_no_history_for_range.
+                    if gap_error.code != "provider_no_history_for_range" or len(provider_ranges) < 2:
+                        raise
                 if job_id is not None:
                     _update_history_sync_job(
                         job_id,

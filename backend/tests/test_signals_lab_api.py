@@ -19,6 +19,13 @@ from app.models.strategies import BacktestRun, IntradaySignal, IntradaySignalEve
 from app.services import intraday_python as ip
 
 NOW = datetime.now(timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _now_is_the_start_of_each_test(monkeypatch):
+    """NOW was evaluated once at collection; in a long suite the 10-minute freshness window had passed by the time these tests ran."""
+    import sys
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(timezone.utc))
 API = "/api/v1/signals-lab"
 
 

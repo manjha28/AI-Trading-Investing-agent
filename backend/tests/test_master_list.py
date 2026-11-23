@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import time as _real_time
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -170,7 +171,14 @@ def test_the_time_budget_stops_a_pass_and_the_next_pass_continues_from_the_stale
     login(client, engine, "budget@example.com")
     ids = stage_three(engine, "budget@example.com")
     clock = iter([0.0, 0.0, 99.0, 100.0, 101.0, 102.0, 103.0, 104.0])
-    monkeypatch.setattr(fts._time, "monotonic", lambda: next(clock))
+    class StubTime:      # only forward_test sees the scripted clock; patching time.monotonic itself would starve every other thread (event loops, the test client) of a clock
+        def __getattr__(self, name):
+            return getattr(_real_time, name)
+
+        @staticmethod
+        def monotonic():
+            return next(clock)
+    monkeypatch.setattr(fts, "_time", StubTime())
     with Session(engine) as db:
         user = db.scalar(select(User).where(User.email == "budget@example.com"))
         fts.refresh_bars(db, user, [db.get(Instrument, i) for i in ids.values()], NOW, max_seconds=50)

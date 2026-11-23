@@ -639,7 +639,9 @@ def test_classify_quote_unknown_beyond_last_covered_year():
 
 
 def test_classify_quote_unknown_on_unverified_holiday():
-    now = _ist(2026, 1, 15, 10, 0)
+    from app.config import NSE_UNVERIFIED_HOLIDAYS
+    holiday = sorted(NSE_UNVERIFIED_HOLIDAYS)[0]            # a date the calendar lists as a holiday but has not verified against NSE
+    now = _ist(holiday.year, holiday.month, holiday.day, 10, 0)
 
     session = venue_session(_in_instrument(), now)
 
@@ -731,10 +733,7 @@ def test_daily_close_change_uses_decimal_against_prior_session_close(monkeypatch
         "_adjust_previous_daily_close",
         lambda db, user_id, instrument, close, price_date: (close, "no_adjustment"),
     )
-    previous_bar = SimpleNamespace(
-        timestamp=datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc),
-        close=Decimal("961.85"),
-    )
+    previous_bar = market_data.PriorCloseValue(close=Decimal("961.85"), session_date=date(2026, 10, 30), source="dhan")
     change, percent, basis, unavailable = market_data._daily_close_change(
         None,
         UUID(int=9),

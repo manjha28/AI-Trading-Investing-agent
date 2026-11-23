@@ -8,17 +8,18 @@ export type EngineHorizon = {
   direction?: string; technical_score?: number; market_regime?: string; selected_setup?: string; entry_status?: string; current_price?: string;
   components?: Record<string, Comp>; scenarios?: Record<string, { status: string; reason: string; zone?: string[]; trigger?: string; extension_atr?: number; extension?: string }>;
   entry?: { low: string; high: string; planned_price: string; breakout_trigger: string | null; extension_atr?: number; extension?: string } | null;
+  limit_entry?: { price: string; stop: string; fill_rate_in_replays: string; derivation: string; evidence: string } | null;
   stop_loss?: { price: string; percent: number; atr_units: number; method: string; reason: string; structural_invalidation: string; } | null;
   targets?: { label: string; price: string; risk_reward: number; basis: string }[]; enough_upside?: boolean | null;
   atr?: { atr14: number; natr: number }; indicators?: Record<string, number | null>;
   support_levels?: Zone[]; resistance_levels?: Zone[]; pivots?: Record<string, Record<string, string>>; relative_strength?: { available: boolean; note: string };
   reasons?: string[]; risks?: string[]; explanation?: string;
 };
-export type Engine = { status: string; reason?: string; last_daily_candle?: string; horizons: Record<string, EngineHorizon>; label?: string };
+export type Engine = { status: string; reason?: string; last_daily_candle?: string; horizons: Record<string, EngineHorizon>; label?: string; validation?: string };
 
 const NAME: Record<string, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
 const SETUP: Record<string, string> = { PULLBACK_ENTRY: 'Pullback entry', BREAKOUT_ENTRY: 'Breakout entry', MOMENTUM_ENTRY: 'Momentum entry', NO_VALID_SETUP: 'No valid setup' };
-const STATUS: Record<string, string> = { ENTER_NOW: 'Enter now', WAIT_FOR_ENTRY: 'Wait for entry', NO_VALID_SETUP: 'No valid setup', WAIT: 'Wait', INVALID: 'Not valid' };
+const STATUS: Record<string, string> = { ENTER_NOW: 'In buy band now', WAIT_FOR_ENTRY: 'Wait for entry', NO_VALID_SETUP: 'No valid setup', WAIT: 'Wait', INVALID: 'Not valid' };
 const dir = (d?: string) => (d ? d.replace('_', ' ').toLowerCase() : '—');
 const tone = (d?: string) => (d?.includes('BULL') ? 'good' : d?.includes('BEAR') ? 'bad' : 'mid');
 const label = (k: string) => k.replace(/_/g, ' ');
@@ -54,6 +55,8 @@ export function TechnicalEnginePanel({ engine, horizon }: { engine: Engine | und
             {h.entry.extension_atr !== undefined && <div><dt>Extension</dt><dd>{h.entry.extension_atr} ATR · {label(h.entry.extension ?? '')}</dd></div>}</> : <div><dt>Entry</dt><dd>None offered</dd></div>}</dl>
         <h4>Scenarios</h4><ul className="rt-list">{Object.entries(h.scenarios ?? {}).map(([k, s]) => <li key={k}><b>{SETUP[k] ?? k}</b> <span className="rt-chip">{STATUS[s.status] ?? s.status}</span><br /><small>{s.reason}</small></li>)}</ul></div>
       <div className="rt-card"><h4>Risk management</h4>
+        {h.limit_entry && <><dl className="rt-kv"><div><dt>Pullback limit entry (best-tested)</dt><dd>{inr(h.limit_entry.price)} · stop {inr(h.limit_entry.stop)}</dd></div><div><dt>Fills</dt><dd>{h.limit_entry.fill_rate_in_replays}</dd></div></dl>
+          <p className="rt-note">{h.limit_entry.derivation} {h.limit_entry.evidence} Decision support, not investment advice.</p></>}
         {h.stop_loss ? <dl className="rt-kv"><div><dt>Stop-loss</dt><dd>{inr(h.stop_loss.price)} ({h.stop_loss.percent}% · {h.stop_loss.atr_units} ATR)</dd></div><div><dt>Method</dt><dd>{label(h.stop_loss.method.toLowerCase())}</dd></div>
           <div><dt>Structural invalidation</dt><dd>{inr(h.stop_loss.structural_invalidation)}</dd></div></dl> : <p className="rt-empty">No stop because no valid setup.</p>}
         {h.stop_loss && <p className="rt-note">{h.stop_loss.reason}</p>}
@@ -74,6 +77,7 @@ export function TechnicalEnginePanel({ engine, horizon }: { engine: Engine | und
     {h.relative_strength && <p className="rt-note"><b>Relative strength (context):</b> {h.relative_strength.note}</p>}
     <details className="rt-fold"><summary>Indicator values</summary><dl className="rt-kv">{Object.entries(h.indicators ?? {}).map(([k, v]) => <div key={k}><dt>{label(k)}</dt><dd>{v === null ? '—' : v}</dd></div>)}</dl></details>
     {(h.risks?.length ?? 0) > 0 && <div className="rt-reasons rt-reasons-warn"><strong>Risks and gaps</strong><ul>{h.risks!.slice(0, 6).map((r) => <li key={r}>{r}</li>)}</ul></div>}
+    {engine.validation && <p className="rt-note"><b>Validation:</b> {engine.validation}</p>}
     <p className="rt-disclaimer">{engine.label} Last completed candle {h.last_completed_candle}.</p>
   </div>;
 }

@@ -147,6 +147,7 @@ def test_every_scoped_get_route_avoids_server_errors(
         "instrument_id": instrument_id,
         "thesis_id": str(uuid4()),
         "slug": "dhan",
+        "job_id": str(uuid4()),
     }
     path = re.sub(
         r"\{([a-z_]+)\}",

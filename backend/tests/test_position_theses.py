@@ -166,6 +166,7 @@ def test_synthetic_and_stale_prices_are_not_actionable(client, test_engine) -> N
         ),
         SimpleNamespace(currency="USD", provider_identifiers=[]),
         "USD",
+        None,      # last completed session: unknown for this US fixture (required explicitly so no caller omits it silently)
     )
     assert synthetic_market.is_synthetic is True
     assert synthetic_market.actionable is False

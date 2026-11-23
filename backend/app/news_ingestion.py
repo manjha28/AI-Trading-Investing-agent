@@ -30,7 +30,7 @@ IST = ZoneInfo("Asia/Kolkata")
 GOOGLE_COMPANIES_PER_POLL = 4
 _SOURCE_LOCK = threading.Lock()
 _SOURCE_COOLDOWN_UNTIL: dict[str, float] = {}
-_SOURCE_USER_AGENT = "TradingCopilotNews/1.0 (public RSS/API metadata; contact: local deployment)"
+_SOURCE_USER_AGENT = "FinByteNexusNews/1.0 (public RSS/API metadata; contact: local deployment)"
 
 
 def _reserve_source_request(url: str) -> None:
