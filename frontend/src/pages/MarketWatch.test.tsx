@@ -378,7 +378,7 @@ describe('MarketWatch · header counts and row selection', () => {
     expect(within(screen.getByText('AAA').closest('tr')!).getByText('100.05')).toBeTruthy();             // 100.03 shown on the 0.05 tick
     fireEvent.click(screen.getByRole('button', { name: 'Gainers' }));
     await waitFor(() => expect(symbolsShown()).toEqual(['AAA', 'ONGC']));
-    expect(strip.textContent).toContain('2 symbols of 4');                                                   // the filter is visible in the count
+    expect(strip.textContent).toContain('2 instruments of 4');                                                   // the filter is visible in the count
   });
 
   it('opens the detail panel when a row is clicked', async () => {

@@ -7648,8 +7648,12 @@ def get_market_universe(
             "reason": reason,
         })
     rows.sort(key=lambda row: row["symbol"])
+    from app.services import instrument_kind
+    funds = sum(1 for row in rows if instrument_kind.is_fund(instruments[UUID(row["instrument_id"])]))
     return {
         "count": len(rows), "instruments": rows,
+        "scope": {"instruments": len(rows), "stocks": len(rows) - funds, "funds_and_etfs": funds,
+                  "rule": "Every NSE instrument with a verified Dhan mapping (stocks, ETFs and funds), plus the symbols you added to the Market watch or starred. Research and the Multibagger screen cover the stocks only (funds and ETFs excluded)."},
         "expected_session": expected_session.isoformat() if expected_session else None,
         "disclaimer": "Decision support, not investment advice.",
     }
@@ -10966,6 +10970,11 @@ def get_rail_summary(
         requested = list(dict.fromkeys(UUID(item) for item in instrument_ids.split(",") if item.strip()))
     except ValueError:
         raise HTTPException(status_code=422, detail="instrument_ids must be comma-separated UUIDs.")
+    if not requested:
+        # No ids supplied: the summary is of the caller's own watchlists (the scope line says so), never an empty "0 instruments" for a user who has some.
+        requested = list(dict.fromkeys(db.scalars(
+            select(WatchlistInstrument.instrument_id).join(Watchlist, Watchlist.id == WatchlistInstrument.watchlist_id).where(Watchlist.user_id == active_session.user_id)
+        )))[:200]
     if len(requested) > 200:
         raise HTTPException(status_code=422, detail="At most 200 instruments per request.")
     instruments = {

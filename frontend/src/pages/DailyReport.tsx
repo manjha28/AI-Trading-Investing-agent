@@ -251,7 +251,7 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
   ];
   return <section className="rt-daily" aria-label="Daily report">
     <div className="rt-daily-head">
-      <div><h2>Today&apos;s research</h2><p className="rt-note">Swing, positional and long-term · {total} stocks: your watchlist, portfolio and the Market watch master list · updated {when(report.as_of)}</p></div>
+      <div><h2>Today&apos;s research</h2><p className="rt-note">Swing, positional and long-term · {report.coverage?.universe_rule ?? `${total} stocks`} · updated {when(report.as_of)}</p></div>
       <span className={`rt-live${researching ? ' busy' : ''}`}>{researching ? `Researching ${report.researching?.join(', ')}…` : 'Auto-updating'}</span>
     </div>
     {error && <p className="rt-alert rt-alert-error" role="alert">{error}</p>}

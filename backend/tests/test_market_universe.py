@@ -352,3 +352,32 @@ def test_universe_rows_carry_the_last_bars_day_range(client, engine):
         db.commit()
     row = client.get("/api/v1/market-data/universe").json()["instruments"][0]
     assert Decimal(row["day_high"]) == Decimal("108.5") and Decimal(row["day_low"]) == Decimal("97.25")
+
+
+def test_universe_states_its_rule_and_splits_stocks_from_funds(client, engine):
+    login(client, engine)
+    last, _ = sessions()
+    with Session(engine) as db:
+        a, b, etf = stock("AAA"), stock("BBB"), stock("NIFTYBEES", asset="etf")
+        etf.instrument_kind = "fund"
+        db.add_all([a, b, etf]); db.flush()
+        for i in (a, b, etf):
+            map_dhan(db, i); day_bar(db, i, last, "10")
+        db.commit()
+    body = client.get("/api/v1/market-data/universe").json()
+    assert body["count"] == 3 and body["scope"]["instruments"] == 3 and body["scope"]["stocks"] == 2 and body["scope"]["funds_and_etfs"] == 1
+    assert "funds and ETFs excluded" in body["scope"]["rule"] and "Research" in body["scope"]["rule"]
+
+
+def test_rail_summary_without_ids_summarises_the_callers_watchlist_instead_of_zero_instruments(client, engine):
+    login(client, engine)
+    last, _ = sessions()
+    with Session(engine) as db:
+        user_id = db.scalar(select(User.id))
+        a, b = stock("WATCHA"), stock("WATCHB")
+        db.add_all([a, b]); db.flush()
+        for i in (a, b):
+            map_dhan(db, i); day_bar(db, i, last, "10"); _watch(db, user_id, i)
+        db.commit()
+    body = client.get("/api/v1/market-data/rail-summary").json()
+    assert len(body["instruments"]) == 2 and "(2 instruments)" in body["scope"]

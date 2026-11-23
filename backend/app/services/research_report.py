@@ -266,7 +266,7 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
                 "stale": sum(1 for r in rows if r.get("researched_at") and r.get("stale")),
                 "not_current": sum(1 for r in rows if r.get("not_enough_kind") == "not_current"), "insufficient_evidence": sum(1 for r in rows if r.get("not_enough_kind") == "insufficient_evidence"), "never_researched": sum(1 for r in rows if not r.get("researched_at")),
                 "last_research_at": max(researched) if researched else None,
-                "universe_rule": "Your watchlists plus every stock with a recorded portfolio transaction (NSE equity).",
+                "universe_rule": f"Stocks only (funds and ETFs excluded): your watchlists, every stock you hold or have a recorded transaction in, and the whole Market watch master list. {len(rows)} stocks today.",
                 "schedule": "Researched automatically after 16:30 IST on trading days, at app start-up if anything is older than 20 hours, and within minutes of a stock being added."}
     buckets_all = BUCKETS_V2 if (settings.levels_v2_active or settings.stock_verdict_enabled) else BUCKETS
     order = {b: i for i, b in enumerate(buckets_all)}

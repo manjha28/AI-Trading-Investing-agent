@@ -24,7 +24,7 @@ type UniverseRow = {
   /** Low/high of the last stored daily bar (that bar's date), shown until a live quote supplies today's range. */
   day_low?: string | null; day_high?: string | null;
 };
-type Universe = { count: number; instruments: UniverseRow[]; expected_session: string | null; disclaimer: string };
+type Universe = { count: number; instruments: UniverseRow[]; expected_session: string | null; scope?: { instruments: number; stocks: number; funds_and_etfs: number; rule: string }; disclaimer: string };
 type FoundInstrument = { id: string; symbol: string; display_name: string; venue: string; currency: string };
 type DataSource = { name: string; label: string; available: boolean; enabled: boolean };
 type DataSourceSettings = { selected_provider: string | null; sources: DataSource[] };
@@ -110,6 +110,7 @@ const WatchRow = memo(function WatchRow({ row, selected, onSelect, onToggleStar 
 function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChanged }: { workspace: WatchWorkspace; initialQuery: string; searchNonce: number; focus?: WatchFocus; onAlertsChanged?: () => void }) {
   const [universe, setUniverse] = useState<UniverseRow[]>([]);
   const [universeSession, setUniverseSession] = useState<string | null>(null);
+  const [scope, setScope] = useState<{ instruments: number; stocks: number; funds_and_etfs: number; rule: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -146,6 +147,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
       const result = await apiRequest<Universe>('/market-data/universe');
       setUniverse(result.instruments);
       setUniverseSession(result.expected_session);
+      setScope(result.scope ?? null);
       setError(null);
     } catch (e) { setError(messageOf(e)); } finally { setLoading(false); }
   }, []);
@@ -316,7 +318,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
       <div className="watch-strip" role="status">
         <span className={`watch-status watch-status-${status}`}>● {statusLabel}</span>
         {universeSession && <span title="Latest completed NSE session">session <b>{universeSession}</b></span>}
-        <span title={`${universe.length} in the master list`}><b>{shown.length}</b> symbols{shown.length < universe.length ? ` of ${universe.length}` : ''}</span>
+        <span title={scope?.rule ?? `${universe.length} in the master list`}><b>{shown.length}</b> instruments{shown.length < universe.length ? ` of ${universe.length}` : ''}{scope ? ` (${scope.stocks} stocks + ${scope.funds_and_etfs} funds/ETFs)` : ''}</span>
         <span><b>{stats.ticking}</b> live</span>
         <span className="positive">▲ <b>{stats.up}</b></span>
         <span className="negative">▼ <b>{stats.down}</b></span>

@@ -7,7 +7,7 @@ type Item = {
   symbol: string; instrument_id: string; class: string; rank: number | null; scores: Record<string, number | null>; checklist: string | null; checks_passed?: number | null; checks_total?: number | null;
   unknown_count?: number; unknown_ids?: string[]; fail_count?: number; timing: string | null; kind: string | null; reasons: string[]; class_if_unknown_checks_cleared: string | null;
 };
-type Resp = { enabled: boolean; shadow?: boolean; message?: string; as_of?: string | null; model_version?: string | null; counts?: Record<string, number>; items: Item[]; disclaimer: string };
+type Resp = { universe_rule?: string; enabled: boolean; shadow?: boolean; message?: string; as_of?: string | null; model_version?: string | null; counts?: Record<string, number>; items: Item[]; disclaimer: string };
 type Check = { id: string; stage: string; value: unknown; reason: string; result: 'pass' | 'fail' | 'unknown' };
 type Detail = { symbol: string; class: string; as_of: string; scores: Record<string, number | null>; reasons: string[]; checks: Check[]; checklist: string | null; timing: string | null; kind: string | null; class_if_unknown_checks_cleared: { class?: string; note?: string } | null };
 
@@ -91,6 +91,7 @@ export function Multibagger({ onOpen }: { onOpen?: (symbol: string) => void }) {
         <span className="ui-muted">long-term only · {data?.model_version ?? '…'}{data?.as_of ? ` · as of ${formatIST(data.as_of).replace(/, \d\d:\d\d IST$/, '')}` : ''}</span></header>
       {data?.shadow && !dismissed && <Banner tone="caution" onDismiss={() => { setDismissed(true); try { window.sessionStorage.setItem(DISMISS_KEY, '1'); } catch { /* per-session only */ } }}>Shadow mode: these results are computed every night and shown here for you to read, but no card, verdict or buy decision uses them yet.</Banner>}
       {data && <p className="mb-summary" role="status">{summary}</p>}
+      {data?.universe_rule && <p className="ui-muted">{data.universe_rule}</p>}
       {data?.message && items.length === 0 && <EmptyState>{data.message}</EmptyState>}
 
       <Tabs label="Class filter" items={classTabs} active={klass} onChange={setKlass} />

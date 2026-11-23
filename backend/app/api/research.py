@@ -907,7 +907,8 @@ def get_multibagger(
                       "failed_or_unknown": [f"{k['id']}: {k['reason']}" for k in (c.get("checks") or []) if k["result"] in ("fail", "unknown")][:8], "class_if_unknown_checks_cleared": (c.get("class_if_unknown_checks_cleared") or {}).get("class")})
     order = {"multibagger_candidate": 0, "quality_compounder": 1, "emerging": 2, "new_listing": 3, "watch": 4, "not_a_fit": 5, "not_tradable": 6, "avoid": 7, "not_assessable": 8}
     items.sort(key=lambda i: (order[i["class"]], -(i["rank"] or 0), i["symbol"]))
-    return {"enabled": True, "shadow": shadow, "as_of": latest.isoformat(), "model_version": rows[0][0].model_version if rows else None, "counts": counts, "items": items[:limit], "disclaimer": DISCLAIMER}
+    return {"enabled": True, "shadow": shadow, "as_of": latest.isoformat(), "model_version": rows[0][0].model_version if rows else None, "counts": counts, "items": items[:limit],
+            "universe_rule": f"{len(rows)} stocks assessed (funds and ETFs excluded): the same stock universe as the Daily report; the Market watch lists more instruments because it includes funds and ETFs.", "disclaimer": DISCLAIMER}
 
 
 @router.get("/multibagger/{symbol}")
