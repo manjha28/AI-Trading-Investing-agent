@@ -216,3 +216,5 @@
 - Nexus v2 Phase 6b: NSE shareholding (with pledge) and filed results with filing dates (flags off in code), emerging track, new listings, T from the quarters available, recall test, migration 0067.
 - 22 Nov end-to-end fixes: stored daily report, Dhan holdings count as held, one IST formatter, tick-rounded prices, mobile nav, broker page grouping, crypto backtest dedupe (migration 0068).
 - Phase 6c/7: not_tradable and not_a_fit labels, emerging without the chart requirement, thesis-break alerts, NSE annual balance sheet and cash flow, stock verdict (flag stock_verdict_enabled, shadow nightly, migration 0069), shadow-mode pages.
+- Phase 7b: instrument kind (stock/fund) stored on the instrument row when the Dhan master syncs, so ETF/fund exclusion no longer depends on the master being loaded in the process (migration 0070).
+- Phase 7b: NIFTY 500 price-index backfill (Dhan IDX_I 19 first, Yahoo only for gaps), weekly forward-record job and hidden report page (#forward-record) over the shadow verdicts and classes (migration 0071), measured win-probability confidence module (model file added when built).

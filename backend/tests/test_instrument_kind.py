@@ -25,3 +25,51 @@ def test_an_unreachable_master_never_marks_anything_a_fund_and_keeps_the_previou
     ik._cache = (0.0, ik._cache[1])                   # expired
     assert ik.fund_symbols(loader=boom) == {"NIFTYBEES"}
     ik.reset_cache()
+
+
+# ---- the kind is stored on the instrument row (test data: a hand-made master and a throw-away sqlite file) ----
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.models import Base, Instrument
+
+
+def _inst(symbol, **kw):
+    return Instrument(symbol=symbol, display_name=symbol, asset_class="equity", venue="NSE", currency="INR", country="IN", timezone="Asia/Kolkata", created_at=datetime.now(timezone.utc), **kw)
+
+
+def test_sync_stores_fund_and_stock_and_leaves_unknown_unclassified(tmp_path):
+    eng = create_engine(f"sqlite:///{tmp_path}/k.db")
+    Base.metadata.create_all(eng)
+    with Session(eng) as db:
+        db.add_all([_inst("NIFTYBEES"), _inst("TCS"), _inst("NOTINMASTER")])
+        db.commit()
+        out = ik.sync_kinds(db, rows=MASTER)
+        kinds = {i.symbol: i.instrument_kind for i in db.query(Instrument)}
+    assert kinds == {"NIFTYBEES": "fund", "TCS": "stock", "NOTINMASTER": None} and out["updated"] == 2
+
+
+def test_a_fresh_process_without_the_master_still_excludes_a_known_etf(tmp_path):
+    db_file = tmp_path / "fresh.db"
+    eng = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(eng)
+    with Session(eng) as db:
+        db.add_all([_inst("NIFTYBEES"), _inst("TCS")])
+        db.commit()
+        ik.sync_kinds(db, rows=MASTER)
+    code = (
+        "import json; from sqlalchemy import create_engine; from sqlalchemy.orm import Session\n"
+        "from app.broker_adapters import DhanAdapter; from app.models import Instrument; from app.services import instrument_kind as ik\n"
+        f"assert DhanAdapter._scrip_master_cache is None\n"
+        f"eng = create_engine('sqlite:///{db_file}')\n"
+        "with Session(eng) as db:\n"
+        "    print(json.dumps({i.symbol: ik.is_fund(i) for i in db.query(Instrument)}))\n")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+                       env={**__import__("os").environ, "DATABASE_URL": "sqlite://"})
+    assert r.returncode == 0, r.stderr[-500:]
+    assert json.loads(r.stdout.strip().splitlines()[-1]) == {"NIFTYBEES": True, "TCS": False}

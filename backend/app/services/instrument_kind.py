@@ -59,7 +59,47 @@ def _warm_in_background() -> None:
 
 
 def is_fund(instrument: Any) -> bool:
+    """The kind stored on the instrument row (set when the master is synced) decides; only an unclassified row falls back to the in-memory master, so a fresh process never depends on it for a classified stock."""
+    if (getattr(instrument, "asset_class", None) or "") == "etf":
+        return True
+    kind = getattr(instrument, "instrument_kind", None)
+    if kind in ("fund", "stock"):
+        return kind == "fund"
     return (getattr(instrument, "symbol", "") or "").strip().upper() in fund_symbols()
+
+
+def sync_kinds(db: Any, *, rows: Any = None) -> dict[str, int]:
+    """Store 'fund' or 'stock' on every Indian NSE/BSE equity instrument found in the Dhan master (ISIN prefix INF = fund). Symbols not in the master keep their value (NULL stays NULL = unknown, never 'stock').
+    Returns counts. ``rows`` is the master (tests pass fixtures; production reads the loaded master)."""
+    from sqlalchemy import select
+
+    from app.models import Instrument
+    if rows is None:
+        from app.broker_adapters import DhanAdapter
+        cached = DhanAdapter._scrip_master_cache
+        if cached is None:
+            return {"updated": 0, "skipped_no_master": 1}
+        rows = cached[1]
+    kinds: dict[str, str] = {}
+    for r in rows:
+        if r.get("EXCH_ID") != "NSE" or r.get("SEGMENT") != "E":
+            continue
+        sym = (r.get("UNDERLYING_SYMBOL") or "").strip().upper()
+        isin = (r.get("ISIN") or "").strip().upper()
+        if not sym or not isin:
+            continue
+        if isin.startswith("INF"):
+            kinds[sym] = "fund"
+        elif sym not in kinds:
+            kinds[sym] = "stock"
+    updated = 0
+    for inst in db.scalars(select(Instrument).where(Instrument.country == "IN", Instrument.asset_class.in_(("equity", "etf")), Instrument.is_synthetic.is_(False))):
+        k = "fund" if inst.asset_class == "etf" else kinds.get((inst.symbol or "").strip().upper())
+        if k is not None and inst.instrument_kind != k:
+            inst.instrument_kind = k
+            updated += 1
+    db.commit()
+    return {"updated": updated, "funds": sum(1 for v in kinds.values() if v == "fund"), "stocks": sum(1 for v in kinds.values() if v == "stock")}
 
 
 def reset_cache() -> None:

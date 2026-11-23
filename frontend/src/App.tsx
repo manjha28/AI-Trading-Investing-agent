@@ -17,6 +17,7 @@ import { MarketWatch, type WatchFocus } from './pages/MarketWatch';
 import { OverviewPage } from './pages/Overview';
 import { PortfolioSetupPage } from './pages/PortfolioSetup';
 import { Research } from './pages/Research';
+import { ForwardRecordPage } from './pages/ForwardRecord';
 
 export default function App() {
   const workspace = useWorkspace();
@@ -285,7 +286,9 @@ export default function App() {
           </section>
         )}
 
-        {activeView === 'research' ? (
+        {typeof window !== 'undefined' && window.location.hash === '#forward-record' ? (
+          <ForwardRecordPage />
+        ) : activeView === 'research' ? (
           <Research focus={researchFocus} watchlist={workspace.watchlist} addInstrumentToWatchlist={workspace.addInstrumentToWatchlist} removeInstrumentFromWatchlist={workspace.removeInstrumentFromWatchlist} />
         ) : activeView === 'signals' ? (
           <SignalsWorkspace />

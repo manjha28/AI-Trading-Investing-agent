@@ -5,7 +5,7 @@ import { tickPrice } from '../lib/formatPrice';
 
 type Lens = { score: number | null; direction: string; facts: string[]; coverage: number; regime?: string };
 type Levels = { entry_status?: string; entry_zone?: { low: string; high: string } | null; stop?: string; targets?: { label: string; price: string; risk_reward?: number }[]; entry_label?: string } | null;
-type Horizon = { verdict: string; evidence_score: number | null; evidence?: { label: string } | null; confidence?: { line: string | null; band: string | null; validated: boolean } | null; reasons: string[]; veto: string | null;
+type Horizon = { verdict: string; evidence_score: number | null; evidence?: { label: string } | null; confidence?: { line: string | null; band: string | null; band_label?: string | null; tooltip?: string | null; expected_r?: number | null; validated: boolean } | null; reasons: string[]; veto: string | null;
   size: number | null; levels: Levels; grade: string | null; lenses: Record<string, Lens> };
 type Verdict = { enabled: boolean; shadow?: boolean; message?: string; symbol?: string; as_of?: string | null; headline?: { horizon: string; verdict: string; evidence: number } | null; horizons: Record<string, Horizon>;
   multibagger?: { class: string; checklist: string | null; timing: string | null; failed_or_unknown: string[] } | null; regime?: { regime: string | null; facts: string[] } | null; risks_and_events?: string[]; disclaimer: string };
@@ -45,7 +45,7 @@ export function StockVerdictPanel({ symbol }: { symbol: string }) {
               <tr key={h}>
                 <td>{HZ[h]}</td>
                 <td><b>{VERDICT[d.verdict] ?? d.verdict}</b>{d.veto ? <small> (veto: {d.veto.replace('_', ' ')})</small> : null}</td>
-                <td>{d.confidence?.line ?? d.evidence?.label ?? (d.evidence_score !== null ? `Evidence score ${Math.round(d.evidence_score)} (not yet validated)` : '—')}</td>
+                <td title={d.confidence?.tooltip ?? undefined}>{d.confidence?.line ? <>{d.confidence.line}{d.confidence.band_label ? <small> · {d.confidence.band_label}</small> : null}{d.confidence.expected_r != null ? <small> · expected {d.confidence.expected_r > 0 ? '+' : ''}{d.confidence.expected_r.toFixed(2)}R</small> : null}</> : (d.evidence?.label ?? (d.evidence_score !== null ? `Evidence score ${Math.round(d.evidence_score)} (not yet validated)` : '—'))}</td>
                 <td>{d.levels?.entry_zone ? `${tickPrice(d.levels.entry_zone.low)} – ${tickPrice(d.levels.entry_zone.high)}` : '—'}</td>
                 <td>{d.levels?.stop ? tickPrice(d.levels.stop) : '—'}</td>
                 <td>{t1 ? `${tickPrice(t1.price)}${t1.risk_reward ? ` · ${t1.risk_reward}R` : ''}` : '—'}</td>

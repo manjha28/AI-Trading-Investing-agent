@@ -200,8 +200,25 @@ def _recent_headlines(sections: dict[str, Any], now: Any, days: int) -> list[str
     return out
 
 
+def _win_confidence(h: str, card: dict[str, Any] | None, daily: Any, index_close: Any, regime: str | None, required_unknown: bool, mb: dict[str, Any] | None) -> dict[str, Any]:
+    """The measured win probability (win_confidence) for one horizon; the old evidence-score map (confidence_line) is no longer the confidence. Never raises: an error is an unavailable confidence, not a number."""
+    import logging
+
+    from app.services import gates_v2, win_confidence as wc
+    try:
+        has = daily is not None and len(daily) >= 200
+        med = None if not has else gates_v2.median_traded_value_crore(daily)[0]
+        out = wc.confidence_for_card(h, card=card, close=daily["close"] if has else None, high=daily["high"] if has else None, bench_close=index_close, regime=regime, median_traded_value_cr=med,
+                                     required_unknown=required_unknown, mb=mb)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("win_confidence_failed horizon=%s error_class=%s", h, type(exc).__name__)
+        out = {"available": False, "reason": "Confidence could not be computed.", "band": None, "line": None, "calibrated": None}
+    out.setdefault("validated", False)
+    return out
+
+
 def compose(*, sections: dict[str, Any], ev: dict[str, Any], mb: dict[str, Any] | None, daily: Any, bench: Any, regime: dict[str, Any], governance: list[dict[str, Any]] | None, now: Any,
-            delivery: Any = None, calibration: dict[str, Any] | None = None, cfg: VerdictConfig | None = None) -> dict[str, Any]:
+            delivery: Any = None, calibration: dict[str, Any] | None = None, cfg: VerdictConfig | None = None, index_close: Any = None) -> dict[str, Any]:
     """One stock, three horizons. ``ev`` is pipeline_v2.evaluate's output (levels, gates, timing, factor); ``mb`` the stored Phase 6 result (checks JSON)."""
     from app.services import research_confidence, stock_lenses as sl
     cfg = cfg or VerdictConfig()
@@ -243,7 +260,7 @@ def compose(*, sections: dict[str, Any], ev: dict[str, Any], mb: dict[str, Any] 
         d = decide(h, tech_ok=tech_ok, liquidity=liq, news=news, mb=mb, chart_ok=chart_ok, chart_reason=chart_reason, grade=grade, ready_to_buy=card.get("ready_to_buy") if have_card else None,
                    valuation_v=((mb or {}).get("scores") or {}).get("V"), ipo_base_ok=ipo_ok, cfg=cfg)
         e = evidence(h, lenses, setup, factor_pct, regime.get("regime"), d["unknown_veto"], cfg)
-        calib = confidence_line(h, e["score"], calibration, cfg)
+        calib = _win_confidence(h, card if have_card else None, daily, index_close if index_close is not None else bench, regime.get("regime"), bool(d["unknown_veto"]), mb)
         reasons = (d["reasons"] + [f for lens in ("chart", "fundamentals", "financial_trends") for f in lenses[lens].get("facts", [])[:1]])[:3]
         out_h[h] = {"verdict": d["verdict"], "veto": d["veto"], "reasons": reasons, "size": d["size"], "evidence": e, "confidence": calib, "grade": grade,
                     "levels": ({"entry_status": card.get("entry_status"), "entry_zone": card.get("entry_zone"), "planned_entry": card.get("planned_entry"), "stop": card.get("stop"), "targets": card.get("targets"),
@@ -298,7 +315,7 @@ def run_universe(db: Any, user_id: Any, *, now: Any = None, store: bool = True, 
             ev = pipeline_v2.evaluate(db, user_id, inst, sections, frame, now, bench=bench)
             row = db.scalar(select(MultibaggerAssessment).where(MultibaggerAssessment.instrument_id == inst.id, MultibaggerAssessment.user_id == user_id).order_by(MultibaggerAssessment.as_of.desc()).limit(1))
             mb = None if row is None else {**(row.checks or {}), "class": row.klass, "scores": {"Q": row.q, "G": row.g, "V": row.v, "T": row.t, "X": row.x}, "rank": row.rank}
-            res = compose(sections=sections, ev=ev, mb=mb, daily=gates_v2.drop_forming_bar(frame, now) if frame is not None and len(frame) else frame, bench=bench, regime=regime, governance=None, now=now, calibration=calibration)
+            res = compose(sections=sections, ev=ev, mb=mb, daily=gates_v2.drop_forming_bar(frame, now) if frame is not None and len(frame) else frame, bench=bench, regime=regime, governance=None, now=now, calibration=calibration, index_close=nifty)
             res["symbol"] = inst.symbol
             results.append(res)
             if store:

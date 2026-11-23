@@ -207,6 +207,7 @@ class Instrument(Base):
     option_type: Mapped[str | None] = mapped_column(String(4))
     is_synthetic: Mapped[bool] = mapped_column(default=False, nullable=False)
     relink_required: Mapped[bool] = mapped_column(default=False, nullable=False)
+    instrument_kind: Mapped[str | None] = mapped_column(String(8))  # 'stock' | 'fund' from the Dhan master ISIN at sync; NULL = not classified yet
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     provider_identifiers: Mapped[list["InstrumentProviderIdentifier"]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"
@@ -1224,3 +1225,4 @@ from app.models.multibagger import MultibaggerAssessment  # noqa: F401
 from app.models.listings import InstrumentListing  # noqa: F401
 from app.models.report_snapshot import DailyReportSnapshot  # noqa: F401
 from app.models.stock_verdict import StockVerdict  # noqa: F401
+from app.models.forward_record import ForwardRecordReport  # noqa: F401

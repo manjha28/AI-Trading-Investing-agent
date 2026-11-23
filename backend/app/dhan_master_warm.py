@@ -16,17 +16,31 @@ REFRESH_AFTER_SECONDS = 20 * 3600
 CHECK_EVERY_SECONDS = 3600
 
 
+def _store_kinds() -> None:
+    try:
+        from sqlalchemy.orm import Session
+
+        from app.db import engine
+        from app.services import instrument_kind
+        with Session(engine) as db:
+            logger.info("instrument_kind_sync %s", instrument_kind.sync_kinds(db))
+    except Exception:  # noqa: BLE001 - classification must never break the warm-up
+        logger.warning("instrument_kind_sync_failed", exc_info=True)
+
+
 def warm_once() -> str:
     """Download the master if there is none or it is older than 20h, and build its lookup index. Returns what it did."""
     cache = DhanAdapter._scrip_master_cache
     age = None if cache is None else time.monotonic() - cache[0]
     if age is not None and age < REFRESH_AFTER_SECONDS:
         DhanAdapter._tick_index()  # built once here, so the first live tick of an instrument never pays for it
+        _store_kinds()
         return "fresh"
     try:
         DhanAdapter._scrip_master(force=True)
         DhanAdapter._equity_lookup()
         DhanAdapter._tick_index()
+        _store_kinds()
         return "refreshed"
     except Exception:  # noqa: BLE001 - the previous copy (if any) keeps serving
         logger.warning("dhan_master_warm_failed", exc_info=True)

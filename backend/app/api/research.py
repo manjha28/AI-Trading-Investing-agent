@@ -933,6 +933,19 @@ def get_stock_verdict(
             "multibagger": any_row.get("multibagger"), "regime": any_row.get("regime"), "risks_and_events": any_row.get("risks_and_events"), "disclaimer": DISCLAIMER}
 
 
+@router.get("/forward-record", include_in_schema=False)
+def get_forward_record(
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Hidden (not in the API docs or the navigation): the latest weekly forward-record report from the owner's point-in-time shadow verdicts and classes. Owner-scoped, read-only."""
+    from app.services import forward_record
+    rep = forward_record.latest(db, _session.user_id)
+    if rep is None:
+        return {"available": False, "message": "No weekly forward-record report has been stored yet; the job runs weekly after the nightly shadow run.", "disclaimer": DISCLAIMER}
+    return {"available": True, **rep, "disclaimer": DISCLAIMER}
+
+
 @router.get("/fundamentals-coverage")
 def get_fundamentals_coverage(
     limit: int = Query(default=200, ge=1, le=1000),

@@ -150,6 +150,8 @@ def _blue_sky_review_once_a_day(now: datetime) -> None:
                 multibagger_loader.log_nightly(db, user_id)      # Phase 6: the engine always runs in shadow mode; the flag only decides whether results are shown or used
                 from app.services import stock_verdict
                 stock_verdict.log_nightly(db, user_id)           # Phase 7: the stock verdict, shadow mode whatever the flag says
+                from app.services import forward_record
+                forward_record.run_if_due(db, user_id)           # Phase 7b: weekly forward record of the shadow verdicts and classes (stores at most one report per 6 days)
     except Exception as exc:  # noqa: BLE001
         logger.warning("blue_sky_review_hook_failed error_class=%s", type(exc).__name__)
 
