@@ -237,3 +237,17 @@ def test_annual_balance_gap_fill_follows_the_same_rules_as_the_results(db):
     assert row.operating_cash_flow == Decimal("130") and row.total_assets == Decimal("900")                   # gaps filled
     assert row.field_sources["operating_cash_flow"]["source"] == "nse_results" and row.extra_metrics["cash"]["source"] == "nse_results" and row.filed_on == date(2026, 4, 20)
     assert nd.store_balance_cash(db, i.id, date(2026, 3, 31), nd.parse_balance_cash_xbrl(balance_xml(), date(2026, 3, 31)), date(2026, 4, 20), "consolidated", NOW) == "unchanged"
+
+
+def test_a_september_half_year_filing_gives_the_balance_sheet_and_a_six_month_cash_flow_that_never_lands_in_the_period_column(db):
+    x = balance_xml(end="2025-09-30", start="2025-04-01", cfo="60")
+    assert nd.parse_balance_cash_xbrl(x, date(2025, 9, 30)) == {"equity": 500, "assets": 900, "cash": 40, "fixed_assets": 300, "debt": 150}      # a 6-month flow is not a year's: no cfo with the annual window
+    b = nd.parse_balance_cash_xbrl(x, date(2025, 9, 30), (170, 195))
+    assert b["cfo"] == 60 and b["equity"] == 500
+    i = _inst(db)
+    db.add(InstrumentFundamental(instrument_id=i.id, period_type="quarterly", period_end=date(2025, 9, 30), currency="INR", source="nse_results", fetched_at=NOW, filed_on=date(2025, 11, 5)))
+    db.commit()
+    b["cfo_6m"] = b.pop("cfo")
+    assert nd.store_balance_cash(db, i.id, date(2025, 9, 30), b, date(2025, 11, 5), "consolidated", NOW, period_type="quarterly") == "updated"
+    row = db.scalar(select(InstrumentFundamental).where(InstrumentFundamental.period_type == "quarterly"))
+    assert row.total_equity == Decimal("500") and row.total_debt == Decimal("150") and row.operating_cash_flow is None and row.extra_metrics["cfo_6m"]["value"] == "60"

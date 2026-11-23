@@ -246,7 +246,7 @@ BALANCE_TAGS = {"equity": ("Equity", "EquityAttributableToOwnersOfParent"), "ass
 CASH_FLOW_TAGS = ("CashFlowsFromUsedInOperatingActivities", "NetCashFlowsFromUsedInOperatingActivities")
 
 
-def parse_balance_cash_xbrl(content: bytes, period_end: date) -> dict[str, Decimal] | None:
+def parse_balance_cash_xbrl(content: bytes, period_end: date, cf_days: tuple[int, int] = (350, 380)) -> dict[str, Decimal] | None:
     """Annual balance sheet (at the March year end) and operating cash flow for the year from a year-end filing: equity, total debt (current + non-current borrowings), cash, total assets, fixed assets, CFO.
     INR absolute. A figure the filing does not carry is simply absent (unknown), never zero. Debt is only reported when at least one borrowings line exists."""
     root = etree.fromstring(content)
@@ -267,7 +267,7 @@ def parse_balance_cash_xbrl(content: bytes, period_end: date) -> dict[str, Decim
         if key and c["end"] == period_end and c["start"] is None:                  # instant at the year end
             if key not in bal or BALANCE_TAGS[key].index(ln) == 0:
                 bal[key] = v
-        elif ln in CASH_FLOW_TAGS and c["end"] == period_end and c["start"] is not None and 350 <= (c["end"] - c["start"]).days <= 380 and cfo is None:
+        elif ln in CASH_FLOW_TAGS and c["end"] == period_end and c["start"] is not None and cf_days[0] <= (c["end"] - c["start"]).days <= cf_days[1] and cfo is None:
             cfo = v
     out: dict[str, Decimal] = {k: v for k, v in bal.items() if k in ("equity", "assets", "cash", "fixed_assets")}
     if "debt_noncurrent" in bal or "debt_current" in bal:
@@ -277,16 +277,16 @@ def parse_balance_cash_xbrl(content: bytes, period_end: date) -> dict[str, Decim
     return out or None
 
 
-def store_balance_cash(db: Any, instrument_id: Any, period_end: date, vals: dict[str, Decimal], filed_on: date | None, basis: str, now: datetime, conflicts_log: list[dict[str, Any]] | None = None) -> str:
+def store_balance_cash(db: Any, instrument_id: Any, period_end: date, vals: dict[str, Decimal], filed_on: date | None, basis: str, now: datetime, conflicts_log: list[dict[str, Any]] | None = None, period_type: str = "annual") -> str:
     """Gap-fill the ANNUAL row with the NSE-filed balance sheet and cash flow: a missing value is filled; a value within 2% is confirmed; a value more than 2% apart is replaced by NSE's (the earlier value and
     its source are kept in the conflict log), exactly as for the P&L. Source order: Dhan (no statements) -> NSE -> Yahoo."""
     from sqlalchemy import select
 
     from app.models import InstrumentFundamental
-    row = db.scalar(select(InstrumentFundamental).where(InstrumentFundamental.instrument_id == instrument_id, InstrumentFundamental.period_type == "annual", InstrumentFundamental.period_end == period_end))
+    row = db.scalar(select(InstrumentFundamental).where(InstrumentFundamental.instrument_id == instrument_id, InstrumentFundamental.period_type == period_type, InstrumentFundamental.period_end == period_end))
     iso = now.isoformat()
     if row is None:
-        row = InstrumentFundamental(instrument_id=instrument_id, period_type="annual", period_end=period_end, currency="INR", source=SOURCE, fetched_at=now, statement_basis=basis, filed_on=filed_on, field_sources={}, extra_metrics=None)
+        row = InstrumentFundamental(instrument_id=instrument_id, period_type=period_type, period_end=period_end, currency="INR", source=SOURCE, fetched_at=now, statement_basis=basis, filed_on=filed_on, field_sources={}, extra_metrics=None)
         db.add(row)
         created = True
     else:
@@ -311,7 +311,7 @@ def store_balance_cash(db: Any, instrument_id: Any, period_end: date, vals: dict
             continue
         fs[col] = prov(basis, iso)
         changed = True
-    for key in ("cash", "fixed_assets"):
+    for key in ("cash", "fixed_assets", "cfo_6m"):
         new = vals.get(key)
         if new is None:
             continue
@@ -476,8 +476,9 @@ def sync_results(db: Any, client: PoliteNse, instrument: Any, *, since: date, no
     for f in filings:
         row = have.get(("annual" if f["kind"] == "annual" else "quarterly", f["period_end"]))
         year_end = f["period_end"].month == 3
-        arow = have.get(("annual", f["period_end"]))
-        need_balance = year_end and not ((arow is not None) and (arow.field_sources or {}).get("total_equity", {}).get("source") == SOURCE)
+        half_year = f["period_end"].month in (3, 9)                      # March and September filings carry the statement of assets and liabilities and the cash flow (6 / 12 months)
+        arow = have.get(("annual", f["period_end"])) if year_end else have.get(("quarterly", f["period_end"]))
+        need_balance = half_year and not ((arow is not None) and (arow.field_sources or {}).get("total_equity", {}).get("source") == SOURCE)
         if row is not None and row.filed_on is not None and (row.field_sources or {}).get("revenue", {}).get("source") == SOURCE and not need_balance:
             out["skipped"] += 1                                       # already stored from this filing
             continue
@@ -504,14 +505,16 @@ def sync_results(db: Any, client: PoliteNse, instrument: Any, *, since: date, no
                 continue
             res = store_results(db, instrument.id, kind, f["period_end"], vals, f["filed_on"], basis, now)
             out[res] += 1
-        if year_end:                                                  # the March filing also carries the balance sheet and the year's cash flow
+        if half_year:                                                 # the March filing carries the balance sheet and the year's cash flow; the September filing the half-year balance sheet and 6-month cash flow
             try:
-                bal = parse_balance_cash_xbrl(client.document(f["xbrl"], now=now), f["period_end"])
+                bal = parse_balance_cash_xbrl(client.document(f["xbrl"], now=now), f["period_end"], (350, 380) if year_end else (170, 195))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("nse_balance_parse_failed symbol=%s error_class=%s", sym, type(exc).__name__)
                 bal = None
+            if bal and not year_end and "cfo" in bal:
+                bal = {**bal, "cfo_6m": bal.pop("cfo")}                     # a 6-month figure never goes in the per-period cash-flow column
             if bal:
-                key = "balance_" + store_balance_cash(db, instrument.id, f["period_end"], bal, f["filed_on"], basis, now)
+                key = "balance_" + store_balance_cash(db, instrument.id, f["period_end"], bal, f["filed_on"], basis, now, period_type="annual" if year_end else "quarterly")
                 out[key] = out.get(key, 0) + 1
     db.commit()
     return out

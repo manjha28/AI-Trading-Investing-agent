@@ -144,6 +144,8 @@ def _blue_sky_review_once_a_day(now: datetime) -> None:
         from app.services import multibagger_loader, price_crosscheck, shadow_outcomes
         with Session(engine) as db:
             price_crosscheck.log_nightly(db)          # Dhan vs NSE bhavcopy closes: flags stocks off by more than 1% (excluded from backtests)
+            from app.services import delivery_ingest
+            delivery_ingest.log_nightly(db)           # Phase 7b: delivery % from the NSE full bhavcopy (last 5 sessions, tracked symbols)
             for user_id in db.scalars(select(User.id).where(User.email_verified.is_(True))).all():
                 _start_nse_nightly(user_id)               # NSE shareholding + filed results (flags off in code, on in the owner's .env); its own slow, polite thread
                 shadow_outcomes.log_review(db, user_id)
