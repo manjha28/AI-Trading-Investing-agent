@@ -80,3 +80,27 @@ describe('Crypto watch looks and behaves like the equity watch', () => {
     expect(strip === null || strip instanceof HTMLElement).toBe(true);
   });
 });
+
+describe('Crypto watch refresh', () => {
+  it('asks only for contracts quoted since the newest one it holds and merges the changes into the table', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: string[] = [];
+    const first = markets.items.map((m, i) => ({ ...m, quote_time: `2026-11-23T10:00:0${i}+00:00` }));
+    apiRequest.mockImplementation((path: string) => {
+      if (path.includes('/crypto-delta/feed')) return Promise.resolve({ available: true, wanted: true, state: 'connected', connected: true, last_event_at: null });
+      if (path.includes('/delta-research/markets')) {
+        calls.push(path);
+        return Promise.resolve(path.includes('since=') ? { items: [{ ...first[0], last_price: '10.5', quote_time: '2026-11-23T10:00:09+00:00' }] } : { items: first });
+      }
+      return Promise.resolve({});
+    });
+    render(<CryptoWatch symbol="AAAUSD" />);
+    await screen.findByText('BBBUSD');
+    await vi.advanceTimersByTimeAsync(1500);
+    await waitFor(() => expect(screen.getByText('10.5')).toBeTruthy());
+    expect(calls[0]).not.toContain('since=');
+    expect(calls.some((c) => c.includes('since=2026-11-23T10%3A00%3A02%2B00%3A00'))).toBe(true);     // the newest quote_time among the full load
+    expect(screen.getByText('BBBUSD')).toBeTruthy();                                                   // unchanged contracts stay in the table
+    vi.useRealTimers();
+  });
+});

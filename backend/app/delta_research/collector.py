@@ -35,7 +35,7 @@ MAX_SUBSCRIBERS = 32
 SUBSCRIBER_QUEUE_SIZE = 256
 WRITE_QUEUE_SIZE = 128
 PRODUCT_REFRESH_SECONDS = 6 * 60 * 60
-TICK_FLUSH_SECONDS = 1
+TICK_FLUSH_SECONDS = 0.5
 
 
 def reconnect_delay(consecutive_failures: int) -> float:
@@ -102,6 +102,8 @@ class DeltaPublicCollector:
         self._last_health_write_at = 0.0
         self._started = False
         self._latest_ticks: dict[str, dict[str, Any]] = {}
+        self._latest_trades: dict[str, dict[str, Any]] = {}
+        self._trade_seen: dict[str, float] = {}
 
     async def start(self) -> None:
         if self._started:
@@ -320,6 +322,7 @@ class DeltaPublicCollector:
                         "payload": {
                             "channels": [
                                 {"name": "ticker", "symbols": symbols},
+                                {"name": "trades", "symbols": symbols},
                                 {
                                     "name": "candlestick_1m",
                                     "symbols": ["perpetual_futures"],
@@ -385,6 +388,12 @@ class DeltaPublicCollector:
                 self._latest_ticks[symbol] = message     # only the newest tick per contract is kept; a batch writer merges them into the stored quotes (cheap, and bounded)
                 await self._mark_event()
             return
+        if message_type == "trades":
+            symbol = str(message.get("sy") or "")
+            if symbol and message.get("p") is not None:
+                self._latest_trades[symbol] = message     # the newest trade per contract wins; flushed in one write
+                await self._mark_event()
+            return
         if message_type != "candlestick_1m":
             return
         symbol = str(message.get("sy") or "")
@@ -409,11 +418,12 @@ class DeltaPublicCollector:
                 await asyncio.wait_for(self._stop.wait(), timeout=TICK_FLUSH_SECONDS)
             except TimeoutError:
                 pass
-            if not self._latest_ticks:
+            if not self._latest_ticks and not self._latest_trades:
                 continue
             rows, self._latest_ticks = list(self._latest_ticks.values()), {}
+            trades, self._latest_trades = self._latest_trades, {}
             try:
-                await asyncio.to_thread(self._persist_ticks, rows)
+                await asyncio.to_thread(self._persist_ticks, rows, trades)
             except (OSError, RuntimeError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
                 await self._record_failure(exc, "storage")
 
@@ -425,9 +435,15 @@ class DeltaPublicCollector:
         except (OSError, sqlite3.Error, RuntimeError):
             return []
 
-    def _persist_ticks(self, rows: list[dict[str, Any]]) -> None:
+    def _persist_ticks(self, rows: list[dict[str, Any]], trades: dict[str, dict[str, Any]] | None = None) -> None:
+        now_m, trades = time.monotonic(), trades or {}
+        for symbol in trades:
+            self._trade_seen[symbol] = now_m
+        recent = frozenset(s for s, seen in self._trade_seen.items() if now_m - seen < 10)
         with self._write_lock, DeltaResearchStore(self.path) as store:
-            store.save_live_ticks(rows, datetime.now(timezone.utc), "delta_public_ws_ticker")
+            store.save_live_ticks(rows, datetime.now(timezone.utc), "delta_public_ws_ticker", recent)
+            if trades:
+                store.save_live_trades(trades, datetime.now(timezone.utc), "delta_public_ws_trades")
 
     async def _writer_loop(self) -> None:
         while not self._stop.is_set() or not self._write_queue.empty():

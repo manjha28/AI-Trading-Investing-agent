@@ -228,3 +228,4 @@
 - Delta live execution (owner-approved, off by default): 1 contract max, leverage min(25x, exchange max), three-layer arming, guard-rails, kill switch, audit; Delta paper tests can execute live only when armed
 - Crypto watch is a sortable watchlist table (last, 24h %, range, volume, open interest, funding, mark, bid/ask, stars); feed pause/resume switch (stored, survives restarts); Dhan and Delta labelled read + order execution (orders only when armed)
 - Crypto watch: live v2/ticker frames are stored (batched every second) so prices tick in seconds and flash green/red; watch refreshes every 2 s; Delta live-execution deployment flag switched on at the owner's request (arming and per-test switch still required)
+- Crypto watch: Delta trades channel drives the last price per trade (flushed every 0.5 s), the page refreshes every second and fetches only changed contracts

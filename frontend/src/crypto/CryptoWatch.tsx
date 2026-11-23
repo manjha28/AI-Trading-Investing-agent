@@ -5,7 +5,7 @@ import { messageOf, type Market } from './cryptoApi';
 
 type Mode = 'all' | 'watchlist' | 'gainers' | 'losers';
 type SortKey = 'symbol' | 'last' | 'chg' | 'chgPct' | 'volume' | 'oi' | 'funding';
-const POLL_MS = 2_000;
+const POLL_MS = 1_000;
 const STALE_AFTER_S = 90;
 
 export const num = (value: string | null | undefined): number | null => { if (value === null || value === undefined || value === '') return null; const n = Number(value); return Number.isFinite(n) ? n : null; };
@@ -74,10 +74,22 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
   const [starred, setStarred] = useState<string[]>(() => { try { return JSON.parse(window.localStorage.getItem('crypto.watchlist') ?? '[]') as string[]; } catch { return []; } });
   const [, setTick] = useState(0);
 
+  const newest = useRef('');
   const load = useCallback(async () => {
     try {
-      const result = await apiRequest<{ items: Market[] }>('/delta-research/markets?limit=500&slim=true');
-      setMarkets(result.items); setError(null);
+      // After the first full load only the contracts quoted since the newest one we hold come back, so a one-second refresh stays small.
+      const since = newest.current ? `&since=${encodeURIComponent(newest.current)}` : '';
+      const result = await apiRequest<{ items: Market[] }>(`/delta-research/markets?limit=500&slim=true${since}`);
+      const items = Array.isArray(result?.items) ? result.items : [];
+      for (const m of items) if (m.quote_time && m.quote_time > newest.current) newest.current = m.quote_time;
+      setMarkets((cur) => {
+        if (!since) return items;
+        if (items.length === 0) return cur;
+        const byId = new Map(cur.map((m) => [m.product_id, m]));
+        for (const m of items) byId.set(m.product_id, m);
+        return [...byId.values()];
+      });
+      setError(null);
     } catch (e) { setError(messageOf(e)); } finally { setLoading(false); }
   }, []);
   useEffect(() => {
@@ -130,8 +142,8 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
     }
     return { up, down, vol, oi, ticking };
   }, [live, rows]);  // eslint-disable-line react-hooks/exhaustive-deps
-  const newest = live.reduce((latest, m) => (m.quote_time && m.quote_time > latest ? m.quote_time : latest), '');
-  const age = newest ? Math.max(0, Math.round((Date.now() - new Date(newest).getTime()) / 1000)) : null;
+  const newestQuote = live.reduce((latest, m) => (m.quote_time && m.quote_time > latest ? m.quote_time : latest), '');
+  const age = newestQuote ? Math.max(0, Math.round((Date.now() - new Date(newestQuote).getTime()) / 1000)) : null;
   const status = !wanted ? 'paused' : age === null ? 'connecting' : age > STALE_AFTER_S ? 'stale' : 'active';
   const label = status === 'active' ? 'LIVE' : status === 'paused' ? 'FEED PAUSED' : status === 'stale' ? 'STALE' : 'CONNECTING';
   const sortBy = (key: SortKey) => setSort((s) => (s.key === key ? { key, dir: (s.dir * -1) as 1 | -1 } : { key, dir: key === 'symbol' ? 1 : -1 }));

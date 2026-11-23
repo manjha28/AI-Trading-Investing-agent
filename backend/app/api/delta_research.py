@@ -58,11 +58,12 @@ def delta_research_markets(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0, le=100_000),
     slim: bool = Query(default=False),
+    since: str = Query(default="", max_length=40),
     _: UserSession = Depends(require_verified_session),
 ) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     with _read_store() as store:
-        return store.list_products(search, limit, offset, slim) | {"disclaimer": DISCLAIMER}
+        return store.list_products(search, limit, offset, slim, since or None) | {"disclaimer": DISCLAIMER}
 
 
 @router.get("/markets/{product_id}")
