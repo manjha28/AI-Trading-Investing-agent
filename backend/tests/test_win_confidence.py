@@ -65,7 +65,7 @@ def test_a_required_unknown_input_halves_the_evidence():
 def test_the_line_and_tooltip_state_the_number_the_base_rate_and_the_sample():
     b = {"setup": "pullback", "regime": "uptrend"}
     s = wc.score("swing", b, _model(_setups([(b, 40, 80)]), 0.30))
-    assert s["line"].startswith("Confidence ") and "(avg setup 30%)" in s["line"] and s["line"].endswith("based on 120 similar past setups")
+    assert s["line"].startswith("Measured win rate ") and "(avg setup 30%)" in s["line"] and s["line"].endswith("based on 120 similar past setups")
     assert "80% interval" in s["tooltip"] and "net R" in s["tooltip"]
 
 

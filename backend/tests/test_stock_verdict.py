@@ -112,7 +112,7 @@ TABLE = {"horizons": {"swing": {"validated": True, "buckets": [
 
 def test_a_confidence_line_needs_a_validated_map_100_setups_and_a_net_r_interval_above_zero():
     ok = sv.confidence_line("swing", 61.0, TABLE)
-    assert ok["line"] == "Confidence 58%: T1 before stop in 58% of 418 similar past setups" and ok["band"] == "Medium" and ok["calibrated"] == 58
+    assert ok["line"] == "Measured win rate 58%: T1 before stop in 58% of 418 similar past setups" and ok["band"] == "Medium" and ok["calibrated"] == 58
     assert sv.confidence_line("swing", 30.0, TABLE)["line"] is None                       # the interval includes zero
     assert sv.confidence_line("swing", 85.0, TABLE)["line"] is None                       # only 60 setups
     assert sv.confidence_line("positional", 61.0, TABLE)["validated"] is False and sv.confidence_line("positional", 61.0, TABLE)["band"] is None

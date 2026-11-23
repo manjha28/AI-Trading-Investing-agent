@@ -834,7 +834,7 @@ def get_fundamentals_gaps(
 @router.get("/daily-report")
 def get_daily_report(
     request: Request,
-    bucket: str | None = Query(default=None, pattern="^(buy|setup_waiting|radar|hold|no_new_entry|not_enough_data)$"),
+    bucket: str | None = Query(default=None, pattern="^(buy|setup_waiting|radar|hold|no_new_entry|stale_data|not_enough_data)$"),
     limit: int | None = Query(default=None, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     _session: UserSession = Depends(require_verified_session),

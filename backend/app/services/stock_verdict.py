@@ -161,7 +161,7 @@ def confidence_line(horizon: str, e: float, table: dict[str, Any] | None = None,
             if b["n"] >= cfg.min_bucket_setups and ci[0] is not None and ci[0] > 0:
                 p = float(b["hit_rate"])
                 band = "High" if p >= cfg.bands[0] / 100 else "Medium" if p >= cfg.bands[1] / 100 else "Low"
-                return {"calibrated": round(p * 100), "band": band, "validated": True, "line": f"Confidence {p:.0%}: T1 before stop in {p:.0%} of {b['n']} similar past setups"}
+                return {"calibrated": round(p * 100), "band": band, "validated": True, "line": f"Measured win rate {p:.0%}: T1 before stop in {p:.0%} of {b['n']} similar past setups"}
             return {"calibrated": None, "band": None, "validated": True, "line": None}
     return {"calibrated": None, "band": None, "validated": True, "line": None}
 

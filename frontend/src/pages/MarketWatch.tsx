@@ -1,3 +1,4 @@
+import { formatISTDate } from '../lib/formatIST';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiRequestError, apiRequest } from '../api';
 import { DayRange } from '../components/DayRange';
@@ -97,10 +98,10 @@ const WatchRow = memo(function WatchRow({ row, selected, onSelect, onToggleStar 
       <td className={`watch-num ${tone(row.chgPct)}`}>{signed(row.chgPct, '%')}</td>
       <td className="watch-range" aria-label="Day range"><DayRange low={row.lo} high={row.hi} last={row.ltp} /></td>
       <td className="watch-num">{compact(row.vol)}</td>
-      <td className={`watch-num watch-age ${!row.live && (row.sessions_behind ?? 0) >= 2 ? 'watch-stale' : ''}`}>
+      <td className={`watch-num watch-age ${!row.live && row.stale ? 'watch-stale' : ''}`}>
         {row.live && row.tickAt ? new Date(row.tickAt).toLocaleTimeString('en-IN', { hour12: false }) : row.last_close_date ?? '—'}
         {row.live_feed === false && !row.live && <small title="Not on the Dhan live feed: shows the latest stored close">no live feed</small>}
-        {!row.live && row.last_close_date && (row.sessions_behind ?? 0) >= 1 && <small>{(row.sessions_behind ?? 0) >= 2 ? 'stale' : 'prior close'}</small>}
+        {!row.live && row.last_close_date && row.stale && <small>stale</small>}
       </td>
     </tr>
   );
@@ -209,11 +210,13 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
   const noClose = rows.filter((r) => r.ltp === null).map((r) => r.symbol);
   const stats = useMemo(() => ({
     ticking: shown.filter((r) => r.live).length,
-    up: shown.filter((r) => (numeric(r.chgPct) ?? 0) > 0).length,
-    down: shown.filter((r) => (numeric(r.chgPct) ?? 0) < 0).length,
-    missing: rows.filter((r) => !r.live && (r.last_close === null || (r.sessions_behind ?? 0) >= 2)).length,
-    stale: rows.filter((r) => !r.live && (r.sessions_behind ?? 0) >= 2).length,
-  }), [rows]);
+    // advance/decline counts use CURRENT closes only: a stale close (the API's own `stale` flag) says nothing about today
+    up: shown.filter((r) => (r.live || !r.stale) && (numeric(r.chgPct) ?? 0) > 0).length,
+    down: shown.filter((r) => (r.live || !r.stale) && (numeric(r.chgPct) ?? 0) < 0).length,
+    excluded: shown.filter((r) => !r.live && r.stale && r.last_close !== null).length,
+    staleAsOf: shown.filter((r) => !r.live && r.stale && r.last_close_date).map((r) => r.last_close_date as string).sort().pop() ?? null,
+    missing: rows.filter((r) => !r.live && r.stale).length,          // the same flag the API reports: header, button and rows can no longer disagree
+  }), [rows, shown]);
 
   const selected = rows.find((r) => r.instrument_id === selectedId) ?? null;
 
@@ -246,7 +249,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
   // Off-hours the table can only show what is stored. This fetches the last sessions' real daily closes for
   // symbols that have none (3 at a time), then reloads the universe. Nothing is estimated.
   async function fillMissingCloses() {
-    const targets = universe.filter((u) => u.last_close === null || (u.sessions_behind ?? 0) >= 2 || u.reason?.startsWith('previous-session'));
+    const targets = universe.filter((u) => u.stale);                  // exactly the rows the API marks stale
     setFill({ done: 0, total: targets.length });
     const end = new Date();
     const start = new Date(end.getTime() - 12 * 86_400_000);
@@ -319,7 +322,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
         <span className="negative">▼ <b>{stats.down}</b></span>
         {noClose.length > 0 && <span className="watch-missing" title="No stored or live close exists for these, so they have no price or change">+ {noClose.length} without a current close ({noClose.slice(0, 6).join(', ')}{noClose.length > 6 ? ', …' : ''})</span>}
         {stats.missing > 0 && <span className="watch-missing">{stats.missing} need a refreshed close</span>}
-        {stats.stale > 0 && <span className="watch-missing" title="Last stored close is two or more sessions old; the background job refreshes these">{stats.stale} stale</span>}
+        {stats.excluded > 0 && <span className="watch-missing" title="These closes are older than the last completed session, so they are left out of ▲ and ▼">{stats.excluded} stale closes not counted in ▲ ▼{stats.staleAsOf ? ` (as of ${formatISTDate(stats.staleAsOf)})` : ''}</span>}
         <span className="watch-note">NSE · Dhan live feed · decision support, not investment advice</span>
       </div>
       {(error || streamError || (message && status !== 'active')) && <p className="alerts-notice" role="alert">{error ?? streamError ?? message}</p>}

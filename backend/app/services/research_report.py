@@ -6,7 +6,7 @@ long-term only. Intraday is a separate system. Missing or stale research is repo
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -22,8 +22,8 @@ from app.services.research_levels import PARAMS
 
 HORIZONS = tuple(PARAMS)            # swing, positional, long_term
 STALE_AFTER = timedelta(hours=40)   # a nightly run missed by more than a day is flagged, not trusted silently
-BUCKETS = ("buy", "radar", "hold", "no_new_entry", "not_enough_data")
-BUCKETS_V2 = ("buy", "setup_waiting", "radar", "hold", "no_new_entry", "not_enough_data")      # Nexus v2: "Ready to buy" holds only in-band / enter-now cards
+BUCKETS = ("buy", "radar", "hold", "no_new_entry", "stale_data", "not_enough_data")
+BUCKETS_V2 = ("buy", "setup_waiting", "radar", "hold", "no_new_entry", "stale_data", "not_enough_data")      # Nexus v2: "Ready to buy" holds only in-band / enter-now cards
 
 
 def held_details(db: Session, user_id: UUID) -> dict[str, dict[str, Any]]:
@@ -113,10 +113,15 @@ def v2_bucket(bucket: str, recs: dict[str, str | None], level_sets: dict[str, An
 
 
 def classify(recs: dict[str, str | None], held: bool, fresh: bool, has_range: bool = True) -> tuple[str, str]:
-    """-> (bucket, plain-language action). ``recs`` maps horizon -> final recommendation."""
+    """-> (bucket, plain-language action). ``recs`` maps horizon -> final recommendation.
+
+    Two different situations that used to share "not enough data" are now separate: ``stale_data`` (the research or the stored close is not current, so
+    nothing is said until it is refreshed) and ``not_enough_data`` (the data is current but too thin for any horizon to give a call)."""
     values = [recs.get(h) for h in HORIZONS]
-    if not fresh or all(v in (None, "INSUFFICIENT_EVIDENCE") for v in values):
-        return "not_enough_data", ("Keep holding; research data is not current enough to say more." if held else "No call: research data is missing or not current.")
+    if not fresh:
+        return "stale_data", ("Not current: keep holding; nothing newer to say until the close and the research are refreshed." if held else "Not current: no call until the close and the research are refreshed.")
+    if all(v in (None, "INSUFFICIENT_EVIDENCE") for v in values):
+        return "not_enough_data", ("Keep holding; the stored data is too thin for a call." if held else "No call: the stored data is too thin for any horizon.")
     if "BUY" in values and not has_range:
         return "radar", "On radar: a buy signal exists but no entry range can be determined yet. It is rechecked more often than other stocks."
     if "BUY" in values:
@@ -126,6 +131,34 @@ def classify(recs: dict[str, str | None], held: bool, fresh: bool, has_range: bo
             return "hold", "In your portfolio: keep holding, but make no new purchase."
         return "hold", "In your portfolio: keep holding."
     return "no_new_entry", "Do not make a new entry now."
+
+
+def last_completed_session(now: datetime) -> date:
+    """The newest NSE session whose daily candle should be published: today after 15:45 IST on a trading day, otherwise the previous trading day."""
+    from datetime import time as _t, timedelta as _td
+    from zoneinfo import ZoneInfo
+
+    from app.config import NSE_NON_TRADING_DATES
+    local = now.astimezone(ZoneInfo("Asia/Kolkata"))
+    day = local.date()
+    trading = lambda d: d.weekday() < 5 and d not in NSE_NON_TRADING_DATES  # noqa: E731
+    if not trading(day) or local.time() < _t(15, 45):
+        day -= _td(days=1)
+        while not trading(day):
+            day -= _td(days=1)
+    return day
+
+
+def last_close_dates(db: Session, instrument_ids: list[Any]) -> dict[Any, date]:
+    """Session date of each instrument's newest REAL daily bar (any real source), in India time."""
+    from zoneinfo import ZoneInfo
+
+    from app.models import MarketBar
+    if not instrument_ids:
+        return {}
+    ist = ZoneInfo("Asia/Kolkata")
+    rows = db.execute(select(MarketBar.instrument_id, func.max(MarketBar.timestamp)).where(MarketBar.instrument_id.in_(instrument_ids), MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False)).group_by(MarketBar.instrument_id)).all()
+    return {iid: (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).astimezone(ist).date() for iid, ts in rows}
 
 
 def _buy_conf(sections: dict[str, Any], horizon: str) -> dict[str, Any] | None:
@@ -153,7 +186,10 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
     held_info = held_details(db, user_id)
     held = {sym: d["quantity"] for sym, d in held_info.items()}
     rows: list[dict[str, Any]] = []
-    for instrument in user_universe(db, user_id):
+    universe = user_universe(db, user_id)
+    last_closes = last_close_dates(db, [i.id for i in universe])
+    completed = last_completed_session(now)
+    for instrument in universe:
         latest = research_pipeline.latest_brief(db, user_id, instrument.id)
         row: dict[str, Any] = {"instrument_id": str(instrument.id), "symbol": instrument.symbol, "name": instrument.display_name,
                                "held": instrument.symbol.upper() in held, "quantity": str(held[instrument.symbol.upper()]) if instrument.symbol.upper() in held else None,
@@ -169,7 +205,10 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
         stale = now - finished > STALE_AFTER or (sections.get("technicals") or {}).get("status") != "available"
         horizons = ((sections.get("assessment") or {}).get("horizons") or {})
         recs = {h: (horizons.get(h) or {}).get("recommendation") for h in HORIZONS}
-        bucket, action = classify(recs, row["held"], not stale, not is_radar(sections))
+        close_date = last_closes.get(instrument.id)
+        stale_close = close_date is not None and close_date < completed                        # the stored close is older than the last completed session: levels from it would be a guess
+        row["last_close_date"], row["stale_close"] = close_date.isoformat() if close_date else None, stale_close
+        bucket, action = classify(recs, row["held"], not stale and not stale_close, not is_radar(sections))
         level_sets = ((sections.get("levels") or {}).get("horizons") or {})
         if settings.levels_v2_active and v2_bucket(bucket, recs, level_sets) == "setup_waiting":
             bucket, action = "setup_waiting", "Set up, waiting: a buy signal and levels exist, but price is not in the buy band yet (see each card's entry label)."
@@ -177,15 +216,17 @@ def build_report(db: Session, user_id: UUID, now: datetime | None = None) -> dic
             graded = [h for h in HORIZONS if recs[h] == "BUY" and (_buy_conf(sections, h) or {}).get("grade")]
             if not graded:
                 bucket, action = "radar", "On radar: a buy signal exists, but no horizon passes the setup checks yet (Not ready); the failed checks are listed on the card."
-        if bucket == "not_enough_data":       # two different situations used to share one text: research that is not current, and current research whose every horizon lacks evidence
-            if stale:
-                why = (sections.get("technicals") or {}).get("message") or ((sections.get("market_data_recovery") or {}).get("latest_candle") or {}).get("reason") or f"the last research run finished more than {int(STALE_AFTER.total_seconds() // 3600)} hours ago"
-                row["not_enough_kind"], action = "not_current", f"Not current: {why}" + (" Keep holding; nothing newer to say." if row["held"] else "")
+        if bucket == "stale_data":
+            if stale_close and not stale:
+                why = f"the last stored close is {close_date.isoformat() if close_date else 'missing'}, older than the last completed session ({completed.isoformat()}); levels are not built from it"
             else:
-                blockers = _insufficient_reasons(sections, horizons)
-                row["not_enough_kind"], row["insufficient_reasons"] = "insufficient_evidence", blockers
-                action = "Insufficient evidence: " + ("; ".join(blockers[:3]) if blockers else "every horizon lacks enough stored data") + ("." if blockers else ".") + (" Keep holding." if row["held"] else "")
-        if settings.stock_verdict_enabled and bucket != "not_enough_data":      # Phase 7: with the flag on the buckets follow the stock verdict (Ready to buy = buy_now, Set up waiting = buy_on_trigger)
+                why = (sections.get("technicals") or {}).get("message") or ((sections.get("market_data_recovery") or {}).get("latest_candle") or {}).get("reason") or "the last research run is too old"
+            row["not_enough_kind"], action = "not_current", f"Not current: {why}" + (" Keep holding; nothing newer to say." if row["held"] else "")
+        elif bucket == "not_enough_data":
+            blockers = _insufficient_reasons(sections, horizons)
+            row["not_enough_kind"], row["insufficient_reasons"] = "insufficient_evidence", blockers
+            action = "Insufficient evidence: " + ("; ".join(blockers[:3]) if blockers else "every horizon lacks enough stored data") + ("." if blockers else ".") + (" Keep holding." if row["held"] else "")
+        if settings.stock_verdict_enabled and bucket not in ("not_enough_data", "stale_data"):      # Phase 7: with the flag on the buckets follow the stock verdict (Ready to buy = buy_now, Set up waiting = buy_on_trigger)
             verdicts = verdict_by_instrument.get(instrument.id) or {}
             if verdicts:
                 best = min(verdicts.values(), key=lambda v: ("buy_now", "buy_on_trigger").index(v) if v in ("buy_now", "buy_on_trigger") else 9)

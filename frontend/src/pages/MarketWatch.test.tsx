@@ -91,7 +91,7 @@ describe('MarketWatch · equities', () => {
     expect(ccc.getAttribute('title')).toBe('no stored daily close');
   });
 
-  it('never presents an old close as current: the ONGC case is labelled stale with its date, a one-session gap is "prior close"', async () => {
+  it('never presents an old close as current: every close the API flags stale is labelled stale and counted the same way in the header', async () => {
     mockApi();
     render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
     await screen.findByText('ONGC');
@@ -99,10 +99,10 @@ describe('MarketWatch · equities', () => {
     expect(within(ongc).getByText('2026-11-11')).toBeTruthy();
     expect(within(ongc).getByText('stale')).toBeTruthy();
     expect(ongc.getAttribute('title')).toContain('last stored close is 2026-11-11');
-    expect(within(screen.getByText('BBB').closest('tr')!).getByText('prior close')).toBeTruthy();
+    expect(within(screen.getByText('BBB').closest('tr')!).getByText('stale')).toBeTruthy();       // a one-session gap is stale too: the API flag decides
     expect(within(screen.getByText('AAA').closest('tr')!).queryByText('stale')).toBeNull();
-    expect(screen.getByText(/2 need a refreshed close/)).toBeTruthy(); // CCC (none) + ONGC (7 sessions); BBB is fine overnight
-    expect(screen.getByText('1 stale')).toBeTruthy();
+    expect(screen.getByText(/3 need a refreshed close/)).toBeTruthy(); // CCC (none) + BBB (1 session) + ONGC (7 sessions): the same stale flag the API sends
+    expect(screen.getByText(/2 stale closes not counted in ▲ ▼ \(as of 19 Nov 2026\)/)).toBeTruthy();   // advance/decline use current closes only
     expect(screen.getByText('2026-11-20', { selector: '.watch-strip b' })).toBeTruthy(); // the latest completed session
   });
 
@@ -257,12 +257,12 @@ describe('MarketWatch · equities', () => {
     expect(workspace.setActiveView).toHaveBeenCalledWith('market-data');
   });
 
-  it('refreshes closes for symbols with none or a genuinely stale one (not for a one-session gap), then reloads', async () => {
+  it('refreshes closes for exactly the rows the API marks stale, then reloads', async () => {
     const calls = mockApi();
     render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
     await screen.findByText('CCC');
-    fireEvent.click(screen.getByRole('button', { name: 'Load missing closes (2)' }));
-    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').map((c) => c.url.match(/instruments\/([^/]+)\//)?.[1]).sort()).toEqual(['id-CCC', 'id-ONGC']));
+    fireEvent.click(screen.getByRole('button', { name: 'Load missing closes (3)' }));
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').map((c) => c.url.match(/instruments\/([^/]+)\//)?.[1]).sort()).toEqual(['id-BBB', 'id-CCC', 'id-ONGC']));
     await waitFor(() => expect(calls.filter((c) => c.url.endsWith('/market-data/universe')).length).toBeGreaterThanOrEqual(2));
   });
 

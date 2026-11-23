@@ -83,7 +83,8 @@ def test_not_enough_data_is_split_into_not_current_and_insufficient_evidence(db,
     briefs = {stale.id: _brief({"swing": "BUY", "positional": "BUY", "long_term": "BUY"}, technicals="stale"), thin.id: _brief(insuff, annual=False)}
     monkeypatch.setattr(rr.research_pipeline, "latest_brief", lambda d, u, iid: briefs[iid])
     rep = rr.build_report(db, uid, NOW)
-    rows = {r["symbol"]: r for r in rep["buckets"]["not_enough_data"]}
+    assert [r["symbol"] for r in rep["buckets"]["stale_data"]] == ["STALECO"] and [r["symbol"] for r in rep["buckets"]["not_enough_data"]] == ["THINCO"]       # stale and thin are separate buckets
+    rows = {r["symbol"]: r for r in rep["buckets"]["stale_data"] + rep["buckets"]["not_enough_data"]}
     assert rows["STALECO"]["not_enough_kind"] == "not_current" and rows["STALECO"]["action"].startswith("Not current: Stored daily bars are stale")
     assert rows["THINCO"]["not_enough_kind"] == "insufficient_evidence" and "no annual statements stored" in rows["THINCO"]["action"] and rows["THINCO"]["insufficient_reasons"]
     assert rep["coverage"]["not_current"] == 1 and rep["coverage"]["insufficient_evidence"] == 1
@@ -120,3 +121,31 @@ def test_with_the_stock_verdict_flag_on_the_buckets_follow_the_verdicts(db, monk
     on = rr.build_report(db, uid, NOW)
     where = {r["symbol"]: b_ for b_, rows in on["buckets"].items() for r in rows}
     assert where["NOWCO"] == "buy" and where["TRIGCO"] == "setup_waiting" and where["NOCO"] == "no_new_entry"
+
+
+def test_a_stale_stored_close_marks_the_card_not_current_and_builds_no_levels(db, monkeypatch):
+    from datetime import datetime as dt, timezone as tz
+    from decimal import Decimal
+
+    from app.models import MarketBar
+    uid = _user(db)
+    old, current = _inst(db, "OLDCLOSE"), _inst(db, "FRESHCLOSE")
+    monkeypatch.setattr(rr, "user_universe", lambda d, u: [old, current])
+    for inst, day in ((old, 20), (current, 23)):
+        db.add(MarketBar(instrument_id=inst.id, interval="1d", timestamp=dt(2026, 11, day, tzinfo=tz.utc), open=Decimal(1), high=Decimal(1), low=Decimal(1), close=Decimal(1), volume=Decimal(1), source="dhan", retrieved_at=NOW, is_synthetic=False))
+    db.commit()
+    buy = {"swing": "BUY", "positional": "BUY", "long_term": "BUY"}
+    briefs = {old.id: _brief(buy), current.id: _brief(buy)}
+    monkeypatch.setattr(rr.research_pipeline, "latest_brief", lambda d, u, iid: briefs[iid])
+    after_close = dt(2026, 11, 23, 12, 0, tzinfo=tz.utc)                       # Mon 23 Nov 17:30 IST: the 23 Nov candle should be stored
+    rep = rr.build_report(db, uid, after_close)
+    stale = {r["symbol"]: r for r in rep["buckets"]["stale_data"]}
+    assert "OLDCLOSE" in stale and stale["OLDCLOSE"]["levels"] == {} and "2026-11-20" in stale["OLDCLOSE"]["action"] and "2026-11-23" in stale["OLDCLOSE"]["action"] and stale["OLDCLOSE"]["stale_close"] is True
+    assert "FRESHCLOSE" not in stale and rr.last_completed_session(dt(2026, 11, 23, 5, 0, tzinfo=tz.utc)).isoformat() == "2026-11-20"       # before 15:45 IST the last completed session is Friday
+
+
+def test_last_completed_session_skips_weekends_and_waits_for_the_candle():
+    from datetime import datetime as dt, timezone as tz
+    assert rr.last_completed_session(dt(2026, 11, 23, 11, 0, tzinfo=tz.utc)).isoformat() == "2026-11-23"
+    assert rr.last_completed_session(dt(2026, 11, 22, 11, 0, tzinfo=tz.utc)).isoformat() == "2026-11-20"
+    assert rr.last_completed_session(dt(2026, 11, 23, 10, 0, tzinfo=tz.utc)).isoformat() == "2026-11-20"           # 15:30 IST: the candle is not published yet
