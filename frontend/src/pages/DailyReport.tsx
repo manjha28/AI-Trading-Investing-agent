@@ -3,6 +3,8 @@ import { apiRequest } from '../api';
 import type { Instrument } from './researchTypes';
 import { formatIST } from '../lib/formatIST';
 import { tickPrice } from '../lib/formatPrice';
+import { bandText, cardState, rLabel } from '../lib/cardState';
+import { Chip, Sheet } from '../components/ui/kit';
 
 export type Levels = {
   status: string; reason?: string; entry_status?: string; selected_setup?: string; breakout_trigger?: string | null; stop_reason?: string; stop_method?: string; explanation?: string; direction?: string; technical_score?: number; market_regime?: string; risk_reward?: Record<string, number>;
@@ -113,7 +115,7 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
           {HORIZON_NAME[h]}<small>{on ? 'Buy' : REC_TEXT[rec ?? ''] ?? '—'}</small></button>;
       })}
     </div>
-    {levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${levels.entry_status === 'ENTER_NOW' ? 'rt-chip-ok' : 'rt-chip-warn'}`}>{levels.entry_label ?? (levels.entry_status === 'ENTER_NOW' ? 'In buy band' : 'Wait for entry')}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}
+    {levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${cardState(levels, row.last_close).kind === 'in_band' ? 'rt-chip-ok' : 'rt-chip-warn'}`} title={cardState(levels, row.last_close).reason ?? undefined}>{cardState(levels, row.last_close).label}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}
     {levels?.status === 'available' ? <Ladder levels={levels} /> : <p className="rt-note">{levels?.reason ?? 'No levels for this horizon.'}</p>}
     {levels?.status === 'available' && <p className="rt-note">Last close {inr(levels.reference_close)}{levels.prior_high_reference ? ` · prior high ${inr(levels.prior_high_reference)}` : ''} · {HORIZON_SPAN[active]}</p>}
     {levels?.status === 'available' && levels.event_gate && <p className="rt-note"><b>Event:</b> {levels.event_gate}</p>}
@@ -126,6 +128,84 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
       {levels?.explanation && <p className="rt-note">{levels.explanation}</p>}{levels?.derivation && <p className="rt-note"><b>Levels:</b> {levels.derivation.rule}</p>}</details>}
     <footer><small>Researched {when(row.researched_at)}</small><button type="button" className="rt-btn rt-ghost" onClick={() => onOpen(row)}>Full research →</button></footer>
   </article>;
+}
+
+type SortKey = 'score' | 'symbol' | 'distance';
+const SORT_LABEL: Record<SortKey, string> = { score: 'Confidence score shown on the card, highest first', symbol: 'Symbol, A to Z', distance: 'Distance from price to the buy band, nearest first' };
+type Filters = { horizon: string; held: boolean; inBand: boolean; band: string; sort: SortKey };
+
+/** Phones get the detail in a bottom sheet instead of a side panel. */
+function useIsPhone(): boolean {
+  const query = '(max-width: 640px)';
+  const get = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(query).matches;
+  const [phone, setPhone] = useState(get);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined;
+    const m = window.matchMedia(query); const on = () => setPhone(m.matches);
+    m.addEventListener('change', on); return () => m.removeEventListener('change', on);
+  }, []);
+  return phone;
+}
+
+function shownLevels(row: Row) { const h = displayedHorizon(row) ?? HORIZONS.find((x) => row.levels[x]?.status === 'available'); return { horizon: h, levels: h ? row.levels[h] ?? null : null }; }
+const distance = (row: Row): number => {
+  const { levels } = shownLevels(row); const close = Number(row.last_close ?? levels?.reference_close); const lo = Number(levels?.entry_zone?.low); const hi = Number(levels?.entry_zone?.high);
+  return [close, lo, hi].some(Number.isNaN) ? Number.POSITIVE_INFINITY : close < lo ? lo - close : close > hi ? close - hi : 0;
+};
+
+function ListRow({ row, selected, onSelect }: { row: Row; selected: boolean; onSelect: (row: Row) => void }) {
+  const { horizon, levels } = shownLevels(row);
+  const state = cardState(levels, row.last_close);
+  const conf = (horizon ? row.horizons[horizon]?.buy_confidence : null) ?? row.confidence;
+  return (
+    <li>
+      <button type="button" className={`dr-row${selected ? ' selected' : ''}`} aria-pressed={selected} onClick={() => onSelect(row)}>
+        <span className="dr-sym"><strong>{row.symbol}</strong><small>{row.name}</small></span>
+        <span className="dr-chips"><Chip status="buy" />{horizon && <small className="ui-muted">{HORIZON_NAME[horizon]}</small>}<Chip tone={state.tone} title={state.reason ?? state.label}>{state.short}</Chip>{row.held && <Chip tone="info" title={`You hold ${row.quantity}`}>Held: {row.quantity ? Number(row.quantity).toLocaleString('en-IN') : '—'}</Chip>}</span>
+        <span className="dr-nums"><span title="Entry band">{bandText(levels)}</span><span title="Stop">Stop {levels?.stop ? inr(levels.stop) : '—'}</span><span title="First target">{rLabel(levels) === '—' ? 'T1 —' : `T1 ${inr(levels?.targets?.[0]?.price)} · ${rLabel(levels)}`}</span></span>
+        <span className="dr-score" title={conf?.win_confidence?.line ?? undefined}>{conf ? (conf.kind === 'factor_v2' ? (conf.grade ?? '—') : Math.round(conf.score)) : '—'}</span>
+      </button>
+    </li>
+  );
+}
+
+function ReportList({ groups, onOpen }: { groups: { key: string; title: string; hint: string; rows: Row[] }[]; onOpen: (row: Row) => void }) {
+  const [filters, setFilters] = useState<Filters>({ horizon: 'all', held: false, inBand: false, band: 'any', sort: 'score' });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const phone = useIsPhone();
+  const all = groups.flatMap((g) => g.rows);
+  const visible = (rows: Row[]) => {
+    const kept = rows.filter((r) => (filters.horizon === 'all' || r.horizons[filters.horizon]?.recommendation === 'BUY') && (!filters.held || r.held)
+      && (!filters.inBand || cardState(shownLevels(r).levels, r.last_close).kind === 'in_band') && (filters.band === 'any' || ((displayedHorizon(r) ? r.horizons[displayedHorizon(r) as string]?.buy_confidence : null) ?? r.confidence)?.band === filters.band));
+    return filters.sort === 'symbol' ? [...kept].sort((a, b) => a.symbol.localeCompare(b.symbol)) : filters.sort === 'distance' ? [...kept].sort((a, b) => distance(a) - distance(b) || a.symbol.localeCompare(b.symbol)) : sortByDisplayedScore(kept);
+  };
+  const shown = groups.map((g) => ({ ...g, rows: visible(g.rows) }));
+  const flat = shown.flatMap((g) => g.rows);
+  const selected = flat.find((r) => r.instrument_id === selectedId) ?? (phone ? null : flat[0] ?? null);
+  const set = <K extends keyof Filters>(k: K, v: Filters[K]) => setFilters((f) => ({ ...f, [k]: v }));
+  return (
+    <div className="dr">
+      <div className="dr-filters" role="group" aria-label="Filter and sort the list">
+        <label>Horizon<select value={filters.horizon} onChange={(e) => set('horizon', e.target.value)}><option value="all">All</option>{HORIZONS.map((h) => <option key={h} value={h}>{HORIZON_NAME[h]}</option>)}</select></label>
+        <label>Confidence<select value={filters.band} onChange={(e) => set('band', e.target.value)}><option value="any">Any</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option></select></label>
+        <label><input type="checkbox" checked={filters.held} onChange={(e) => set('held', e.target.checked)} /> Held</label>
+        <label><input type="checkbox" checked={filters.inBand} onChange={(e) => set('inBand', e.target.checked)} /> In buy band</label>
+        <label>Sort by<select value={filters.sort} onChange={(e) => set('sort', e.target.value as SortKey)}>{(Object.keys(SORT_LABEL) as SortKey[]).map((k) => <option key={k} value={k}>{SORT_LABEL[k]}</option>)}</select></label>
+        <span className="ui-muted" role="status">{flat.length} of {all.length}</span>
+      </div>
+      <div className="dr-split">
+        <div className="dr-list" aria-label="Buy candidates">
+          {shown.map((g) => g.rows.length > 0 && (
+            <section key={g.key}><h3 className="dr-group">{g.title} <span className="ui-muted">{g.rows.length}</span><small>{g.hint}</small></h3>
+              <ul>{g.rows.map((r) => <ListRow key={r.instrument_id} row={r} selected={selected?.instrument_id === r.instrument_id} onSelect={(row) => setSelectedId(row.instrument_id)} />)}</ul></section>
+          ))}
+          {flat.length === 0 && <p className="rt-note">No stocks match these filters.</p>}
+        </div>
+        {!phone && selected && <div className="dr-detail" aria-label="Selected stock"><BuyCard key={selected.instrument_id} row={selected} onOpen={onOpen} /></div>}
+      </div>
+      {phone && <Sheet open={selected !== null && selectedId !== null} onClose={() => setSelectedId(null)} title={selected?.symbol ?? ''}>{selected && <BuyCard key={selected.instrument_id} row={selected} onOpen={onOpen} />}</Sheet>}
+    </div>
+  );
 }
 
 function CompactRow({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
@@ -161,7 +241,9 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
   const buys = tab === 'all' || tab === 'buy' ? report.buckets.buy : [];
   const waiting = tab === 'all' || tab === 'setup_waiting' ? (report.buckets.setup_waiting ?? []) : [];
   const hasWaiting = report.counts.setup_waiting !== undefined;
-  const allOthers = rows.filter((r) => r.bucket !== 'buy' && r.bucket !== 'setup_waiting');
+  const nonBuy = rows.filter((r) => r.bucket !== 'buy' && r.bucket !== 'setup_waiting');
+  const needs = nonBuy.filter((r) => r.bucket === 'not_enough_data');          // collapsed by default: the reason is on each row
+  const allOthers = tab === 'not_enough_data' ? nonBuy : nonBuy.filter((r) => r.bucket !== 'not_enough_data');
   const others = allOthers.slice(0, limit);
   const tiles: { key: Bucket; label: string; hint: string }[] = [
     { key: 'buy', label: 'Ready to buy', hint: hasWaiting ? 'in the band now' : 'with a range' }, ...(hasWaiting ? [{ key: 'setup_waiting' as Bucket, label: 'Set up, waiting', hint: 'levels set, price not in band' }] : []), { key: 'radar', label: 'Radar', hint: 'buy signal, no range yet' }, { key: 'hold', label: 'Hold', hint: 'in your portfolio' },
@@ -179,12 +261,12 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
     <div className="rt-tiles">{tiles.map((t) => <button key={t.key} type="button" className={`rt-tile rt-tile-${t.key}${tab === t.key ? ' active' : ''}`} onClick={() => setTab(tab === t.key ? 'all' : t.key)}><b>{report.counts[t.key] ?? 0}</b><span>{t.label}</span><small>{t.hint}</small></button>)}</div>
     <div className="rt-seg rt-seg-wide" role="tablist" aria-label="Filter">{TABS.filter((t) => t.key !== 'setup_waiting' || hasWaiting).map((t) => <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''} onClick={() => setTab(t.key)}>{t.label}</button>)}</div>
     {total === 0 && <div className="rt-card rt-empty-state"><h3>Nothing to report yet</h3><p>Add a stock to a watchlist or record a holding. It is researched automatically and appears here within a minute or two.</p></div>}
-    {buys.length > 0 && <><h3 className="rt-h">Ready to buy <small>highest confidence first, by the number shown on each card</small></h3><div className="rt-buy-grid">{sortByDisplayedScore(buys).map((r) => <BuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
-    {waiting.length > 0 && <><h3 className="rt-h">Set up, waiting <small>levels are set; price is not in the buy band yet</small></h3><div className="rt-buy-grid">{waiting.map((r) => <BuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
+    {(buys.length > 0 || waiting.length > 0) && <ReportList onOpen={open} groups={[{ key: 'buy', title: 'Ready to buy', hint: 'the price is in the band now', rows: buys }, { key: 'waiting', title: 'Set up, waiting', hint: 'levels are set; price is not in the buy band yet', rows: waiting }]} />}
     {others.length > 0 && <div className="rt-card rt-compact"><div className="rt-table-wrap"><table className="rt-table"><thead><tr><th>Stock</th><th>Portfolio</th><th>What to do</th><th title="Swing / Positional / Long-term">S · P · L</th><th className="r">Last close</th><th>Researched</th></tr></thead>
       <tbody>{others.map((r) => <CompactRow key={r.instrument_id} row={r} onOpen={open} />)}</tbody></table></div>
       {allOthers.length > limit && <p className="rt-note"><button type="button" className="rt-btn rt-ghost" onClick={() => setLimit(limit + 100)}>Show more ({allOthers.length - limit} remaining)</button></p>}
       <p className="rt-note"><span className="rt-dot rt-dot-BUY">B</span> buy <span className="rt-dot rt-dot-HOLD">H</span> hold <span className="rt-dot rt-dot-WAIT">W</span> wait <span className="rt-dot rt-dot-AVOID">A</span> avoid <span className="rt-dot rt-dot-none">–</span> no data</p></div>}
+    {tab !== 'not_enough_data' && needs.length > 0 && <details className="rt-card rt-compact rt-fold"><summary><b>Needs data ({needs.length})</b> · not enough stored evidence yet; the reason is on each row</summary><div className="rt-table-wrap"><table className="rt-table"><thead><tr><th>Stock</th><th>Portfolio</th><th>Why it needs data</th><th>S · P · L</th><th className="r">Last close</th><th>Researched</th></tr></thead><tbody>{needs.map((r) => <CompactRow key={r.instrument_id} row={r} onOpen={open} />)}</tbody></table></div></details>}
     <p className="rt-disclaimer">{report.disclaimer}</p>
   </section>;
 }
