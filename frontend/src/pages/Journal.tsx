@@ -1,3 +1,4 @@
+import { DhanReconciliation } from '../components/DhanReconciliation';
 import { useEffect, useId, useMemo, useState } from 'react';
 import {
   CalendarDays, ChevronLeft, ChevronRight, CircleDollarSign, Pencil, Plus, Search, Trash2, Upload, X,
@@ -387,6 +388,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
           <article className="journal-kpi"><span>Journal records</span><strong>{kpiAnalytics.trades_logged}</strong><small>{kpiAnalytics.fill_count} fills + {kpiAnalytics.manual_trade_count} manual = {kpiAnalytics.trades_logged} records</small><small>{kpiAnalytics.fifo_match_slices} FIFO match slices + {kpiAnalytics.manual_trade_count} manual records · {kpiAnalytics.matched_closed_trades} closed trades</small><small>{kpiAnalytics.real_open_positions} real open · {kpiAnalytics.unattributed_fill_rows} unattributable · {kpiAnalytics.expired_trades} expired · {kpiAnalytics.unmatched_fill_rows} unmatched</small><small>{kpiAnalytics.fill_reconciliation}</small></article>
         </section>
       )}
+      {journalCurrency === 'INR' && <details className="journal-recon"><summary>Reconcile with Dhan (Closed today vs the journal)</summary><DhanReconciliation /></details>}
 
       <div className="journal-main-grid">
         <section className="data-section journal-calendar-panel">

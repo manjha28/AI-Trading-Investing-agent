@@ -19,6 +19,7 @@ from app.master_bar_refresh import master_bar_refresh_loop
 from app.forward_test_scheduler import forward_test_loop
 from app.api.crypto_delta import router as crypto_delta_router
 from app.api.crypto_delta_live import router as crypto_delta_live_router
+from app.api.dhan_reconciliation import router as dhan_reconciliation_router
 from app.delta_research.collector import delta_research_manager
 from app.api.position_theses import router as position_theses_router
 from app.api.strategies import router as strategies_router
@@ -318,6 +319,7 @@ app.include_router(forward_tests_router, prefix="/api/v1")
 app.include_router(dhan_live_router, prefix="/api/v1")
 app.include_router(crypto_delta_router, prefix="/api/v1")
 app.include_router(crypto_delta_live_router, prefix="/api/v1")
+app.include_router(dhan_reconciliation_router, prefix="/api/v1")
 app.include_router(strategies_router, prefix="/api/v1")
 app.include_router(signals_lab_router, prefix="/api/v1")
 app.include_router(var_strategy_router, prefix="/api/v1")
