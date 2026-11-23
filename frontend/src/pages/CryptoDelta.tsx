@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { CryptoExecution } from '../crypto/CryptoExecution';
+import { CryptoForward } from '../crypto/CryptoForward';
 import { CryptoLab } from '../crypto/CryptoLab';
 import { CryptoMarkets } from '../crypto/CryptoMarkets';
 import { DeltaResearchPage } from './DeltaResearch';
 
-type Tab = 'markets' | 'lab' | 'feed' | 'execution';
+type Tab = 'markets' | 'lab' | 'forward' | 'feed' | 'execution';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'markets', label: 'Markets & charts' },
   { id: 'lab', label: 'Strategy lab' },
+  { id: 'forward', label: 'Forward test' },
   { id: 'feed', label: 'Live feed' },
   { id: 'execution', label: 'Execution' },
 ];
@@ -53,6 +55,7 @@ export function CryptoDeltaPage() {
       </nav>
       {tab === 'markets' && <CryptoMarkets symbol={symbol} setSymbol={setSymbol} resolution={resolution} setResolution={setResolution} />}
       {tab === 'lab' && <CryptoLab symbol={symbol} setSymbol={setSymbol} resolution={resolution} setResolution={setResolution} />}
+      {tab === 'forward' && <CryptoForward symbol={symbol} resolution={resolution} />}
       {tab === 'feed' && <DeltaResearchPage />}
       {tab === 'execution' && <CryptoExecution />}
     </main>

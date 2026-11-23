@@ -19,11 +19,12 @@ from app.crypto_delta.backtest import MAX_BARS, ContractSpec, _plain, run_backte
 from app.crypto_delta.candles import (
     MAX_SYNC_DAYS, RESOLUTION_SECONDS, SYMBOL_PATTERN, CandleDataError, find_gaps, load_candles, sync_candles,
 )
+from app.crypto_delta import forward as crypto_forward
 from app.crypto_delta.strategies import STRATEGIES, ParamError, resolve_params
 from app.db import get_db
 from app.delta_research.store import DeltaResearchStore
 from app.models import UserSession
-from app.models.crypto_delta import CryptoBacktestRun
+from app.models.crypto_delta import CryptoBacktestRun, CryptoForwardTest
 
 router = APIRouter(prefix="/crypto-delta", tags=["crypto-delta"])
 DISCLAIMER = "Decision support, not investment advice. Backtests are hypothetical."
@@ -398,3 +399,101 @@ def get_backtest(
     if row is None:
         raise HTTPException(status_code=404, detail="Backtest not found.")
     return _run_json(row, full=True)
+
+
+# ───────────────────────── paper forward tests (5 EMA alert candle) ─────────────────────────
+class ForwardCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=2, max_length=32)
+    resolution: Literal["5m", "15m", "1h"] = "15m"
+    name: str | None = Field(default=None, max_length=80)
+    ema: int = Field(default=5, ge=2, le=50)
+    rr: Decimal = Field(default=Decimal(3), ge=Decimal(1), le=Decimal(6))
+    direction: Literal[-1, 0, 1] = -1
+    stop_buffer_pct: Decimal = Field(default=Decimal(0), ge=Decimal(0), le=Decimal(2))
+    contracts: int = Field(default=1, ge=1, le=1000)
+    slippage_bps: Decimal = Field(default=Decimal(5), ge=Decimal(0), le=Decimal(100))
+
+
+def _forward_json(ft: CryptoForwardTest, *, full: bool) -> dict[str, Any]:
+    snap = ft.snapshot or {}
+    out: dict[str, Any] = {
+        "id": str(ft.id), "name": ft.name, "symbol": ft.symbol, "resolution": ft.resolution, "status": ft.status, "contracts": ft.contracts,
+        "params": ft.params, "slippage_bps": str(ft.slippage_bps), "start_time": ft.start_time.isoformat(), "last_run_at": ft.last_run_at.isoformat() if ft.last_run_at else None,
+        "last_error": ft.last_error, "paper_only": True, "label": crypto_forward.LABEL, "summary": snap.get("summary"), "open_positions": snap.get("open_positions", []),
+    }
+    if full:
+        out.update(trades=snap.get("trades", []), assumptions=snap.get("assumptions"), last_candle_close=snap.get("last_candle_close"), bars=snap.get("bars"))
+    return out
+
+
+def _owned_forward(db: Session, user_id: Any, ft_id: UUID) -> CryptoForwardTest:
+    row = db.scalar(select(CryptoForwardTest).where(CryptoForwardTest.id == ft_id, CryptoForwardTest.user_id == user_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Forward test not found.")
+    return row
+
+
+@router.get("/forward-tests")
+def list_forward_tests(active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
+    rows = db.scalars(select(CryptoForwardTest).where(CryptoForwardTest.user_id == active_session.user_id).order_by(CryptoForwardTest.created_at.desc())).all()
+    return {"tests": [_forward_json(r, full=False) for r in rows], "disclaimer": DISCLAIMER}
+
+
+@router.post("/forward-tests", status_code=201)
+def create_forward_test(
+    body: ForwardCreate, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Register a paper test that starts now. It never places an order; it replays completed public candles."""
+    symbol = body.symbol.upper()
+    try:
+        crypto_forward.fetch_spec(symbol)                 # a known USD perpetual with published fees, or refuse
+    except CandleDataError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    except Exception:
+        raise HTTPException(status_code=502, detail="Delta public contract service is unreachable.") from None
+    now = datetime.now(timezone.utc)
+    row = CryptoForwardTest(
+        user_id=active_session.user_id, name=(body.name or f"5 EMA {symbol} {body.resolution}").strip(), symbol=symbol, resolution=body.resolution,
+        params={"ema": body.ema, "rr": str(body.rr), "direction": body.direction, "stop_buffer_pct": str(body.stop_buffer_pct)},
+        contracts=body.contracts, slippage_bps=body.slippage_bps, start_time=now, status="active", created_at=now, updated_at=now,
+    )
+    db.add(row)
+    db.commit()
+    crypto_forward.run_once(db, row, now)
+    return _forward_json(row, full=True)
+
+
+@router.get("/forward-tests/{ft_id}")
+def get_forward_test(ft_id: UUID, active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
+    return _forward_json(_owned_forward(db, active_session.user_id, ft_id), full=True)
+
+
+@router.post("/forward-tests/{ft_id}/refresh")
+def refresh_forward_test(
+    ft_id: UUID, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    row = _owned_forward(db, active_session.user_id, ft_id)
+    crypto_forward.run_once(db, row)
+    return _forward_json(row, full=True)
+
+
+@router.post("/forward-tests/{ft_id}/{action}")
+def set_forward_status(
+    ft_id: UUID, action: Literal["pause", "resume"], active_session: UserSession = Depends(require_verified_session),
+    _: UserSession = Depends(require_csrf), db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    row = _owned_forward(db, active_session.user_id, ft_id)
+    row.status = "paused" if action == "pause" else "active"
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return _forward_json(row, full=False)
+
+
+@router.delete("/forward-tests/{ft_id}", status_code=204)
+def delete_forward_test(
+    ft_id: UUID, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db),
+) -> Response:
+    db.delete(_owned_forward(db, active_session.user_id, ft_id))
+    db.commit()
+    return Response(status_code=204)

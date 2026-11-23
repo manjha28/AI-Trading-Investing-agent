@@ -57,6 +57,12 @@ def run_pass(now: datetime | None = None) -> dict[str, int]:
             result = ft_service.run_once(db, ft, now, client_factory=(lambda uid: ft_service.build_client(db, uid)) if ft.execute_live else None)
             failed += bool(result["error"])
             done += 1
+        try:                                                  # Delta paper tests run 24x7, once per closed candle; they never place an order
+            from app.crypto_delta import forward as crypto_forward
+            crypto_forward.run_pass(db, now)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("crypto_forward_pass_failed")
         for user_id in set(db.scalars(select(DhanLiveOrder.user_id).where(DhanLiveOrder.status.in_(OPEN)))):
             try:
                 reconcile(db, user_id, lambda uid: ft_service.build_client(db, uid), now=now)

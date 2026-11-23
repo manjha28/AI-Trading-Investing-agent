@@ -52,3 +52,25 @@ class CryptoBacktestRun(Base):
     metrics: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
     trades: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
     equity: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+
+
+class CryptoForwardTest(Base):
+    """A paper forward test of the 5 EMA alert-candle strategy on a Delta perpetual. Hypothetical only; no order path to Delta exists."""
+    __tablename__ = "crypto_forward_tests"
+    __table_args__ = (Index("ix_crypto_forward_user_created", "user_id", "created_at"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    resolution: Mapped[str] = mapped_column(String(4), nullable=False)
+    params: Mapped[dict] = mapped_column(JSON_DOCUMENT, nullable=False)
+    contracts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    slippage_bps: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=Decimal("5"))
+    start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="active")   # active | paused
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(400))
+    snapshot: Mapped[dict | None] = mapped_column(JSON_DOCUMENT)

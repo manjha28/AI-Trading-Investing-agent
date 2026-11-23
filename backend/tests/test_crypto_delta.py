@@ -553,3 +553,26 @@ def test_an_identical_backtest_submitted_twice_within_a_minute_is_one_run(client
     assert len(client.get("/api/v1/crypto-delta/backtests").json()) == 1
     other = client.post("/api/v1/crypto-delta/backtests", headers=headers, json={**BODY, "slippage_bps": "5"})
     assert other.json()["id"] != first.json()["id"] and "deduplicated" not in other.json()                       # a different setting is a different run
+
+
+def test_forward_test_api_is_paper_only_owner_scoped_and_fails_closed(client, engine, monkeypatch):
+    from app.crypto_delta import forward as crypto_forward
+    monkeypatch.setattr(crypto_forward, "fetch_spec", lambda symbol, **_: crypto_forward.Spec(symbol, D("0.001"), D("0.0005"), D("0.5")))
+    monkeypatch.setattr(crypto_forward, "sync_candles", lambda *a, **k: {})      # no network in tests; candles below are TEST DATA
+    headers = login(client, engine, "fwd@example.com")
+    seed_candles(engine)
+    created = client.post("/api/v1/crypto-delta/forward-tests", headers=headers, json={"symbol": "testusd", "resolution": "15m"})
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["paper_only"] is True and "not investment advice" in body["label"] and body["symbol"] == "TESTUSD"
+    assert body["summary"]["closed_trades"] == 0 and body["summary"]["win_rate"] is None       # starts now: no trade before the start
+    assert body["params"]["ema"] == 5 and body["params"]["direction"] == -1
+    ft_id = body["id"]
+    assert client.post(f"/api/v1/crypto-delta/forward-tests/{ft_id}/pause", headers=headers).json()["status"] == "paused"
+    assert client.post(f"/api/v1/crypto-delta/forward-tests/{ft_id}/refresh", headers=headers).status_code == 200
+    other = login(client, engine, "fwd2@example.com")
+    assert client.get(f"/api/v1/crypto-delta/forward-tests/{ft_id}").status_code == 404
+    assert client.delete(f"/api/v1/crypto-delta/forward-tests/{ft_id}", headers=other).status_code == 404
+    monkeypatch.setattr(crypto_forward, "fetch_spec", lambda symbol, **_: (_ for _ in ()).throw(CandleDataError("Contract value or fee rate is unavailable; refusing to assume it.")))
+    assert client.post("/api/v1/crypto-delta/forward-tests", headers=other, json={"symbol": "NOFEE"}).status_code == 422
+    assert client.post("/api/v1/crypto-delta/forward-tests", headers=other, json={"symbol": "BTCUSD", "contracts": 0}).status_code == 422
