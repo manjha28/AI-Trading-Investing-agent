@@ -10,7 +10,7 @@ function scale(values: number[], pad = 0.05): [number, number] {
 }
 
 /** Interactive SVG line/area chart. Hover shows the nearest point. Width scales to the container (viewBox), so it never overflows. */
-export function LineChart({ points, label, color = 'var(--sl-accent)', fill = false, format = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 }), baseline, maxY }: {
+export function LineChart({ points, label, color = 'var(--accent)', fill = false, format = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 }), baseline, maxY }: {
   points: Pt[]; label: string; color?: string; fill?: boolean; format?: (v: number) => string; baseline?: number; maxY?: number;
 }) {
   const [hover, setHover] = useState<number | null>(null);
