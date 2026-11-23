@@ -13,6 +13,7 @@ import { ForwardTest } from './ForwardTest';
 import { StrategyRegistry } from './StrategyRegistry';
 import { defaultParams, emptyDefinition, lab, messageOf, nextAlias } from './lab';
 import { Notice } from './shared';
+import { LiveCapabilityChip } from './LiveCapabilityChip';
 import type { Definition, Health, InstrumentRow, Meta, Readiness, StrategyRow } from './types';
 import './signals.css';
 import { useSlow } from '../hooks/useSlow';
@@ -24,11 +25,24 @@ const TABS = [
   ['backtesting', 'Backtesting'], ['forward', 'Forward Test'], ['live', 'Live Signals'], ['jobs', 'Jobs & scanner'], ['indicators', 'Indicator Library'], ['import', 'Import & Validation'],
 ] as const;
 type Tab = (typeof TABS)[number][0];
+// Two levels: six primary sections, with the detailed tabs inside the section that owns them. Every tab stays reachable.
+const GROUPS: { id: string; label: string; tabs: Tab[] }[] = [
+  { id: 'dashboard', label: 'Dashboard', tabs: ['dashboard'] },
+  { id: 'strategies', label: 'Strategies', tabs: ['library', 'registry', 'builder', 'indicators', 'import'] },
+  { id: 'backtest', label: 'Backtest', tabs: ['lab', 'backtesting'] },
+  { id: 'forward', label: 'Forward test', tabs: ['forward'] },
+  { id: 'live', label: 'Live signals', tabs: ['live'] },
+  { id: 'jobs', label: 'Jobs', tabs: ['jobs'] },
+];
+const labelOf = (t: Tab) => TABS.find(([k]) => k === t)?.[1] ?? t;
 
 const blankDraft = (): Draft => ({ definition: emptyDefinition(), sourceText: null, editing: null });
 
 export function SignalsWorkspace() {
-  const [tab, setTab] = useState<Tab>('dashboard');
+  const [tab, setTabRaw] = useState<Tab>('dashboard');
+  const [lastInGroup, setLastInGroup] = useState<Record<string, Tab>>({});
+  const group = GROUPS.find((g) => g.tabs.includes(tab)) ?? GROUPS[0];
+  const setTab = useCallback((t: Tab) => { setTabRaw(t); const g = GROUPS.find((x) => x.tabs.includes(t)); if (g) setLastInGroup((cur) => ({ ...cur, [g.id]: t })); }, []);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
   const [instruments, setInstruments] = useState<InstrumentRow[]>([]);
@@ -113,8 +127,14 @@ export function SignalsWorkspace() {
         <p className="sl-muted">Strategy research, backtesting and signal monitoring for Indian equities. Decision support only: nothing here places orders.</p>
       </header>
       <nav className="sl-tabs" aria-label="Signals sections">
-        {TABS.map(([key, label]) => <button key={key} type="button" className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); if (key !== 'builder') setNotice(null); }}>{label}</button>)}
+        {GROUPS.map((g) => <button key={g.id} type="button" className={group.id === g.id ? 'active' : ''} aria-current={group.id === g.id ? 'page' : undefined} onClick={() => { if (group.id !== g.id) setTab(lastInGroup[g.id] ?? g.tabs[0]); setNotice(null); }}>{g.label}</button>)}
       </nav>
+      {group.tabs.length > 1 && (
+        <nav className="sl-tabs sl-subtabs" aria-label={`${group.label} sections`}>
+          {group.tabs.map((key) => <button key={key} type="button" className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); if (key !== 'builder') setNotice(null); }}>{labelOf(key)}</button>)}
+        </nav>
+      )}
+      {tab === 'forward' && <p className="sl-capability"><LiveCapabilityChip /></p>}
       {notice && tab === 'builder' && <Notice tone="info">{notice}</Notice>}
       {error && !meta && <Notice tone="bad">{error}</Notice>}
       {!meta ? <p className="sl-muted">{loading ? (slowWorkspace ? 'Still loading (slow backend). This can take up to a minute…' : 'Loading Signals workspace…') : (error ?? 'The Signals workspace could not be loaded.')}</p> : (

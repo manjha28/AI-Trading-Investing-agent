@@ -125,10 +125,17 @@ function install(extra: Record<string, (body: unknown) => unknown> = {}) {
 
 async function mount() {
   render(<SignalsWorkspace />);
-  await screen.findByText('Strategy Dashboard');
+  await screen.findByRole('button', { name: 'Dashboard' });
   await waitFor(() => expect(screen.getByLabelText('Strategy counts')).toBeInTheDocument());
 }
-const tab = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
+// Two levels: a primary section, then the tab inside it. `tab('Backtesting')` opens Backtest and then Backtesting.
+const PRIMARY: Record<string, string> = { 'Strategy Dashboard': 'Dashboard', 'Strategy Library': 'Strategies', 'Strategy Registry': 'Strategies', 'Strategy Builder': 'Strategies', 'Indicator Library': 'Strategies', 'Import & Validation': 'Strategies',
+  'Backtest Lab': 'Backtest', Backtesting: 'Backtest', 'Forward Test': 'Forward test', 'Live Signals': 'Live signals', 'Jobs & scanner': 'Jobs' };
+const tab = (name: string) => {
+  fireEvent.click(screen.getByRole('button', { name: PRIMARY[name] }));
+  const secondary = screen.queryByRole('navigation', { name: `${PRIMARY[name]} sections` });
+  if (secondary) fireEvent.click(within(secondary).getByRole('button', { name }));
+};
 
 describe('Signals workspace', () => {
   beforeEach(() => { calls = []; install(); });
@@ -136,9 +143,9 @@ describe('Signals workspace', () => {
 
   it('shows every section and the dashboard with strategy counts and data-quality warnings', async () => {
     await mount();
-    for (const name of ['Strategy Dashboard', 'Strategy Library', 'Strategy Registry', 'Strategy Builder', 'Backtest Lab', 'Backtesting', 'Forward Test', 'Live Signals', 'Jobs & scanner', 'Indicator Library', 'Import & Validation']) {
-      expect(screen.getByRole('button', { name })).toBeInTheDocument();
-    }
+    for (const name of ['Dashboard', 'Strategies', 'Backtest', 'Forward test', 'Live signals', 'Jobs']) expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    for (const name of Object.keys(PRIMARY)) { tab(name); expect(screen.getByRole('button', { name: PRIMARY[name] }).getAttribute('aria-current')).toBe('page'); }   // every old tab is still reachable
+    tab('Strategy Dashboard');
     const counts = within(screen.getByLabelText('Strategy counts'));
     expect(counts.getByText('Total strategies').nextSibling).toHaveTextContent('3');
     expect(screen.getByText(/1 instrument\(s\) have 1-minute data problems/)).toBeInTheDocument();
@@ -148,7 +155,9 @@ describe('Signals workspace', () => {
   it('is a strategy workbench: the VAR research, derivatives data and legacy daily pages are no longer in the navigation', async () => {
     await mount();
     const nav = within(screen.getByRole('navigation', { name: 'Signals sections' })).getAllByRole('button').map((b) => b.textContent);
-    expect(nav).toEqual(['Strategy Dashboard', 'Strategy Library', 'Strategy Registry', 'Strategy Builder', 'Backtest Lab', 'Backtesting', 'Forward Test', 'Live Signals', 'Jobs & scanner', 'Indicator Library', 'Import & Validation']);
+    expect(nav).toEqual(['Dashboard', 'Strategies', 'Backtest', 'Forward test', 'Live signals', 'Jobs']);
+    fireEvent.click(screen.getByRole('button', { name: 'Strategies' }));
+    expect(within(screen.getByRole('navigation', { name: 'Strategies sections' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['Strategy Library', 'Strategy Registry', 'Strategy Builder', 'Indicator Library', 'Import & Validation']);
     for (const gone of ['Legacy daily research', 'Derivatives Data', 'Intraday research (VAR)']) expect(screen.queryByRole('button', { name: gone })).toBeNull();
   });
 
