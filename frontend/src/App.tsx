@@ -1,5 +1,5 @@
 import { Activity, ArrowDownLeft, Bitcoin, TrendingUp, BookOpen, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { apiRequest } from './api';
 import { marketStatusLabel } from './lib/priceStates';
 import { footerWording, sidebarWording, type LiveCapability } from './lib/liveCapability';
@@ -9,15 +9,16 @@ import { MobileNav } from './components/MobileNav';
 import { BrandLockup } from './components/BrandLockup';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
-import { CryptoDeltaPage } from './pages/CryptoDelta';
+const CryptoDeltaPage = lazy(() => import('./pages/CryptoDelta').then((m) => ({ default: m.CryptoDeltaPage })));
 import { JournalPage } from './pages/Journal';
-import { SignalsWorkspace } from './signals/SignalsWorkspace';
-import { MarketDataPage } from './pages/MarketData';
-import { MarketWatch, type WatchFocus } from './pages/MarketWatch';
+const SignalsWorkspace = lazy(() => import('./signals/SignalsWorkspace').then((m) => ({ default: m.SignalsWorkspace })));
+const MarketDataPage = lazy(() => import('./pages/MarketData').then((m) => ({ default: m.MarketDataPage })));
+import type { WatchFocus } from './pages/MarketWatch';
+const MarketWatch = lazy(() => import('./pages/MarketWatch').then((m) => ({ default: m.MarketWatch })));
 import { OverviewPage } from './pages/Overview';
 import { PortfolioSetupPage } from './pages/PortfolioSetup';
-import { Research } from './pages/Research';
-import { ForwardRecordPage } from './pages/ForwardRecord';
+const Research = lazy(() => import('./pages/Research').then((m) => ({ default: m.Research })));
+const ForwardRecordPage = lazy(() => import('./pages/ForwardRecord').then((m) => ({ default: m.ForwardRecordPage })));
 
 export default function App() {
   const workspace = useWorkspace();
@@ -286,6 +287,7 @@ export default function App() {
           </section>
         )}
 
+        <Suspense fallback={<p className="ui-muted" role="status" aria-busy="true">Loading…</p>}>
         {typeof window !== 'undefined' && window.location.hash === '#forward-record' ? (
           <ForwardRecordPage />
         ) : activeView === 'research' ? (
@@ -359,6 +361,7 @@ export default function App() {
           <OverviewPage brokerAccessAllowed={!!twoFactorStatus?.session_verified} workspace={{addInstrumentToWatchlist: workspace.addInstrumentToWatchlist, cancelEditingTransaction: workspace.cancelEditingTransaction, coverage: workspace.coverage, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist, riskMetrics: workspace.riskMetrics, setActiveView: workspace.setActiveView, setOpenMarketInstrumentId: workspace.setOpenMarketInstrumentId, setCoverageVersion: workspace.setCoverageVersion, setThesisSymbol: workspace.setThesisSymbol, setTransactionType: workspace.setTransactionType, submitTransaction: workspace.submitTransaction, summary: workspace.summary, thesisSymbol: workspace.thesisSymbol, transactionType: workspace.transactionType, valuation: workspace.valuation, valuationBySymbol: workspace.valuationBySymbol, watchlist: workspace.watchlist, watchlistLoadState: workspace.watchlistLoadState, watchlistLoadError: workspace.watchlistLoadError, refreshWatchlist: workspace.refreshWatchlist, setBrokerPriceRows: workspace.setBrokerPriceRows, brokerRefreshKey: workspace.brokerRefreshKey}} />
         ) : null}
         <footer className="workspace-footer"><span><ArrowDownLeft size={14} /> {footerWording(liveCapability)}</span><span>Data entered by you · {portfolios.length} portfolio{portfolios.length === 1 ? '' : 's'}</span></footer>
+        </Suspense>
       </main>
       <MobileNav activeView={activeView} setActiveView={setActiveView} onSignOut={signOut} />
     </div>
