@@ -117,8 +117,8 @@ describe('DeltaResearchPage', () => {
     await userEventClick(await screen.findByRole('button', { name: 'Markets' }));
 
     expect(await screen.findByText('BTCUSD')).toBeInTheDocument();
-    expect(screen.getByText('65000.25')).toBeInTheDocument();
-    expect(screen.getByText('delta_rest_ticker')).toBeInTheDocument();
+    expect(screen.getByText('65,000.25')).toBeInTheDocument();
+    expect(screen.getByTitle(/Source: delta_rest_ticker · observed 2026-04-20T10:00:00Z/)).toBeInTheDocument();
   });
 });
 

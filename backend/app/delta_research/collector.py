@@ -35,6 +35,7 @@ MAX_SUBSCRIBERS = 32
 SUBSCRIBER_QUEUE_SIZE = 256
 WRITE_QUEUE_SIZE = 128
 PRODUCT_REFRESH_SECONDS = 6 * 60 * 60
+TICK_FLUSH_SECONDS = 1
 
 
 def reconnect_delay(consecutive_failures: int) -> float:
@@ -100,6 +101,7 @@ class DeltaPublicCollector:
         self._last_rest_success_at: datetime | None = None
         self._last_health_write_at = 0.0
         self._started = False
+        self._latest_ticks: dict[str, dict[str, Any]] = {}
 
     async def start(self) -> None:
         if self._started:
@@ -116,6 +118,7 @@ class DeltaPublicCollector:
                 asyncio.create_task(self._rest_loop(client), name="delta-rest-collector"),
                 asyncio.create_task(self._websocket_loop(), name="delta-public-stream"),
                 asyncio.create_task(self._writer_loop(), name="delta-sqlite-writer"),
+                asyncio.create_task(self._tick_flush_loop(), name="delta-tick-flush"),
             ]
             await asyncio.gather(*self._tasks)
 
@@ -130,6 +133,8 @@ class DeltaPublicCollector:
                 pass
         if len(self._tasks) > 2:
             await self._tasks[2]
+        for task in self._tasks[3:]:
+            await task
         self._tasks.clear()
         self._started = False
         self._connected = False
@@ -370,6 +375,12 @@ class DeltaPublicCollector:
             return
         if message_type in {"subscriptions", "pong"}:
             return
+        if message_type == "v2/ticker":
+            symbol = str(message.get("symbol") or "")
+            if symbol:
+                self._latest_ticks[symbol] = message     # only the newest tick per contract is kept; a batch writer stores them (cheap, and bounded)
+                await self._mark_event()
+            return
         if message_type not in {"ticker", "candlestick_1m"}:
             return
         symbol = str(message.get("sy") or "")
@@ -386,6 +397,25 @@ class DeltaPublicCollector:
             })
             return
         await self._mark_event()
+
+    async def _tick_flush_loop(self) -> None:
+        """Store the newest live ticker of every contract in ONE write every TICK_FLUSH_SECONDS, so the watch glows on real price changes without a write per frame."""
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=TICK_FLUSH_SECONDS)
+            except TimeoutError:
+                pass
+            if not self._latest_ticks:
+                continue
+            rows, self._latest_ticks = list(self._latest_ticks.values()), {}
+            try:
+                await asyncio.to_thread(self._persist_ticks, rows)
+            except (OSError, RuntimeError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+                await self._record_failure(exc, "storage")
+
+    def _persist_ticks(self, rows: list[dict[str, Any]]) -> None:
+        with self._write_lock, DeltaResearchStore(self.path) as store:
+            store.save_quotes(rows, datetime.now(timezone.utc), "delta_public_ws_v2_ticker")
 
     async def _writer_loop(self) -> None:
         while not self._stop.is_set() or not self._write_queue.empty():

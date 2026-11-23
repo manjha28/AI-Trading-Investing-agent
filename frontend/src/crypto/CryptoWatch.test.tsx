@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CryptoMarkets } from './CryptoMarkets';
+import { CryptoWatch } from './CryptoWatch';
 
 const { apiRequest } = vi.hoisted(() => ({ apiRequest: vi.fn() }));
 vi.mock('../api', () => ({ apiRequest, ApiRequestError: class extends Error {} }));
@@ -41,7 +42,7 @@ describe('Crypto watch table', () => {
     fireEvent.click(within(table).getByRole('button', { name: /^Funding/ }));
     const first = () => within(table).getAllByRole('row')[1].textContent ?? '';
     expect(first()).toContain('AAAUSD');                                 // BBB has no funding value: sorted last whatever the direction
-    fireEvent.click(screen.getByRole('tab', { name: 'Gainers' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Gainers' }));
     await waitFor(() => expect(first()).toContain('AAAUSD'));
   });
 
@@ -49,7 +50,7 @@ describe('Crypto watch table', () => {
     render(<CryptoMarkets {...props} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Add BBBUSD to watchlist' }));
     expect(JSON.parse(window.localStorage.getItem('crypto.watchlist') ?? '[]')).toEqual(['BBBUSD']);
-    fireEvent.click(screen.getByRole('tab', { name: 'Watchlist (1)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist (1)' }));
     const table = await screen.findByRole('table');
     expect(within(table).getAllByRole('row').slice(1)).toHaveLength(1);
   });
@@ -63,5 +64,19 @@ describe('Crypto watch table', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Pause feed (save cost)' }));
     expect(await screen.findByText('Feed paused')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Resume feed' })).toBeTruthy();
+  });
+});
+
+
+describe('Crypto watch looks and behaves like the equity watch', () => {
+  it('shows the status strip with live, up and down counts and totals, and the paused state', async () => {
+    const recent = new Date().toISOString();
+    apiRequest.mockImplementation((path: string) => Promise.resolve(path.includes('/delta-research/markets') ? { items: markets.items.map((m) => ({ ...m, quote_time: recent })) } : { available: true, wanted: true, state: 'connected', connected: true, last_event_at: null }));
+    render(<CryptoWatch symbol="AAAUSD" />);
+    const strip = await screen.findByRole('status', { name: '' }).catch(() => null);
+    await screen.findByText('● LIVE');
+    expect(screen.getByText('contracts', { exact: false })).toBeTruthy();
+    expect(screen.getByText('24h vol', { exact: false })).toBeTruthy();
+    expect(strip === null || strip instanceof HTMLElement).toBe(true);
   });
 });

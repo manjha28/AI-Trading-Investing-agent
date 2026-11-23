@@ -367,3 +367,21 @@ def test_all_delta_read_routes_require_authentication(client) -> None:
     )
     for path in paths:
         assert client.get(f"/api/v1/delta-research{path}").status_code == 401
+
+
+def test_live_v2_ticker_frames_keep_only_the_newest_tick_per_contract_and_store_the_full_ticker(tmp_path) -> None:
+    store_path = tmp_path / "delta-research.sqlite3"
+    with DeltaResearchStore(store_path) as store:
+        store.save_products([{"id": 123, "symbol": "BTCUSD", "contract_type": "perpetual_futures", "state": "live"}])
+    collector = DeltaPublicCollector(store_path)
+    for price in ("65000.5", "65001.0"):                       # two ticks before the batch write: only the newest is kept
+        asyncio.run(collector._handle_frame(json.dumps({"type": "v2/ticker", "symbol": "BTCUSD", "product_id": 123, "close": price, "mark_price": "65000.9",
+                                                         "open": "64000", "high": "66000", "low": "63000", "oi_value_usd": "123456", "funding_rate": "0.01",
+                                                         "ltp_change_24h": "1.5", "turnover_usd": "999", "quotes": {"best_bid": "65000", "best_ask": "65001"}})))
+    assert list(collector._latest_ticks) == ["BTCUSD"] and collector._write_queue.empty()
+    collector._persist_ticks(list(collector._latest_ticks.values()))
+    with DeltaResearchStore(store_path, read_only=True) as store:
+        item = store.list_products("", 10, 0, True)["items"][0]
+    assert item["last_price"] == "65001.0" and item["quote_source"] == "delta_public_ws_v2_ticker"
+    assert item["ticker"]["oi_value_usd"] == "123456" and item["ticker"]["high"] == "66000" and item["ticker"]["best_bid"] == "65000"
+    assert "metadata" not in item                               # the slim list leaves the heavy product document out

@@ -14,6 +14,7 @@ export type Market = {
   mark_price: string | null;
   volume_24h: string | null;
   index_price?: string | null;
+  quote_source?: string | null;
   ticker?: Ticker;
 };
 

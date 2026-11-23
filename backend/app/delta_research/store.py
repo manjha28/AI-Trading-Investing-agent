@@ -20,7 +20,7 @@ TICKER_FIELDS = ("open", "high", "low", "close", "ltp_change_24h", "mark_change_
                  "underlying_asset_symbol", "leverage", "contract_value", "tick_size")
 
 
-def _list_item(row: sqlite3.Row) -> dict[str, Any]:
+def _list_item(row: sqlite3.Row, slim: bool = False) -> dict[str, Any]:
     """One watch row: the stored columns plus the ticker fields the Crypto watch shows (a missing field stays null, never zero)."""
     item = dict(row)
     raw = item.pop("raw_quote", None)
@@ -30,7 +30,8 @@ def _list_item(row: sqlite3.Row) -> dict[str, Any]:
         quote = {}
     book = quote.get("quotes") if isinstance(quote.get("quotes"), dict) else {}
     item["ticker"] = {k: quote.get(k) for k in TICKER_FIELDS} | {"best_bid": book.get("best_bid"), "best_ask": book.get("best_ask"), "tags": quote.get("tags")}
-    return item | {"metadata": json.loads(item["metadata_json"])}
+    item.pop("metadata_json", None) if slim else None
+    return item if slim else item | {"metadata": json.loads(item["metadata_json"])}
 
 
 class DeltaResearchStore:
@@ -289,7 +290,7 @@ class DeltaResearchStore:
             "feed_health": dict(health) if health else None,
         }
 
-    def list_products(self, search: str, limit: int, offset: int) -> dict[str, Any]:
+    def list_products(self, search: str, limit: int, offset: int, slim: bool = False) -> dict[str, Any]:
         where = "WHERE lower(p.symbol) LIKE ?" if search else ""
         params: tuple[Any, ...] = (f"%{search.casefold()}%",) if search else ()
         total = int(self.connection.execute(
@@ -307,7 +308,7 @@ class DeltaResearchStore:
             ORDER BY p.symbol,p.product_id LIMIT ? OFFSET ?
         """, (*params, limit, offset)).fetchall()
         return {
-            "items": [_list_item(row) for row in rows],
+            "items": [_list_item(row, slim) for row in rows],
             "total": total,
             "limit": limit,
             "offset": offset,

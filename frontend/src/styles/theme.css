@@ -383,10 +383,5 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .auth-panel .brand-lockup { margin-bottom: 0; }
 
 .crypto-stack { display: grid; gap: 16px; }
-.watch-toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
-.watch-scroll { overflow: auto; max-height: 560px; border: 1px solid var(--tc-line); border-radius: 6px; }
-.watch-table tr.selected { background: var(--tc-green-soft); }
-.watch-table tbody tr { cursor: pointer; }
-.star-button { all: unset; cursor: pointer; color: var(--tc-amber, #d9a441); padding: 2px 6px; }
 .feed-toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; }
 .feed-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--tc-dim); } .feed-dot.on { background: var(--tc-green); } .feed-dot.wait { background: var(--tc-amber, #d9a441); }
