@@ -56,3 +56,15 @@ def test_balance_snapshot_is_the_latest_known_and_cfo_only_comes_from_a_march_ye
     assert row["equity"] == 550 and row["cfo"] == 130.0 and row["balance_as_of"] == "2025-03-31"          # the March balance sheet (known 2025-05-12) is attached once it is filed
     early = ps.annual_series([], ttm, snaps, date(2025, 5, 11))[0]
     assert early["equity"] == 500 and early["cfo"] is None and early["balance_as_of"] == "2024-09-30"       # before it is filed: the September one, no CFO (never the 6-month figure)
+
+
+def test_when_filed_years_are_too_few_the_annual_series_is_ttm_years_anchored_on_the_latest_quarter():
+    ends = [date(y, m, d) for y, m, d in [(2022, 3, 31), (2022, 6, 30), (2022, 9, 30), (2022, 12, 31), (2023, 3, 31), (2023, 6, 30), (2023, 9, 30), (2023, 12, 31), (2024, 3, 31), (2024, 6, 30), (2024, 9, 30), (2024, 12, 31), (2025, 3, 31)]]
+    rows = [q(e, e + timedelta(days=40), 100 + i, 10 + i % 3, 1.0 + 0.01 * i) for i, e in enumerate(ends)]
+    ttm = ps.ttm_series([ps.quarter_dict(r) for r in rows])
+    filed = [{"period_end": date(2023, 3, 31), "revenue": 1.0}, {"period_end": date(2024, 3, 31), "revenue": 2.0}]
+    out = ps.annual_series(filed, ttm, [], date(2025, 6, 1))
+    assert [r["period_end"] for r in out] == [date(2023, 3, 31), date(2024, 3, 31), date(2025, 3, 31)]
+    out2 = ps.annual_series([filed[0]], ttm, [], date(2025, 2, 15))                        # only 1 filed year at that date: the anchored TTM years (Dec-24, Dec-23, Dec-22) are used
+    assert [r["period_end"] for r in out2] == [date(2022, 12, 31), date(2023, 12, 31), date(2024, 12, 31)]
+    assert all(r["provenance"] == "nse_ttm_from_quarters" for r in ps.anchored_series(ttm, [], date(2025, 2, 15))) and len(ps.anchored_series(ttm, [], date(2025, 2, 15))) == 3

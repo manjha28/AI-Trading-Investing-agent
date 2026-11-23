@@ -95,7 +95,36 @@ def annual_series(annual_engine_rows: list[dict[str, Any]], ttm: list[dict[str, 
             if s["period_end"] == t["period_end"]:
                 row["cfo"] = s["cfo"]
         rows.append(row)
-    return sorted(rows, key=lambda r: r["period_end"])
+    rows = sorted(rows, key=lambda r: r["period_end"])
+    if len(rows) < 3:                                    # too few filed years for the engine's 3-year rules: use the TTM years anchored on the latest quarter when they give more
+        alt = anchored_series(ttm, snaps, as_of)
+        if len(alt) > len(rows):
+            return alt
+    return rows
+
+
+def _engine_row(t: dict[str, Any], snaps: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
+    exact = next((x for x in snaps if abs((x["period_end"] - t["period_end"]).days) <= 45 and x["known"] <= as_of), None)
+    row = {"period_end": t["period_end"], "revenue": t["revenue"], "pat": t["pat"], "eps": t["eps"], "op_margin": t["op_margin"], "interest": t["interest"], "pbt": t["pbt"], "ebit": t["ebit"], "op_profit": t["op_profit"],
+           "assets": None, "equity": None, "debt": None, "cfo": None, "shares": None, "cash": None, "fixed_assets": None, "provenance": PROVENANCE}
+    if exact:
+        row.update(equity=exact["equity"], debt=exact["debt"], assets=exact["assets"], cash=exact["cash"], fixed_assets=exact["fixed_assets"], balance_as_of=str(exact["period_end"]))
+        if exact["period_end"] == t["period_end"] and t["period_end"].month == 3:
+            row["cfo"] = exact["cfo"]
+    return row
+
+
+def anchored_series(ttm: list[dict[str, Any]], snaps: list[dict[str, Any]], as_of: date) -> list[dict[str, Any]]:
+    """TTM rows spaced a year apart and anchored on the latest filed quarter (for example Dec, Dec-1, Dec-2): the annual-equivalent series when the filed annual statements are too few for the engine."""
+    known = sorted((t for t in ttm if t["known"] <= as_of), key=lambda t: t["period_end"])
+    if not known:
+        return []
+    out = [known[-1]]
+    for t in reversed(known[:-1]):
+        gap = (out[-1]["period_end"] - t["period_end"]).days
+        if 350 <= gap <= 380:
+            out.append(t)
+    return [_engine_row(t, snaps, as_of) for t in reversed(out)]
 
 
 def pe_history(daily_close: pd.Series, ttm: list[dict[str, Any]], as_of: date, months: int = 36) -> tuple[float | None, int]:
