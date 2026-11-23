@@ -119,3 +119,12 @@ class DeltaLiveOrder(Base):
     response: Mapped[dict | None] = mapped_column(JSON_DOCUMENT)      # what Delta answered, verbatim
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AppFlag(Base):
+    """A tiny owner-set runtime switch that must survive restarts (for example pausing the Delta public feed to save hosting cost)."""
+    __tablename__ = "app_flags"
+
+    key: Mapped[str] = mapped_column(String(48), primary_key=True)
+    value: Mapped[str] = mapped_column(String(120), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -223,7 +223,7 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
         return;
       }
       await refresh();
-      setNotice(`${broker.name} connected. No orders can be placed through this connection.`);
+      setNotice(`${broker.name} connected. Orders are placed only when you arm live execution (off by default).`);
     } catch (requestError) {
       setFailedBroker(broker.slug);
       setError(brokerErrorMessage(requestError));
@@ -504,8 +504,8 @@ export function BrokersPage({ portfolioId }: { portfolioId: string }) {
   return (
     <section className="brokers-page">
       <div className="broker-disclaimer" role="note">
-        <strong>Broker connections are read-only.</strong> FinByte Nexus reads your profile, holdings, positions,
-        order history, and funds here. Nothing on this page can place, modify, or cancel an order; the only order path in the app is Signals &gt; Forward Test, for allowlisted Dhan strategies and only when live execution is armed. Broker data
+        <strong>Broker connections read your account and can execute orders within hard limits.</strong> FinByte Nexus reads your profile, holdings, positions,
+        order history, and funds here. Nothing on this page places, modifies, or cancels an order; orders come only from Signals &gt; Forward Test (Dhan: 1 share, intraday) and Crypto &gt; Forward test (Delta: 1 contract, leverage up to 25x), and only after you arm live execution. Broker data
         stays in a separate mirror and never overwrites your manual portfolio. Any reconciliation import
         creates a manual ledger transaction only after you confirm it.
       </div>

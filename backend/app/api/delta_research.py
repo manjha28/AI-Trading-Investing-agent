@@ -55,7 +55,7 @@ def delta_research_overview(
 def delta_research_markets(
     response: Response,
     search: str = Query(default="", max_length=80),
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0, le=100_000),
     _: UserSession = Depends(require_verified_session),
 ) -> dict[str, Any]:
@@ -161,3 +161,4 @@ def _json_default(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+

@@ -647,3 +647,41 @@ def test_arming_needs_2fa_the_flag_and_the_phrase_and_the_kill_switch_always_wor
     assert status["armed"] is False and status["can_arm"] is False and status["limits"]["max_contracts"] == 1
     assert client.post("/api/v1/crypto-delta/live/disarm", headers=headers).json()["armed"] is False          # stopping never needs 2FA
     assert client.put("/api/v1/crypto-delta/live/tests/00000000-0000-0000-0000-000000000000", headers=headers, json={"enabled": True}).status_code == 404
+
+
+def test_public_feed_can_be_paused_and_resumed_and_the_choice_is_stored(client, engine, monkeypatch):
+    from app.delta_research import collector
+    monkeypatch.setattr(collector, "feed_wanted", collector.feed_wanted)
+    headers = login(client, engine, "feed@example.com")
+    from app.api import crypto_delta as api
+    stored = {"on": True}
+    monkeypatch.setattr(api, "feed_wanted", lambda: stored["on"])
+    monkeypatch.setattr(api, "set_feed_wanted", lambda on: stored.update(on=on))
+    assert client.get("/api/v1/crypto-delta/feed").json()["wanted"] is True
+    assert client.put("/api/v1/crypto-delta/feed", json={"enabled": False}).status_code in (401, 403)            # needs the CSRF header
+    off = client.put("/api/v1/crypto-delta/feed", headers=headers, json={"enabled": False}).json()
+    assert off["wanted"] is False and stored["on"] is False
+    assert client.put("/api/v1/crypto-delta/feed", headers=headers, json={"enabled": True}).json()["wanted"] is True
+
+
+def test_the_feed_preference_round_trips_through_the_database(engine, monkeypatch):
+    from app.delta_research import collector
+    from app import db as app_db
+    monkeypatch.setattr(app_db, "engine", engine)
+    assert collector.feed_wanted() is True                      # no choice stored: on
+    collector.set_feed_wanted(False)
+    assert collector.feed_wanted() is False
+    collector.set_feed_wanted(True)
+    assert collector.feed_wanted() is True
+
+
+def test_watch_rows_carry_ticker_columns_and_unknown_stays_null(tmp_path):
+    with DeltaResearchStore(tmp_path / "w.sqlite3") as store:
+        store.save_products([{"id": 1, "symbol": "AAAUSD", "contract_type": "perpetual_futures", "state": "live"}, {"id": 2, "symbol": "BBBUSD", "contract_type": "perpetual_futures", "state": "live"}])
+        store.save_quotes([{"product_id": 1, "symbol": "AAAUSD", "close": "10", "mark_price": "10.1", "turnover_usd": "5000", "open": "9", "high": "11", "low": "8", "ltp_change_24h": "11.1",
+                            "funding_rate": "0.01", "oi_value_usd": "123456", "quotes": {"best_bid": "9.9", "best_ask": "10.1"}},
+                           {"product_id": 2, "symbol": "BBBUSD", "close": "3"}], datetime(2026, 11, 23, tzinfo=timezone.utc), "delta_rest_ticker")
+        items = {i["symbol"]: i for i in store.list_products("", 10, 0)["items"]}
+    a, b = items["AAAUSD"]["ticker"], items["BBBUSD"]["ticker"]
+    assert a["ltp_change_24h"] == "11.1" and a["funding_rate"] == "0.01" and a["oi_value_usd"] == "123456" and a["best_bid"] == "9.9"
+    assert b["funding_rate"] is None and b["oi_value_usd"] is None and b["best_bid"] is None            # unknown is null, never zero

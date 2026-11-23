@@ -226,3 +226,4 @@
 - Delta forward test: paper 5 EMA alert-candle test on perpetuals (5m/15m/1h), taker fees and slippage, owner-scoped, runs once per closed candle; new table crypto_forward_tests
 - Delta research feed: first product fetch no longer skipped on a freshly booted machine (monotonic clock bug)
 - Delta live execution (owner-approved, off by default): 1 contract max, leverage min(25x, exchange max), three-layer arming, guard-rails, kill switch, audit; Delta paper tests can execute live only when armed
+- Crypto watch is a sortable watchlist table (last, 24h %, range, volume, open interest, funding, mark, bid/ask, stars); feed pause/resume switch (stored, survives restarts); Dhan and Delta labelled read + order execution (orders only when armed)

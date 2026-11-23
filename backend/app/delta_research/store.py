@@ -16,6 +16,23 @@ def _iso(value: datetime | None = None) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+TICKER_FIELDS = ("open", "high", "low", "close", "ltp_change_24h", "mark_change_24h", "funding_rate", "oi_value_usd", "oi_change_usd_6h", "turnover_usd",
+                 "underlying_asset_symbol", "leverage", "contract_value", "tick_size")
+
+
+def _list_item(row: sqlite3.Row) -> dict[str, Any]:
+    """One watch row: the stored columns plus the ticker fields the Crypto watch shows (a missing field stays null, never zero)."""
+    item = dict(row)
+    raw = item.pop("raw_quote", None)
+    try:
+        quote = json.loads(raw) if raw else {}
+    except ValueError:
+        quote = {}
+    book = quote.get("quotes") if isinstance(quote.get("quotes"), dict) else {}
+    item["ticker"] = {k: quote.get(k) for k in TICKER_FIELDS} | {"best_bid": book.get("best_bid"), "best_ask": book.get("best_ask"), "tags": quote.get("tags")}
+    return item | {"metadata": json.loads(item["metadata_json"])}
+
+
 class DeltaResearchStore:
     """Isolated public-market research storage; no account or execution state."""
 
@@ -281,7 +298,7 @@ class DeltaResearchStore:
         rows = self.connection.execute(f"""
             SELECT p.product_id,p.symbol,p.contract_type,p.state,p.metadata_json,
                    q.observed_at AS quote_time,q.last_price,q.mark_price,q.index_price,
-                   q.volume_24h,q.source AS quote_source
+                   q.volume_24h,q.source AS quote_source,q.raw_json AS raw_quote
             FROM products p
             LEFT JOIN quotes q ON q.product_id=p.product_id
               AND q.observed_at=(SELECT MAX(q2.observed_at) FROM quotes q2
@@ -290,10 +307,7 @@ class DeltaResearchStore:
             ORDER BY p.symbol,p.product_id LIMIT ? OFFSET ?
         """, (*params, limit, offset)).fetchall()
         return {
-            "items": [
-                dict(row) | {"metadata": json.loads(row["metadata_json"])}
-                for row in rows
-            ],
+            "items": [_list_item(row) for row in rows],
             "total": total,
             "limit": limit,
             "offset": offset,

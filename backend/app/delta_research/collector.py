@@ -544,29 +544,91 @@ class DeltaPublicCollector:
             queue.put_nowait(message)
 
 
+FEED_FLAG = "delta_feed"
+WATCH_SECONDS = 10
+
+
+def feed_wanted() -> bool | None:
+    """The owner's on/off choice for the public feed (default on). None when the database cannot be read, so nothing changes."""
+    try:
+        from sqlalchemy.orm import Session
+
+        from app.db import engine
+        from app.models.crypto_delta import AppFlag
+        with Session(engine) as db:
+            row = db.get(AppFlag, FEED_FLAG)
+            return row is None or row.value != "off"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def set_feed_wanted(on: bool) -> None:
+    from datetime import datetime, timezone
+
+    from sqlalchemy.orm import Session
+
+    from app.db import engine
+    from app.models.crypto_delta import AppFlag
+    with Session(engine) as db:
+        row = db.get(AppFlag, FEED_FLAG)
+        now = datetime.now(timezone.utc)
+        if row is None:
+            db.add(AppFlag(key=FEED_FLAG, value="on" if on else "off", updated_at=now))
+        else:
+            row.value, row.updated_at = "on" if on else "off", now
+        db.commit()
+
+
 class DeltaResearchManager:
+    """Runs the public collector while the owner wants it. A watcher follows the stored on/off choice every few seconds, so the switch works from any request."""
+
     def __init__(self) -> None:
         self.collector: DeltaPublicCollector | None = None
         self.task: asyncio.Task[None] | None = None
+        self.watcher: asyncio.Task[None] | None = None
 
-    async def start(self) -> None:
-        if not settings.delta_research_enabled or not settings.delta_research_db_path:
-            return
-        if self.task is not None and not self.task.done():
-            return
-        self.collector = DeltaPublicCollector(settings.delta_research_db_path)
+    def _running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def _launch(self) -> None:
+        self.collector = DeltaPublicCollector(settings.delta_research_db_path or "")
         self.task = asyncio.create_task(self.collector.start(), name="delta-research-manager")
 
-    async def stop(self) -> None:
-        if self.collector is None:
-            return
-        await self.collector.stop()
+    async def _halt(self) -> None:
+        if self.collector is not None:
+            await self.collector.stop()
         if self.task is not None:
             try:
                 await self.task
             except asyncio.CancelledError:
                 pass
         self.task = None
+        self.collector = None
+
+    async def _watch(self) -> None:
+        while True:
+            wanted = await asyncio.to_thread(feed_wanted)
+            if wanted is True and not self._running():
+                self._launch()
+            elif wanted is False and self._running():
+                await self._halt()
+            await asyncio.sleep(WATCH_SECONDS)
+
+    async def start(self) -> None:
+        if not settings.delta_research_enabled or not settings.delta_research_db_path:
+            return
+        if self.watcher is None or self.watcher.done():
+            self.watcher = asyncio.create_task(self._watch(), name="delta-research-watch")
+
+    async def stop(self) -> None:
+        if self.watcher is not None:
+            self.watcher.cancel()
+            try:
+                await self.watcher
+            except asyncio.CancelledError:
+                pass
+            self.watcher = None
+        await self._halt()
 
     def status(self) -> dict[str, Any]:
         if not settings.delta_research_enabled:
@@ -586,7 +648,7 @@ class DeltaResearchManager:
             return {
                 "enabled": True,
                 "configured": bool(settings.delta_research_db_path),
-                "state": "not_started",
+                "state": "paused" if feed_wanted() is False else "not_started",
                 "connected": False,
                 "reconnects": 0,
                 "consecutive_failures": 0,

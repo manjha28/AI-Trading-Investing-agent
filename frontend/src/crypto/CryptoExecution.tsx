@@ -43,7 +43,7 @@ const checkLabels: Record<string, string> = {
   total_exposure_within_cap: 'Total exposure within cap',
 };
 
-/** Execution readiness, risk-check sandbox and audit trail. No order is placed or transmitted. */
+/** Execution readiness, risk-check sandbox and audit trail. Orders go out only when armed. */
 export function CryptoExecution() {
   const [status, setStatus] = useState<ExecutionStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -101,14 +101,14 @@ export function CryptoExecution() {
   return (
     <div className="crypto-page">
       <section className="data-section crypto-readiness" aria-label="Execution readiness">
-        <div className="section-heading"><div><p className="eyebrow">EXECUTION READINESS</p><h3>Orders are not placed from this app</h3></div></div>
+        <div className="section-heading"><div><p className="eyebrow">EXECUTION READINESS</p><h3>Delta orders: off until armed</h3></div></div>
         {statusError ? <p className="error-message" role="alert">{statusError}</p> : !status ? <p className="table-empty">Loading…</p> : (
           <div className="crypto-readiness-grid">
-            <div><span>Order transmission</span><strong className="negative">Not available</strong><small>{status.capabilities.live_adapter ? 'Live adapter present' : 'No live adapter exists'}</small></div>
-            <div><span>Mode</span><strong>{status.mode.effective}</strong><small>{status.mode.live_blocked ? status.mode.reason : 'Live needs a separate, owner-approved milestone'}</small></div>
+            <div><span>Order transmission</span><strong className={status.capabilities.order_transmission ? 'positive' : 'negative'}>{status.capabilities.order_transmission ? 'Enabled on this deployment' : 'Switched off'}</strong><small>{status.capabilities.live_adapter ? 'Live adapter present; needs your arming and a per-test switch' : 'No live adapter'}</small></div>
+            <div><span>Mode</span><strong>{status.mode.effective}</strong><small>{status.mode.live_blocked ? status.mode.reason : 'Live orders are gated by arming, not by this mode'}</small></div>
             <div><span>Max order notional</span><strong>{status.limits.max_order_notional} {status.limits.currency}</strong><small>Fails closed on unknown inputs</small></div>
             <div><span>Max total exposure</span><strong>{status.limits.max_total_exposure} {status.limits.currency}</strong><small>Price must be under {status.limits.max_price_age_seconds}s old</small></div>
-            <div><span>Credentials</span><strong>Read-only</strong><small>{status.capabilities.execution_credentials}</small></div>
+            <div><span>Credentials</span><strong>Backend secrets</strong><small>{status.capabilities.execution_credentials}</small></div>
             <div><span>Audit events</span><strong>{status.audit_events}</strong><small>Append-only, owner-scoped</small></div>
           </div>
         )}

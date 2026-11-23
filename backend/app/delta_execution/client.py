@@ -116,5 +116,9 @@ class DeltaOrderClient:
     def cancel_order(self, order_id: str, product_id: int) -> BrokerReply:
         return self._request("DELETE", "/v2/orders", {"id": int(order_id), "product_id": product_id})
 
+    def balances(self) -> BrokerReply:
+        """Signed READ of the wallet: proves the key, the signature and the whitelisted IP work without touching any order endpoint."""
+        return self._request("GET", "/v2/wallet/balances")
+
     def position(self, product_id: int) -> BrokerReply:
         return self._request("GET", "/v2/positions", query=f"?product_id={product_id}")

@@ -198,8 +198,8 @@ BODY = {"intent": {"symbol": "BTCUSD", "side": "buy", "quantity": "2", "order_ty
 def test_status_states_that_no_order_can_be_transmitted(client, engine):
     login(client, engine, "exec@example.com")
     body = client.get("/api/v1/execution/status").json()
-    assert body["mode"]["effective"] == "research" and body["capabilities"]["order_transmission"] is False
-    assert body["capabilities"]["live_adapter"] is False and "not stored" in body["capabilities"]["execution_credentials"]
+    assert body["mode"]["effective"] == "research" and body["capabilities"]["order_transmission"] is False                 # the deployment flag is off in tests
+    assert body["capabilities"]["live_adapter"] is True and "not stored in the database" in body["capabilities"]["execution_credentials"]
     assert body["limits"]["currency"] == "USD"
 
 
@@ -279,7 +279,8 @@ def test_no_code_path_can_reach_a_broker_order_endpoint():
         ), f"{path.name} defines an order path"
 
     paths = list(app.openapi()["paths"])
-    # The owner-approved Dhan live-execution exception (AGENTS.md, 2026-11-21) is the only place order routes may exist, and only under /dhan-live/.
-    assert not [path for path in paths if "order" in path.lower() and "/execution/" not in path and "/dhan-live/" not in path]
+    # The owner-approved Dhan (2026-11-21) and Delta (2026-11-23) live-execution exceptions in AGENTS.md are the only places order routes may exist,
+    # and only under /dhan-live/ and /crypto-delta/live/.
+    assert not [path for path in paths if "order" in path.lower() and "/execution/" not in path and "/dhan-live/" not in path and "/crypto-delta/live/" not in path]
     assert {path for path in paths if "/execution/" in path} == {
         "/api/v1/execution/status", "/api/v1/execution/dry-run", "/api/v1/execution/audit"}

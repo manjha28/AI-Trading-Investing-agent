@@ -23,6 +23,6 @@ describe('BrokersPage', () => {
     expect(others.hasAttribute('open')).toBe(false);
     expect(within(others).getByRole('heading', { name: 'Zerodha' })).toBeTruthy();
     expect(within(others).getByRole('heading', { name: 'Angel One SmartAPI' })).toBeTruthy();       // session expired: not a primary card
-    expect(screen.getByText(/the only order path in the app is Signals > Forward Test/)).toBeTruthy();
+    expect(screen.getByText(/orders come only from Signals > Forward Test \(Dhan: 1 share, intraday\) and Crypto > Forward test \(Delta: 1 contract/)).toBeTruthy();
   });
 });

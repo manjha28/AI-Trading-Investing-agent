@@ -160,7 +160,7 @@ export default function App() {
         <strong>{twoFactorStatus?.enabled ? 'Verify this session' : 'Set up two-factor authentication'}</strong>
         <span>
           {twoFactorStatus?.enabled
-            ? ' Enter the current six-digit code from your authenticator app to unlock read-only broker access.'
+            ? ' Enter the current six-digit code from your authenticator app to unlock broker access.'
             : ' Broker connections require app-based two-factor authentication. Use an authenticator app; FinByte Nexus never asks for your broker PIN or OTP.'}
         </span>
         {twoFactorSecret && (
