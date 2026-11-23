@@ -1,0 +1,13 @@
+.git
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.venv
+backend/var
+backend/diagnostics
+backend/.env
+**/.env
+diagnostics
+frontend/dist
+frontend/tsconfig.tsbuildinfo
+scripts/screenshots

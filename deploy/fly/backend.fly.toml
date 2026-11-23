@@ -1,0 +1,30 @@
+# Fly.io backend app. Replace APP_NAME (must be globally unique) before `fly launch --no-deploy --copy-config`.
+app = "APP_NAME-api"
+primary_region = "bom"        # Mumbai: closest to NSE / Dhan
+
+[build]
+  dockerfile = "backend.Dockerfile"
+
+[env]
+  ENVIRONMENT = "production"
+  # Set the real values with `fly secrets set` (never here): DATABASE_URL, BROKER_ENCRYPTION_KEY,
+  # TWO_FACTOR_ENCRYPTION_KEY, ALLOWED_ORIGINS, FRONTEND_ORIGIN, TRUSTED_PROXY_HOSTS, RESEND_API_KEY.
+  # Every research flag and DHAN_LIVE_EXECUTION_ENABLED are left OFF (their defaults).
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"     # forward testing needs the nightly jobs and the live feed to keep running
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "90s"
+    interval = "30s"
+    timeout = "10s"
+    method = "GET"
+    path = "/api/v1/healthz"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

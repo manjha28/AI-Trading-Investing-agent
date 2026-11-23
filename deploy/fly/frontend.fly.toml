@@ -1,0 +1,20 @@
+# Fly.io frontend app. Replace APP_NAME as in backend.fly.toml.
+app = "APP_NAME-web"
+primary_region = "bom"
+
+[build]
+  dockerfile = "frontend.Dockerfile"
+
+[env]
+  BACKEND_HOST = "APP_NAME-api.internal"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
