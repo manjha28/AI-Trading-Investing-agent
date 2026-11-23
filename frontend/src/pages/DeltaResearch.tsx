@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '../api';
 import { formatIST } from '../lib/formatIST';
+import { CryptoWatch } from '../crypto/CryptoWatch';
 
 type FeedStatus = {
   state: string;
@@ -226,7 +227,7 @@ export function DeltaResearchPage() {
       <section className="data-section" aria-label="Delta public market research">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">DELTA EXCHANGE · PUBLIC MARKET DATA · READ ONLY</p>
+            <p className="eyebrow">DELTA EXCHANGE · PUBLIC MARKET DATA · READ + ORDER EXECUTION (ORDERS ONLY WHEN ARMED)</p>
             <h2>Delta Research</h2>
           </div>
           {status && <span className="section-count">Milestone {status.milestone}</span>}
@@ -281,34 +282,7 @@ export function DeltaResearchPage() {
 
           {activeTab === 'markets' && (
             <section aria-label="Public markets">
-              <label>
-                Search markets
-                <input
-                  type="search"
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.currentTarget.value);
-                    void refreshData(event.currentTarget.value);
-                  }}
-                  maxLength={80}
-                />
-              </label>
-              <table>
-                <thead><tr><th>Instrument</th><th>State</th><th>Last price</th><th>Mark</th><th>Observed</th><th>Source</th></tr></thead>
-                <tbody>
-                  {marketRows.map((market) => (
-                    <tr key={market.product_id}>
-                      <td><button type="button" onClick={() => setSelectedProduct(market.product_id)}>{market.symbol}</button></td>
-                      <td>{market.state}</td>
-                      <td>{market.last_price ?? 'Not available'}</td>
-                      <td>{market.mark_price ?? 'Not available'}</td>
-                      <td>{dateLabel(market.quote_time)}</td>
-                      <td>{market.quote_source ?? 'Not available'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {marketRows.length === 0 && <p className="table-empty">No public market rows are available.</p>}
+              <CryptoWatch symbol={detail?.product.symbol ?? ''} onSelect={(market) => setSelectedProduct(market.product_id)} />
               {detail && (
                 <section aria-label={`${detail.product.symbol} details`}>
                   <h3>{detail.product.symbol} · {detail.product.contract_type}</h3>

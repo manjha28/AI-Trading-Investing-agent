@@ -576,3 +576,112 @@ def test_forward_test_api_is_paper_only_owner_scoped_and_fails_closed(client, en
     monkeypatch.setattr(crypto_forward, "fetch_spec", lambda symbol, **_: (_ for _ in ()).throw(CandleDataError("Contract value or fee rate is unavailable; refusing to assume it.")))
     assert client.post("/api/v1/crypto-delta/forward-tests", headers=other, json={"symbol": "NOFEE"}).status_code == 422
     assert client.post("/api/v1/crypto-delta/forward-tests", headers=other, json={"symbol": "BTCUSD", "contracts": 0}).status_code == 422
+
+
+# ---- Delta live execution (mocked broker only; no request leaves the process) ----
+def _live_fixture(engine, monkeypatch, armed: bool):
+    from pydantic import SecretStr
+    from app.crypto_delta.forward import Spec
+    from app.delta_execution import policy, service as live_service
+    from app.models.crypto_delta import CryptoForwardTest
+    monkeypatch.setattr(settings, "delta_live_execution_enabled", True)
+    monkeypatch.setattr(settings, "delta_api_key", SecretStr("k"))
+    monkeypatch.setattr(settings, "delta_api_secret", SecretStr("s"))
+    monkeypatch.setattr(policy, "environment_block", lambda: None)
+    with Session(engine) as db:
+        user = db.scalar(select(User))
+        ft = CryptoForwardTest(user_id=user.id, name="t", symbol="BTCUSD", resolution="15m", params={"ema": 5, "rr": "3", "direction": -1}, contracts=1,
+                               slippage_bps=D("5"), start_time=T0, status="active", execute_live=True, created_at=T0, updated_at=T0)
+        db.add(ft)
+        live_service.get_state(db, user.id).armed = armed
+        db.commit()
+        return user.id, ft.id, Spec("BTCUSD", D("0.001"), D("0.0005"), D("0.5"), 27, D("0.4"))
+
+
+def _entry_and_candles(now):
+    close = now.replace(second=0, microsecond=0) - timedelta(minutes=now.minute % 15)
+    last = Candle(close - timedelta(minutes=15), D("100000"), D("100100"), D("99800"), D("100000"), D("1"))
+    return [{"side": "sell", "entry_time": last.open_time, "signal_time": last.open_time - timedelta(minutes=15), "entry_raw": D("100050"), "stop": D("100400"), "closed_same_bar": False}], [last], close + timedelta(seconds=20)
+
+
+def test_live_order_is_placed_only_when_every_layer_allows_and_is_idempotent(client, engine, monkeypatch):
+    from app.delta_execution import client as dclient, service as live_service
+    from app.models.crypto_delta import CryptoForwardTest, DeltaLiveOrder
+    login(client, engine, "live@example.com")
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"success": True, "result": {"id": 555}})
+    factory = lambda: dclient.DeltaOrderClient(transport=httpx.MockTransport(handler))  # noqa: E731
+    now = datetime.now(timezone.utc)
+    entries, candles, at = _entry_and_candles(now)
+    # not armed: blocked, nothing sent
+    user_id, ft_id, spec = _live_fixture(engine, monkeypatch, armed=False)
+    with Session(engine) as db:
+        ft = db.get(CryptoForwardTest, ft_id)
+        row = live_service.maybe_place(db, ft, spec, entries, candles, at, factory)
+        assert row.status == "blocked" and "armed" in row.block_reason and calls == []
+    # armed: leverage set, then one bracket order of one contract
+    with Session(engine) as db:
+        live_service.get_state(db, user_id).armed = True
+        db.query(DeltaLiveOrder).delete()
+        db.commit()
+        ft = db.get(CryptoForwardTest, ft_id)
+        row = live_service.maybe_place(db, ft, spec, entries, candles, at, factory)
+        assert row.status == "placed" and row.delta_order_id == "555" and row.contracts == 1 and row.leverage == 25
+        assert calls == ["/v2/products/27/orders/leverage", "/v2/orders"]
+        again = live_service.maybe_place(db, ft, spec, entries, candles, at, factory)             # the same signal can never place twice
+        assert again.id == row.id and calls.count("/v2/orders") == 1
+        # a paper-only test never reaches the broker
+        ft.execute_live = False
+        assert live_service.maybe_place(db, ft, spec, entries, candles, at, factory) is None
+
+
+def test_arming_needs_2fa_the_flag_and_the_phrase_and_the_kill_switch_always_works(client, engine, monkeypatch):
+    from app.delta_execution import policy
+    headers = login(client, engine, "arm@example.com")
+    body = {"confirmation": policy.CONFIRMATION_PHRASE}
+    assert client.post("/api/v1/crypto-delta/live/arm", headers=headers, json=body).status_code == 403          # no 2FA-verified session
+    status = client.get("/api/v1/crypto-delta/live/status").json()
+    assert status["armed"] is False and status["can_arm"] is False and status["limits"]["max_contracts"] == 1
+    assert client.post("/api/v1/crypto-delta/live/disarm", headers=headers).json()["armed"] is False          # stopping never needs 2FA
+    assert client.put("/api/v1/crypto-delta/live/tests/00000000-0000-0000-0000-000000000000", headers=headers, json={"enabled": True}).status_code == 404
+
+
+def test_public_feed_can_be_paused_and_resumed_and_the_choice_is_stored(client, engine, monkeypatch):
+    from app.delta_research import collector
+    monkeypatch.setattr(collector, "feed_wanted", collector.feed_wanted)
+    headers = login(client, engine, "feed@example.com")
+    from app.api import crypto_delta as api
+    stored = {"on": True}
+    monkeypatch.setattr(api, "feed_wanted", lambda: stored["on"])
+    monkeypatch.setattr(api, "set_feed_wanted", lambda on: stored.update(on=on))
+    assert client.get("/api/v1/crypto-delta/feed").json()["wanted"] is True
+    assert client.put("/api/v1/crypto-delta/feed", json={"enabled": False}).status_code in (401, 403)            # needs the CSRF header
+    off = client.put("/api/v1/crypto-delta/feed", headers=headers, json={"enabled": False}).json()
+    assert off["wanted"] is False and stored["on"] is False
+    assert client.put("/api/v1/crypto-delta/feed", headers=headers, json={"enabled": True}).json()["wanted"] is True
+
+
+def test_the_feed_preference_round_trips_through_the_database(engine, monkeypatch):
+    from app.delta_research import collector
+    from app import db as app_db
+    monkeypatch.setattr(app_db, "engine", engine)
+    assert collector.feed_wanted() is True                      # no choice stored: on
+    collector.set_feed_wanted(False)
+    assert collector.feed_wanted() is False
+    collector.set_feed_wanted(True)
+    assert collector.feed_wanted() is True
+
+
+def test_watch_rows_carry_ticker_columns_and_unknown_stays_null(tmp_path):
+    with DeltaResearchStore(tmp_path / "w.sqlite3") as store:
+        store.save_products([{"id": 1, "symbol": "AAAUSD", "contract_type": "perpetual_futures", "state": "live"}, {"id": 2, "symbol": "BBBUSD", "contract_type": "perpetual_futures", "state": "live"}])
+        store.save_quotes([{"product_id": 1, "symbol": "AAAUSD", "close": "10", "mark_price": "10.1", "turnover_usd": "5000", "open": "9", "high": "11", "low": "8", "ltp_change_24h": "11.1",
+                            "funding_rate": "0.01", "oi_value_usd": "123456", "quotes": {"best_bid": "9.9", "best_ask": "10.1"}},
+                           {"product_id": 2, "symbol": "BBBUSD", "close": "3"}], datetime(2026, 11, 23, tzinfo=timezone.utc), "delta_rest_ticker")
+        items = {i["symbol"]: i for i in store.list_products("", 10, 0)["items"]}
+    a, b = items["AAAUSD"]["ticker"], items["BBBUSD"]["ticker"]
+    assert a["ltp_change_24h"] == "11.1" and a["funding_rate"] == "0.01" and a["oi_value_usd"] == "123456" and a["best_bid"] == "9.9"
+    assert b["funding_rate"] is None and b["oi_value_usd"] is None and b["best_bid"] is None            # unknown is null, never zero

@@ -13,6 +13,15 @@ export type Market = {
   last_price: string | null;
   mark_price: string | null;
   volume_24h: string | null;
+  index_price?: string | null;
+  quote_source?: string | null;
+  ticker?: Ticker;
+};
+
+export type Ticker = {
+  open: string | null; high: string | null; low: string | null; close: string | null; ltp_change_24h: string | null; mark_change_24h: string | null; funding_rate: string | null;
+  oi_value_usd: string | null; oi_change_usd_6h: string | null; turnover_usd: string | null; underlying_asset_symbol: string | null; leverage: number | null;
+  best_bid: string | null; best_ask: string | null; tags: string[] | null;
 };
 
 export type Candles = {

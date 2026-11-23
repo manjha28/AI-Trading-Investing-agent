@@ -16,6 +16,24 @@ def _iso(value: datetime | None = None) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+TICKER_FIELDS = ("open", "high", "low", "close", "ltp_change_24h", "mark_change_24h", "funding_rate", "oi_value_usd", "oi_change_usd_6h", "turnover_usd",
+                 "underlying_asset_symbol", "leverage", "contract_value", "tick_size")
+
+
+def _list_item(row: sqlite3.Row, slim: bool = False) -> dict[str, Any]:
+    """One watch row: the stored columns plus the ticker fields the Crypto watch shows (a missing field stays null, never zero)."""
+    item = dict(row)
+    raw = item.pop("raw_quote", None)
+    try:
+        quote = json.loads(raw) if raw else {}
+    except ValueError:
+        quote = {}
+    book = quote.get("quotes") if isinstance(quote.get("quotes"), dict) else {}
+    item["ticker"] = {k: quote.get(k) for k in TICKER_FIELDS} | {"best_bid": book.get("best_bid"), "best_ask": book.get("best_ask"), "tags": quote.get("tags")}
+    item.pop("metadata_json", None) if slim else None
+    return item if slim else item | {"metadata": json.loads(item["metadata_json"])}
+
+
 class DeltaResearchStore:
     """Isolated public-market research storage; no account or execution state."""
 
@@ -187,6 +205,102 @@ class DeltaResearchStore:
                  volume_24h,raw_json) VALUES (?,?,?,?,?,?,?,?)
             """, values)
 
+    def live_symbols(self) -> list[str]:
+        """Symbols of live perpetuals, for the websocket subscription (Delta's `ticker` channel needs them listed; \"all\" returns nothing)."""
+        return [str(r[0]) for r in self.connection.execute("SELECT symbol FROM products WHERE contract_type='perpetual_futures' AND state='live' ORDER BY symbol")]
+
+    def save_live_ticks(self, messages: list[dict[str, Any]], observed_at: datetime, source: str, keep_price_for: frozenset[str] = frozenset()) -> int:
+        """Merge compact live `ticker` frames into each contract's stored quote: price, mark, 24h range, open interest and best bid/ask move; everything else
+        (funding, turnover, 6h open-interest change) keeps the last full REST value. A field the frame lacks stays as it was, never zero."""
+        def dec(value: Any) -> Decimal | None:
+            try:
+                number = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError):
+                return None
+            return number if number.is_finite() else None
+
+        parsed: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        for message in messages:
+            for row in message.get("d") if isinstance(message.get("d"), list) else []:
+                ohlc = row.get("ohlc") if isinstance(row, dict) else None
+                if not isinstance(ohlc, list) or len(ohlc) != 4 or dec(ohlc[3]) is None:
+                    continue
+                product_id = row.get("i") if row.get("i") is not None else self.product_id_for_symbol(str(message.get("sy") or ""))
+                if product_id is not None:
+                    parsed.append((str(product_id), message, row))
+        if not parsed:
+            return 0
+        ids = [p[0] for p in parsed]
+        existing = {r[0]: r[1] for r in self.connection.execute(f"SELECT product_id,raw_json FROM quotes WHERE product_id IN ({','.join('?' * len(ids))})", ids)}
+        timestamp, values = _iso(observed_at), []
+        for product_id, message, row in parsed:
+            try:
+                raw = json.loads(existing.get(product_id) or "{}")
+            except ValueError:
+                raw = {}
+            o, h, low, c = (dec(x) for x in row["ohlc"])
+            if str(message.get("sy")) in keep_price_for and dec(raw.get("close")) is not None:
+                c = dec(raw.get("close"))                         # a newer trade price is already stored; the 6-second summary must not roll it back
+            mark = dec(row.get("m"))
+            raw.update(close=str(c), mark_price=str(mark) if mark is not None else raw.get("mark_price"), spot_price=str(message.get("sp")) if message.get("sp") is not None else raw.get("spot_price"))
+            for key, value in (("open", o), ("high", h), ("low", low)):
+                if value is not None:
+                    raw[key] = str(value)
+            if o is not None and o != 0:
+                raw["ltp_change_24h"] = str(((c - o) / o * 100).quantize(Decimal("0.0001")))
+            if dec(row.get("m24hc")) is not None:
+                raw["mark_change_24h"] = str(dec(row.get("m24hc")))
+            oi = row.get("oi")
+            contracts, value_unit = (dec(oi[0]) if isinstance(oi, list) and oi else None), dec(raw.get("contract_value"))
+            if contracts is not None and value_unit is not None and mark is not None:
+                raw["oi_contracts"] = str(contracts)
+                raw["oi_value_usd"] = str((contracts * value_unit * mark).quantize(Decimal("0.01")))
+            q = row.get("q")
+            if isinstance(q, list) and len(q) >= 4 and dec(q[0]) is not None and dec(q[2]) is not None:
+                raw["quotes"] = {**(raw.get("quotes") if isinstance(raw.get("quotes"), dict) else {}), "best_ask": str(dec(q[0])), "best_bid": str(dec(q[2])),
+                                 "ask_size": str(q[1]), "bid_size": str(q[3])}
+            raw["time"] = timestamp
+            values.append((product_id, timestamp, source, str(c), raw.get("mark_price"), raw.get("spot_price"), raw.get("turnover_usd"), json.dumps(raw, separators=(",", ":"), sort_keys=True, default=str)))
+        with self.connection:
+            self.connection.executemany("INSERT OR REPLACE INTO quotes (product_id,observed_at,source,last_price,mark_price,index_price,volume_24h,raw_json) VALUES (?,?,?,?,?,?,?,?)", values)
+        return len(values)
+
+    def save_live_trades(self, trades: dict[str, dict[str, Any]], observed_at: datetime, source: str) -> int:
+        """Apply the newest trade price per contract: last price, the 24h range it extends, and the 24h change from the stored open. Contracts without a stored quote are skipped."""
+        symbols = list(trades)
+        if not symbols:
+            return 0
+        rows = self.connection.execute(
+            f"SELECT p.symbol,q.product_id,q.raw_json,q.mark_price,q.index_price,q.volume_24h FROM quotes q JOIN products p ON p.product_id=q.product_id WHERE p.symbol IN ({','.join('?' * len(symbols))})", symbols).fetchall()
+        timestamp, values = _iso(observed_at), []
+        for symbol, product_id, raw_json, mark, spot, volume in rows:
+            try:
+                price = Decimal(str(trades[symbol]["p"]))
+                raw = json.loads(raw_json or "{}")
+            except (InvalidOperation, ValueError, KeyError):
+                continue
+            if not price.is_finite() or price <= 0:
+                continue
+            raw["close"] = str(price)
+            for key, better in (("high", price.__gt__), ("low", price.__lt__)):
+                try:
+                    current = Decimal(str(raw.get(key)))
+                except InvalidOperation:
+                    continue
+                if current.is_finite() and better(current):
+                    raw[key] = str(price)
+            try:
+                opened = Decimal(str(raw.get("open")))
+                if opened.is_finite() and opened != 0:
+                    raw["ltp_change_24h"] = str(((price - opened) / opened * 100).quantize(Decimal("0.0001")))
+            except InvalidOperation:
+                pass
+            raw["time"] = timestamp
+            values.append((str(product_id), timestamp, source, str(price), mark, spot, volume, json.dumps(raw, separators=(",", ":"), sort_keys=True, default=str)))
+        with self.connection:
+            self.connection.executemany("INSERT OR REPLACE INTO quotes (product_id,observed_at,source,last_price,mark_price,index_price,volume_24h,raw_json) VALUES (?,?,?,?,?,?,?,?)", values)
+        return len(values)
+
     def save_candle(
         self,
         product_id: str,
@@ -272,16 +386,21 @@ class DeltaResearchStore:
             "feed_health": dict(health) if health else None,
         }
 
-    def list_products(self, search: str, limit: int, offset: int) -> dict[str, Any]:
-        where = "WHERE lower(p.symbol) LIKE ?" if search else ""
-        params: tuple[Any, ...] = (f"%{search.casefold()}%",) if search else ()
+    def list_products(self, search: str, limit: int, offset: int, slim: bool = False, since: str | None = None) -> dict[str, Any]:
+        conditions, args = [], []
+        if search:
+            conditions.append("lower(p.symbol) LIKE ?"); args.append(f"%{search.casefold()}%")
+        if since:
+            conditions.append("q.observed_at > ?"); args.append(since)          # only contracts whose quote changed after the caller's newest one
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        params: tuple[Any, ...] = tuple(args)
         total = int(self.connection.execute(
-            f"SELECT COUNT(*) FROM products p {where}", params
+            f"SELECT COUNT(*) FROM products p LEFT JOIN quotes q ON q.product_id=p.product_id {where}", params
         ).fetchone()[0])
         rows = self.connection.execute(f"""
             SELECT p.product_id,p.symbol,p.contract_type,p.state,p.metadata_json,
                    q.observed_at AS quote_time,q.last_price,q.mark_price,q.index_price,
-                   q.volume_24h,q.source AS quote_source
+                   q.volume_24h,q.source AS quote_source,q.raw_json AS raw_quote
             FROM products p
             LEFT JOIN quotes q ON q.product_id=p.product_id
               AND q.observed_at=(SELECT MAX(q2.observed_at) FROM quotes q2
@@ -290,10 +409,7 @@ class DeltaResearchStore:
             ORDER BY p.symbol,p.product_id LIMIT ? OFFSET ?
         """, (*params, limit, offset)).fetchall()
         return {
-            "items": [
-                dict(row) | {"metadata": json.loads(row["metadata_json"])}
-                for row in rows
-            ],
+            "items": [_list_item(row, slim) for row in rows],
             "total": total,
             "limit": limit,
             "offset": offset,

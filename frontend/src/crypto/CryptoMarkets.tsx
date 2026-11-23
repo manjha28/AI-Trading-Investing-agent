@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '../api';
 import { CryptoCandleChart } from './CryptoCharts';
+import { CryptoWatch } from './CryptoWatch';
 import { DEFAULT_DAYS, RESOLUTIONS, atTick, messageOf, type Candles, type ContractInfo, type Market } from './cryptoApi';
 
 type Props = { symbol: string; setSymbol: (symbol: string) => void; resolution: string; setResolution: (resolution: string) => void };
@@ -17,8 +18,7 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
   const [marketsError, setMarketsError] = useState<string | null>(null);
   const [marketsLoading, setMarketsLoading] = useState(true);       // true until the first response or error: never say "No contracts match" while the request is in flight
   const [chartLoading, setChartLoading] = useState(true);
-  const [query, setQuery] = useState('');
-  const [candles, setCandles] = useState<Candles | null>(null);
+    const [candles, setCandles] = useState<Candles | null>(null);
   const [contract, setContract] = useState<ContractInfo | null>(null);
   const [chartError, setChartError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -26,7 +26,7 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
 
   const loadMarkets = useCallback(async () => {
     try {
-      const result = await apiRequest<{ items: Market[] }>('/delta-research/markets?limit=100');
+      const result = await apiRequest<{ items: Market[] }>('/delta-research/markets?limit=500&slim=true');
       setMarkets(result.items);
       setMarketsError(null);
     } catch (error) {
@@ -38,7 +38,7 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
 
   useEffect(() => {
     void loadMarkets();
-    const timer = window.setInterval(() => void loadMarkets(), 30_000);
+    const timer = window.setInterval(() => void loadMarkets(), 15_000);
     return () => window.clearInterval(timer);
   }, [loadMarkets]);
 
@@ -73,37 +73,11 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
     }
   }
 
-  const visible = useMemo(() => {
-    const term = query.trim().toUpperCase();
-    return [...markets]
-      .filter((m) => !term || m.symbol.toUpperCase().includes(term))
-      .sort((a, b) => Number(b.volume_24h ?? 0) - Number(a.volume_24h ?? 0))
-      .slice(0, 60);
-  }, [markets, query]);
-
   const selected = markets.find((m) => m.symbol === symbol);
 
   return (
-    <div className="crypto-split">
-      <aside className="data-section crypto-watch" aria-label="Perpetual contracts">
-        <div className="section-heading"><div><p className="eyebrow">WATCH</p><h3>Perpetuals</h3></div><span className="section-count">{markets.length}</span></div>
-        <input type="search" placeholder="Search contract, e.g. SOL" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search contracts" />
-        {marketsError && <p className="error-message" role="alert">{marketsError}</p>}
-        <ul className="crypto-watch-list">
-          {visible.map((m) => (
-            <li key={m.product_id}>
-              <button type="button" className={m.symbol === symbol ? 'active' : ''} onClick={() => setSymbol(m.symbol)} aria-pressed={m.symbol === symbol}>
-                <strong>{m.symbol}</strong>
-                <span className="crypto-watch-price">{m.last_price ?? '—'}</span>
-                <small>24h vol {shortNumber(m.volume_24h)}</small>
-              </button>
-            </li>
-          ))}
-          {visible.length === 0 && marketsLoading && <li className="table-empty" role="status" aria-busy="true">Loading contracts…</li>}
-          {visible.length === 0 && !marketsLoading && !marketsError && <li className="table-empty">No contracts match. Delta research may be disabled.</li>}
-        </ul>
-        <p className="crypto-sub">Prices are the latest public-feed quotes, refreshed every 30 seconds.</p>
-      </aside>
+    <div className="crypto-stack">
+      <CryptoWatch symbol={symbol} setSymbol={setSymbol} />
 
       <section className="data-section crypto-chart-panel" aria-label="Chart">
         <div className="section-heading">

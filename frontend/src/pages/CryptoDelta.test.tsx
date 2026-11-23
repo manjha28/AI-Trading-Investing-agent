@@ -14,7 +14,7 @@ vi.mock('../crypto/CryptoCharts', async (importOriginal) => {
 
 const status = {
   mode: { configured: 'research', effective: 'research', live_blocked: false, reason: null },
-  capabilities: { order_transmission: false, live_adapter: false, execution_credentials: 'not stored; broker access is read-only', simulated_fills: 'backtest only' },
+  capabilities: { order_transmission: false, live_adapter: true, execution_credentials: 'read from backend secrets only', simulated_fills: 'backtest only' },
   limits: { currency: 'USD', max_order_notional: '1000', max_total_exposure: '5000', max_price_age_seconds: 120 },
   audit_events: 0,
   disclaimer: 'Decision support, not investment advice.',
@@ -83,12 +83,13 @@ describe('CryptoDeltaPage', () => {
   it('opens on Markets & charts with a watch list sorted by volume and a chart of completed candles', async () => {
     mockApi();
     render(<CryptoDeltaPage />);
-    const watch = await screen.findByRole('complementary', { name: 'Perpetual contracts' });
-    const buttons = await within(watch).findAllByRole('button');
-    expect(buttons[0].textContent).toContain('SOLUSD'); // 90M volume ranks above BTC's 5M
+    const watch = await screen.findByRole('region', { name: 'Perpetual contracts' });
+    await within(watch).findByText('SOLUSD');
+    const bodyRows = within(watch).getAllByRole('row').slice(1);
+    expect(bodyRows[0].textContent).toContain('SOLUSD'); // 90M volume ranks above BTC's 5M
     expect(await screen.findByTestId('candle-chart')).toHaveProperty('textContent', '3 candles, 0 markers');
     expect(await screen.findByText('0.050%')).toBeTruthy(); // exchange taker fee, shown not assumed
-    fireEvent.click(within(watch).getByRole('button', { name: /SOLUSD/ }));
+    fireEvent.click(within(watch).getByRole('button', { name: 'SOLUSD' }));
     await waitFor(() => expect(window.localStorage.getItem('crypto.symbol')).toBe('SOLUSD'));
   });
 
@@ -146,8 +147,8 @@ describe('CryptoDeltaPage', () => {
     mockApi();
     render(<CryptoDeltaPage />);
     fireEvent.click(await screen.findByRole('tab', { name: 'Execution' }));
-    expect(await screen.findByText('Orders are not placed from this app')).toBeTruthy();
-    expect(await screen.findByText('Not available')).toBeTruthy();
+    expect(await screen.findByText('Delta orders: off until armed')).toBeTruthy();
+    expect(await screen.findByText('Switched off')).toBeTruthy();
     expect(screen.getByText('1000 USD')).toBeTruthy();
   });
 
@@ -155,7 +156,7 @@ describe('CryptoDeltaPage', () => {
     const calls = mockApi();
     render(<CryptoDeltaPage />);
     fireEvent.click(await screen.findByRole('tab', { name: 'Execution' }));
-    await screen.findByText('Orders are not placed from this app');
+    await screen.findByText('Delta orders: off until armed');
     fireEvent.change(screen.getByLabelText(/Limit price/), { target: { value: '60000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run risk check' }));
     expect(await screen.findByText(/Blocked by the risk checks/)).toBeTruthy();

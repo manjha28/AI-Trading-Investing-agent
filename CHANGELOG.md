@@ -224,3 +224,8 @@
 - Phase 7b: Overview takes a snapshot-only Dhan sync when it opens (closed positions no longer wait for the Sync button); long-term PIT statements module, swing/delivery/feature-drop analyses (report in diagnostics/nexus-v2/phase-7b-report.md).
 - MCX session follows the exchange: closes 23:55 IST in the US winter (23:30 in the US summer), backend hint and Commodity watch
 - Delta forward test: paper 5 EMA alert-candle test on perpetuals (5m/15m/1h), taker fees and slippage, owner-scoped, runs once per closed candle; new table crypto_forward_tests
+- Delta research feed: first product fetch no longer skipped on a freshly booted machine (monotonic clock bug)
+- Delta live execution (owner-approved, off by default): 1 contract max, leverage min(25x, exchange max), three-layer arming, guard-rails, kill switch, audit; Delta paper tests can execute live only when armed
+- Crypto watch is a sortable watchlist table (last, 24h %, range, volume, open interest, funding, mark, bid/ask, stars); feed pause/resume switch (stored, survives restarts); Dhan and Delta labelled read + order execution (orders only when armed)
+- Crypto watch: live v2/ticker frames are stored (batched every second) so prices tick in seconds and flash green/red; watch refreshes every 2 s; Delta live-execution deployment flag switched on at the owner's request (arming and per-test switch still required)
+- Crypto watch: Delta trades channel drives the last price per trade (flushed every 0.5 s), the page refreshes every second and fetches only changed contracts

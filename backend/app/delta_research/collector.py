@@ -35,6 +35,7 @@ MAX_SUBSCRIBERS = 32
 SUBSCRIBER_QUEUE_SIZE = 256
 WRITE_QUEUE_SIZE = 128
 PRODUCT_REFRESH_SECONDS = 6 * 60 * 60
+TICK_FLUSH_SECONDS = 0.5
 
 
 def reconnect_delay(consecutive_failures: int) -> float:
@@ -100,6 +101,9 @@ class DeltaPublicCollector:
         self._last_rest_success_at: datetime | None = None
         self._last_health_write_at = 0.0
         self._started = False
+        self._latest_ticks: dict[str, dict[str, Any]] = {}
+        self._latest_trades: dict[str, dict[str, Any]] = {}
+        self._trade_seen: dict[str, float] = {}
 
     async def start(self) -> None:
         if self._started:
@@ -116,6 +120,7 @@ class DeltaPublicCollector:
                 asyncio.create_task(self._rest_loop(client), name="delta-rest-collector"),
                 asyncio.create_task(self._websocket_loop(), name="delta-public-stream"),
                 asyncio.create_task(self._writer_loop(), name="delta-sqlite-writer"),
+                asyncio.create_task(self._tick_flush_loop(), name="delta-tick-flush"),
             ]
             await asyncio.gather(*self._tasks)
 
@@ -130,6 +135,8 @@ class DeltaPublicCollector:
                 pass
         if len(self._tasks) > 2:
             await self._tasks[2]
+        for task in self._tasks[3:]:
+            await task
         self._tasks.clear()
         self._started = False
         self._connected = False
@@ -191,10 +198,10 @@ class DeltaPublicCollector:
         return messages()
 
     async def _rest_loop(self, client: httpx.AsyncClient) -> None:
-        last_products = 0.0
+        last_products: float | None = None      # None = never fetched (time.monotonic() counts from boot, so 0.0 would skip the first fetch on a young machine)
         while not self._stop.is_set():
             try:
-                if time.monotonic() - last_products >= PRODUCT_REFRESH_SECONDS:
+                if last_products is None or time.monotonic() - last_products >= PRODUCT_REFRESH_SECONDS:
                     products = await self._fetch_products(client)
                     await asyncio.to_thread(self._persist_products, products)
                     last_products = time.monotonic()
@@ -297,6 +304,10 @@ class DeltaPublicCollector:
         # "unavailable" and retried at the capped interval, so it recovers on its own.
         while not self._stop.is_set():
             try:
+                symbols = await asyncio.to_thread(self._live_symbols)
+                while not symbols and not self._stop.is_set():        # a fresh store has no product list until the first REST fetch lands
+                    await asyncio.sleep(2)
+                    symbols = await asyncio.to_thread(self._live_symbols)
                 async with connect(
                     self.websocket_url,
                     open_timeout=10,
@@ -310,7 +321,8 @@ class DeltaPublicCollector:
                         "type": "subscribe",
                         "payload": {
                             "channels": [
-                                {"name": "v2/ticker", "symbols": ["all"]},
+                                {"name": "ticker", "symbols": symbols},
+                                {"name": "trades", "symbols": symbols},
                                 {
                                     "name": "candlestick_1m",
                                     "symbols": ["perpetual_futures"],
@@ -370,7 +382,19 @@ class DeltaPublicCollector:
             return
         if message_type in {"subscriptions", "pong"}:
             return
-        if message_type not in {"ticker", "candlestick_1m"}:
+        if message_type == "ticker":
+            symbol = str(message.get("sy") or "")
+            if symbol:
+                self._latest_ticks[symbol] = message     # only the newest tick per contract is kept; a batch writer merges them into the stored quotes (cheap, and bounded)
+                await self._mark_event()
+            return
+        if message_type == "trades":
+            symbol = str(message.get("sy") or "")
+            if symbol and message.get("p") is not None:
+                self._latest_trades[symbol] = message     # the newest trade per contract wins; flushed in one write
+                await self._mark_event()
+            return
+        if message_type != "candlestick_1m":
             return
         symbol = str(message.get("sy") or "")
         if not symbol:
@@ -386,6 +410,40 @@ class DeltaPublicCollector:
             })
             return
         await self._mark_event()
+
+    async def _tick_flush_loop(self) -> None:
+        """Store the newest live ticker of every contract in ONE write every TICK_FLUSH_SECONDS, so the watch glows on real price changes without a write per frame."""
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=TICK_FLUSH_SECONDS)
+            except TimeoutError:
+                pass
+            if not self._latest_ticks and not self._latest_trades:
+                continue
+            rows, self._latest_ticks = list(self._latest_ticks.values()), {}
+            trades, self._latest_trades = self._latest_trades, {}
+            try:
+                await asyncio.to_thread(self._persist_ticks, rows, trades)
+            except (OSError, RuntimeError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+                await self._record_failure(exc, "storage")
+
+    def _live_symbols(self) -> list[str]:
+        """Live perpetuals from the stored product list (Delta's `ticker` channel returns nothing for \"all\"). Empty until the first product fetch lands; the loop then waits and retries."""
+        try:
+            with DeltaResearchStore(self.path, read_only=True) as store:
+                return store.live_symbols()
+        except (OSError, sqlite3.Error, RuntimeError):
+            return []
+
+    def _persist_ticks(self, rows: list[dict[str, Any]], trades: dict[str, dict[str, Any]] | None = None) -> None:
+        now_m, trades = time.monotonic(), trades or {}
+        for symbol in trades:
+            self._trade_seen[symbol] = now_m
+        recent = frozenset(s for s, seen in self._trade_seen.items() if now_m - seen < 10)
+        with self._write_lock, DeltaResearchStore(self.path) as store:
+            store.save_live_ticks(rows, datetime.now(timezone.utc), "delta_public_ws_ticker", recent)
+            if trades:
+                store.save_live_trades(trades, datetime.now(timezone.utc), "delta_public_ws_trades")
 
     async def _writer_loop(self) -> None:
         while not self._stop.is_set() or not self._write_queue.empty():
@@ -420,34 +478,7 @@ class DeltaPublicCollector:
         observed_at = _event_time(message.get("ts"))
         with self._write_lock, DeltaResearchStore(self.path) as store:
             product_id = store.product_id_for_symbol(symbol)
-            if message_type == "ticker":
-                store.save_event(
-                    "ticker", message, product_id=product_id, symbol=symbol,
-                    exchange_time=observed_at,
-                )
-                rows = message.get("d")
-                if isinstance(rows, list):
-                    quotes = []
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        ohlc = row.get("ohlc")
-                        if not isinstance(ohlc, list) or len(ohlc) != 4 or ohlc[3] is None:
-                            continue
-                        quotes.append({
-                            "product_id": row.get("i", product_id),
-                            "symbol": symbol,
-                            "close": ohlc[3],
-                            "mark_price": row.get("m"),
-                            "spot_price": message.get("sp"),
-                            "raw": row,
-                        })
-                    store.save_quotes(
-                        quotes,
-                        observed_at or datetime.now(timezone.utc),
-                        "delta_public_ws_ticker_24h_close",
-                    )
-            elif product_id is not None:
+            if product_id is not None:
                 required = {"o", "h", "l", "c", "res"}
                 if required.issubset(message):
                     observed_time = observed_at or datetime.now(timezone.utc)
@@ -544,29 +575,91 @@ class DeltaPublicCollector:
             queue.put_nowait(message)
 
 
+FEED_FLAG = "delta_feed"
+WATCH_SECONDS = 10
+
+
+def feed_wanted() -> bool | None:
+    """The owner's on/off choice for the public feed (default on). None when the database cannot be read, so nothing changes."""
+    try:
+        from sqlalchemy.orm import Session
+
+        from app.db import engine
+        from app.models.crypto_delta import AppFlag
+        with Session(engine) as db:
+            row = db.get(AppFlag, FEED_FLAG)
+            return row is None or row.value != "off"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def set_feed_wanted(on: bool) -> None:
+    from datetime import datetime, timezone
+
+    from sqlalchemy.orm import Session
+
+    from app.db import engine
+    from app.models.crypto_delta import AppFlag
+    with Session(engine) as db:
+        row = db.get(AppFlag, FEED_FLAG)
+        now = datetime.now(timezone.utc)
+        if row is None:
+            db.add(AppFlag(key=FEED_FLAG, value="on" if on else "off", updated_at=now))
+        else:
+            row.value, row.updated_at = "on" if on else "off", now
+        db.commit()
+
+
 class DeltaResearchManager:
+    """Runs the public collector while the owner wants it. A watcher follows the stored on/off choice every few seconds, so the switch works from any request."""
+
     def __init__(self) -> None:
         self.collector: DeltaPublicCollector | None = None
         self.task: asyncio.Task[None] | None = None
+        self.watcher: asyncio.Task[None] | None = None
 
-    async def start(self) -> None:
-        if not settings.delta_research_enabled or not settings.delta_research_db_path:
-            return
-        if self.task is not None and not self.task.done():
-            return
-        self.collector = DeltaPublicCollector(settings.delta_research_db_path)
+    def _running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def _launch(self) -> None:
+        self.collector = DeltaPublicCollector(settings.delta_research_db_path or "")
         self.task = asyncio.create_task(self.collector.start(), name="delta-research-manager")
 
-    async def stop(self) -> None:
-        if self.collector is None:
-            return
-        await self.collector.stop()
+    async def _halt(self) -> None:
+        if self.collector is not None:
+            await self.collector.stop()
         if self.task is not None:
             try:
                 await self.task
             except asyncio.CancelledError:
                 pass
         self.task = None
+        self.collector = None
+
+    async def _watch(self) -> None:
+        while True:
+            wanted = await asyncio.to_thread(feed_wanted)
+            if wanted is True and not self._running():
+                self._launch()
+            elif wanted is False and self._running():
+                await self._halt()
+            await asyncio.sleep(WATCH_SECONDS)
+
+    async def start(self) -> None:
+        if not settings.delta_research_enabled or not settings.delta_research_db_path:
+            return
+        if self.watcher is None or self.watcher.done():
+            self.watcher = asyncio.create_task(self._watch(), name="delta-research-watch")
+
+    async def stop(self) -> None:
+        if self.watcher is not None:
+            self.watcher.cancel()
+            try:
+                await self.watcher
+            except asyncio.CancelledError:
+                pass
+            self.watcher = None
+        await self._halt()
 
     def status(self) -> dict[str, Any]:
         if not settings.delta_research_enabled:
@@ -586,7 +679,7 @@ class DeltaResearchManager:
             return {
                 "enabled": True,
                 "configured": bool(settings.delta_research_db_path),
-                "state": "not_started",
+                "state": "paused" if feed_wanted() is False else "not_started",
                 "connected": False,
                 "reconnects": 0,
                 "consecutive_failures": 0,

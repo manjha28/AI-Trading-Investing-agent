@@ -24,7 +24,7 @@ function remembered<T extends string>(key: string, fallback: T, allowed?: readon
 
 /**
  * Delta Exchange India crypto perpetuals: a self-contained workspace, separate from the Indian-equity
- * system (own candles, strategies, backtests). Research only; no order is placed or transmitted.
+ * system (own candles, strategies, backtests). Read + order execution: Delta orders go out only when live execution is armed (off by default; 1 contract max).
  */
 export function CryptoDeltaPage() {
   const [tab, setTab] = useState<Tab>(() => remembered<Tab>('crypto.tab', 'markets', TABS.map((t) => t.id)));
@@ -45,7 +45,7 @@ export function CryptoDeltaPage() {
         <div>
           <p className="eyebrow">DELTA EXCHANGE INDIA · CRYPTO PERPETUALS</p>
           <h2>Perpetuals workspace</h2>
-          <p className="crypto-sub">Watch, chart and backtest perpetual contracts. Separate from the Indian-equity system; research only. Decision support, not investment advice.</p>
+          <p className="crypto-sub">Watch, chart and backtest perpetual contracts. Separate from the Indian-equity system; read + order execution (orders only when armed, 1 contract max). Decision support, not investment advice.</p>
         </div>
       </div>
       <nav className="crypto-tabs" role="tablist" aria-label="Crypto workspace">

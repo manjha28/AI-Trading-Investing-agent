@@ -118,9 +118,9 @@ def execution_status(
             "reason": mode.reason,
         },
         "capabilities": {
-            "order_transmission": False,
-            "live_adapter": False,
-            "execution_credentials": "not stored; broker access is read-only",
+            "order_transmission": bool(settings.delta_live_execution_enabled),          # layer 1 of 3: orders go out only when the deployment flag, your arming and the per-test switch are all on
+            "live_adapter": True,
+            "execution_credentials": "read from backend secrets only (not stored in the database); 1 contract max, leverage min(25x, exchange max)",
             "simulated_fills": "backtest only, completed bars, labelled hypothetical",
         },
         "limits": {

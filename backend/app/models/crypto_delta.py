@@ -69,8 +69,62 @@ class CryptoForwardTest(Base):
     slippage_bps: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=Decimal("5"))
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(12), nullable=False, default="active")   # active | paused
+    execute_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")   # layer 3 of 3 for Delta live orders
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(400))
     snapshot: Mapped[dict | None] = mapped_column(JSON_DOCUMENT)
+
+
+class DeltaLiveState(Base):
+    """Per-user Delta live-execution arming and limits. Absent or ``armed = false`` means no order can ever be sent for this user."""
+    __tablename__ = "delta_live_state"
+
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    armed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    armed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disarmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    max_daily_loss_usd: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("25"))
+    max_trades_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
+    max_open_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    max_notional_usd: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("2000"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DeltaLiveOrder(Base):
+    """Every live Delta order this app tried to place, with the broker's actual reply. Owner-scoped; never mixed with paper rows."""
+    __tablename__ = "delta_live_orders"
+    __table_args__ = (UniqueConstraint("client_order_id", name="uq_delta_live_orders_client_id"), Index("ix_delta_live_orders_user_created", "user_id", "created_at"))
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    forward_test_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("crypto_forward_tests.id", ondelete="SET NULL"))
+    strategy_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    product_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    contracts: Mapped[int] = mapped_column(Integer, nullable=False)
+    leverage: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reference_price: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
+    stop_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    client_order_id: Mapped[str] = mapped_column(String(30), nullable=False)
+    delta_order_id: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(24), nullable=False)   # blocked | placed | rejected | filled | closed | cancelled | error
+    block_reason: Mapped[str | None] = mapped_column(String(300))
+    entry_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    request: Mapped[dict | None] = mapped_column(JSON_DOCUMENT)       # what was sent (no credentials)
+    response: Mapped[dict | None] = mapped_column(JSON_DOCUMENT)      # what Delta answered, verbatim
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AppFlag(Base):
+    """A tiny owner-set runtime switch that must survive restarts (for example pausing the Delta public feed to save hosting cost)."""
+    __tablename__ = "app_flags"
+
+    key: Mapped[str] = mapped_column(String(48), primary_key=True)
+    value: Mapped[str] = mapped_column(String(120), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -1155,7 +1155,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
     <div className="overview-page">
       <div className="overview-heading">
         <h1 className="page-title">Overview</h1>
-        <p className="muted">Decision support, not investment advice. Brokers are read-only.</p>
+        <p className="muted">Decision support, not investment advice. Brokers: read + order execution (orders only when armed).</p>
       </div>
       {dhanError && <p className="broker-sync-time" role="alert">{dhanError}</p>}
       {!brokerAccessAllowed && <p className="broker-sync-time" role="status">Verify this session with your authenticator code to load broker account data.</p>}

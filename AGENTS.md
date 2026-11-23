@@ -33,9 +33,8 @@ pick one.
 - Scanner and backtester consume the same compiled condition tree and indicator library.
 
 ## Execution policy
-Current state: Delta Exchange is research-only: no order path to it exists and none may be built.
-Dhan has ONE owner-approved exception (below); every other broker, segment and strategy stays
-read-only.
+Current state: Dhan and Delta Exchange each have ONE owner-approved live-execution exception (below);
+every other broker, segment and strategy stays read-only.
 
 ### Owner-approved exception: Dhan live execution (approved by the owner, 2026-11-21)
 The owner runs this system on their own account and approved building live order execution for
@@ -57,6 +56,28 @@ Dhan only, within hard limits. Agents MAY build and maintain exactly this, and n
 - Every intent, decision, order request, broker response and fill is written to the append-only
   audit trail with the real broker reply; tokens are never logged.
 
+### Owner-approved exception: Delta Exchange India live execution (approved by the owner, 2026-11-23)
+The owner approved building live order execution for Delta Exchange India, within hard limits. Agents MAY
+build and maintain exactly this, and nothing wider:
+- USD-quoted perpetual futures only. No options, no spot, no non-USD contracts.
+- Maximum order size 1 contract (one lot, whatever the lot size is). Enforced in the intent, the guard-rails
+  and the client; configuration cannot raise it.
+- Leverage is set to the LOWER of 25x and the maximum the contract's initial margin allows, and the order
+  is refused if that leverage cannot be confirmed.
+- Only strategies on a code-level allowlist (currently `five_ema_alert`, from the Delta paper forward test).
+- The API key and secret are read from backend environment secrets only (`DELTA_API_KEY`, `DELTA_API_SECRET`),
+  never stored in the database, never logged, never returned.
+- Off by default in three independent layers, all required: deployment flag (`DELTA_LIVE_EXECUTION_ENABLED`),
+  per-user arming by the owner (verified email, 2FA-verified session, CSRF, typed confirmation, auditable),
+  and per-test `execute_live` on that Delta forward test.
+- Guard-rails fail closed (stale price, missing stop or target, daily loss cap, daily trade cap, open-position
+  cap, notional cap, duplicate signal, one open order per contract, kill switch). The kill switch disarms
+  instantly and cancels this app's unfilled orders.
+- Tests, CI and development NEVER reach a Delta order endpoint (the client refuses under pytest/CI and is
+  exercised only against a mocked transport). Agents must not place a real order.
+- Every intent, decision, order request, broker response and fill is written to the append-only audit trail
+  with the real broker reply; credentials are never logged.
+
 Agents MAY design and build the architecture that lets live execution be added later without
 rework:
 - a structured `OrderIntent` object (instrument, side, quantity, order type, limit, stop, TIF,
@@ -69,7 +90,7 @@ rework:
 - guard-rail limits (risk checks, size and exposure caps) that fail closed;
 - an append-only audit trail recording intent, decision and fill identically for backtest and live.
 
-Agents MUST NOT build (outside the Dhan exception above):
+Agents MUST NOT build (outside the Dhan and Delta exceptions above):
 - any code path that transmits an order (place, modify or cancel) to a broker;
 - any execution credential storage (read-only credentials only);
 - any live adapter, or any adapter method that can reach a broker's order endpoints.

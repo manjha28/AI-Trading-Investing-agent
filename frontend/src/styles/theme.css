@@ -381,3 +381,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .brand-chips .chip-blue { color: #4da3ff; background: #0f2036; }
 .auth-panel { background: #111826; border-radius: 16px; width: min(100%, 440px); }
 .auth-panel .brand-lockup { margin-bottom: 0; }
+
+.crypto-stack { display: grid; gap: 16px; }
+.feed-toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; }
+.feed-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--tc-dim); } .feed-dot.on { background: var(--tc-green); } .feed-dot.wait { background: var(--tc-amber, #d9a441); }

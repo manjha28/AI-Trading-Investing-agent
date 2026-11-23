@@ -20,6 +20,7 @@ from app.crypto_delta.candles import (
     MAX_SYNC_DAYS, RESOLUTION_SECONDS, SYMBOL_PATTERN, CandleDataError, find_gaps, load_candles, sync_candles,
 )
 from app.crypto_delta import forward as crypto_forward
+from app.delta_research.collector import delta_research_manager, feed_wanted, set_feed_wanted
 from app.crypto_delta.strategies import STRATEGIES, ParamError, resolve_params
 from app.db import get_db
 from app.delta_research.store import DeltaResearchStore
@@ -418,7 +419,7 @@ class ForwardCreate(BaseModel):
 def _forward_json(ft: CryptoForwardTest, *, full: bool) -> dict[str, Any]:
     snap = ft.snapshot or {}
     out: dict[str, Any] = {
-        "id": str(ft.id), "name": ft.name, "symbol": ft.symbol, "resolution": ft.resolution, "status": ft.status, "contracts": ft.contracts,
+        "id": str(ft.id), "name": ft.name, "symbol": ft.symbol, "resolution": ft.resolution, "status": ft.status, "contracts": ft.contracts, "execute_live": ft.execute_live,
         "params": ft.params, "slippage_bps": str(ft.slippage_bps), "start_time": ft.start_time.isoformat(), "last_run_at": ft.last_run_at.isoformat() if ft.last_run_at else None,
         "last_error": ft.last_error, "paper_only": True, "label": crypto_forward.LABEL, "summary": snap.get("summary"), "open_positions": snap.get("open_positions", []),
     }
@@ -497,3 +498,30 @@ def delete_forward_test(
     db.delete(_owned_forward(db, active_session.user_id, ft_id))
     db.commit()
     return Response(status_code=204)
+
+
+# ───────────────────────── public feed on/off (saves hosting cost) ─────────────────────────
+
+class FeedSwitch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+def _feed_view() -> dict[str, Any]:
+    status = delta_research_manager.status()
+    return {"available": bool(settings.delta_research_enabled and settings.delta_research_db_path), "wanted": feed_wanted() is not False, "state": status.get("state"),
+            "connected": status.get("connected"), "last_event_at": status.get("last_event_at")}
+
+
+@router.get("/feed")
+def feed_state(response: Response, _: UserSession = Depends(require_verified_session)) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    return _feed_view()
+
+
+@router.put("/feed")
+def feed_switch(body: FeedSwitch, response: Response, _: UserSession = Depends(require_verified_session), __: UserSession = Depends(require_csrf)) -> dict[str, Any]:
+    """Pause or resume the public Delta feed (saves CPU and network on the host). The choice survives restarts; stored data stays readable."""
+    response.headers["Cache-Control"] = "no-store"
+    set_feed_wanted(body.enabled)
+    return _feed_view() | {"note": "Applies within about ten seconds."}
