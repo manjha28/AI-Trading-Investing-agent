@@ -898,12 +898,36 @@ def get_multibagger(
             continue
         if sector and sector.casefold() not in str(c.get("kind", "")).casefold() and sector.casefold() not in str(c.get("sector", "")).casefold():
             continue
+        all_checks = c.get("checks") or []
+        unknown_ids = [k["id"] for k in all_checks if k.get("result") == "unknown"]
         items.append({"symbol": sym, "instrument_id": str(a.instrument_id), "class": a.klass, "rank": a.rank, "scores": {"Q": a.q, "G": a.g, "V": a.v, "T": a.t, "X": a.x}, "checklist": c.get("checklist"),
+                      "checks_passed": c.get("checks_passed"), "checks_total": c.get("checks_total"), "unknown_count": len(unknown_ids), "unknown_ids": unknown_ids,
+                      "fail_count": sum(1 for k in all_checks if k.get("result") == "fail"),
                       "timing": c.get("timing"), "kind": c.get("kind"), "reasons": (c.get("reasons") or [])[:3],
                       "failed_or_unknown": [f"{k['id']}: {k['reason']}" for k in (c.get("checks") or []) if k["result"] in ("fail", "unknown")][:8], "class_if_unknown_checks_cleared": (c.get("class_if_unknown_checks_cleared") or {}).get("class")})
     order = {"multibagger_candidate": 0, "quality_compounder": 1, "emerging": 2, "new_listing": 3, "watch": 4, "not_a_fit": 5, "not_tradable": 6, "avoid": 7, "not_assessable": 8}
     items.sort(key=lambda i: (order[i["class"]], -(i["rank"] or 0), i["symbol"]))
     return {"enabled": True, "shadow": shadow, "as_of": latest.isoformat(), "model_version": rows[0][0].model_version if rows else None, "counts": counts, "items": items[:limit], "disclaimer": DISCLAIMER}
+
+
+@router.get("/multibagger/{symbol}")
+def get_multibagger_detail(
+    symbol: str,
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict:
+    """One stock's latest multibagger assessment with EVERY check (passed, failed, unknown) and its one-line reason, for the screen's detail panel. Owner-scoped, read-only."""
+    from app.models.multibagger import MultibaggerAssessment
+    row = db.execute(select(MultibaggerAssessment, Instrument.symbol).join(Instrument, Instrument.id == MultibaggerAssessment.instrument_id)
+                     .where(MultibaggerAssessment.user_id == _session.user_id, func.upper(Instrument.symbol) == symbol.upper())
+                     .order_by(MultibaggerAssessment.as_of.desc()).limit(1)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No multibagger assessment for this stock.")
+    a, sym = row
+    c = a.checks or {}
+    return {"symbol": sym, "class": a.klass, "as_of": a.as_of.isoformat(), "model_version": a.model_version, "scores": {"Q": a.q, "G": a.g, "V": a.v, "T": a.t, "X": a.x}, "rank": a.rank,
+            "kind": c.get("kind"), "timing": c.get("timing"), "reasons": c.get("reasons") or [], "checklist": c.get("checklist"), "checks": c.get("checks") or [], "emerging": c.get("emerging"),
+            "class_if_unknown_checks_cleared": c.get("class_if_unknown_checks_cleared"), "disclaimer": DISCLAIMER}
 
 
 @router.get("/stock/{symbol}/verdict")

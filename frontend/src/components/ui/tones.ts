@@ -8,11 +8,13 @@ export const STATUS_TONE: Record<string, Tone> = {
   live: 'positive', stale: 'caution', delayed: 'caution', closed: 'neutral', unverified: 'caution', unknown: 'neutral',
   // multibagger classes
   compounder: 'positive', emerging: 'positive', watch: 'caution', not_a_fit: 'neutral', not_tradable: 'negative',
+  multibagger_candidate: 'positive', quality_compounder: 'positive', new_listing: 'info', not_assessable: 'neutral',
 };
 
 export const STATUS_LABEL: Record<string, string> = {
   buy: 'Buy', hold: 'Hold', wait: 'Wait', avoid: 'Avoid', radar: 'Radar', live: 'Live', stale: 'Stale', delayed: 'Delayed', closed: 'Closed', unverified: 'Unverified', unknown: 'Unknown',
   compounder: 'Compounder', emerging: 'Emerging', watch: 'Watch', not_a_fit: 'Not a fit', not_tradable: 'Not tradable',
+  multibagger_candidate: 'Candidate', quality_compounder: 'Compounder', new_listing: 'New listing', not_assessable: 'Not assessable',
 };
 
 export function toneOf(status: string | null | undefined): Tone {

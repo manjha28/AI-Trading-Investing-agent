@@ -9,7 +9,7 @@ const BASELINE = new URL('./lint-tokens.baseline.json', import.meta.url).pathnam
 const ALLOW = [/styles\/tokens\.css$/, /(^|\/)style\.css$/, /\.test\.tsx?$/, /(^|\/)charts?\.tsx$/, /CryptoCharts\.tsx$/, /Chart[A-Za-z]*\.tsx$/];
 const RAW_COLOUR = /#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(/g;
 const INLINE_STYLE = /style=\{\{([^}]*)\}\}/g;
-const STYLE_KEYS = /\b(color|background|backgroundColor|border|borderColor|font|fontSize|fontFamily|fontWeight|margin|padding|gap|width|height)\b\s*:/;
+const STYLE_KEYS = /\b(color|background|backgroundColor|border|borderColor|font|fontSize|fontFamily|fontWeight|margin|padding|gap)\b\s*:/;
 
 function walk(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {

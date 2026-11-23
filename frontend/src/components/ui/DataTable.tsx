@@ -5,7 +5,7 @@ import { useDensity, useWindow, type Density } from './useWindow';
 export type Column<T> = {
   key: string; header: string; render: (row: T) => ReactNode;
   sortValue?: (row: T) => number | string | null | undefined;     // present = the header sorts; unknown (null/NaN) always sorts last
-  align?: 'left' | 'right'; sticky?: boolean; hideable?: boolean; defaultHidden?: boolean; title?: string;
+  align?: 'left' | 'right'; firstSort?: 'asc' | 'desc'; sticky?: boolean; hideable?: boolean; defaultHidden?: boolean; title?: string;
 };
 export type SortState = { key: string; dir: 1 | -1 };
 const ROW_HEIGHT: Record<Density, number> = { comfortable: 40, compact: 32 };
@@ -14,9 +14,9 @@ export const VIRTUALISE_ABOVE = 100;
 const unknown = (v: unknown) => v === null || v === undefined || (typeof v === 'number' && Number.isNaN(v)) || v === '';
 
 /** Sorted, windowed, keyboard-friendly table. Scrolls sideways INSIDE its own container (never the page) and renders only the visible rows above 100. */
-export function DataTable<T>({ columns, rows, rowKey, caption, onRowClick, selectedKey, defaultSort, viewportHeight = 560, loading, error, onRetry, empty, density: densityProp }: {
+export function DataTable<T>({ columns, rows, rowKey, caption, onRowClick, selectedKey, defaultSort, viewportHeight = 560, virtualiseAbove = VIRTUALISE_ABOVE, loading, error, onRetry, empty, density: densityProp }: {
   columns: Column<T>[]; rows: T[]; rowKey: (row: T) => string; caption: string; onRowClick?: (row: T) => void; selectedKey?: string | null; defaultSort?: SortState;
-  viewportHeight?: number; loading?: boolean; error?: unknown; onRetry?: () => void; empty?: ReactNode; density?: Density;
+  viewportHeight?: number; virtualiseAbove?: number; loading?: boolean; error?: unknown; onRetry?: () => void; empty?: ReactNode; density?: Density;
 }) {
   const [stored] = useDensity();
   const density = densityProp ?? stored;
@@ -38,7 +38,7 @@ export function DataTable<T>({ columns, rows, rowKey, caption, onRowClick, selec
     }).map((x) => x.r);
   }, [rows, columns, sort]);
 
-  const windowed = sorted.length > VIRTUALISE_ABOVE;
+  const windowed = sorted.length > virtualiseAbove;
   const win = useWindow(sorted.length, rowHeight, viewportHeight, windowed);
   const shown = sorted.slice(win.start, win.end);
 
@@ -46,7 +46,7 @@ export function DataTable<T>({ columns, rows, rowKey, caption, onRowClick, selec
   if (loading) return <Skeleton variant="table" />;
   if (rows.length === 0) return <EmptyState>{empty ?? 'Nothing to show yet.'}</EmptyState>;
 
-  const toggleSort = (c: Column<T>) => c.sortValue && setSort((s) => (s?.key === c.key ? { key: c.key, dir: (s.dir * -1) as 1 | -1 } : { key: c.key, dir: c.align === 'right' ? -1 : 1 }));
+  const toggleSort = (c: Column<T>) => c.sortValue && setSort((s) => (s?.key === c.key ? { key: c.key, dir: (s.dir * -1) as 1 | -1 } : { key: c.key, dir: c.firstSort ? (c.firstSort === 'desc' ? -1 : 1) : c.align === 'right' ? -1 : 1 }));
   const onKeyDown = (e: KeyboardEvent<HTMLTableRowElement>, row: T) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick?.(row); return; }
     const dir = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;

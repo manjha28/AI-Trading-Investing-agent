@@ -63,6 +63,8 @@
   --radius-md: 8px;
   --radius-pill: 999px;
   --motion: 150ms ease-out;
+  --overlay: rgba(0, 0, 0, .45);
+  --shadow-pop: -8px 0 24px rgba(0, 0, 0, .4);
 }
 
 [data-theme='light'] {
