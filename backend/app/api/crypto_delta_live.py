@@ -14,6 +14,7 @@ from app.api.crypto_delta import require_verified_session
 from app.db import get_db
 from app.delta_execution import policy, service as live
 from app.models import UserSession
+from app.services import execution_state
 from app.models.crypto_delta import CryptoForwardTest, DeltaLiveOrder
 
 router = APIRouter(prefix="/crypto-delta/live", tags=["crypto-delta-live"])
@@ -44,6 +45,7 @@ def _status(db: Session, user_id: UUID) -> dict[str, Any]:
         "today": {"orders": len(today), "placed": sum(r.status in live.OPEN or r.status == "closed" for r in today), "blocked": sum(r.status == "blocked" for r in today),
                   "rejected": sum(r.status in ("rejected", "error") for r in today)},
         "confirmation_phrase": policy.CONFIRMATION_PHRASE,
+        "execution": execution_state.delta_state(db, user_id),
         "warning": "Real orders on your own account: one contract at most, leveraged. The 5 EMA strategy has no proven edge; expect losses as well as wins.",
         "disclaimer": DISCLAIMER,
     }
@@ -123,8 +125,10 @@ def reconcile_now(active_session: UserSession = Depends(require_verified_session
 
 @router.get("/orders")
 def live_orders(limit: int = Query(default=50, ge=1, le=200), active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
-    rows = db.scalars(select(DeltaLiveOrder).where(DeltaLiveOrder.user_id == active_session.user_id).order_by(DeltaLiveOrder.created_at.desc()).limit(limit)).all()
-    return {"orders": [{"id": str(r.id), "created_at": r.created_at.isoformat(), "symbol": r.symbol, "side": r.side, "contracts": r.contracts, "leverage": r.leverage,
+    all_rows = db.scalars(select(DeltaLiveOrder).where(DeltaLiveOrder.user_id == active_session.user_id).order_by(DeltaLiveOrder.created_at.desc()).limit(limit)).all()
+    rows = [r for r in all_rows if r.status != "blocked"]                 # the ledger lists orders that were SENT to Delta (a broker rejection is a real order)
+    blocked = [r for r in all_rows if r.status == "blocked"]
+    return {"blocked_attempts": [{"id": str(r.id), "created_at": r.created_at.isoformat(), "symbol": r.symbol, "side": r.side, "contracts": r.contracts, "block_reason": r.block_reason} for r in blocked], "orders": [{"id": str(r.id), "created_at": r.created_at.isoformat(), "symbol": r.symbol, "side": r.side, "contracts": r.contracts, "leverage": r.leverage,
                         "status": r.status, "block_reason": r.block_reason, "reference_price": str(r.reference_price), "stop_price": str(r.stop_price) if r.stop_price else None,
                         "target_price": str(r.target_price) if r.target_price else None, "entry_price": str(r.entry_price) if r.entry_price else None,
                         "delta_order_id": r.delta_order_id, "broker_response": r.response} for r in rows],

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CryptoForward } from './CryptoForward';
 
@@ -16,7 +16,7 @@ describe('CryptoForward', () => {
     apiRequest.mockResolvedValue({ tests: [test, { ...test, id: 'b', name: 'empty', summary: { ...summary, closed_trades: 0, win_rate: null, net_pnl: '0' } }] });
     render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
     expect(await screen.findByText('5 EMA BTCUSD 15m')).toBeTruthy();
-    expect(screen.getByText(/places no order/)).toBeTruthy();
+    expect(screen.getByText(/never mixes with real P&L/)).toBeTruthy();
     expect(screen.getByText('50.0%')).toBeTruthy();
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
@@ -34,17 +34,49 @@ describe('CryptoForward', () => {
   });
 });
 
+const venue = (flag: boolean, armed: boolean, reasons: string[], state: string, today = { sent_to_broker: 0, rejected_by_broker: 0, blocked_attempts: 0 }) => ({ venue: 'delta', label: 'Delta Exchange India (USD perpetuals)', deployment_flag: { name: 'DELTA_LIVE_EXECUTION_ENABLED', enabled: flag }, armed, armed_at: null,
+  window: { kind: '24x7', text: '24 hours, 7 days', open_now: true }, strategies: [{ key: 'five_ema_alert', live_tests: 0 }], live_tests: 0, effective: { state, reasons }, limits: {}, today });
+const limits = { max_contracts: 1, leverage: "min(25x, the contract's exchange maximum)", allowed_strategies: ['five_ema_alert'], max_daily_loss_usd: '25', max_trades_per_day: 6, max_open_positions: 2, max_notional_usd: '2000' };
+const status = (flag: boolean, armed: boolean, state: string, reasons: string[], today?: { sent_to_broker: number; rejected_by_broker: number; blocked_attempts: number }) => ({ deployment_enabled: flag, credentials_present: true, armed, can_arm: flag, confirmation_phrase: 'ENABLE DELTA LIVE ORDERS', warning: 'x', limits, execution: venue(flag, armed, reasons, state, today) });
+const serve = (st: unknown, orders: unknown = { orders: [], blocked_attempts: [] }, tests: unknown[] = []) => apiRequest.mockImplementation((path: string) => Promise.resolve(path.endsWith('/live/status') ? st : path.includes('/live/orders') ? orders : { tests }));
+
 describe('CryptoForward live controls', () => {
   afterEach(() => { cleanup(); apiRequest.mockReset(); });
-  const status = { deployment_enabled: false, credentials_present: true, armed: false, can_arm: false, confirmation_phrase: 'ENABLE DELTA LIVE ORDERS', warning: 'Real orders.',
-    limits: { max_contracts: 1, leverage: "min(25x, the contract's exchange maximum)", max_daily_loss_usd: '25', max_trades_per_day: 6, max_open_positions: 2, max_notional_usd: '2000' }, today: { orders: 0, placed: 0, blocked: 0, rejected: 0 } };
 
-  it('says live orders are off and cannot be armed when the deployment flag is off', async () => {
-    apiRequest.mockImplementation((path: string) => Promise.resolve(path.endsWith('/live/status') ? status : path.includes('/live/orders') ? { orders: [] } : { tests: [] }));
+  it('OFF with the flag off: states the reason from the backend and offers no live control at all', async () => {
+    serve(status(false, false, 'OFF', ['the deployment flag DELTA_LIVE_EXECUTION_ENABLED is off']));
     render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
-    expect(await screen.findByText(/DELTA_LIVE_EXECUTION_ENABLED is off/)).toBeTruthy();
-    expect(screen.getByText('OFF')).toBeTruthy();
-    expect(screen.queryByText('Arm live orders')).toBeNull();
-    expect(screen.getByText(/Kill switch/)).toBeTruthy();
+    expect(await screen.findByText(/the deployment flag DELTA_LIVE_EXECUTION_ENABLED is off/)).toBeTruthy();
+    expect(screen.getByText('Delta: OFF')).toBeTruthy();
+    expect(screen.queryByLabelText('Confirmation phrase')).toBeNull(); expect(screen.queryByText(/Kill switch/)).toBeNull();
+    expect(screen.queryByText(/Live: o(n|ff)/)).toBeNull();
+  });
+
+  it('flag on but not armed: arming needs the phrase and then a confirmation step that names the venue, strategy, quantity cap and leverage', async () => {
+    serve(status(true, false, 'OFF', ['you have not armed live execution']));
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
+    const arm = await screen.findByRole('button', { name: 'Arm live orders…' });
+    expect((arm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Confirmation phrase'), { target: { value: 'ENABLE DELTA LIVE ORDERS' } });
+    fireEvent.click(arm);
+    const dialog = await screen.findByRole('dialog', { name: /Arm live orders on Delta Exchange India/ });
+    expect(within(dialog).getByText(/five_ema_alert/)).toBeTruthy(); expect(within(dialog).getByText(/1 contract per order/)).toBeTruthy(); expect(within(dialog).getByText(/min\(25x/)).toBeTruthy();
+    expect(apiRequest.mock.calls.some((c) => String(c[0]).endsWith('/live/arm'))).toBe(false);          // nothing is armed until the confirmation
+  });
+
+  it('armed: shows the kill switch and the per-test Live switch; today never merges blocked attempts into sent orders', async () => {
+    serve(status(true, true, 'ARMED_BUT_BLOCKED', ['no Delta forward test has its live switch on'], { sent_to_broker: 1, rejected_by_broker: 1, blocked_attempts: 2 }),
+      { orders: [{ id: 'o1', created_at: '2026-11-23T19:50:17Z', symbol: 'BTCUSD', side: 'buy', contracts: 1, leverage: 25, status: 'rejected', block_reason: 'insufficient_margin', delta_order_id: null }],
+        blocked_attempts: [{ id: 'b1', created_at: '2026-11-23T19:00:00Z', symbol: 'ETHUSD', side: 'sell', contracts: 1, block_reason: 'signal_fresh: stale' }] },
+      [{ id: 't1', name: '5 EMA BTCUSD 5m', symbol: 'BTCUSD', resolution: '5m', status: 'active', contracts: 1, start_time: '2026-11-23T10:00:00Z', last_run_at: null, last_error: null, execute_live: false, label: 'x', summary: null, open_positions: [], params: { ema: 5, rr: '3', direction: -1 } }]);
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
+    expect(await screen.findByText(/Kill switch/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Live: off' })).toBeTruthy();
+    expect(screen.getByText(/Today: 1 sent to Delta \(1 rejected by the broker\) · 2 blocked attempts \(never sent\)/)).toBeTruthy();
+    expect(screen.queryByText(/Orders off/i)).toBeNull();
+    const ledger = screen.getByRole('heading', { name: 'Live order ledger (real orders only)' }).nextElementSibling as HTMLElement;
+    expect(within(ledger).getByText('BTCUSD')).toBeTruthy(); expect(within(ledger).getByText('insufficient_margin')).toBeTruthy(); expect(within(ledger).queryByText('ETHUSD')).toBeNull();
+    const blocked = screen.getByRole('heading', { name: /Blocked attempts/ }).nextElementSibling as HTMLElement;
+    expect(within(blocked).getByText('ETHUSD')).toBeTruthy(); expect(within(blocked).getByText(/signal_fresh/)).toBeTruthy();
   });
 });

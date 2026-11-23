@@ -4,11 +4,15 @@ import { fmtMoney, fmtPct, messageOf } from './lab';
 import { Field, Notice, Pill, Scroll } from './shared';
 import type { RegistryStrategy } from './StrategyRegistry';
 import { formatIST } from '../lib/formatIST';
+import { ExecutionStateChip } from '../components/ExecutionStateChip';
+import { ArmConfirm } from '../components/ArmConfirm';
+import { refreshExecutionState } from '../hooks/useExecutionState';
+import { todayLine, type VenueState } from '../lib/executionState';
 
 type Limits = { max_order_quantity: number; allowed_strategies: string[]; product: string; segment: string; entry_window_ist: string[]; max_daily_loss_inr: string; max_trades_per_day: number; max_open_positions: number; max_notional_inr: string };
 type LiveStatus = {
   deployment_enabled: boolean; environment_block: string | null; armed: boolean; armed_at: string | null; can_arm: boolean; limits: Limits;
-  today: { orders: number; placed: number; blocked: number; rejected: number; realized_pnl: string }; confirmation_phrase: string; warning: string;
+  today: { orders: number; placed: number; blocked: number; rejected: number; realized_pnl: string }; confirmation_phrase: string; warning: string; execution: VenueState;
 };
 type Summary = { closed_trades: number; wins: number; losses: number; win_rate: number | null; gross_pnl: string; charges: string; slippage: string; net_pnl: string; by_symbol: Record<string, { trades: number; wins: number; net_pnl: string }> };
 type UniverseRow = { instrument_id: string; symbol: string; status: string; reason: string | null; last_bar_close?: string; age_minutes?: number; bars?: number };
@@ -35,18 +39,19 @@ function LivePanel({ status, reload }: { status: LiveStatus | null; reload: () =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
   if (!status) return <p className="sl-muted">Loading live-execution status…</p>;
   const act = async (path: string, body?: unknown) => {
     setBusy(true); setError(null); setNote(null);
     try {
       const r = await apiRequest<Record<string, unknown>>(`/dhan-live/${path}`, { method: 'POST', ...(body ? { body: JSON.stringify(body) } : {}) });
       if (path === 'disarm') setNote(`Disarmed. ${String(r.cancelled ?? 0)} unfilled order(s) cancelled.${Array.isArray(r.filled_positions_still_open) && r.filled_positions_still_open.length ? ` Still open at the broker: ${(r.filled_positions_still_open as string[]).join(', ')} — exit them in the Dhan app.` : ''}`);
-      setPhrase(''); reload();
+      setPhrase(''); setConfirming(false); reload(); void refreshExecutionState();
     } catch (e) { setError(messageOf(e)); } finally { setBusy(false); }
   };
   return (
     <section className="sl-card" aria-label="Live execution">
-      <div className="sl-card-head"><h3>Live order execution (Dhan)</h3>{status.armed ? <Pill tone="bad">ARMED</Pill> : <Pill tone="ok">off</Pill>}</div>
+      <div className="sl-card-head"><h3>Live order execution (Dhan)</h3><ExecutionStateChip venue={status.execution} /></div>
       <Notice tone="warn">{status.warning}</Notice>
       <ul className="ft-limits" aria-label="Hard limits">
         <li>Quantity per order: <strong>{status.limits.max_order_quantity}</strong> share</li>
@@ -55,7 +60,8 @@ function LivePanel({ status, reload }: { status: LiveStatus | null; reload: () =
         <li>Entries {status.limits.entry_window_ist[0]}–{status.limits.entry_window_ist[1]} IST, Mon–Fri</li>
         <li>Daily loss cap ₹{status.limits.max_daily_loss_inr} · {status.limits.max_trades_per_day} orders/day · {status.limits.max_open_positions} open · ₹{status.limits.max_notional_inr} per order</li>
       </ul>
-      <p className="sl-muted">Today: {status.today.orders} order(s) · {status.today.placed} placed · {status.today.blocked} blocked · {status.today.rejected} rejected · estimated realised {fmtMoney(status.today.realized_pnl)} (the Dhan contract note is the authority).</p>
+      <p className="sl-muted">{todayLine(status.execution)} · estimated realised {fmtMoney(status.today.realized_pnl)} (the Dhan contract note is the authority).</p>
+      {status.execution.effective.state !== "LIVE" && <Notice tone="info">{status.execution.label}: {status.execution.effective.state.replace(/_/g, " ")}. {status.execution.effective.reasons.join("; ")}.</Notice>}
       {!status.deployment_enabled && <Notice tone="info">Live execution is switched <strong>off on this deployment</strong>. To allow it, set <code>DHAN_LIVE_EXECUTION_ENABLED=true</code> in the backend environment and restart. Dhan also requires a static IP for order APIs, which a Codespace does not have.</Notice>}
       {status.environment_block && <Notice tone="info">Live orders are blocked in this environment ({status.environment_block}).</Notice>}
       {error && <Notice tone="bad">{error}</Notice>}
@@ -75,10 +81,11 @@ function LivePanel({ status, reload }: { status: LiveStatus | null; reload: () =
             <Field label="Max order value (₹)"><input aria-label="Max order value" value={notional} onChange={(e) => setNotional(e.target.value)} inputMode="decimal" /></Field>
           </div>
           <Field label={`Type “${status.confirmation_phrase}” to confirm`}><input aria-label="Confirmation" value={phrase} onChange={(e) => setPhrase(e.target.value)} autoComplete="off" /></Field>
-          <button type="button" className="sl-primary" disabled={phrase !== status.confirmation_phrase}
-            onClick={() => void act('arm', { confirmation: phrase, max_daily_loss_inr: loss, max_trades_per_day: Number(trades), max_open_positions: Number(open), max_notional_inr: notional })}>Arm live execution</button>
+          <button type="button" className="sl-primary" disabled={phrase !== status.confirmation_phrase} onClick={() => setConfirming(true)}>Arm live execution…</button>
         </fieldset>
       )}
+      <ArmConfirm open={confirming} venue="Dhan" strategies={status.limits.allowed_strategies} quantityCap={`${status.limits.max_order_quantity} share per order (${status.limits.product}, ${status.limits.segment})`} tradingWindow={`Mon-Fri ${status.limits.entry_window_ist[0]}-${status.limits.entry_window_ist[1]} IST`} busy={busy} onCancel={() => setConfirming(false)}
+        onConfirm={() => void act('arm', { confirmation: phrase, max_daily_loss_inr: loss, max_trades_per_day: Number(trades), max_open_positions: Number(open), max_notional_inr: notional })} />
     </section>
   );
 }
@@ -90,6 +97,7 @@ export function ForwardTest() {
   const [strategies, setStrategies] = useState<RegistryStrategy[]>([]);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [blockedAttempts, setBlockedAttempts] = useState<{ id: string; created_at: string; symbol: string; side: string; quantity: number; strategy_key: string; block_reason: string | null }[]>([]);
   const [selected, setSelected] = useState<FT | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -98,7 +106,7 @@ export function ForwardTest() {
   const [form, setForm] = useState({ strategy_key: 'five_ema_alert', universe: 'master', quantity: '1', start_date: '', live: false, candle: '15', vwap: true });
 
   const loadStatus = useCallback(() => apiRequest<LiveStatus>('/dhan-live/status').then(setStatus).catch((e) => setError(messageOf(e))), []);
-  const loadOrders = useCallback(() => apiRequest<{ orders: Order[] }>('/dhan-live/orders?limit=50').then((r) => setOrders(r.orders)).catch(() => undefined), []);
+  const loadOrders = useCallback(() => apiRequest<{ orders: Order[]; blocked_attempts?: { id: string; created_at: string; symbol: string; side: string; quantity: number; strategy_key: string; block_reason: string | null }[] }>('/dhan-live/orders?limit=50').then((r) => { setOrders(r.orders); setBlockedAttempts(r.blocked_attempts ?? []); }).catch(() => undefined), []);
   const loadTests = useCallback(() => apiRequest<{ forward_tests: FT[]; default_start_date: string }>('/forward-tests').then((r) => { setTests(r.forward_tests); setDefaultStart(r.default_start_date); setForm((f) => (f.start_date ? f : { ...f, start_date: r.default_start_date })); }).catch((e) => setError(messageOf(e))), []);
   const open = useCallback((id: string) => apiRequest<FT>(`/forward-tests/${id}`).then(setSelected).catch((e) => setError(messageOf(e))), []);
 
@@ -115,7 +123,8 @@ export function ForwardTest() {
   }, [selected?.id, loadStatus, loadOrders, loadTests, open]);
 
   const liveCapable = status?.limits.allowed_strategies ?? [];
-  const canLive = liveCapable.includes(form.strategy_key) && Number(form.quantity) === (status?.limits.max_order_quantity ?? 1);
+  const liveControls = !!status && status.execution.effective.state !== 'OFF';          // live-order controls exist only when the effective state is not OFF
+  const canLive = liveControls && liveCapable.includes(form.strategy_key) && Number(form.quantity) === (status?.limits.max_order_quantity ?? 1);
 
   async function create() {
     setBusy(true); setError(null); setNotice(null);
@@ -168,7 +177,7 @@ export function ForwardTest() {
           <Field label="Start date"><input aria-label="Start date" type="date" value={form.start_date || defaultStart} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></Field>
         </div>
         {form.strategy_key === 'five_ema_alert' && <label className="ft-live-flag"><input type="checkbox" aria-label="VWAP filter" checked={form.vwap} onChange={(e) => setForm({ ...form, vwap: e.target.checked })} /> Only trade with VWAP (sell below, buy above) at 1:2 — the closest-to-break-even 5-EMA variant in the study (out-of-sample profit factor 0.98 on a thin sample; still not net-positive)</label>}
-        <label className="ft-live-flag"><input type="checkbox" checked={form.live && canLive} disabled={!canLive} onChange={(e) => setForm({ ...form, live: e.target.checked })} /> Also place live orders for this test (allowlisted strategies, quantity {status?.limits.max_order_quantity ?? 1}; still needs arming)</label>
+        {liveControls && <label className="ft-live-flag"><input type="checkbox" checked={form.live && canLive} disabled={!canLive} onChange={(e) => setForm({ ...form, live: e.target.checked })} /> Also place live orders for this test (allowlisted strategies, quantity {status?.limits.max_order_quantity ?? 1}; still needs arming)</label>}
         <div className="sl-toolbar"><button type="button" className="sl-primary" disabled={busy || !form.strategy_key} onClick={() => void create()}>{busy ? 'Creating…' : 'Create forward test'}</button></div>
       </section>
 
@@ -194,7 +203,7 @@ export function ForwardTest() {
               {selected.status === 'active' ? <button type="button" onClick={() => void act('/pause')}>Pause</button> : <button type="button" onClick={() => void act('/resume')}>Resume</button>}
               {selected.execute_live
                 ? <button type="button" onClick={() => void act('/execute-live', 'PUT', { enabled: false })}>Make paper-only</button>
-                : <button type="button" disabled={!liveCapable.includes(selected.strategy_key) || selected.quantity !== (status?.limits.max_order_quantity ?? 1)} onClick={() => void act('/execute-live', 'PUT', { enabled: true })}>Flag for live orders</button>}
+                : liveControls && <button type="button" disabled={!liveCapable.includes(selected.strategy_key) || selected.quantity !== (status?.limits.max_order_quantity ?? 1)} onClick={() => void act('/execute-live', 'PUT', { enabled: true })}>Flag for live orders</button>}
               {confirmDelete
                 ? <span role="group" aria-label="Confirm delete"><button type="button" className="ft-kill" onClick={() => void act('', 'DELETE')}>Delete for good</button> <button type="button" onClick={() => setConfirmDelete(false)}>Keep</button></span>
                 : <button type="button" onClick={() => setConfirmDelete(true)}>Delete</button>}
@@ -240,7 +249,7 @@ export function ForwardTest() {
 
       <section className="sl-card" aria-label="Live order ledger">
         <div className="sl-card-head"><h3>Live order ledger (real orders only)</h3></div>
-        {orders.length === 0 ? <p className="sl-muted">No live order has been attempted. Blocked attempts appear here too, with the reason.</p> : (
+        {orders.length === 0 ? <p className="sl-muted">No order has been sent to Dhan. Attempts the guard-rails stopped are listed separately below.</p> : (
           <Scroll label="Live orders">
             <table className="sl-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th className="r">Qty</th><th className="r">Ref</th><th className="r">Stop</th><th className="r">Target</th><th>Status</th><th className="r">Est. P&amp;L</th></tr></thead>
               <tbody>{orders.map((o) => (
@@ -249,6 +258,14 @@ export function ForwardTest() {
                   <td className={`r ${tone(o.realized_pnl_estimate)}`}>{o.realized_pnl_estimate != null ? fmtMoney(o.realized_pnl_estimate) : '—'}</td></tr>))}</tbody>
             </table>
           </Scroll>
+        )}
+      </section>
+
+      <section className="sl-card" aria-label="Blocked attempts">
+        <div className="sl-card-head"><h3>Blocked attempts (never sent to Dhan)</h3></div>
+        {blockedAttempts.length === 0 ? <p className="sl-muted">No attempt was blocked.</p> : (
+          <Scroll label="Blocked attempts table"><table className="sl-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th className="r">Qty</th><th>Strategy</th><th>Why it was blocked</th></tr></thead>
+            <tbody>{blockedAttempts.map((b) => <tr key={b.id}><td>{when(b.created_at)}</td><td>{b.symbol}</td><td>{b.side}</td><td className="r">{b.quantity}</td><td>{b.strategy_key}</td><td>{b.block_reason ?? '—'}</td></tr>)}</tbody></table></Scroll>
         )}
       </section>
     </div>

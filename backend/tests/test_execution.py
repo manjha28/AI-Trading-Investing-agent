@@ -283,4 +283,4 @@ def test_no_code_path_can_reach_a_broker_order_endpoint():
     # and only under /dhan-live/ and /crypto-delta/live/.
     assert not [path for path in paths if "order" in path.lower() and "/execution/" not in path and "/dhan-live/" not in path and "/crypto-delta/live/" not in path]
     assert {path for path in paths if "/execution/" in path} == {
-        "/api/v1/execution/status", "/api/v1/execution/dry-run", "/api/v1/execution/audit"}
+        "/api/v1/execution/status", "/api/v1/execution/state", "/api/v1/execution/dry-run", "/api/v1/execution/audit"}

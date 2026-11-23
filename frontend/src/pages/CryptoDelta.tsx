@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CryptoExecution } from '../crypto/CryptoExecution';
+import { ExecutionStateChip } from '../components/ExecutionStateChip';
+import { useExecutionState } from '../hooks/useExecutionState';
 import { CryptoForward } from '../crypto/CryptoForward';
 import { CryptoLab } from '../crypto/CryptoLab';
 import { CryptoMarkets } from '../crypto/CryptoMarkets';
@@ -24,9 +26,10 @@ function remembered<T extends string>(key: string, fallback: T, allowed?: readon
 
 /**
  * Delta Exchange India crypto perpetuals: a self-contained workspace, separate from the Indian-equity
- * system (own candles, strategies, backtests). Read + order execution: Delta orders go out only when live execution is armed (off by default; 1 contract max).
+ * system (own candles, strategies, backtests). Whether it can send real orders is the backend's effective execution state, shown on the page.
  */
 export function CryptoDeltaPage() {
+  const states = useExecutionState();
   const [tab, setTab] = useState<Tab>(() => remembered<Tab>('crypto.tab', 'markets', TABS.map((t) => t.id)));
   const [symbol, setSymbol] = useState<string>(() => remembered<string>('crypto.symbol', 'BTCUSD'));
   const [resolution, setResolution] = useState<string>(() => remembered<string>('crypto.resolution', '15m', ['1m', '5m', '15m', '1h', '4h', '1d']));
@@ -45,7 +48,7 @@ export function CryptoDeltaPage() {
         <div>
           <p className="eyebrow">DELTA EXCHANGE INDIA · CRYPTO PERPETUALS</p>
           <h2>Perpetuals workspace</h2>
-          <p className="crypto-sub">Watch, chart and backtest perpetual contracts. Separate from the Indian-equity system; read + order execution (orders only when armed, 1 contract max). Decision support, not investment advice.</p>
+          <p className="crypto-sub">Watch, chart and backtest perpetual contracts. Separate from the Indian-equity system. Decision support, not investment advice. <ExecutionStateChip venue={states?.delta} /></p>
         </div>
       </div>
       <nav className="crypto-tabs" role="tablist" aria-label="Crypto workspace">

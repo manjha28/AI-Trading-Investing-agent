@@ -12,8 +12,8 @@ vi.mock('../api', () => ({
   apiRequest: async (path: string, init: { method?: string; body?: string } = {}) => {
     const method = init.method ?? 'GET';
     calls.push({ path, method, body: init.body ? JSON.parse(init.body) : undefined });
-    if (path === '/dhan-live/status') return status;
-    if (path.startsWith('/dhan-live/orders')) return { orders };
+    if (path === '/dhan-live/status') return withExecution(status);
+    if (path.startsWith('/dhan-live/orders')) return { orders: orders.filter((o) => o.status !== 'blocked'), blocked_attempts: orders.filter((o) => o.status === 'blocked') };
     if (path === '/dhan-live/arm') { status = { ...status, armed: true }; return status; }
     if (path === '/dhan-live/disarm') { status = { ...status, armed: false }; return { cancelled: 2, filled_positions_still_open: ['SBIN'], status }; }
     if (path === '/dhan-live/reconcile') return { checked: 1, updated: 0, errors: 0 };
@@ -27,6 +27,13 @@ vi.mock('../api', () => ({
     throw new Error(`unexpected ${method} ${path}`);
   },
 }));
+
+// The backend's effective state (services/execution_state.py), derived here from the same two facts the test already sets.
+const withExecution = (st: Record<string, unknown>) => {
+  const enabled = st.deployment_enabled as boolean; const armed = st.armed as boolean;
+  const effective = !enabled ? { state: 'OFF', reasons: ['the deployment flag DHAN_LIVE_EXECUTION_ENABLED is off'] } : !armed ? { state: 'OFF', reasons: ['you have not armed live execution'] } : { state: 'ARMED_BUT_BLOCKED', reasons: ['no forward test has its live switch on'] };
+  return { ...st, execution: { venue: 'dhan', label: 'Dhan (NSE equity, intraday)', deployment_flag: { name: 'DHAN_LIVE_EXECUTION_ENABLED', enabled }, armed, armed_at: null, window: { kind: 'session', text: 'Mon-Fri 09:20-14:30 IST', open_now: true }, strategies: [], live_tests: 0, effective, limits: {}, today: { sent_to_broker: 1, rejected_by_broker: 0, blocked_attempts: 1 } } };
+};
 
 const baseStatus = () => ({
   deployment_enabled: true, environment_block: null, armed: false, armed_at: null, can_arm: true, confirmation_phrase: 'ENABLE LIVE ORDERS',
@@ -68,13 +75,13 @@ describe('ForwardTest', () => {
     expect(await screen.findByText(/off on this deployment/)).toBeTruthy();
     expect(screen.getByText(/DHAN_LIVE_EXECUTION_ENABLED=true/)).toBeTruthy();
     expect(screen.getByText(/static IP/)).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Arm live execution' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Arm live execution…' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText('Confirmation').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
   });
 
   it('arms only after the exact phrase is typed, and sends the limits as the owner set them', async () => {
     render(<ForwardTest />);
-    const arm = await screen.findByRole('button', { name: 'Arm live execution' });
+    const arm = await screen.findByRole('button', { name: 'Arm live execution…' });
     expect((arm as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Confirmation'), { target: { value: 'enable live orders' } });
     expect((arm as HTMLButtonElement).disabled).toBe(true);                                         // case matters
@@ -83,7 +90,11 @@ describe('ForwardTest', () => {
     fireEvent.change(screen.getByLabelText('Confirmation'), { target: { value: 'ENABLE LIVE ORDERS' } });
     expect((arm as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(arm);
-    expect(await screen.findByText('ARMED')).toBeTruthy();
+    const confirm = await screen.findByRole('dialog', { name: /Arm live orders on Dhan/ });                 // an explicit step that names the venue, strategies, quantity cap and window
+    expect(within(confirm).getByText(/five_ema_alert, mfi_dip_30m/)).toBeTruthy(); expect(within(confirm).getByText(/1 share per order/)).toBeTruthy(); expect(within(confirm).getByText(/09:20-14:30 IST/)).toBeTruthy();
+    expect(calls.some((c) => c.path === '/dhan-live/arm')).toBe(false);
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Yes, arm Dhan' }));
+    expect((await screen.findAllByText(/ARMED BUT BLOCKED/)).length).toBeGreaterThan(0);
     const post = calls.find((c) => c.path === '/dhan-live/arm')!;
     expect(post.method).toBe('POST');
     expect(post.body).toMatchObject({ confirmation: 'ENABLE LIVE ORDERS', max_daily_loss_inr: '300', max_trades_per_day: 4, max_open_positions: 3, max_notional_inr: '50000' });
@@ -97,10 +108,11 @@ describe('ForwardTest', () => {
     expect(await screen.findByText(/2 unfilled order\(s\) cancelled/)).toBeTruthy();
     expect(screen.getByText(/Still open at the broker: SBIN — exit them in the Dhan app/)).toBeTruthy();
     expect(calls.some((c) => c.path === '/dhan-live/disarm' && c.method === 'POST')).toBe(true);
-    expect(await screen.findByRole('button', { name: 'Arm live execution' })).toBeTruthy();         // back to off
+    expect(await screen.findByRole('button', { name: 'Arm live execution…' })).toBeTruthy();         // back to off
   });
 
   it('only allows the live flag for an allowlisted strategy at quantity 1, and creates paper tests otherwise', async () => {
+    status = { ...baseStatus(), armed: true };
     render(<ForwardTest />);
     await screen.findByRole('option', { name: /5 EMA Alert Candle · live-capable/ });
     const live = screen.getByLabelText(/Also place live orders/) as HTMLInputElement;
@@ -118,6 +130,7 @@ describe('ForwardTest', () => {
   });
 
   it('flags a live-capable test for live orders but says nothing is placed until it is armed', async () => {
+    status = { ...baseStatus(), armed: true };
     render(<ForwardTest />);
     await screen.findByRole('option', { name: /5 EMA Alert Candle · live-capable/ });
     fireEvent.click(screen.getByLabelText(/Also place live orders/));
@@ -145,6 +158,7 @@ describe('ForwardTest', () => {
   });
 
   it('shows a waiting message before the start date and runs refresh, pause and live-flag actions against the right endpoints', async () => {
+    status = { ...baseStatus(), armed: true };
     detail = { ...detail, snapshot: { waiting: 'Starts 2026-11-23 at 09:15 IST', summary: { closed_trades: 0, wins: 0, losses: 0, win_rate: null, gross_pnl: '0', charges: '0', slippage: '0', net_pnl: '0', by_symbol: {} }, universe: [] } };
     render(<ForwardTest />);
     fireEvent.click(await screen.findByRole('button', { name: /Monday 5-EMA/ }));
@@ -184,7 +198,7 @@ describe('ForwardTest', () => {
     cleanup();
     orders = [];
     render(<ForwardTest />);
-    expect(await within(await screen.findByLabelText('Live order ledger')).findByText(/No live order has been attempted/)).toBeTruthy();
+    expect(await within(await screen.findByLabelText('Live order ledger')).findByText(/No order has been sent to Dhan/)).toBeTruthy();
   });
 
   it('lets the 5-EMA be forward-tested on 5-minute or 15-minute candles and sends that choice', async () => {
@@ -196,5 +210,26 @@ describe('ForwardTest', () => {
     await waitFor(() => expect(calls.find((c) => c.path === '/forward-tests' && c.method === 'POST')?.body).toMatchObject({ strategy_key: 'five_ema_alert', params: { timeframe_min: 5, vwap_filter: 1, rr: 2 } }));
     fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: 'mfi_dip_30m' } });
     expect(screen.queryByLabelText('5-EMA candle')).toBeNull();                                      // only the 5-EMA has a candle choice
+  });
+
+  it('hides every live-order control while the effective state is OFF, and shows them once armed', async () => {
+    render(<ForwardTest />);
+    await screen.findByRole('option', { name: /5 EMA Alert Candle/ });
+    expect(screen.queryByRole('checkbox', { name: /Also place live orders/ })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: /Monday 5-EMA/ }));
+    await screen.findByLabelText('Forward test detail');
+    expect(screen.queryByRole('button', { name: 'Flag for live orders' })).toBeNull();
+  });
+
+  it('keeps blocked attempts out of the live order ledger and lists them separately with the reason', async () => {
+    orders = [
+      { id: 'b1', created_at: '2026-11-23T09:35:00Z', symbol: 'SBIN', side: 'sell', quantity: 1, strategy_key: 'five_ema_alert', status: 'blocked', block_reason: 'market_window: Mon 15:05 IST is outside entry hours 09:20-14:30 Mon-Fri', reference_price: '810', stop_price: null, target_price: null, entry_price: null, exit_price: null, exit_reason: null, realized_pnl_estimate: null, dhan_order_id: null, broker_response: null },
+      { id: 'o1', created_at: '2026-11-23T04:00:00Z', symbol: 'TCS', side: 'sell', quantity: 1, strategy_key: 'five_ema_alert', status: 'rejected', block_reason: 'rejected by the broker', reference_price: '3100', stop_price: null, target_price: null, entry_price: null, exit_price: null, exit_reason: null, realized_pnl_estimate: null, dhan_order_id: null, broker_response: null },
+    ];
+    render(<ForwardTest />);
+    const ledger = within(await screen.findByLabelText('Live order ledger'));
+    expect(await ledger.findByText('TCS')).toBeTruthy(); expect(ledger.queryByText('SBIN')).toBeNull();
+    const blocked = within(screen.getByRole('region', { name: 'Blocked attempts' }));
+    expect(blocked.getByText('SBIN')).toBeTruthy(); expect(blocked.getByText(/outside entry hours/)).toBeTruthy(); expect(blocked.queryByText('TCS')).toBeNull();
   });
 });

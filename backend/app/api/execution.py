@@ -101,6 +101,18 @@ class DryRunRequest(BaseModel):
     intent: OrderIntent
 
 
+@router.get("/state")
+def execution_state(
+    response: Response,
+    active_session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """One effective state per venue (Dhan, Delta): the single source every screen reads."""
+    from app.services import execution_state as es
+    response.headers["Cache-Control"] = "no-store"
+    return es.all_states(db, active_session.user_id)
+
+
 @router.get("/status")
 def execution_status(
     response: Response,
@@ -108,6 +120,8 @@ def execution_status(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
+    from app.services import execution_state as es
+    states = es.all_states(db, active_session.user_id)
     mode = current_mode()
     limits = _limits()
     return {
@@ -118,9 +132,10 @@ def execution_status(
             "reason": mode.reason,
         },
         "capabilities": {
-            "order_transmission": bool(settings.delta_live_execution_enabled),          # layer 1 of 3: orders go out only when the deployment flag, your arming and the per-test switch are all on
+            "order_transmission": any(v["effective"]["state"] == "LIVE" for v in (states["dhan"], states["delta"])),
             "live_adapter": True,
-            "execution_credentials": "read from backend secrets only (not stored in the database); 1 contract max, leverage min(25x, exchange max)",
+            "effective": {"dhan": states["dhan"]["effective"], "delta": states["delta"]["effective"]},
+            "execution_credentials": "read from backend secrets only (not stored in the database)",
             "simulated_fills": "backtest only, completed bars, labelled hypothetical",
         },
         "limits": {

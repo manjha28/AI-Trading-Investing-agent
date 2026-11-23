@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { apiRequest } from '../api';
+import { ExecutionStateChip } from '../components/ExecutionStateChip';
+import { useExecutionState } from '../hooks/useExecutionState';
 import { messageOf } from './cryptoApi';
 
 type ExecutionStatus = {
@@ -59,6 +61,8 @@ function auditOutcome(row: { event_type: string; payload: Record<string, unknown
 
 /** Execution readiness, risk-check sandbox and audit trail. Orders go out only when armed. */
 export function CryptoExecution() {
+  const states = useExecutionState();
+  const delta = states?.delta;
   const [status, setStatus] = useState<ExecutionStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [audit, setAudit] = useState<AuditRow[]>([]);
@@ -115,11 +119,11 @@ export function CryptoExecution() {
   return (
     <div className="crypto-page">
       <section className="data-section crypto-readiness" aria-label="Execution readiness">
-        <div className="section-heading"><div><p className="eyebrow">EXECUTION READINESS</p><h3>Delta orders: off until armed</h3></div></div>
+        <div className="section-heading"><div><p className="eyebrow">EXECUTION READINESS</p><h3>Delta orders: {delta ? delta.effective.state.replace(/_/g, ' ') : 'checking…'}</h3></div></div>
         {statusError ? <p className="error-message" role="alert">{statusError}</p> : !status ? <p className="table-empty">Loading…</p> : (
           <div className="crypto-readiness-grid">
-            <div><span>Order transmission</span><strong className={status.capabilities.order_transmission ? 'positive' : 'negative'}>{status.capabilities.order_transmission ? 'Enabled on this deployment' : 'Switched off'}</strong><small>{status.capabilities.live_adapter ? 'Live adapter present; needs your arming and a per-test switch' : 'No live adapter'}</small></div>
-            <div><span>Mode</span><strong>{status.mode.effective}</strong><small>{status.mode.live_blocked ? status.mode.reason : 'Live orders are gated by arming, not by this mode'}</small></div>
+            <div><span>Execution state</span><strong>{delta ? <ExecutionStateChip venue={delta} /> : '—'}</strong><small>{delta ? (delta.effective.reasons.join('; ') || 'Orders can be sent now') : 'The server has not reported it yet'}</small></div>
+            <div><span>Mode</span><strong>{status.mode.effective}</strong><small>{status.mode.live_blocked ? status.mode.reason : 'Research mode does not decide live orders: the execution state does'}</small></div>
             <div><span>Max order notional</span><strong>{status.limits.max_order_notional} {status.limits.currency}</strong><small>Fails closed on unknown inputs</small></div>
             <div><span>Max total exposure</span><strong>{status.limits.max_total_exposure} {status.limits.currency}</strong><small>Price must be under {status.limits.max_price_age_seconds}s old</small></div>
             <div><span>Credentials</span><strong>Backend secrets</strong><small>{status.capabilities.execution_credentials}</small></div>

@@ -12,6 +12,9 @@ vi.mock('../crypto/CryptoCharts', async (importOriginal) => {
   };
 });
 
+const venue = (v: string, state: string, reasons: string[]) => ({ venue: v, label: v === 'delta' ? 'Delta Exchange India (USD perpetuals)' : 'Dhan (NSE equity, intraday)', deployment_flag: { name: `${v.toUpperCase()}_LIVE_EXECUTION_ENABLED`, enabled: state !== 'OFF' }, armed: state === 'LIVE', armed_at: null,
+  window: { kind: '24x7', text: '24 hours, 7 days', open_now: true }, strategies: [], live_tests: 0, effective: { state, reasons }, limits: {}, today: { sent_to_broker: 0, rejected_by_broker: 0, blocked_attempts: 0 } });
+const executionStates = { dhan: venue('dhan', 'OFF', ['the deployment flag DHAN_LIVE_EXECUTION_ENABLED is off']), delta: venue('delta', 'OFF', ['the deployment flag DELTA_LIVE_EXECUTION_ENABLED is off']), as_of: '2026-11-23T12:00:00Z' };
 const status = {
   mode: { configured: 'research', effective: 'research', live_blocked: false, reason: null },
   capabilities: { order_transmission: false, live_adapter: true, execution_credentials: 'read from backend secrets only', simulated_fills: 'backtest only' },
@@ -60,7 +63,8 @@ function mockApi() {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     const path = String(url);
-    const body = path.includes('/execution/status') ? status
+    const body = path.includes('/execution/state') ? executionStates
+      : path.includes('/execution/status') ? status
       : path.includes('/execution/audit') ? []
         : path.includes('/execution/dry-run') ? dryRun
           : path.includes('/delta-research/markets') ? markets
@@ -147,8 +151,8 @@ describe('CryptoDeltaPage', () => {
     mockApi();
     render(<CryptoDeltaPage />);
     fireEvent.click(await screen.findByRole('tab', { name: 'Execution' }));
-    expect(await screen.findByText('Delta orders: off until armed')).toBeTruthy();
-    expect(await screen.findByText('Switched off')).toBeTruthy();
+    expect(await screen.findByText('Delta orders: OFF')).toBeTruthy();
+    expect(await screen.findByText(/the deployment flag DELTA_LIVE_EXECUTION_ENABLED is off/)).toBeTruthy();
     expect(screen.getByText('1000 USD')).toBeTruthy();
   });
 
@@ -156,7 +160,7 @@ describe('CryptoDeltaPage', () => {
     const calls = mockApi();
     render(<CryptoDeltaPage />);
     fireEvent.click(await screen.findByRole('tab', { name: 'Execution' }));
-    await screen.findByText('Delta orders: off until armed');
+    await screen.findByText('Delta orders: OFF');
     fireEvent.change(screen.getByLabelText(/Limit price/), { target: { value: '60000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run risk check' }));
     expect(await screen.findByText(/Blocked by the risk checks/)).toBeTruthy();

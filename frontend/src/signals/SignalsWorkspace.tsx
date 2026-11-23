@@ -13,7 +13,8 @@ import { ForwardTest } from './ForwardTest';
 import { StrategyRegistry } from './StrategyRegistry';
 import { defaultParams, emptyDefinition, lab, messageOf, nextAlias } from './lab';
 import { Notice } from './shared';
-import { LiveCapabilityChip } from './LiveCapabilityChip';
+import { ExecutionStateChip } from '../components/ExecutionStateChip';
+import { useExecutionState } from '../hooks/useExecutionState';
 import type { Definition, Health, InstrumentRow, Meta, Readiness, StrategyRow } from './types';
 import './signals.css';
 import { useSlow } from '../hooks/useSlow';
@@ -41,6 +42,7 @@ const blankDraft = (): Draft => ({ definition: emptyDefinition(), sourceText: nu
 export function SignalsWorkspace() {
   const [tab, setTabRaw] = useState<Tab>('dashboard');
   const [lastInGroup, setLastInGroup] = useState<Record<string, Tab>>({});
+  const executionStates = useExecutionState();
   const group = GROUPS.find((g) => g.tabs.includes(tab)) ?? GROUPS[0];
   const setTab = useCallback((t: Tab) => { setTabRaw(t); const g = GROUPS.find((x) => x.tabs.includes(t)); if (g) setLastInGroup((cur) => ({ ...cur, [g.id]: t })); }, []);
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -134,7 +136,7 @@ export function SignalsWorkspace() {
           {group.tabs.map((key) => <button key={key} type="button" className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); if (key !== 'builder') setNotice(null); }}>{labelOf(key)}</button>)}
         </nav>
       )}
-      {tab === 'forward' && <p className="sl-capability"><LiveCapabilityChip /></p>}
+      {(tab === 'forward' || tab === 'live') && <p className="sl-capability" aria-label="Live execution state"><ExecutionStateChip venue={executionStates?.dhan} /> <ExecutionStateChip venue={executionStates?.delta} /></p>}
       {notice && tab === 'builder' && <Notice tone="info">{notice}</Notice>}
       {error && !meta && <Notice tone="bad">{error}</Notice>}
       {!meta ? <p className="sl-muted">{loading ? (slowWorkspace ? 'Still loading (slow backend). This can take up to a minute…' : 'Loading Signals workspace…') : (error ?? 'The Signals workspace could not be loaded.')}</p> : (

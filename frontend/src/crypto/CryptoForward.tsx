@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { apiRequest } from '../api';
 import { messageOf } from './cryptoApi';
+import { ExecutionStateChip } from '../components/ExecutionStateChip';
+import { ArmConfirm } from '../components/ArmConfirm';
+import { refreshExecutionState } from '../hooks/useExecutionState';
+import { todayLine, type VenueState } from '../lib/executionState';
 
 type Summary = { closed_trades: number; wins: number; losses: number; win_rate: number | null; gross_pnl: string; fees: string; slippage: string; net_pnl: string; avg_r: string | null };
 type Trade = { side: string; entry_time: string; exit_time: string | null; entry_fill: string; exit_fill: string; exit_reason: string; net_pnl: string; r_multiple: string | null };
 type OpenPos = { side: string; entry_time: string; entry_fill: string; stop_initial: string; target: string; mark: string };
-type LiveStatus = { deployment_enabled: boolean; credentials_present: boolean; armed: boolean; can_arm: boolean; confirmation_phrase: string; warning: string; limits: { max_contracts: number; leverage: string; max_daily_loss_usd: string; max_trades_per_day: number; max_open_positions: number; max_notional_usd: string }; today: { orders: number; placed: number; blocked: number; rejected: number } };
+type LiveStatus = { deployment_enabled: boolean; credentials_present: boolean; armed: boolean; can_arm: boolean; confirmation_phrase: string; warning: string; execution: VenueState; limits: { max_contracts: number; leverage: string; allowed_strategies: string[]; max_daily_loss_usd: string; max_trades_per_day: number; max_open_positions: number; max_notional_usd: string } };
 type LiveOrder = { id: string; created_at: string; symbol: string; side: string; contracts: number; leverage: number; status: string; block_reason: string | null; delta_order_id: string | null };
+type Blocked = { id: string; created_at: string; symbol: string; side: string; contracts: number; block_reason: string | null };
 type Forward = {
   id: string; name: string; symbol: string; resolution: string; status: string; contracts: number; start_time: string; last_run_at: string | null; last_error: string | null;
   execute_live?: boolean; label: string; summary: Summary | null; open_positions: OpenPos[]; trades?: Trade[]; params: { ema: number; rr: string; direction: number };
@@ -27,6 +32,8 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
   const [contracts, setContracts] = useState('1');
   const [live, setLive] = useState<LiveStatus | null>(null);
   const [orders, setOrders] = useState<LiveOrder[]>([]);
+  const [blocked, setBlocked] = useState<Blocked[]>([]);
+  const [confirming, setConfirming] = useState(false);
   const [phrase, setPhrase] = useState('');
   const [tf, setTf] = useState(['5m', '15m', '1h'].includes(resolution) ? resolution : '15m');
 
@@ -36,9 +43,10 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
   const loadLive = useCallback(async () => {
     try {
       const status = await apiRequest<LiveStatus>('/crypto-delta/live/status');
-      setLive(status && status.limits ? status : null);
-      const list = await apiRequest<{ orders: LiveOrder[] }>('/crypto-delta/live/orders?limit=20');
+      setLive(status && status.limits && status.execution ? status : null);
+      const list = await apiRequest<{ orders: LiveOrder[]; blocked_attempts?: Blocked[] }>('/crypto-delta/live/orders?limit=30');
       setOrders(Array.isArray(list?.orders) ? list.orders : []);
+      setBlocked(Array.isArray(list?.blocked_attempts) ? list.blocked_attempts : []);
     } catch { /* live controls are optional: the paper test works without them */ }
   }, []);
   useEffect(() => { void load(); void loadLive(); }, [load, loadLive]);
@@ -54,8 +62,8 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
       setOpen(made); await load();
     });
   };
-  const arm = () => void act(async () => { setLive(await apiRequest<LiveStatus>('/crypto-delta/live/arm', { method: 'POST', body: JSON.stringify({ confirmation: phrase }) })); setPhrase(''); });
-  const killSwitch = () => void act(async () => { await apiRequest('/crypto-delta/live/disarm', { method: 'POST', body: '{}' }); await loadLive(); });
+  const arm = () => void act(async () => { setLive(await apiRequest<LiveStatus>('/crypto-delta/live/arm', { method: 'POST', body: JSON.stringify({ confirmation: phrase }) })); setPhrase(''); setConfirming(false); void refreshExecutionState(); });
+  const killSwitch = () => void act(async () => { await apiRequest('/crypto-delta/live/disarm', { method: 'POST', body: '{}' }); await loadLive(); void refreshExecutionState(); });
   const setExecuteLive = (t: Forward, enabled: boolean) => {
     if (enabled && !window.confirm(`Let "${t.name}" place REAL Delta orders (1 contract, leveraged) when it signals?`)) return;
     void act(async () => { await apiRequest(`/crypto-delta/live/tests/${t.id}`, { method: 'PUT', body: JSON.stringify({ enabled }) }); await load(); await loadLive(); });
@@ -71,7 +79,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
   return (
     <section className="crypto-forward" aria-label="Delta forward test">
       <h2>Forward test: 5 EMA alert candle</h2>
-      <p className="crypto-sub">Hypothetical paper test on completed Delta candles, starting now. It places no order and never mixes with real P&amp;L. Fees are Delta&apos;s taker fee both ways plus slippage; GST and funding are not modelled. Decision support, not investment advice.</p>
+      <p className="crypto-sub">Hypothetical paper test on completed Delta candles, starting now. A paper test never mixes with real P&amp;L; whether it can send real orders is the Live switch and the state below. Fees are Delta&apos;s taker fee both ways plus slippage; GST and funding are not modelled. Decision support, not investment advice.</p>
       <form className="crypto-form" onSubmit={create}>
         <label>Contract<input value={symbol} readOnly aria-label="Contract" /></label>
         <label>Candle<select value={tf} onChange={(e) => setTf(e.target.value)}><option value="5m">5m</option><option value="15m">15m</option><option value="1h">1h</option></select></label>
@@ -83,17 +91,26 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
       {error && <p role="alert" className="crypto-error">{error}</p>}
       {live && (
         <div className="crypto-live" aria-label="Live order controls">
-          <h3>Live orders <span className="chip">{live.armed ? 'ARMED' : 'OFF'}</span></h3>
-          <p className="crypto-sub">{live.warning} Limits: {live.limits.max_contracts} contract, leverage {live.limits.leverage}, daily loss cap {live.limits.max_daily_loss_usd} USD, notional cap {live.limits.max_notional_usd} USD. Today: {live.today.placed} placed, {live.today.blocked} blocked, {live.today.rejected} rejected.</p>
-          {!live.can_arm && <p className="crypto-sub">Not available on this deployment: {!live.deployment_enabled ? 'DELTA_LIVE_EXECUTION_ENABLED is off' : 'Delta credentials are missing'}. Paper tests still run.</p>}
-          {live.can_arm && !live.armed && (
+          <h3>Live orders <ExecutionStateChip venue={live.execution} /></h3>
+          <p className="crypto-sub">{live.execution.label}: {live.execution.effective.state.replace(/_/g, ' ')}{live.execution.effective.reasons.length ? `. ${live.execution.effective.reasons.join('; ')}.` : '.'} Limits: {live.limits.max_contracts} contract, leverage {live.limits.leverage}, daily loss cap {live.limits.max_daily_loss_usd} USD, notional cap {live.limits.max_notional_usd} USD.</p>
+          <p className="crypto-sub">{todayLine(live.execution)}</p>
+          {live.execution.deployment_flag.enabled && live.credentials_present && !live.armed && (
             <p><input aria-label="Confirmation phrase" value={phrase} onChange={(e) => setPhrase(e.target.value)} placeholder={live.confirmation_phrase} />{' '}
-              <button type="button" className="secondary-button" onClick={arm} disabled={busy || phrase !== live.confirmation_phrase}>Arm live orders</button></p>
+              <button type="button" className="secondary-button" onClick={() => setConfirming(true)} disabled={busy || phrase !== live.confirmation_phrase}>Arm live orders…</button></p>
           )}
-          <button type="button" className="secondary-button" onClick={killSwitch} disabled={busy}>Kill switch: disarm and cancel unfilled orders</button>
-          {orders.length > 0 && (
-            <table className="crypto-table"><thead><tr><th>Time</th><th>Contract</th><th>Side</th><th>Lev</th><th>Status</th><th>Reason</th></tr></thead>
+          {live.armed && <button type="button" className="secondary-button" onClick={killSwitch} disabled={busy}>Kill switch: disarm and cancel unfilled orders</button>}
+          {live.execution.effective.state !== 'OFF' && <p className="crypto-sub">Each forward test below has its own Live switch.</p>}
+          <ArmConfirm open={confirming} venue="Delta Exchange India" strategies={live.limits.allowed_strategies} quantityCap={`${live.limits.max_contracts} contract per order (USD perpetuals)`} leverage={live.limits.leverage} tradingWindow={live.execution.window.text} busy={busy}
+            onCancel={() => setConfirming(false)} onConfirm={arm} />
+          <h4>Live order ledger (real orders only)</h4>
+          {orders.length === 0 ? <p className="crypto-sub">No order has been sent to Delta.</p> : (
+            <table className="crypto-table"><thead><tr><th>Time</th><th>Contract</th><th>Side</th><th>Lev</th><th>Status</th><th>Delta said</th></tr></thead>
               <tbody>{orders.map((o) => <tr key={o.id}><td>{when(o.created_at)}</td><td>{o.symbol}</td><td>{o.side}</td><td>{o.leverage}x</td><td>{o.status}</td><td>{o.block_reason ?? '—'}</td></tr>)}</tbody></table>
+          )}
+          <h4>Blocked attempts (never sent to Delta)</h4>
+          {blocked.length === 0 ? <p className="crypto-sub">No attempt was blocked.</p> : (
+            <table className="crypto-table"><thead><tr><th>Time</th><th>Contract</th><th>Side</th><th>Why it was blocked</th></tr></thead>
+              <tbody>{blocked.map((o) => <tr key={o.id}><td>{when(o.created_at)}</td><td>{o.symbol}</td><td>{o.side}</td><td>{o.block_reason ?? '—'}</td></tr>)}</tbody></table>
           )}
         </div>
       )}
@@ -109,7 +126,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
               <td>{num(t.summary?.net_pnl)}</td>
               <td>{when(t.last_run_at)}</td>
               <td><button type="button" className="secondary-button" onClick={() => toggle(t)} disabled={busy}>{t.status === 'active' ? 'Pause' : 'Resume'}</button>{' '}
-                <button type="button" className="secondary-button" onClick={() => setExecuteLive(t, !t.execute_live)} disabled={busy}>{t.execute_live ? 'Live: on' : 'Live: off'}</button>{' '}
+                {live && live.execution.effective.state !== 'OFF' && <><button type="button" className="secondary-button" onClick={() => setExecuteLive(t, !t.execute_live)} disabled={busy}>{t.execute_live ? 'Live: on' : 'Live: off'}</button>{' '}</>}
                 <button type="button" className="secondary-button" onClick={() => remove(t.id)} disabled={busy}>Delete</button></td>
             </tr>))}
           </tbody>

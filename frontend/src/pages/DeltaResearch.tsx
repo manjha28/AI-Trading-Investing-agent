@@ -227,7 +227,7 @@ export function DeltaResearchPage() {
       <section className="data-section" aria-label="Delta public market research">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">DELTA EXCHANGE · PUBLIC MARKET DATA · READ + ORDER EXECUTION (ORDERS ONLY WHEN ARMED)</p>
+            <p className="eyebrow">DELTA EXCHANGE · PUBLIC MARKET DATA</p>
             <h2>Delta Research</h2>
           </div>
           {status && <span className="section-count">Milestone {status.milestone}</span>}

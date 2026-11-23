@@ -18,6 +18,7 @@ from app.dhan_execution import policy
 from app.dhan_execution import service as live
 from app.models import Instrument, UserSession
 from app.models.forward_live import DhanLiveOrder, ForwardTest
+from app.services import execution_state
 from app.services import forward_test as fts
 from app.services import lab
 from app.services.intraday_strategy import definition_hash, validate_definition, StrategyDefinition
@@ -222,6 +223,7 @@ def _status(db: Session, user_id: UUID) -> dict[str, Any]:
                   "rejected": sum(r.status in ("rejected", "error") for r in today),
                   "realized_pnl": str(sum((r.realized_pnl for r in today if r.realized_pnl is not None), Decimal(0)))},
         "confirmation_phrase": policy.CONFIRMATION_PHRASE,
+        "execution": execution_state.dhan_state(db, user_id, now),
         "warning": "Real orders on your own account. Quantity is capped at 1. Backtests of these strategies were net-negative after charges; expect small losses, not profit.",
         "disclaimer": DISCLAIMER,
     }
@@ -277,11 +279,14 @@ def reconcile_now(active_session: UserSession = Depends(require_verified_session
 
 @live_router.get("/orders")
 def live_orders(limit: int = Query(default=50, ge=1, le=200), active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
-    rows = db.scalars(select(DhanLiveOrder).where(DhanLiveOrder.user_id == active_session.user_id).order_by(DhanLiveOrder.created_at.desc()).limit(limit)).all()
+    all_rows = db.scalars(select(DhanLiveOrder).where(DhanLiveOrder.user_id == active_session.user_id).order_by(DhanLiveOrder.created_at.desc()).limit(limit)).all()
+    rows = [r for r in all_rows if r.status != "blocked"]               # the ledger lists orders that were SENT to Dhan (a broker rejection is a real order)
+    blocked = [r for r in all_rows if r.status == "blocked"]
     return {"orders": [{"id": str(r.id), "created_at": r.created_at.isoformat(), "symbol": r.symbol, "side": r.side, "quantity": r.quantity, "strategy_key": r.strategy_key,
                         "status": r.status, "block_reason": r.block_reason, "reference_price": str(r.reference_price), "stop_price": str(r.stop_price) if r.stop_price else None,
                         "target_price": str(r.target_price) if r.target_price else None, "entry_price": str(r.entry_price) if r.entry_price else None,
                         "exit_price": str(r.exit_price) if r.exit_price else None, "exit_reason": r.exit_reason,
                         "realized_pnl_estimate": str(r.realized_pnl) if r.realized_pnl is not None else None, "dhan_order_id": r.dhan_order_id,
                         "broker_response": r.response} for r in rows],
+            "blocked_attempts": [{"id": str(r.id), "created_at": r.created_at.isoformat(), "symbol": r.symbol, "side": r.side, "quantity": r.quantity, "strategy_key": r.strategy_key, "block_reason": r.block_reason} for r in blocked],
             "note": "realized_pnl_estimate is gross P&L less this app's ESTIMATE of statutory charges; Dhan's contract note is the authority.", "disclaimer": DISCLAIMER}
