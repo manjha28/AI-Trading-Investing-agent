@@ -24,6 +24,16 @@ function csrfToken(): string | undefined {
 
 const inFlightRequests = new Map<string, Promise<unknown>>();
 
+/** Requests that have taken longer than SLOW_AFTER_MS, so the app can say "backend is slow, still loading" instead of showing blank panels. */
+export const SLOW_AFTER_MS = 8000;
+let slowCount = 0;
+const slowListeners = new Set<(count: number) => void>();
+export function subscribeSlowRequests(listener: (count: number) => void): () => void {
+  slowListeners.add(listener); listener(slowCount);
+  return () => { slowListeners.delete(listener); };
+}
+const setSlow = (delta: number) => { slowCount = Math.max(0, slowCount + delta); slowListeners.forEach((l) => l(slowCount)); };
+
 function safeRequestUrlForLog(rawUrl: string): string {
   const url = new URL(rawUrl, window.location.origin);
   for (const key of [...url.searchParams.keys()]) {
@@ -40,6 +50,12 @@ export function isAbortError(error: unknown): boolean {
 }
 
 async function performApiRequest<T>(path: string, options: RequestInit): Promise<T> {
+  let slow = false;
+  const timer = window.setTimeout(() => { slow = true; setSlow(1); }, SLOW_AFTER_MS);
+  try { return await performApiRequestInner<T>(path, options); } finally { window.clearTimeout(timer); if (slow) setSlow(-1); }
+}
+
+async function performApiRequestInner<T>(path: string, options: RequestInit): Promise<T> {
   const method = (options.method ?? 'GET').toUpperCase();
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('Content-Type')) {

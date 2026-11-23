@@ -232,3 +232,4 @@
 - Journal: Dhan fills without charges show ESTIMATED fees and net P&L (labelled est., never stored, real charges win); Execution tab labels broker replies
 - Journal: Dhan trading symbols (NIFTY-Nov2026-25350-CE) are recognised as options, so they are labelled option and priced with the options schedule
 - Multibagger screen redesigned: sortable, filterable table with a side sheet, shared data gaps said once; API adds per-stock checks and unknown counts
+- App shell: Dhan session status row in the sidebar, 'backend is slow' banner after 8 s, six-box authenticator code input, password show/hide

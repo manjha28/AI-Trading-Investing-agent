@@ -1,5 +1,6 @@
 export { Button } from './Button';
 export { Chip } from './Chip';
+export { CodeInput } from './CodeInput';
 export { DataTable, VIRTUALISE_ABOVE, type Column, type SortState } from './DataTable';
 export { ScoreBar } from './ScoreBar';
 export { Sheet } from './Sheet';

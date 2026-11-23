@@ -87,3 +87,17 @@
 .mb-checks { margin: var(--space-2) 0 0; padding-left: var(--space-4); display: grid; gap: var(--space-1); font-size: var(--fs-2); }
 .ui-table progress { width: 48px; height: 6px; vertical-align: middle; accent-color: var(--accent); }
 @media (max-width: 640px) { .mb-scores { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Sidebar Dhan status row */
+.dhan-status { display: flex; align-items: center; gap: var(--space-2); width: 100%; padding: var(--space-2) var(--space-2); font: 500 var(--fs-2)/1.2 var(--font-ui); color: var(--text-muted); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
+.dhan-status:hover { background: var(--surface-2); color: var(--text); }
+.dhan-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.dhan-status-ok .dhan-status-dot { background: var(--positive); } .dhan-status-warn .dhan-status-dot { background: var(--caution); } .dhan-status-bad .dhan-status-dot, .dhan-status-off .dhan-status-dot { background: var(--negative); }
+.dhan-status-bad, .dhan-status-off { color: var(--negative); }
+
+/* 6-box code input */
+.ui-code { display: flex; gap: var(--space-2); }
+.ui-code input { width: 40px; height: 48px; text-align: center; font: 600 var(--fs-5)/1 var(--font-mono); color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+.ui-code input:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.ui-pass { display: flex; gap: var(--space-2); align-items: center; }
+.ui-pass input { flex: 1; min-width: 0; }

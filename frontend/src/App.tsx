@@ -6,6 +6,9 @@ import { footerWording, sidebarWording, type LiveCapability } from './lib/liveCa
 import { useWorkspace } from './components/useWorkspace';
 import { AlertsBell } from './components/AlertsBell';
 import { MobileNav } from './components/MobileNav';
+import { CodeInput } from './components/ui/kit';
+import { DhanStatusRow } from './components/DhanStatusRow';
+import { SlowBackendBanner } from './components/SlowBackendBanner';
 import { BrandLockup } from './components/BrandLockup';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
@@ -180,18 +183,9 @@ export default function App() {
           <form className="form-stack" onSubmit={(event) => void verifyTwoFactor(event)}>
             <label>
               Authenticator code
-              <input
-                name="two_factor_code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                pattern="[0-9]{6}"
-                maxLength={6}
-                value={twoFactorCode}
-                onChange={(event) => setTwoFactorCode(event.target.value)}
-                required
-              />
+              <CodeInput value={twoFactorCode} onChange={setTwoFactorCode} />
             </label>
-            <button className="primary-button" type="submit" disabled={twoFactorBusy}>
+            <button className="primary-button" type="submit" disabled={twoFactorBusy || twoFactorCode.length !== 6}>
               {twoFactorBusy ? 'Verifying…' : twoFactorStatus?.enabled ? 'Verify session' : 'Verify and enable'}
             </button>
           </form>
@@ -244,11 +238,13 @@ export default function App() {
           <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={17} /><span>Crypto · Delta</span></button>
         </nav>
         <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span>{sidebarWording(liveCapability)}</span><span>Market data: {marketStatusLabel(marketDataStatus)}</span></div>
+        <DhanStatusRow allowed={sessionVerified} onOpen={() => setActiveView('brokers')} />
         <p className="sidebar-user">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</p>
         <button className="signout-button" onClick={signOut}><LogOut size={16} /><span>Sign out</span></button>
       </aside>
 
       <main className="workspace">
+        <SlowBackendBanner />
         <header className="workspace-header">
           <form className="header-search" role="search" onSubmit={(event) => { event.preventDefault(); setWatchSearch((current) => ({ q: marketQuery.trim(), n: current.n + 1 })); setActiveView('market-watch'); }}>
             <Search size={15} aria-hidden="true" />

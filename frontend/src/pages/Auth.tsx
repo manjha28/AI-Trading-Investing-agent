@@ -1,4 +1,5 @@
 import { CircleAlert, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
 import { BrandLockup } from '../components/BrandLockup';
 import type { WorkspaceState } from '../components/useWorkspace';
 
@@ -12,6 +13,8 @@ export function AuthPage({ workspace }: { workspace: Pick<WorkspaceState, 'error
   verificationStatus,
   verificationToken
 } = workspace;
+
+  const [showPassword, setShowPassword] = useState(false);
 
   if (verificationToken) {
     const message = verificationStatus === 'verifying'
@@ -48,7 +51,7 @@ export function AuthPage({ workspace }: { workspace: Pick<WorkspaceState, 'error
         {registering && <p>We’ll email a verification link. Verify your address, then sign in to connect a broker.</p>}
         <form className="form-stack" onSubmit={submitAuth}>
           <label>Email address<input name="email" type="email" autoComplete="email" required /></label>
-          <label>Password<input name="password" type="password" minLength={12} autoComplete={registering ? 'new-password' : 'current-password'} required /></label>
+          <label>Password<span className="ui-pass"><input name="password" type={showPassword ? 'text' : 'password'} minLength={12} autoComplete={registering ? 'new-password' : 'current-password'} required /><button type="button" className="secondary-button" aria-pressed={showPassword} onClick={() => setShowPassword((v) => !v)}>{showPassword ? 'Hide' : 'Show'}</button></span></label>
           <button className="primary-button" type="submit">{registering ? 'Create account' : 'Sign in'}</button>
         </form>
         {error && <p className="error-message" role="alert"><CircleAlert size={16} />{error}</p>}
