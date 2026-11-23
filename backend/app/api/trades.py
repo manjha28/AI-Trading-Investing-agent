@@ -194,6 +194,8 @@ def _dhan_trade_rows(db: Session, user_id: UUID) -> list[DhanTradeMirror]:
 
 
 _DERIVATIVE_SEGMENTS = {"NSE_FNO", "BSE_FNO", "MCX_COMM"}
+# Dhan's trading symbol for an index option: UNDERLYING-MonYYYY-STRIKE-CE|PE (monthly) or UNDERLYING-DDMonYYYY-STRIKE-CE|PE (weekly); no day for monthly expiries.
+_OPTION_SYMBOL = re.compile(r"^[A-Z0-9&]+-(?:\d{1,2})?(?P<month>[A-Za-z]{3})(?P<year>\d{4})-(?P<strike>\d+(?:\.\d+)?)-(?P<kind>CE|PE)$", re.IGNORECASE)
 _OPTION_PATTERN = re.compile(
     r"\b(?P<day>\d{1,2})\s+(?P<month>JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
     r"\s+(?P<strike>\d+(?:\.\d+)?)\s+(?P<kind>CALL|PUT|CE|PE)\b",
@@ -204,6 +206,9 @@ _OPTION_PATTERN = re.compile(
 def _contract_details(row: DhanTradeMirror) -> tuple[date | None, Decimal | None, str | None]:
     match = _OPTION_PATTERN.search(row.symbol or "")
     if not match:
+        trading = _OPTION_SYMBOL.match((row.symbol or "").strip())
+        if trading:                                   # expiry day is not in a monthly symbol: leave it unknown rather than guess
+            return None, Decimal(trading.group("strike")), "call" if trading.group("kind").upper() == "CE" else "put"
         return None, None, None
     month = datetime.strptime(match.group("month").title(), "%b").month
     year = row.trade_at.year
@@ -235,7 +240,7 @@ def _classify_segment(segment: str | None, symbol: str | None) -> str:
     if normalized in {"NSE_EQ", "BSE_EQ"}:
         return "equity"
     if normalized in _DERIVATIVE_SEGMENTS:
-        if normalized != "MCX_COMM" and _OPTION_PATTERN.search(symbol or ""):
+        if normalized != "MCX_COMM" and (_OPTION_PATTERN.search(symbol or "") or _OPTION_SYMBOL.match((symbol or "").strip())):
             return "option"
         return "future"
     return "future"

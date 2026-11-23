@@ -50,3 +50,12 @@ def test_equity_fills_use_the_intraday_schedule():
     rows = [fill("o8", "BUY", 10, "100", segment="NSE_EQ", symbol="TCS")]
     out = estimate_missing_charges(rows, is_option)
     assert out[0].charges_estimated and out[0].charges > 0
+
+
+def test_dhan_trading_symbols_are_recognised_as_options_so_they_are_priced_and_labelled_correctly():
+    from app.api.trades import _classify_segment, _contract_details
+    for symbol, kind, strike in (("NIFTY-Nov2026-25350-CE", "call", D("25350")), ("NIFTY-24Nov2026-25400-PE", "put", D("25400"))):
+        assert _classify_segment("NSE_FNO", symbol) == "option"
+        assert _contract_details(fill("o9", "BUY", 65, "10", symbol=symbol))[1:] == (strike, kind)
+    assert _classify_segment("NSE_FNO", "NIFTY-Nov2026-FUT") == "future"
+    assert _classify_segment("NSE_EQ", "TCS") == "equity"

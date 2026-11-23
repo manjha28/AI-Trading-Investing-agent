@@ -230,3 +230,4 @@
 - Crypto watch: live v2/ticker frames are stored (batched every second) so prices tick in seconds and flash green/red; watch refreshes every 2 s; Delta live-execution deployment flag switched on at the owner's request (arming and per-test switch still required)
 - Crypto watch: Delta trades channel drives the last price per trade (flushed every 0.5 s), the page refreshes every second and fetches only changed contracts
 - Journal: Dhan fills without charges show ESTIMATED fees and net P&L (labelled est., never stored, real charges win); Execution tab labels broker replies
+- Journal: Dhan trading symbols (NIFTY-Nov2026-25350-CE) are recognised as options, so they are labelled option and priced with the options schedule
