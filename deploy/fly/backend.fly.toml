@@ -26,5 +26,5 @@ primary_region = "sin"        # Singapore: the nearest region to India that offe
     path = "/api/v1/healthz"
 
 [[vm]]
-  size = "shared-cpu-2x"
-  memory = "2gb"
+  size = "shared-cpu-4x"
+  memory = "4gb"

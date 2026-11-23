@@ -1,3 +1,4 @@
+- Fly.io hosting for forward testing: deploy/fly (API + web apps, Managed Postgres, Singapore); live execution stays off.
 - Market watch: equity stream is built in memory (no DB per tick), pushed per row at most once a second, ticks and latest quote saved in batches; feed frames decoded inline; first tick in ~10 s.
 - Live feed: Market watch equities now stream (batched tick saves, one-pass tick-size index, live status on first tick, no portfolio summary or blocking history backfill in the universe stream); forward-test concurrency capped at 100.
 - P0-K: style Strategies with shared panels and controls, keep coverage sync status/reason interval-scoped, and arrange Overview metrics 2x2.
