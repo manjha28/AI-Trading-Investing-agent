@@ -1726,12 +1726,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                             provenance={showSnapshotFallback ? 'cached' : headerProvenance}
                             observedAt={showSnapshotFallback && fallbackBar
                               ? fallbackBar.bar_timestamp
-                              : liveMarketQuote?.market_timestamp ?? detailQuote?.market_timestamp ?? null}
+                              : liveMarketQuote?.market_timestamp ?? detailQuote?.market_timestamp ?? fallbackBar?.bar_timestamp ?? null}
                             provider={showSnapshotFallback && fallbackBar
                               ? fallbackBar.provider
-                              : liveMarketQuote?.source ?? detailQuote?.source ?? null}
+                              : liveMarketQuote?.source ?? detailQuote?.source ?? fallbackBar?.provider ?? null}
                             detail={showSnapshotFallback
-                              ? 'Persisted snapshot from Valkey; the live feed is not supplying newer values.'
+                              ? (fallbackBar?.source === 'stored' ? 'Newest stored bar; no live state store is configured.' : 'Persisted snapshot from the live state store; the live feed is not supplying newer values.')
                               : undefined}
                           />
                         )}
@@ -1822,10 +1822,12 @@ loadIndicatorsRef.current = loadInstrumentIndicators;
                           >{fundamentalsSyncing ? 'Syncing…' : 'Refresh from Yahoo Finance'}</button>
                         </div>
                         <p className="market-provenance">
-                          Source: Yahoo Finance · Last updated: {financialsFetchedAt
-                            ? formatIST(financialsFetchedAt)
-                            : 'Not available'}
+                          {companyProfile?.company_info
+                            ? <>Primary source: Dhan (company information below, retrieved {formatIST(companyProfile.company_info.retrieved_at)}). Statement periods are a labelled fallback from Yahoo Finance because Dhan does not supply them · Yahoo last updated: {financialsFetchedAt ? formatIST(financialsFetchedAt) : 'Not available'}</>
+                            : <>Dhan company information is not available for this stock; showing the labelled fallback from Yahoo Finance · Last updated: {financialsFetchedAt ? formatIST(financialsFetchedAt) : 'Not available'}</>}
                         </p>
+                        {companyProfile?.company_info && <DhanCompanyInfo info={companyProfile.company_info} />}
+                        <h4>Statement periods <small className="trade-subtext">fallback: Yahoo Finance</small></h4>
                         {fundamentalsMessage && <p className="market-provenance" role="status">{fundamentalsMessage}</p>}
                         {fundamentalsLoading ? <p className="loading-inline">Loading financials…</p>
                           : !selectedInstrument ? <p className="table-empty">Select an instrument to load its Yahoo Finance financials.</p>

@@ -79,11 +79,36 @@ def _freshness(interval: str, bar_timestamp: str, now: datetime) -> tuple[int, s
     return age_seconds, "fresh" if age_seconds <= threshold else "stale"
 
 
-@router.get("/latest", dependencies=[Depends(require_enabled)])
+def _stored_snapshot(db: Session, ids: list[UUID], now: datetime) -> dict:
+    """The newest REAL stored bar per instrument (1-minute first, else daily), used when the live state store is disabled or unreachable. Labelled as stored, never as live."""
+    from app.models import MarketBar
+    bars, missing = [], []
+    for instrument_id in ids:
+        bar = None
+        for interval in ("1m", "1d"):
+            bar = db.scalar(select(MarketBar).where(MarketBar.instrument_id == instrument_id, MarketBar.interval == interval, MarketBar.is_synthetic.is_(False)).order_by(MarketBar.timestamp.desc()).limit(1))
+            if bar is not None:
+                break
+        if bar is None:
+            missing.append(str(instrument_id))
+            continue
+        ts = bar.timestamp if bar.timestamp.tzinfo else bar.timestamp.replace(tzinfo=timezone.utc)
+        age = int((now - ts).total_seconds())
+        threshold = settings.market_data_daily_freshness_seconds if bar.interval == "1d" else settings.market_data_intraday_freshness_seconds
+        bars.append({"instrument_id": str(instrument_id), "provider": bar.source, "interval": bar.interval, "bar_timestamp": ts.isoformat(), "open": str(bar.open), "high": str(bar.high), "low": str(bar.low),
+                     "close": str(bar.close), "volume": str(bar.volume), "ingested_at": (bar.retrieved_at if bar.retrieved_at.tzinfo else bar.retrieved_at.replace(tzinfo=timezone.utc)).isoformat(),
+                     "age_seconds": age, "freshness": "fresh" if age <= threshold else "stale", "is_synthetic": False, "source": "stored"})
+    status = "no_data" if not bars else "stale" if all(b["freshness"] == "stale" for b in bars) else "ok"
+    return {"bars": bars, "missing_instrument_ids": missing, "unreadable_instrument_ids": [], "status": status, "source": "stored",
+            "note": "Live state store is not available on this deployment; these are the newest stored bars.", "disclaimer": DISCLAIMER}
+
+
+@router.get("/latest")
 def latest_bars(
     instrument_ids: str = Query(..., max_length=2000),
     _session: UserSession = Depends(require_verified_session),
     store: LatestStateStore = Depends(get_latest_store),
+    db: Session = Depends(get_db),
 ) -> dict:
     try:
         ids = list(dict.fromkeys(UUID(item.strip()) for item in instrument_ids.split(",") if item.strip()))
@@ -91,21 +116,13 @@ def latest_bars(
         raise HTTPException(status_code=422, detail="invalid_instrument_id") from exc
     if not ids or len(ids) > MAX_SNAPSHOT_INSTRUMENTS:
         raise HTTPException(status_code=422, detail="instrument_count_out_of_range")
+    now = datetime.now(timezone.utc)
+    if not settings.market_stream_enabled:
+        return _stored_snapshot(db, ids, now)            # no live stream configured (for example on Fly): answer from stored real bars instead of failing every page
     try:
         raw = store.get_many(ids)
-    except redis.RedisError as exc:
-        # Truthful and structured: no data is returned or implied, and the client may retry.
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "latest_state_unavailable",
-                "message": "Live state store is unreachable.",
-                "status": "unavailable",
-                "bars": [],
-            },
-            headers={"Retry-After": "5"},
-        ) from exc
-    now = datetime.now(timezone.utc)
+    except redis.RedisError:
+        return _stored_snapshot(db, ids, now) | {"note": "Live state store is unreachable; these are the newest stored bars."}
     bars = []
     unreadable: list[str] = []
     for instrument_id, payload in raw.items():

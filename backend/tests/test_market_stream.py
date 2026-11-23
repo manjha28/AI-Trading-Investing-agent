@@ -395,8 +395,7 @@ def test_consume_batch_commits_only_after_successful_handle():
 def test_snapshot_is_disabled_by_default(client, test_engine):
     register(client, test_engine, "off@example.com", verified=True)
     response = client.get(f"/api/v1/market-stream/latest?instrument_ids={uuid4()}")
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "market_stream_disabled"
+    assert response.status_code == 200 and response.json()["source"] == "stored" and response.json()["bars"] == []      # no live stream: stored real bars, never a 503 on every page
 
 
 def test_snapshot_requires_authentication(client, enabled):
@@ -497,20 +496,29 @@ def _get_latest(client, store, ids):
         app.dependency_overrides.pop(get_latest_store, None)
 
 
-def test_snapshot_store_outage_is_a_structured_503_without_any_data(client, test_engine, enabled):
+def test_snapshot_store_outage_falls_back_to_stored_bars_and_says_so(client, test_engine, enabled):
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from app.models import Instrument, MarketBar
     register(client, test_engine, "outage@example.com", verified=True)
-    response = _get_latest(client, _UnreachableStore(), [uuid4()])
-    assert response.status_code == 503
-    detail = response.json()["detail"]
-    assert detail["code"] == "latest_state_unavailable"
-    assert detail["status"] == "unavailable" and detail["bars"] == []
-    assert response.headers["retry-after"] == "5"
+    now = datetime.now(timezone.utc)
+    with Session(test_engine) as db:
+        inst = Instrument(symbol="STORED", display_name="Stored Ltd", asset_class="equity", venue="NSE", currency="INR", country="IN", timezone="Asia/Kolkata", created_at=now, is_synthetic=False)
+        db.add(inst); db.flush()
+        db.add(MarketBar(instrument_id=inst.id, interval="1d", timestamp=datetime(2026, 11, 23, tzinfo=timezone.utc), open=Decimal(1), high=Decimal(2), low=Decimal(1), close=Decimal("1.5"), volume=Decimal(9), source="dhan", retrieved_at=now, is_synthetic=False))
+        db.commit()
+        known, unknown = inst.id, uuid4()
+    body = _get_latest(client, _UnreachableStore(), [known, unknown]).json()
+    assert body["source"] == "stored" and "unreachable" in body["note"] and body["missing_instrument_ids"] == [str(unknown)]
+    assert body["bars"][0]["close"] == "1.50000000" or body["bars"][0]["close"].startswith("1.5")
+    assert body["bars"][0]["source"] == "stored" and body["bars"][0]["provider"] == "dhan" and body["bars"][0]["is_synthetic"] is False
 
 
-def test_disabled_stream_503_is_structured_and_carries_no_bars(client, test_engine):
+def test_disabled_stream_answers_from_stored_bars_and_carries_no_fabricated_data(client, test_engine):
     register(client, test_engine, "off2@example.com", verified=True)
-    detail = client.get(f"/api/v1/market-stream/latest?instrument_ids={uuid4()}").json()["detail"]
-    assert detail["code"] == "market_stream_disabled" and detail["status"] == "unavailable" and detail["bars"] == []
+    body = client.get(f"/api/v1/market-stream/latest?instrument_ids={uuid4()}").json()
+    assert body["source"] == "stored" and body["status"] == "no_data" and body["bars"] == []
 
 
 def test_snapshot_without_any_tick_reports_no_data_and_never_fabricates(client, test_engine, enabled):

@@ -8,6 +8,7 @@ export type SnapshotBar = {
   provider: string;
   interval: string;
   bar_timestamp: string;
+  source?: string;
   open: string;
   high: string;
   low: string;
