@@ -1,0 +1,14 @@
+{
+ "method": "Deflated Sharpe ratio on TRADE-level returns (round 3). Method:\n - the return of a trade = its net P&L in bps of the notional it carried;\n - every round-2 variant (R1-R5, both symbols) is run over the full sample under baseline costs; its per-trade Sharpe (mean / std of trade returns) is one trial;\n   the variance V of those Sharpes across trials with at least 30 trades is the 'variance across variants';\n - the benchmark SR0 is the expected best of N zero-edge trials: SR0 = sqrt(V) * ((1-g) Z(1-1/N) + g Z(1-1/(N e))), g = Euler-Mascheroni, with N = the true variant count (148, including\n   round 1's 56 and the 18 tick variants, which share this V);\n - DSR = Z( (SR_hat - SR0) sqrt(T-1) / sqrt(1 - skew SR_hat + (kurt-1)/4 SR_hat^2) ), T = number of trades of the best holdout result.\nOutput: reports/round3_dsr.json. Hypothetical research; decision support, not investment advice.",
+ "trials_with_enough_trades": 72,
+ "variance_of_sharpe_across_variants": 0.0039937831940116495,
+ "n_variants_true": 148,
+ "best": "R3 BTCUSD holdout (frozen rules)",
+ "trades": 101,
+ "sharpe_per_trade": 0.18825019696675757,
+ "benchmark_sr0": 0.16845533053852535,
+ "skew": 0.8510319413915444,
+ "kurtosis": 2.6967205382950987,
+ "deflated_sharpe_prob": 0.5847649323871482,
+ "plain_p_value_single_test": 0.029252748243238758
+}

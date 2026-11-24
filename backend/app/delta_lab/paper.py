@@ -1,31 +1,46 @@
-"""Paper engine: one chosen variant on LIVE public Delta data, using the same signal code, the same simulate() and the same risk_gate() as the backtest.
+"""Paper engine: the frozen R3 rules on LIVE public Delta data, BTCUSD and ETHUSD, through the same signal code, simulator and risk gate as the backtest.
+R1 runs as a SHADOW (logged to shadow_r1.csv, no decisions taken from it).
 
-It can never send an order: there is no order code in this module, and `--mode live` is refused. (Live orders exist only in app.delta_execution,
-behind its three layers; that path now also applies the shared liquidation-safety rule.) It also records the top of the book every minute, so the
-measured spread can later replace the assumed slippage. Stop it by creating reports/paper_live/STOP. Decision support, not investment advice."""
+It can never send an order: there is no order code in this module and `--mode live` is refused. (Live orders exist only in app.delta_execution, behind its
+three layers.) Data lives under DELTA_LAB_DATA_DIR (a Fly volume in production). Stop a CLI run by creating <dir>/paper_live/STOP.
+Decision support, not investment advice."""
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 import pandas as pd
 
-from . import data, families
+from . import data, families, round2
 from .engine import simulate
+from .paper_config import FROZEN, PARAM_HASH, SYMBOLS
 from .run import BASE, CFG
 
-REPORTS_DIR = Path(__file__).resolve().parents[3] / "reports"
-OUT = REPORTS_DIR / "paper_live"
+REPO = Path(__file__).resolve().parents[3]
+ROOT = Path(os.environ.get("DELTA_LAB_DATA_DIR", str(REPO / "data" / "lab")))
+OUT = ROOT / "paper_live"
 KEEP_DAYS = 75        # R3 ranks the 24-hour range against the last 60 days of hourly bars
+if os.environ.get("DELTA_LAB_DATA_DIR"):
+    data.DATA_DIR = ROOT / "series"
+else:
+    data.DATA_DIR = REPO / "diagnostics" / "delta_lab_data"
+
+
+def ensure_spec(symbol: str) -> None:
+    f = data.DATA_DIR / f"{symbol}_spec.json"
+    if not f.exists():
+        data.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(data.product_spec(symbol), default=str))
 
 
 def refresh(symbol: str, now: int) -> None:
-    """Append the newest completed candles to the rolling live series (45 days: enough for the 30-day windows)."""
+    """Append the newest completed candles to the rolling live series."""
+    ensure_spec(symbol)
     for series, prefix, res in (("last_1m", "", "1m"), ("mark_1m", "MARK:", "1m"), ("funding_1h", "FUNDING:", "1h")):
         name = f"{symbol}_live_{series}"
         try:
@@ -39,81 +54,82 @@ def refresh(symbol: str, now: int) -> None:
         data.save(df, name)
 
 
-def record_quote(symbol: str) -> dict | None:
-    try:
-        q = httpx.get(f"{data.BASE}/v2/tickers/{symbol}", timeout=10).json()["result"].get("quotes") or {}
-        return {"time": int(time.time()), "symbol": symbol, "best_bid": q.get("best_bid"), "best_ask": q.get("best_ask"), "bid_size": q.get("bid_size"), "ask_size": q.get("ask_size")}
-    except Exception:  # noqa: BLE001 - a missed snapshot is just a gap
-        return None
+def _funding_hist(m) -> pd.DataFrame:
+    """Delta's hourly FUNDING series (percent) as the 8-hourly settlement rows R1 reads (fraction)."""
+    f = m.funding_df
+    rows = [(int(t) + 3600, float(c) / 100.0) for t, c in zip(f["time"], f["close"]) if (int(t) + 3600) % 28800 == 0]
+    return pd.DataFrame(rows, columns=["time", "rate"])
 
 
-def run_cycle(symbol: str, variant: str, family: str, start_ts: int) -> dict:
+def run_symbol(symbol: str, start_ts: int) -> dict:
     now = int(time.time()) // 60 * 60
     refresh(symbol, now)
     m = families.build_market(symbol, "live_")
-    if family.startswith("R"):
-        from . import round2
-        sigs = {"R3": lambda: round2.r3(m, None)}[family]()      # round-2 families are added here as they pass
-    else:
-        sigs = dict(families.variants(m, family))[variant]
+    m.atr_4h = round2._atr_grid(m, "4h")
     start_idx = int(m.t.searchsorted(start_ts))
-    trades, rows, counts = simulate(m, sigs, BASE, CFG, window=(start_idx, len(m.t)))   # CFG.mode is paper: nothing can be sent
     last_t = int(m.t[-1])
-    done = [t for t in trades if t["exit_time"] <= last_t - 120 and t["exit_reason"] != "time" or t["exit_time"] < last_t - 3600]
-    return {"trades": done, "open": len(trades) - len(done), "rejections": counts, "rejection_rows": rows, "last_bar": last_t}
+    out = {"symbol": symbol, "last_bar": last_t}
+    for role, sigs in (("decision", round2.r3(m, None)), ("shadow", None)):
+        if role == "shadow":
+            m.funding_hist = _funding_hist(m)
+            sigs = round2.r1(m, 10, 2, 72, 2)
+        trades, rows, counts = simulate(m, sigs, BASE, CFG, window=(start_idx, len(m.t)))
+        closed = [t for t in trades if t["exit_time"] <= last_t - 120]
+        out[role] = {"trades": closed, "open": len(trades) - len(closed), "rejections": counts, "rejection_rows": rows}
+    return out
 
 
-def weekly(result: dict, symbol: str, family: str) -> None:
-    """reports/paper_weekly.md: paper vs backtest, by ISO week. Slippage in paper is still modelled (the recorder's measured spread will replace it)."""
-    import numpy as np
-    res = REPORTS_DIR / "round2_results.json"
-    ref = json.loads(res.read_text())["families"].get(family, {}).get(symbol, {}) if res.exists() else {}
-    hold = (ref.get("holdout") or {}).get("maker_maker", {}).get("summary", {})
-    by: dict[str, list[dict]] = {}
-    for t in result["trades"]:
-        by.setdefault(datetime.fromtimestamp(t["entry_time"], tz=timezone.utc).strftime("%G-W%V"), []).append(t)
-    L = [f"# Paper run: {family} {symbol}", "", "*Paper trades on live Delta data through the same signal code, simulator and risk gate. No order is ever sent. Decision support, not investment advice.*", "",
-         f"Backtest holdout reference: {hold.get('net_bps_per_trade', float('nan')):.1f} net bps/trade over {hold.get('trades', '—')} trades.", "",
-         "| Week | Trades | Net bps/trade | Net $ | Maker fills | Rejections so far |", "|---|---|---|---|---|---|"]
-    for wk, ts in sorted(by.items()):
-        L.append(f"| {wk} | {len(ts)} | {np.mean([t['bps_net'] for t in ts]):.1f} | {sum(t['net'] for t in ts):.2f} | {sum(1 for t in ts if t['entry_maker'])} | {sum(result['rejections'].values())} |")
-    total = len(result["trades"])
-    L += ["", f"Total closed paper trades: {total} (open: {result['open']}). The run needs at least 4 weeks or 50 trades, whichever is later, before any comparison is read.", ""]
-    (REPORTS_DIR / "paper_weekly.md").write_text("\n".join(L))
-
-
-def write(result: dict, symbol: str, family: str) -> None:
+def _write_rows(path: Path, header: list[str], rows: list[list]) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    with (OUT / "paper_trades.csv").open("w", newline="") as fh:
+    with path.open("w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["timestamp_utc", "symbol", "family", "variant", "side", "intended_entry", "size_contracts", "exit_time_utc", "exit_reason", "net_usd", "net_bps", "fees", "gst", "funding", "slippage_assumed"])
-        for t in result["trades"]:
-            w.writerow([datetime.fromtimestamp(t["entry_time"], tz=timezone.utc).isoformat(), symbol, family, t["variant"], t["side"], round(t["entry_px"], 2), t["qty"],
-                        datetime.fromtimestamp(t["exit_time"], tz=timezone.utc).isoformat(), t["exit_reason"], round(t["net"], 4), round(t["bps_net"], 2), round(t["fees"], 4), round(t["gst"], 4), round(t["funding"], 4), round(t["slippage"], 4)])
-    (OUT / "rejections.json").write_text(json.dumps({"counts": result["rejections"], "open_positions": result["open"], "last_bar": result["last_bar"]}, indent=1))
+        w.writerow(header)
+        w.writerows(rows)
+
+
+def write_results(results: list[dict]) -> None:
+    head = ["timestamp_utc", "symbol", "role", "variant", "param_hash", "side", "intended_entry_ref", "entry_fill_assumed", "size_contracts", "exit_time_utc", "exit_reason", "net_usd", "net_bps", "gross_bps",
+            "fees", "gst", "funding", "slippage_assumed", "required_margin"]
+    for role, fname in (("decision", "paper_trades.csv"), ("shadow", "shadow_r1.csv")):
+        rows = []
+        for r in results:
+            for t in r[role]["trades"]:
+                rows.append([datetime.fromtimestamp(t["entry_time"], tz=timezone.utc).isoformat(), r["symbol"], role, t["variant"], PARAM_HASH, t["side"], round(t["entry_ref"], 2), round(t["entry_px"], 2), t["qty"],
+                             datetime.fromtimestamp(t["exit_time"], tz=timezone.utc).isoformat(), t["exit_reason"], round(t["net"], 4), round(t["bps_net"], 2), round(t["gross"] / t["notional"] * 1e4, 2) if t["notional"] else "",
+                             round(t["fees"], 4), round(t["gst"], 4), round(t["funding"], 4), round(t["slippage"], 4), round(t["required_margin"], 2)])
+        _write_rows(OUT / fname, head, rows)
+    (OUT / "state.json").write_text(json.dumps({"as_of": time.time(), "param_hash": PARAM_HASH, "frozen": FROZEN,
+                                                "symbols": {r["symbol"]: {"last_bar": r["last_bar"], "open": r["decision"]["open"], "closed": len(r["decision"]["trades"]), "rejections": r["decision"]["rejections"],
+                                                                          "shadow_closed": len(r["shadow"]["trades"])} for r in results}}, indent=1))
+
+
+def run_cycle(start_ts: int) -> list[dict]:
+    results = [run_symbol(s, start_ts) for s in SYMBOLS]
+    write_results(results)
+    (OUT / "heartbeat").write_text(str(int(time.time())))
+    return results
+
+
+def start_timestamp() -> int:
+    OUT.mkdir(parents=True, exist_ok=True)
+    f = OUT / "start.txt"                                 # the paper run keeps its start across restarts and redeploys
+    if f.exists():
+        return int(f.read_text())
+    ts = int(time.time())
+    f.write_text(str(ts))
+    return ts
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Paper-trade one variant on live public Delta data. Never sends an order.")
-    ap.add_argument("--symbol", required=True); ap.add_argument("--family", required=True); ap.add_argument("--variant", required=True)
+    ap = argparse.ArgumentParser(description="Paper-trade the frozen R3 rules on live public Delta data. Never sends an order.")
     ap.add_argument("--mode", default="paper"); ap.add_argument("--once", action="store_true")
     a = ap.parse_args()
     if a.mode != "paper":
         raise SystemExit("Refused: this engine is paper-only. Live orders go through the existing Delta execution (three layers), not through the lab.")
-    OUT.mkdir(parents=True, exist_ok=True)
-    start_file = OUT / "start.txt"                      # the paper run keeps its start across restarts
-    start_ts = int(start_file.read_text()) if start_file.exists() else int(time.time())
-    start_file.write_text(str(start_ts))
+    start = start_timestamp()
     (OUT / "STOP").unlink(missing_ok=True)
     while not (OUT / "STOP").exists():
-        result = run_cycle(a.symbol, a.variant, a.family, start_ts)
-        write(result, a.symbol, a.family)
-        weekly(result, a.symbol, a.family)
-        quote = record_quote(a.symbol)
-        if quote:
-            new = not (OUT / "quotes.csv").exists()
-            with (OUT / "quotes.csv").open("a", newline="") as fh:
-                w = csv.DictWriter(fh, fieldnames=list(quote)); new and w.writeheader(); w.writerow(quote)
+        run_cycle(start)
         if a.once:
             break
         time.sleep(60)

@@ -867,6 +867,8 @@ def get_daily_report_card(
     for rows in (served["payload"].get("buckets") or {}).values():
         for row in rows:
             if row.get("instrument_id") == instrument_id:
+                from app.services import report_prices
+                row = {**row, "price": report_prices.build(db, [row]).get(instrument_id)}
                 return JSONResponse(row, headers={"Cache-Control": "private, max-age=30"})
     raise HTTPException(status_code=404, detail="That stock is not in the daily report.")
 
@@ -887,11 +889,12 @@ def get_daily_report(
     from app.services import report_store
     researching = research_daily.kick_missing(_session.user_id)   # newly added stocks start researching immediately
     served = report_store.serve(db, _session.user_id)
-    etag = f'"{served["etag"]}-{bucket or "all"}-{limit or 0}-{offset}-{"c" if compact else "f"}"'
+    etag = f'"{served["etag"]}-{bucket or "all"}-{limit or 0}-{offset}-{"c" if compact else "f"}-p{int(time.time() // 60)}"'     # the price line moves, so the tag changes each minute
     headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"}
     if request.headers.get("if-none-match") == etag and not researching:
         return Response(status_code=304, headers=headers)
-    report = _compact_report(served["payload"]) if compact else served["payload"]
+    from app.services import report_prices
+    report = report_prices.attach(db, _compact_report(served["payload"]) if compact else served["payload"])
     if bucket:
         rows = (report.get("buckets") or {}).get(bucket, [])
         page = rows[offset: offset + limit] if limit else rows[offset:]

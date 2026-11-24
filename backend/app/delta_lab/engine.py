@@ -223,6 +223,6 @@ def _run_trade(m: Market, sig: Signal, leg: Leg, ei: int, entry_px: float, entry
     if entry_maker and not entry_taker:                              # how far the price moved against the fill 1/5/30 bars later (bps, positive = against us)
         for k in (1, 5, 30):
             adverse[f"adverse_{k}m_bps"] = -sign * (m.c[min(n - 1, ei + k)] - entry_px) / entry_px * 1e4
-    return {**adverse, "entry_time": t_in, "exit_time": t_out, "exit_idx": exit_i, "entry_px": entry_px, "exit_px": exit_px, "gross": gross, "slippage": slippage, "fees": fees, "gst": gst,
+    return {**adverse, "entry_ref": entry_ref, "exit_ref": exit_ref, "entry_time": t_in, "exit_time": t_out, "exit_idx": exit_i, "entry_px": entry_px, "exit_px": exit_px, "gross": gross, "slippage": slippage, "fees": fees, "gst": gst,
             "funding": funding, "funding_missing": missing, "net": net, "exit_reason": reason, "entry_maker": entry_maker and not entry_taker, "notional": entry_px * cvq,
             "bps_net": net / (entry_px * cvq) * 1e4 if entry_px * cvq else 0.0}

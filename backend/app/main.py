@@ -170,6 +170,22 @@ async def lifespan(_app: FastAPI):
         async def delta_book_recorder_loop() -> None:
             await Recorder(["BTCUSD", "ETHUSD"], _P(settings.delta_book_dir)).run()
         _leader(delta_book_recorder_loop, 'delta_book')
+    if settings.delta_paper_enabled and "pytest" not in sys.modules:
+        async def delta_paper_loop() -> None:
+            import time as _time
+
+            from app.delta_lab import paper, round3_status
+            start, last_status = paper.start_timestamp(), 0.0
+            while True:
+                try:
+                    await asyncio.to_thread(paper.run_cycle, start)
+                    if _time.time() - last_status > 3600:
+                        await asyncio.to_thread(round3_status.write_all)
+                        last_status = _time.time()
+                except Exception as error:  # noqa: BLE001 - the paper test must never disturb the app; the heartbeat shows a stall
+                    logging.getLogger(__name__).warning("delta paper cycle failed error_class=%s", type(error).__name__)
+                await asyncio.sleep(60)
+        _leader(delta_paper_loop, 'delta_paper')
     if "pytest" not in sys.modules:
         from app.mcx_open_check import mcx_open_check_loop
         _leader(mcx_open_check_loop, 'mcx_open_check')

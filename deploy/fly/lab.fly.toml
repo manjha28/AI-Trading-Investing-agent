@@ -1,0 +1,26 @@
+# Fly.io app for the Delta lab: the read-only order-book recorder and the frozen R3 paper test. It is separate from the API so a lab restart can never affect the API.
+# Create once:  fly apps create finbyte-delta-lab ;  fly volumes create delta_lab --size 3 --region sin -a finbyte-delta-lab
+# Deploy:       fly deploy -c deploy/fly/lab.fly.toml --remote-only
+app = "finbyte-delta-lab"
+primary_region = "sin"
+
+[build]
+  dockerfile = "lab.Dockerfile"
+
+[env]
+  DELTA_BOOK_DIR = "/data/delta_book"
+  DELTA_LAB_DATA_DIR = "/data/lab"
+  DELTA_LAB_REPORT_DIR = "/data/lab"
+
+[processes]
+  lab = "python -m app.delta_lab.lab_service"
+
+[mounts]
+  source = "delta_lab"
+  destination = "/data"
+  processes = ["lab"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  processes = ["lab"]

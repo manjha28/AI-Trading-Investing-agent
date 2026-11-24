@@ -26,7 +26,7 @@ describe('DailyReport', () => {
     const onOpen = vi.fn();
     render(<DailyReport onOpen={onOpen} />);
     await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
-    expect(screen.getByRole('img', { name: /Confidence 72 out of 100, High/ })).toBeTruthy();
+    expect(screen.getByRole('img', { name: /Score 72 out of 100, unproven/ })).toBeTruthy();
     expect(screen.getByText('₹95.00')).toBeTruthy();
     expect(screen.getByText(/keep holding/)).toBeTruthy();
     expect(screen.getByText(/Decision support, not investment advice/)).toBeTruthy();
@@ -41,8 +41,8 @@ describe('DailyReport', () => {
     expect(screen.getAllByText('Factor rank 12th of 249 (factor screen)').length).toBeGreaterThan(0);
     expect(screen.getByText('Gamma Ltd')).toBeTruthy();
     expect(screen.getAllByText(/Set up, waiting/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Wait for a pullback into 100.00-103.00').length).toBeGreaterThan(0);
-    expect(screen.queryByRole('img', { name: /Confidence \d+ out of 100/ })).toBeNull();
+    expect(screen.getAllByText(/^(In buy band|Wait:)/).length).toBeGreaterThan(0);                 // a short status chip; the full reason is its tooltip
+    expect(screen.queryByRole('img', { name: /Score \d+ out of 100/ })).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 
@@ -132,6 +132,36 @@ describe('DailyReport · every horizon button is clickable', () => {
     expect((swing as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(swing);
     expect(await screen.findByText(/Swing: Hold\./)).toBeTruthy(); expect(screen.getByText(/Trend is flat/)).toBeTruthy();
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
+});
+
+describe('DailyReport · card header (24 Nov layout)', () => {
+  it('shows the price line, one short evidence chip, and no band while the measured result is not yet separating; the full sentence sits in the Why fold', async () => {
+    const wc = { line: 'Measured win rate 50% (avg setup 38%) · based on 118 similar past setups', band: 'Medium', band_label: 'Medium (not yet separating)', tooltip: 'interval 40-60%', expected_r: 0.12 };
+    const c = { ...conf, win_confidence: wc };
+    const card = { ...buy, price: { value: '2040.5', kind: 'ltp', as_of: '2026-11-24T07:35:00Z', change: '12.4', change_pct: '0.61', stale: false }, horizons: { ...buy.horizons, positional: { ...buy.horizons.positional, buy_confidence: c } }, confidence: c };
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [card] } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    await screen.findByText('Alpha Ltd');
+    expect(screen.getByText('₹2,040.50')).toBeTruthy();                                              // current price in large type
+    expect(screen.getByText(/\+₹12\.40 \(\+0\.61%\)/)).toBeTruthy(); expect(screen.getByText(/as of 13:05 IST/)).toBeTruthy();
+    expect(screen.getByText('Win rate 50% · 118 past setups')).toBeTruthy();                      // the short chip
+    expect(screen.getByRole('img', { name: /Score 72 out of 100, unproven/ })).toBeTruthy();        // no "High" next to "not yet separating"
+    expect(screen.queryByText('High')).toBeNull();
+    expect(screen.getByText(/Measured win rate 50% \(avg setup 38%\)/).closest('details')).toBeTruthy();   // the full sentence is in the Why fold
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
+
+  it('shows a band only when the stored calibration separates, and a stale price in grey with the word stale', async () => {
+    const wc = { line: 'Measured win rate 61% (avg setup 38%) · based on 140 similar past setups', band: 'High', band_label: 'High', tooltip: null, expected_r: 0.3 };
+    const c = { ...conf, win_confidence: wc };
+    const card = { ...buy, price: { value: '99', kind: 'close', as_of: '2026-11-21', change: null, change_pct: null, stale: true }, horizons: { ...buy.horizons, positional: { ...buy.horizons.positional, buy_confidence: c } }, confidence: c };
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [card] } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    await screen.findByText('Alpha Ltd');
+    expect(screen.getByRole('img', { name: /Score 72 out of 100, High/ })).toBeTruthy();
+    expect(screen.getByText(/stale/)).toBeTruthy(); expect(screen.getByText('₹99.00').closest('.rt-priceline')?.className).toContain('stale');
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });

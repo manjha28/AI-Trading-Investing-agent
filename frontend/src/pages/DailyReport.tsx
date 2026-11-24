@@ -15,7 +15,9 @@ export type WinConfidence = { line: string; band?: string | null; band_label?: s
 export type Confidence = { score: number; win_confidence?: WinConfidence | null; band: string; kind?: 'factor_v2'; label?: string; grade?: string | null; measured_line?: string | null; factor_rank?: { rank: number; of: number; composite: number; percentile: number; as_of?: string; universe_size?: number; text: string } | null; setup?: { label: string; checks: { key: string; label: string; result: string; reason: string; veto: boolean }[]; failed_vetoes: string[] }; note: string; parts: { key: string; label: string; value: number; weight: number }[]; horizon?: string };
 type HorizonRec = { recommendation: string | null; score: number | null; confidence: number | null; buy_confidence?: Confidence | null; why_not: string[]; data_note?: string | null };
 type Bucket = 'buy' | 'setup_waiting' | 'radar' | 'hold' | 'no_new_entry' | 'stale_data' | 'not_enough_data';
+export type PriceBlock = { value: string; kind: 'ltp' | 'close'; as_of: string | null; change: string | null; change_pct: string | null; stale: boolean };
 export type Row = {
+  price?: PriceBlock | null;
   instrument_id: string; symbol: string; name: string; held: boolean; quantity: string | null; bucket: Bucket; action: string; researched_at: string | null; stale: boolean;
   horizons: Record<string, HorizonRec>; levels: Record<string, Levels | null>; last_close?: string | null; confidence?: Confidence | null; researching?: boolean; data_note?: string | null; radar_reasons?: string[] | null;
 };
@@ -36,30 +38,56 @@ export const inr = (v?: string | number | null) => (v == null ? '—' : `₹${ti
 export const when = (iso: string | null) => formatIST(iso, 'not yet');
 const bandClass = (band?: string) => (band === 'High' ? 'good' : band === 'Medium' ? 'mid' : 'bad');
 
-export function WinLine({ conf }: { conf: Confidence }) {      // Phase 7b: the measured win probability with its sample, base rate and expected R; the tooltip carries the 80% interval
+/** The calibration band is shown only when the stored validation says the buckets separate; otherwise the number stands alone, marked Unproven. */
+export function shownBand(conf: Confidence): string | null {
+  const w = conf.win_confidence;
+  return w?.band_label && !/not yet separating/i.test(w.band_label) ? (w.band ?? w.band_label) : null;
+}
+
+/** "Win rate 50% · 118 past setups": the one short evidence chip; the full sentence lives in the Why fold. */
+export function evidenceChip(conf: Confidence | null | undefined): { text: string; title: string | undefined } | null {
+  const w = conf?.win_confidence;
+  if (!w?.line) return null;
+  const pct = /win rate\s+(\d+(?:\.\d+)?)%/i.exec(w.line)?.[1]; const n = /based on\s+(\d+)/i.exec(w.line)?.[1];
+  return { text: pct && n ? `Win rate ${pct}% · ${n} past setups` : w.line.slice(0, 40), title: w.tooltip ?? undefined };
+}
+
+export function WinLine({ conf }: { conf: Confidence }) {          // the full sentence, shown inside the Why fold
   const w = conf.win_confidence;
   if (!w?.line) return null;
-  return <small className="rt-measured" title={w.tooltip ?? undefined}>{w.line}{w.band_label ? ` · ${w.band_label}` : ''}{w.expected_r != null ? ` · expected ${w.expected_r > 0 ? '+' : ''}${w.expected_r.toFixed(2)}R` : ''}</small>;
+  return <p className="rt-note rt-measured" title={w.tooltip ?? undefined}>{w.line}{w.band_label ? ` · ${w.band_label}` : ''}{w.expected_r != null ? ` · expected ${w.expected_r > 0 ? '+' : ''}${w.expected_r.toFixed(2)}R` : ''}</p>;
 }
 
 export function RankBadge({ conf }: { conf: Confidence }) {      // Nexus v2: a neutral factor rank plus the setup grade; no confidence wording, no colour scale
   return <div className="rt-rankbadge" role="img" aria-label={`${conf.factor_rank?.text ?? 'Factor rank unavailable'}; ${conf.setup?.label ?? ''}`}>
     <b>{conf.label === 'High' ? 'High' : conf.setup?.label ?? 'Not ready'}</b><small>{conf.factor_rank?.text ?? 'Factor rank unavailable'}</small>
-    <WinLine conf={conf} />
-    {conf.measured_line && <small className="rt-measured" title="Hypothetical past results of similar setups on a survivor-free replay; not a forecast">{conf.measured_line}</small>}
   </div>;
 }
 
-export function Ring({ score, band }: { score: number; band: string }) {
+export function Ring({ score, band }: { score: number; band: string | null }) {
   const r = 26; const c = 2 * Math.PI * r;
-  return <div className={`rt-ring rt-ring-${bandClass(band)}`} role="img" aria-label={`Confidence ${Math.round(score)} out of 100, ${band}`}>
-    <svg viewBox="0 0 64 64" width="64" height="64" aria-hidden="true"><circle cx="32" cy="32" r={r} className="rt-ring-bg" /><circle cx="32" cy="32" r={r} className="rt-ring-fg" strokeDasharray={`${(score / 100) * c} ${c}`} transform="rotate(-90 32 32)" /></svg>
-    <div><b>{Math.round(score)}</b><small>{band}</small></div>
+  return <div className={`rt-ring rt-ring-${band ? bandClass(band) : 'neutral'}`} role="img" aria-label={`Score ${Math.round(score)} out of 100, ${band ?? 'unproven'}`}>
+    <div className="rt-ring-dial">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r={r} className="rt-ring-bg" /><circle cx="32" cy="32" r={r} className="rt-ring-fg" strokeDasharray={`${(score / 100) * c} ${c}`} transform="rotate(-90 32 32)" /></svg>
+      <b>{Math.round(score)}</b>
+    </div>
+    <small>{band ?? 'Unproven'}</small>
+  </div>;
+}
+
+function PriceLine({ price }: { price: PriceBlock | null | undefined }) {
+  if (!price) return <div className="rt-priceline"><b className="rt-price rt-price-none" title="No stored price for this stock">—</b></div>;
+  const ch = Number(price.change); const known = price.change !== null && Number.isFinite(ch);
+  const asOf = price.as_of ? (price.kind === 'ltp' ? `as of ${formatIST(price.as_of).replace(/^.*?,\s*/, '')}` : `close ${new Date(price.as_of).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })}`) : (price.kind === 'ltp' ? 'live' : 'last close');
+  return <div className={`rt-priceline${price.stale ? ' stale' : ''}`}>
+    <b className="rt-price" title={price.kind === 'ltp' ? 'Live price' : 'Last close'}>{inr(price.value)}</b>
+    {known && <span className={`rt-change ${ch >= 0 ? 'rt-pos' : 'rt-neg'}`}>{ch >= 0 ? '+' : '−'}{inr(String(Math.abs(ch)))}{price.change_pct ? ` (${Number(price.change_pct) >= 0 ? '+' : '−'}${Math.abs(Number(price.change_pct)).toFixed(2)}%)` : ''}</span>}
+    <small className="rt-asof">{asOf}{price.stale ? ' · stale' : ''}</small>
   </div>;
 }
 
 /** Horizontal price ladder: stop, entry zone, last close and targets drawn to scale. */
-export function Ladder({ levels }: { levels: Levels }) {
+export function Ladder({ levels, lastClose }: { levels: Levels; lastClose?: string | null }) {
   const stop = Number(levels.stop); const lo = Number(levels.entry_zone?.low); const hi = Number(levels.entry_zone?.high); const close = Number(levels.reference_close);
   const targets = (levels.targets ?? []).map((t) => ({ ...t, v: Number(t.price) }));
   const max = Math.max(...targets.map((t) => t.v), hi); const min = stop; const span = Math.max(max - min, 1e-9);
@@ -74,7 +102,7 @@ export function Ladder({ levels }: { levels: Levels }) {
     </div>
     <ul className="rt-ladder-keys">
       <li className="bad"><small>Stop</small><b>{inr(levels.stop)}</b></li>
-      <li className="mid"><small>{levels.entry_status === 'ENTER_NOW' ? 'Price is in the band: limit between' : 'Wait, then limit between'}</small><b>{inr(levels.entry_zone?.low)} – {inr(levels.entry_zone?.high)}</b></li>
+      <li className="mid"><small>{cardState(levels, lastClose).kind === 'in_band' ? 'In the band: limit between' : 'Wait, then limit between'}</small><b className="rt-range"><span>{inr(levels.entry_zone?.low)}</span><span>– {inr(levels.entry_zone?.high)}</span></b></li>
       {levels.targets?.map((t) => <li key={t.label} className="good" title={t.basis}><small>Target {t.label}{t.risk_reward ? ` · ${t.risk_reward}R` : ''}</small><b>{inr(t.price)}</b></li>)}
     </ul>
   </div>;
@@ -100,12 +128,14 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
   const active = HORIZONS.includes(horizon as never) ? horizon : buyHorizons[0];                // any horizon can be opened: a Hold or Avoid horizon explains itself instead of being a dead button
   const conf = row.horizons[active]?.buy_confidence ?? row.confidence;
   const levels = row.levels[active];
+  const evid = evidenceChip(conf);
   return <article className="rt-buy">
-    <header>
-      <div><button type="button" className="rt-sym" onClick={() => onOpen(row)}>{row.symbol}</button><span className="rt-name">{row.name}</span>
-        <div className="rt-chips">{row.held && <span className="rt-chip rt-chip-held" title={`You hold ${row.quantity}`}>In portfolio</span>}{row.stale && <span className="rt-chip rt-chip-warn">Not current</span>}</div></div>
-      {conf && (conf.kind === 'factor_v2' ? <RankBadge conf={conf} /> : <><Ring score={conf.score} band={conf.band} /><WinLine conf={conf} /></>)}
+    <header className="rt-head">
+      <div className="rt-head-id"><button type="button" className="rt-sym" onClick={() => onOpen(row)} title={row.symbol}>{row.symbol}</button><span className="rt-name" title={row.name}>{row.name}</span></div>
+      {conf && (conf.kind === 'factor_v2' ? <RankBadge conf={conf} /> : <Ring score={conf.score} band={shownBand(conf)} />)}
     </header>
+    <PriceLine price={row.price} />
+    {(evid || row.held || row.stale) && <div className="rt-chips">{evid && <span className="rt-chip rt-chip-evidence" title={evid.title}>{evid.text}</span>}{row.held && <span className="rt-chip rt-chip-held" title={`You hold ${row.quantity}`}>In portfolio</span>}{row.stale && <span className="rt-chip rt-chip-warn">Not current</span>}</div>}
     <div className="rt-seg" role="tablist" aria-label={`${row.symbol} horizon`}>
       {HORIZONS.map((h) => {
         const rec = row.horizons[h]?.recommendation;
@@ -114,8 +144,8 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
           {HORIZON_NAME[h]}<small>{on ? 'Buy' : REC_TEXT[rec ?? ''] ?? '—'}</small></button>;
       })}
     </div>
-    {levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${cardState(levels, row.last_close).kind === 'in_band' ? 'rt-chip-ok' : 'rt-chip-warn'}`} title={cardState(levels, row.last_close).reason ?? undefined}>{cardState(levels, row.last_close).label}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}
-    {levels?.status === 'available' ? <Ladder levels={levels} /> : row.horizons[active]?.recommendation !== 'BUY'
+    {levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${cardState(levels, row.last_close).kind === 'in_band' ? 'rt-chip-ok' : 'rt-chip-warn'}`} title={cardState(levels, row.last_close).reason ?? cardState(levels, row.last_close).label}>{cardState(levels, row.last_close).compact}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}
+    {levels?.status === 'available' ? <Ladder levels={levels} lastClose={row.last_close} /> : row.horizons[active]?.recommendation !== 'BUY'
       ? <p className="rt-note"><b>{HORIZON_NAME[active]}: {REC_TEXT[row.horizons[active]?.recommendation ?? ''] ?? 'no call'}.</b> {[...(row.horizons[active]?.why_not ?? []), row.horizons[active]?.data_note].filter(Boolean).join(' · ') || 'No buy signal on this horizon, so no levels are drawn.'}</p>
       : <p className="rt-note">{levels?.reason ?? 'No levels for this horizon.'}</p>}
     {levels?.status === 'available' && <p className="rt-note">Last close {inr(levels.reference_close)}{levels.prior_high_reference ? ` · prior high ${inr(levels.prior_high_reference)}` : ''} · {HORIZON_SPAN[active]}</p>}
@@ -123,6 +153,8 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
     {levels?.status === 'available' && levels.gates?.event_calendar_note?.startsWith('EVENT CALENDAR UNRELIABLE') && <p className="rt-note">{levels.gates.event_calendar_note}</p>}
     {levels?.status === 'available' && (levels.pivot_support || levels.pivot_resistance) && <p className="rt-note">Pivot support {levels.pivot_support ? `${inr(levels.pivot_support.price)} (${levels.pivot_support.name})` : 'none below price'} · pivot resistance {levels.pivot_resistance ? `${inr(levels.pivot_resistance.price)} (${levels.pivot_resistance.name})` : 'none above price'}</p>}
     {conf && <details className="rt-fold rt-why"><summary>{conf.kind === 'factor_v2' ? 'Why this rank and grade?' : `Why ${Math.round(conf.score)}/100?`}</summary>
+      <WinLine conf={conf} />
+      {conf.measured_line && <p className="rt-note rt-measured" title="Hypothetical past results of similar setups on a survivor-free replay; not a forecast">{conf.measured_line}</p>}
       <ul className="rt-parts">{(conf.parts ?? []).map((p) => <li key={p.key}><span>{p.label}<small> · {Math.round(p.weight * 100)}% weight</small></span><div className="rt-bar"><i style={{ width: `${p.value}%` }} /></div><b>{Math.round(p.value)}</b></li>)}</ul>
       {conf.kind === 'factor_v2' && conf.setup && <ul className="rt-checks">{(conf.setup.checks ?? []).map((c) => <li key={c.key}><b>{c.result === 'pass' ? 'Pass' : c.result === 'not_evaluated' ? 'Not evaluated' : c.veto ? 'Fail (veto)' : 'Fail'}</b> {c.label}<small> · {c.reason}</small></li>)}</ul>}
       <p className="rt-note">{conf.note}{conf.kind === 'factor_v2' ? '' : ' Provisional ranking of conviction, not a probability of profit.'}</p>

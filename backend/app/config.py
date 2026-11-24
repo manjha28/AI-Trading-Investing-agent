@@ -292,6 +292,7 @@ class Settings(BaseSettings):
     daily_close_refresh_enabled: bool = True              # data correctness, not a feature flag: keeps the master list's daily closes current after each session
     delta_book_recorder_enabled: bool = False     # read-only Delta order-book and trade recorder (needs a persistent volume at delta_book_dir)
     delta_book_dir: str = "/data/delta_book"
+    delta_paper_enabled: bool = False          # the frozen R3 paper test (never sends an order); needs the same volume
     daily_close_refresh_budget_seconds: int = Field(default=240, ge=10, le=900)
     master_bar_refresh_budget_seconds: int = Field(default=50, ge=5, le=300)
     forward_test_interval_seconds: int = Field(default=60, ge=20, le=600)
