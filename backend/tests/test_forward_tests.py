@@ -338,15 +338,15 @@ def test_live_status_shows_the_hard_limits_and_cannot_be_armed_on_a_default_depl
     assert s["limits"]["max_order_quantity"] == 1 and s["limits"]["allowed_strategies"] == ["five_ema_alert", "mfi_dip_30m"] and s["limits"]["product"] == "INTRADAY"
     assert s["confirmation_phrase"] == "ENABLE LIVE ORDERS" and "net-negative" in s["warning"]
     session_ok_2fa(engine, "status@example.com")
-    wrong = client.post(f"{LIVE}/arm", headers=h(client), json={"confirmation": "yes"})
+    wrong = client.post(f"{LIVE}/arm", headers=h(client), json={})
     assert wrong.status_code == 422
-    off = client.post(f"{LIVE}/arm", headers=h(client), json={"confirmation": "ENABLE LIVE ORDERS"})
+    off = client.post(f"{LIVE}/arm", headers=h(client), json={"acknowledged": True})
     assert off.status_code == 409 and "DHAN_LIVE_EXECUTION_ENABLED" in off.json()["detail"]
 
 
 def test_arming_needs_a_two_factor_session_the_phrase_the_deployment_flag_and_a_real_environment(client, engine, monkeypatch):
     login(client, engine, "arm@example.com")
-    arm = lambda **kw: client.post(f"{LIVE}/arm", headers=h(client), json={"confirmation": "ENABLE LIVE ORDERS", **kw})  # noqa: E731
+    arm = lambda **kw: client.post(f"{LIVE}/arm", headers=h(client), json={"acknowledged": True, **kw})  # noqa: E731
     no2fa = arm()
     assert no2fa.status_code == 403 and no2fa.json()["detail"]["code"] == "two_factor_required"
     session_ok_2fa(engine, "arm@example.com")
@@ -355,7 +355,7 @@ def test_arming_needs_a_two_factor_session_the_phrase_the_deployment_flag_and_a_
     assert blocked.status_code == 409 and "pytest" in blocked.json()["detail"]                                                 # a test run can never arm live execution
     monkeypatch.setattr(policy, "environment_block", lambda: None)
     assert arm(max_daily_loss_inr="10000").status_code == 422 and arm(max_notional_inr="1").status_code == 422 and arm(max_open_positions=9).status_code == 422
-    assert client.post(f"{LIVE}/arm", headers=h(client), json={"confirmation": "ENABLE LIVE ORDERS", "max_daily_loss_inr": 300.5}).status_code in (200, 422)
+    assert client.post(f"{LIVE}/arm", headers=h(client), json={"acknowledged": True, "max_daily_loss_inr": 300.5}).status_code in (200, 422)
     armed = arm(max_daily_loss_inr="300", max_trades_per_day=4, max_open_positions=2, max_notional_inr="20000")
     assert armed.status_code == 200 and armed.json()["armed"] is True and armed.json()["armed_at"]
     assert armed.json()["limits"]["max_daily_loss_inr"] == "300.00" and armed.json()["limits"]["max_trades_per_day"] == 4
@@ -369,7 +369,7 @@ def test_the_kill_switch_works_without_two_factor_and_leaves_the_user_disarmed(c
     monkeypatch.setattr(settings, "dhan_live_execution_enabled", True)
     monkeypatch.setattr(policy, "environment_block", lambda: None)
     session_ok_2fa(engine, "kill@example.com")
-    client.post(f"{LIVE}/arm", headers=h(client), json={"confirmation": "ENABLE LIVE ORDERS"})
+    client.post(f"{LIVE}/arm", headers=h(client), json={"acknowledged": True})
     assert client.get(f"{LIVE}/status").json()["armed"] is True
     with Session(engine) as db:
         for s in db.scalars(select(UserSession)):

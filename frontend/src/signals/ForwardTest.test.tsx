@@ -75,29 +75,25 @@ describe('ForwardTest', () => {
     expect(await screen.findByText(/off on this deployment/)).toBeTruthy();
     expect(screen.getByText(/DHAN_LIVE_EXECUTION_ENABLED=true/)).toBeTruthy();
     expect(screen.getByText(/static IP/)).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Arm live execution…' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Confirmation').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Turn live orders on…' }).closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
   });
 
-  it('arms only after the exact phrase is typed, and sends the limits as the owner set them', async () => {
+  it('turns live orders on after a warning (nothing to type), and sends the limits as the owner set them', async () => {
     render(<ForwardTest />);
-    const arm = await screen.findByRole('button', { name: 'Arm live execution…' });
-    expect((arm as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Confirmation'), { target: { value: 'enable live orders' } });
-    expect((arm as HTMLButtonElement).disabled).toBe(true);                                         // case matters
+    const arm = await screen.findByRole('button', { name: 'Turn live orders on…' });
+    expect(screen.queryByLabelText('Confirmation')).toBeNull();                                      // no phrase is asked for
     fireEvent.change(screen.getByLabelText('Daily loss cap'), { target: { value: '300' } });
     fireEvent.change(screen.getByLabelText('Orders per day'), { target: { value: '4' } });
-    fireEvent.change(screen.getByLabelText('Confirmation'), { target: { value: 'ENABLE LIVE ORDERS' } });
     expect((arm as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(arm);
-    const confirm = await screen.findByRole('dialog', { name: /Arm live orders on Dhan/ });                 // an explicit step that names the venue, strategies, quantity cap and window
+    const confirm = await screen.findByRole('dialog', { name: /Turn live orders on for Dhan/ });                 // an explicit step that names the venue, strategies, quantity cap and window
     expect(within(confirm).getByText(/five_ema_alert, mfi_dip_30m/)).toBeTruthy(); expect(within(confirm).getByText(/1 share per order/)).toBeTruthy(); expect(within(confirm).getByText(/09:20-14:30 IST/)).toBeTruthy();
     expect(calls.some((c) => c.path === '/dhan-live/arm')).toBe(false);
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Yes, arm Dhan' }));
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Yes, turn on live orders' }));
     expect((await screen.findAllByText(/ARMED BUT BLOCKED/)).length).toBeGreaterThan(0);
     const post = calls.find((c) => c.path === '/dhan-live/arm')!;
     expect(post.method).toBe('POST');
-    expect(post.body).toMatchObject({ confirmation: 'ENABLE LIVE ORDERS', max_daily_loss_inr: '300', max_trades_per_day: 4, max_open_positions: 3, max_notional_inr: '50000' });
+    expect(post.body).toMatchObject({ acknowledged: true, max_daily_loss_inr: '300', max_trades_per_day: 4, max_open_positions: 3, max_notional_inr: '50000' });
   });
 
   it('shows a prominent kill switch while armed, disarms, and reports cancelled orders and positions still open at the broker', async () => {
@@ -108,7 +104,7 @@ describe('ForwardTest', () => {
     expect(await screen.findByText(/2 unfilled order\(s\) cancelled/)).toBeTruthy();
     expect(screen.getByText(/Still open at the broker: SBIN — exit them in the Dhan app/)).toBeTruthy();
     expect(calls.some((c) => c.path === '/dhan-live/disarm' && c.method === 'POST')).toBe(true);
-    expect(await screen.findByRole('button', { name: 'Arm live execution…' })).toBeTruthy();         // back to off
+    expect(await screen.findByRole('button', { name: 'Turn live orders on…' })).toBeTruthy();         // back to off
   });
 
   it('only allows the live flag for an allowlisted strategy at quantity 1, and creates paper tests otherwise', async () => {

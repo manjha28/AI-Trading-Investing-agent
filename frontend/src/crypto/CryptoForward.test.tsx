@@ -52,14 +52,13 @@ describe('CryptoForward live controls', () => {
     expect(screen.queryByText(/Live: o(n|ff)/)).toBeNull();
   });
 
-  it('flag on but not armed: arming needs the phrase and then a confirmation step that names the venue, strategy, quantity cap and leverage', async () => {
+  it('flag on but not armed: turning live on needs no typing, only a warning step that names the venue, strategy, quantity cap and leverage', async () => {
     serve(status(true, false, 'OFF', ['you have not armed live execution']));
     render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
-    const arm = await screen.findByRole('button', { name: 'Arm live orders…' });
-    expect((arm as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Confirmation phrase'), { target: { value: 'ENABLE DELTA LIVE ORDERS' } });
+    const arm = await screen.findByRole('button', { name: 'Turn live orders on…' });
+    expect(screen.queryByLabelText('Confirmation phrase')).toBeNull();
     fireEvent.click(arm);
-    const dialog = await screen.findByRole('dialog', { name: /Arm live orders on Delta Exchange India/ });
+    const dialog = await screen.findByRole('dialog', { name: /Turn live orders on for Delta Exchange India/ });
     expect(within(dialog).getByText(/five_ema_alert/)).toBeTruthy(); expect(within(dialog).getByText(/1 contract per order/)).toBeTruthy(); expect(within(dialog).getByText(/min\(25x/)).toBeTruthy();
     expect(apiRequest.mock.calls.some((c) => String(c[0]).endsWith('/live/arm'))).toBe(false);          // nothing is armed until the confirmation
   });

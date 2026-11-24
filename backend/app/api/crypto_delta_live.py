@@ -58,7 +58,7 @@ def live_status(active_session: UserSession = Depends(require_verified_session),
 
 class ArmBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    confirmation: str
+    acknowledged: bool = False   # set by the warning dialog the owner confirms; no phrase is typed any more
     max_daily_loss_usd: Decimal = Field(default=Decimal("25"), ge=1, le=500)
     max_trades_per_day: int = Field(default=6, ge=1, le=20)
     max_open_positions: int = Field(default=2, ge=1, le=5)
@@ -68,8 +68,8 @@ class ArmBody(BaseModel):
 @router.post("/arm")
 def arm(body: ArmBody, active_session: UserSession = Depends(require_arming_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, Any]:
     """The explicit, auditable owner action that allows live orders. Needs the deployment flag, credentials, a 2FA-verified session and the typed phrase."""
-    if body.confirmation != policy.CONFIRMATION_PHRASE:
-        raise HTTPException(status_code=422, detail=f"Type {policy.CONFIRMATION_PHRASE!r} exactly to arm live execution.")
+    if not body.acknowledged:
+        raise HTTPException(status_code=422, detail="Confirm the warning to switch live orders on.")
     if not policy.deployment_enabled():
         raise HTTPException(status_code=409, detail="Delta live execution is switched off on this deployment (DELTA_LIVE_EXECUTION_ENABLED is not set).")
     if not policy.credentials_present():

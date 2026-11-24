@@ -20,8 +20,7 @@ import {
 } from '../lib/priceStates';
 import { formatIST, formatISTDate } from '../lib/formatIST';
 import { DhanSessionBanner } from '../components/DhanSessionBanner';
-import { NeedsAttention, type AttentionItem } from '../components/NeedsAttention';
-import { ExecutionStateChip } from '../components/ExecutionStateChip';
+import { LiveSwitch } from '../components/LiveSwitch';
 import { useExecutionState } from '../hooks/useExecutionState';
 
 type Props = Pick<
@@ -1150,29 +1149,16 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
   };
 
   const executionStates = useExecutionState(brokerAccessAllowed);
-  const attentionItems: AttentionItem[] = [];
-  for (const v of executionStates ? [executionStates.dhan, executionStates.delta] : []) {
-    if (v.effective.state === 'LIVE') attentionItems.push({ id: `exec-${v.venue}`, tone: 'negative', text: `${v.label} is LIVE: real orders can be sent now` });
-    else if (v.effective.state === 'ARMED_BUT_BLOCKED') attentionItems.push({ id: `exec-${v.venue}`, tone: 'caution', text: `${v.label} is armed but blocked: ${v.effective.reasons.join('; ')}` });
-  }
-  if (alerts && alerts.length > 0) attentionItems.push({ id: 'alerts', tone: 'caution', text: `${alerts.length} new alert${alerts.length === 1 ? '' : 's'} (${alerts.slice(0, 2).map((a) => a.rule_type.replace(/_/g, " ")).join(', ')}${alerts.length > 2 ? ', …' : ''})`, action: { label: 'Open alerts', onClick: () => setActiveView('alerts') } });
-  if (alertsError) attentionItems.push({ id: 'alerts-error', tone: 'caution', text: `Alerts could not be loaded: ${alertsError}`, action: { label: 'Retry', onClick: () => void refreshAlerts() } });
-  if (summary) {
-    const unpriced = summary.positions.filter((p) => { const v = valuationBySymbol.get(p.symbol); return !v || v.freshness === 'stale' || v.freshness === 'unavailable' || v.is_synthetic; });
-    if (unpriced.length > 0) attentionItems.push({ id: 'stale', tone: 'caution', text: `${unpriced.length} position${unpriced.length === 1 ? ' has' : 's have'} no current price: ${unpriced.slice(0, 4).map((p) => p.symbol).join(', ')}${unpriced.length > 4 ? ', …' : ''}`, action: { label: 'Review', onClick: () => setActiveView('market-watch') } });
-  }
-  if (dhanError) attentionItems.push({ id: 'dhan', tone: 'negative', text: dhanError, action: { label: 'Open Dhan connection', onClick: () => setActiveView('brokers') } });
 
   return (
     <div className="overview-page">
       <div className="overview-heading">
         <h1 className="page-title">Overview</h1>
-        <p className="muted">Decision support, not investment advice. <ExecutionStateChip venue={executionStates?.dhan} /> <ExecutionStateChip venue={executionStates?.delta} /></p>
+        <p className="muted">Decision support, not investment advice. <LiveSwitch venue={executionStates?.dhan} /> <LiveSwitch venue={executionStates?.delta} /></p>
       </div>
       {dhanError && <p className="broker-sync-time" role="alert">{dhanError}</p>}
       {!brokerAccessAllowed && <p className="broker-sync-time" role="status">Verify this session with your authenticator code to load broker account data.</p>}
       <DhanSessionBanner allowed={brokerAccessAllowed} onOpenBrokers={() => setActiveView('brokers')} />
-      <NeedsAttention loading={alerts === null && !alertsError && loadingPortfolio} items={attentionItems} />
 
       <section className="metrics-row portfolio-metrics" aria-label="Portfolio metrics">
         <MetricCard

@@ -62,7 +62,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
       setOpen(made); await load();
     });
   };
-  const arm = () => void act(async () => { setLive(await apiRequest<LiveStatus>('/crypto-delta/live/arm', { method: 'POST', body: JSON.stringify({ confirmation: phrase }) })); setPhrase(''); setConfirming(false); void refreshExecutionState(); });
+  const arm = () => void act(async () => { setLive(await apiRequest<LiveStatus>('/crypto-delta/live/arm', { method: 'POST', body: JSON.stringify({ acknowledged: true }) })); setConfirming(false); void refreshExecutionState(); });
   const killSwitch = () => void act(async () => { await apiRequest('/crypto-delta/live/disarm', { method: 'POST', body: '{}' }); await loadLive(); void refreshExecutionState(); });
   const setExecuteLive = (t: Forward, enabled: boolean) => {
     if (enabled && !window.confirm(`Let "${t.name}" place REAL Delta orders (1 contract, leveraged) when it signals?`)) return;
@@ -95,8 +95,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
           <p className="crypto-sub">{live.execution.label}: {live.execution.effective.state.replace(/_/g, ' ')}{live.execution.effective.reasons.length ? `. ${live.execution.effective.reasons.join('; ')}.` : '.'} Limits: {live.limits.max_contracts} contract, leverage {live.limits.leverage}, daily loss cap {live.limits.max_daily_loss_usd} USD, notional cap {live.limits.max_notional_usd} USD.</p>
           <p className="crypto-sub">{todayLine(live.execution)}</p>
           {live.execution.deployment_flag.enabled && live.credentials_present && !live.armed && (
-            <p><input aria-label="Confirmation phrase" value={phrase} onChange={(e) => setPhrase(e.target.value)} placeholder={live.confirmation_phrase} />{' '}
-              <button type="button" className="secondary-button" onClick={() => setConfirming(true)} disabled={busy || phrase !== live.confirmation_phrase}>Arm live orders…</button></p>
+            <p><button type="button" className="secondary-button" onClick={() => setConfirming(true)} disabled={busy}>Turn live orders on…</button></p>
           )}
           {live.armed && <button type="button" className="secondary-button" onClick={killSwitch} disabled={busy}>Kill switch: disarm and cancel unfilled orders</button>}
           {live.execution.effective.state !== 'OFF' && <p className="crypto-sub">Each forward test below has its own Live switch.</p>}

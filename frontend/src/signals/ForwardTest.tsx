@@ -73,19 +73,18 @@ function LivePanel({ status, reload }: { status: LiveStatus | null; reload: () =
         </div>
       ) : (
         <fieldset className="sl-card" disabled={busy || !status.can_arm}>
-          <legend>Arm live execution (needs a two-factor-verified session)</legend>
+          <legend>Live orders (needs a two-factor-verified session)</legend>
           <div className="sl-row">
             <Field label="Daily loss cap (₹)"><input aria-label="Daily loss cap" value={loss} onChange={(e) => setLoss(e.target.value)} inputMode="decimal" /></Field>
             <Field label="Orders per day"><input aria-label="Orders per day" value={trades} onChange={(e) => setTrades(e.target.value)} inputMode="numeric" /></Field>
             <Field label="Open positions"><input aria-label="Open positions" value={open} onChange={(e) => setOpen(e.target.value)} inputMode="numeric" /></Field>
             <Field label="Max order value (₹)"><input aria-label="Max order value" value={notional} onChange={(e) => setNotional(e.target.value)} inputMode="decimal" /></Field>
           </div>
-          <Field label={`Type “${status.confirmation_phrase}” to confirm`}><input aria-label="Confirmation" value={phrase} onChange={(e) => setPhrase(e.target.value)} autoComplete="off" /></Field>
-          <button type="button" className="sl-primary" disabled={phrase !== status.confirmation_phrase} onClick={() => setConfirming(true)}>Arm live execution…</button>
+          <button type="button" className="sl-primary" onClick={() => setConfirming(true)}>Turn live orders on…</button>
         </fieldset>
       )}
       <ArmConfirm open={confirming} venue="Dhan" strategies={status.limits.allowed_strategies} quantityCap={`${status.limits.max_order_quantity} share per order (${status.limits.product}, ${status.limits.segment})`} tradingWindow={`Mon-Fri ${status.limits.entry_window_ist[0]}-${status.limits.entry_window_ist[1]} IST`} busy={busy} onCancel={() => setConfirming(false)}
-        onConfirm={() => void act('arm', { confirmation: phrase, max_daily_loss_inr: loss, max_trades_per_day: Number(trades), max_open_positions: Number(open), max_notional_inr: notional })} />
+        onConfirm={() => void act('arm', { acknowledged: true, max_daily_loss_inr: loss, max_trades_per_day: Number(trades), max_open_positions: Number(open), max_notional_inr: notional })} />
     </section>
   );
 }

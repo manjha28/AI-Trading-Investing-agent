@@ -47,7 +47,7 @@ Dhan only, within hard limits. Agents MAY build and maintain exactly this, and n
   Execution scope is a separate, explicit owner arming step, never implied by the token.
 - Off by default in three independent layers, all required: deployment flag
   (`DHAN_LIVE_EXECUTION_ENABLED`), per-user arming by the owner (verified email, 2FA-verified
-  session, CSRF, typed confirmation, auditable), and per-test `execute_live` on that forward test.
+  session, CSRF, a warning dialog the owner confirms with one click (the typed phrase was removed by the owner on 2026-11-24), auditable), and per-test `execute_live` on that forward test.
 - Guard-rails fail closed: stale/missing price, outside market hours, no stop or target, daily
   loss cap, daily trade cap, open-position cap, notional cap, duplicate signal, kill switch.
 - A kill switch disarms instantly and cancels this app's open orders.
@@ -68,7 +68,7 @@ build and maintain exactly this, and nothing wider:
 - The API key and secret are read from backend environment secrets only (`DELTA_API_KEY`, `DELTA_API_SECRET`),
   never stored in the database, never logged, never returned.
 - Off by default in three independent layers, all required: deployment flag (`DELTA_LIVE_EXECUTION_ENABLED`),
-  per-user arming by the owner (verified email, 2FA-verified session, CSRF, typed confirmation, auditable),
+  per-user arming by the owner (verified email, 2FA-verified session, CSRF, a warning dialog confirmed with one click (typed phrase removed by the owner on 2026-11-24), auditable),
   and per-test `execute_live` on that Delta forward test.
 - Guard-rails fail closed (stale price, missing stop or target, daily loss cap, daily trade cap, open-position
   cap, notional cap, duplicate signal, one open order per contract, kill switch). The kill switch disarms

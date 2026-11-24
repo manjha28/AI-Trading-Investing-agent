@@ -642,7 +642,7 @@ def test_live_order_is_placed_only_when_every_layer_allows_and_is_idempotent(cli
 def test_arming_needs_2fa_the_flag_and_the_phrase_and_the_kill_switch_always_works(client, engine, monkeypatch):
     from app.delta_execution import policy
     headers = login(client, engine, "arm@example.com")
-    body = {"confirmation": policy.CONFIRMATION_PHRASE}
+    body = {"acknowledged": True}
     assert client.post("/api/v1/crypto-delta/live/arm", headers=headers, json=body).status_code == 403          # no 2FA-verified session
     status = client.get("/api/v1/crypto-delta/live/status").json()
     assert status["armed"] is False and status["can_arm"] is False and status["limits"]["max_contracts"] == 1
