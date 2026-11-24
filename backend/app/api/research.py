@@ -842,7 +842,10 @@ def _compact_row(row: dict) -> dict:
     out = dict(row)
     # the list keeps what a row and the ladder need; the derivations, support/resistance lists and pivots come with the full card
     out["levels"] = {h: ({k: v for k, v in lv.items() if k in LEVEL_KEEP} if isinstance(lv, dict) else lv) for h, lv in (row.get("levels") or {}).items()}
-    out["horizons"] = {h: ({**hv, "buy_confidence": slim_conf(hv.get("buy_confidence"))} if isinstance(hv, dict) else hv) for h, hv in (row.get("horizons") or {}).items()}
+    keep_detail = row.get("bucket") in ("buy", "setup_waiting", "radar")
+    # a list row needs each horizon's call and score; the reasons it is not a buy ("why_not") and, for stocks that are not candidates, the confidence block come with the full card
+    out["horizons"] = {h: ({k: v for k, v in hv.items() if k != "why_not"} | ({"buy_confidence": slim_conf(hv.get("buy_confidence"))} if keep_detail else {"buy_confidence": None}) if isinstance(hv, dict) else hv)
+                       for h, hv in (row.get("horizons") or {}).items()}
     out["confidence"] = slim_conf(row.get("confidence"))
     out["compact"] = True
     return out

@@ -147,3 +147,9 @@
 .ui-toasts { position: fixed; z-index: 60; right: var(--space-4); bottom: var(--space-4); display: grid; gap: var(--space-2); max-width: min(360px, calc(100vw - 32px)); }
 .ui-toast { display: flex; gap: var(--space-3); justify-content: space-between; align-items: center; padding: var(--space-3) var(--space-4); font-size: var(--fs-2); background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: var(--shadow-pop); }
 .ui-toast-positive { border-color: var(--positive-line); } .ui-toast-negative { border-color: var(--negative-line); background: var(--negative-soft); } .ui-toast button { all: unset; cursor: pointer; color: var(--text-muted); }
+
+/* Top loading bar */
+.top-loading-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 70; height: 2px; overflow: hidden; background: transparent; }
+.top-loading-bar i { display: block; width: 40%; height: 100%; background: var(--accent); animation: ui-bar 1.1s ease-in-out infinite; }
+@keyframes ui-bar { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+@media (prefers-reduced-motion: reduce) { .top-loading-bar i { animation: none; width: 100%; opacity: .6; } }

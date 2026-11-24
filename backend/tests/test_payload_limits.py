@@ -42,7 +42,7 @@ def test_compact_daily_report_drops_the_long_fields_and_keeps_what_the_list_show
     levels = {"status": "available", "entry_zone": {"low": "1", "high": "2"}, "stop": "0.5", "targets": [{"label": "T1", "price": "3"}], "explanation": "long text " * 50, "derivation": {"rule": "x" * 400},
               "support_levels": list(range(40)), "resistance_levels": list(range(40)), "pivots": {"daily": {"P": "1"}}}
     conf = {"score": 70, "band": "High", "parts": [{"key": "a"}] * 8, "setup": {"checks": [1] * 10}, "note": "n" * 300, "win_confidence": {"line": "Measured win rate 38%"}}
-    row = {"instrument_id": "i1", "symbol": "AAA", "levels": {"positional": levels}, "horizons": {"positional": {"recommendation": "BUY", "buy_confidence": conf}}, "confidence": conf}
+    row = {"instrument_id": "i1", "symbol": "AAA", "bucket": "buy", "levels": {"positional": levels}, "horizons": {"positional": {"recommendation": "BUY", "buy_confidence": conf}}, "confidence": conf}
     out = _compact_report({"buckets": {"buy": [row]}, "counts": {"buy": 1}})["buckets"]["buy"][0]
     kept, original = out["levels"]["positional"], levels
     assert out["compact"] is True and kept["entry_zone"] == original["entry_zone"] and kept["stop"] == "0.5" and kept["targets"] == original["targets"]

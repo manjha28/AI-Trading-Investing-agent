@@ -10,6 +10,7 @@ import { MobileNav } from './components/MobileNav';
 import { CodeInput } from './components/ui/kit';
 import { DhanStatusRow } from './components/DhanStatusRow';
 import { SlowBackendBanner } from './components/SlowBackendBanner';
+import { TopLoadingBar } from './components/TopLoadingBar';
 import { BrandLockup } from './components/BrandLockup';
 import { AuthPage } from './pages/Auth';
 import { BrokersPage } from './pages/BrokersPage';
@@ -239,6 +240,7 @@ export default function App() {
       </aside>
 
       <main className="workspace">
+        <TopLoadingBar />
         <SlowBackendBanner />
         <header className="workspace-header">
           <form className="header-search" role="search" onSubmit={(event) => { event.preventDefault(); setWatchSearch((current) => ({ q: marketQuery.trim(), n: current.n + 1 })); setActiveView('market-watch'); }}>

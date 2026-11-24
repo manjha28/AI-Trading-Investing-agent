@@ -27,6 +27,14 @@ const inFlightRequests = new Map<string, Promise<unknown>>();
 /** Requests that have taken longer than SLOW_AFTER_MS, so the app can say "backend is slow, still loading" instead of showing blank panels. */
 export const SLOW_AFTER_MS = 8000;
 let slowCount = 0;
+let pendingCount = 0;
+const pendingListeners = new Set<(count: number) => void>();
+/** Number of API requests in flight, for the thin loading bar under the header. */
+export function subscribePending(listener: (count: number) => void): () => void {
+  pendingListeners.add(listener); listener(pendingCount);
+  return () => { pendingListeners.delete(listener); };
+}
+const setPending = (delta: number) => { pendingCount = Math.max(0, pendingCount + delta); pendingListeners.forEach((l) => l(pendingCount)); };
 const slowListeners = new Set<(count: number) => void>();
 export function subscribeSlowRequests(listener: (count: number) => void): () => void {
   slowListeners.add(listener); listener(slowCount);
@@ -51,8 +59,9 @@ export function isAbortError(error: unknown): boolean {
 
 async function performApiRequest<T>(path: string, options: RequestInit): Promise<T> {
   let slow = false;
+  setPending(1);
   const timer = window.setTimeout(() => { slow = true; setSlow(1); }, SLOW_AFTER_MS);
-  try { return await performApiRequestInner<T>(path, options); } finally { window.clearTimeout(timer); if (slow) setSlow(-1); }
+  try { return await performApiRequestInner<T>(path, options); } finally { window.clearTimeout(timer); setPending(-1); if (slow) setSlow(-1); }
 }
 
 async function performApiRequestInner<T>(path: string, options: RequestInit): Promise<T> {
