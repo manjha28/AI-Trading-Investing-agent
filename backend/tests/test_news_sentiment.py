@@ -400,3 +400,80 @@ def test_sentiment_analysis_api_requires_normal_authenticated_route_and_returns_
         app.dependency_overrides.clear()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_instrument_sentiment_list_matches_the_single_aggregate_and_does_not_query_per_instrument():
+    from sqlalchemy import event
+
+    from app.services.news_sentiment import list_instrument_sentiment
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    try:
+        def seed(n):
+            with Session(engine) as db:
+                items = []
+                for k in range(n):
+                    inst = _instrument(f"LST{n}X{k}")
+                    db.add(inst); db.flush()
+                    db.add(InstrumentSnapshot(instrument_id=inst.id, sector="Industrials", industry="Engineering", source="test", fetched_at=NOW))
+                    items += [_news(headline=f"Q{k} results: profit rose", instrument_id=inst.id), _news(headline=f"Order win {k}", instrument_id=inst.id)]
+                items.append(_news(headline="Indian inflation outlook changes"))
+                if db.scalar(select(NewsSourcePoll).where(NewsSourcePoll.source == "google_news")) is None:
+                    _source(db, "google_news")
+                db.add_all(items); db.commit()
+                analyze_news_items(db, now=NOW, vader=lambda _text: 0.0)
+
+        def count_queries(n):
+            seed(n)
+            counter = {"n": 0}
+            hook = lambda *a, **k: counter.__setitem__("n", counter["n"] + 1)  # noqa: E731
+            event.listen(engine, "before_cursor_execute", hook)
+            with Session(engine) as db:
+                listed = list_instrument_sentiment(db, now=NOW, limit=100)
+            event.remove(engine, "before_cursor_execute", hook)
+            return listed, counter["n"]
+
+        few, q_few = count_queries(2)
+        many, q_many = count_queries(8)
+        assert len(few) == 2 and len(many) == 10                           # the first two instruments are still in the table
+        assert q_many - q_few <= q_few + 2 and q_many < 40                  # the number of queries does not grow with the number of instruments
+        with Session(engine) as db:
+            single = aggregate_instrument_sentiment(db, uuid_of(db, many[0]["instrument"]["id"]), now=NOW)
+            for key in ("status", "sentiment", "score", "confidence_score", "event_count", "article_count", "counts"):
+                assert many[0][key] == single[key], key
+        assert len(many[0]["events"]) <= 3 and many[0]["coverage"].get("sources_omitted_in_list") is True
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def uuid_of(db, text):
+    from uuid import UUID
+    return UUID(text)
+
+
+def test_sector_sentiment_list_matches_the_single_sector_aggregate():
+    from app.services.news_sentiment import list_sector_sentiment
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as db:
+            items = []
+            for sector, n in (("Industrials", 2), ("Banks", 1)):
+                for k in range(n):
+                    inst = _instrument(f"{sector[:3].upper()}{k}")
+                    db.add(inst); db.flush()
+                    db.add(InstrumentSnapshot(instrument_id=inst.id, sector=sector, industry="x", source="test", fetched_at=NOW))
+                    items.append(_news(headline=f"{sector} results: profit rose {k}", instrument_id=inst.id))
+            _source(db, "google_news")
+            db.add_all(items); db.commit()
+            analyze_news_items(db, now=NOW, vader=lambda _text: 0.0)
+            listed = {row["scope_id"]: row for row in list_sector_sentiment(db, now=NOW)}
+            assert set(listed) == {"Industrials", "Banks"}
+            for sector, row in listed.items():
+                single = aggregate_sector_sentiment(db, sector, now=NOW)
+                for key in ("status", "sentiment", "score", "confidence_score", "event_count", "article_count", "counts"):
+                    assert row[key] == single[key], (sector, key)
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()

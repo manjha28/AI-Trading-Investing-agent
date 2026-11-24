@@ -720,14 +720,9 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [portfolioId, brokerAccessAllowed]);
 
-  // Closed positions, holdings and funds are a stored snapshot that only a sync refreshes. Take a snapshot-only sync (no trades, so the journal's trade window is untouched) when Overview opens or the connection is
-  // freshly established, and again at most every 2 minutes, so 'Closed today' no longer waits for the Sync button.
-  const lastSnapshotSyncAt = useRef(0);
+  // Closed positions, holdings and funds are a stored snapshot. The backend refreshes it on a schedule while the market is open (dhan_snapshot_refresh), so opening a page or switching views
+  // never triggers a sync; the Sync button is the explicit way to ask for one.
   const fetchDhanData = async () => {
-    if (Date.now() - lastSnapshotSyncAt.current > 120_000) {
-      lastSnapshotSyncAt.current = Date.now();
-      await apiRequest('/brokers/dhan/sync?snapshot_only=true', { method: 'POST' }).catch(() => undefined);
-    }
     // The server measures each price's age when it responds. Elapsed time is counted from the
     // moment of the request, so a displayed age is never understated.
     const requestedAt = Date.now();

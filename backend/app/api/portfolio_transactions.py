@@ -6,7 +6,7 @@ from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -800,19 +800,36 @@ def attach_instrument_to_position(
     )
 
 
+HISTORY_MAX_POINTS = 600
+
+
+def _thin(rows: list, max_points: int) -> list:
+    """At most ``max_points`` evenly spaced snapshots, always keeping the newest one (a chart cannot show more than that anyway)."""
+    if len(rows) <= max_points:
+        return rows
+    step = len(rows) / (max_points - 1)
+    picked = [rows[int(i * step)] for i in range(max_points - 1)]
+    return picked + [rows[-1]]
+
+
 @router.get("/history")
 def portfolio_valuation_history(
     portfolio_id: UUID,
+    days: int = Query(default=365, ge=1, le=3650, description="How far back to read snapshots."),
+    max_points: int = Query(default=HISTORY_MAX_POINTS, ge=10, le=5000, description="Snapshots are thinned evenly to at most this many per series (the newest is always kept)."),
+    include_observations: bool = Query(default=False, description="Price observations are heavy; they are always included on the newest snapshot, and on every snapshot only when asked."),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     portfolio = get_owned_portfolio(db, user.id, portfolio_id)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     owner_rows = list(db.scalars(
         select(PortfolioValuationSnapshot)
         .where(
             PortfolioValuationSnapshot.owner_id == user.id,
             PortfolioValuationSnapshot.scope == "owner",
             PortfolioValuationSnapshot.portfolio_id.is_(None),
+            PortfolioValuationSnapshot.timestamp >= since,
         )
         .order_by(PortfolioValuationSnapshot.timestamp)
         .limit(10_000)
@@ -823,10 +840,14 @@ def portfolio_valuation_history(
             PortfolioValuationSnapshot.owner_id == user.id,
             PortfolioValuationSnapshot.scope == "portfolio",
             PortfolioValuationSnapshot.portfolio_id == portfolio.id,
+            PortfolioValuationSnapshot.timestamp >= since,
         )
         .order_by(PortfolioValuationSnapshot.timestamp)
         .limit(10_000)
     ).all())
+    owner_total, portfolio_total = len(owner_rows), len(portfolio_rows)
+    owner_rows, portfolio_rows = _thin(owner_rows, max_points), _thin(portfolio_rows, max_points)
+    newest = {id(owner_rows[-1]) if owner_rows else None, id(portfolio_rows[-1]) if portfolio_rows else None}
 
     def serialize(row: PortfolioValuationSnapshot) -> dict:
         return {
@@ -841,12 +862,14 @@ def portfolio_valuation_history(
             "provider_timestamp": row.provider_timestamp,
             "complete": row.complete,
             "reason": row.reason,
-            "price_observations": row.price_observations,
+            "price_observations": row.price_observations if (include_observations or id(row) in newest) else [],
         }
 
     return {
         "owner_wide": [serialize(row) for row in owner_rows],
         "portfolio_scoped": [serialize(row) for row in portfolio_rows],
+        "window": {"days": days, "max_points": max_points, "owner_wide_total": owner_total, "portfolio_scoped_total": portfolio_total,
+                   "thinned": owner_total > len(owner_rows) or portfolio_total > len(portfolio_rows)},
     }
 
 

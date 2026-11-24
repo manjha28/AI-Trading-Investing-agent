@@ -448,9 +448,11 @@ def _build_aggregate(
     now: datetime,
     period_days: int,
     unanalysed_count: int = 0,
+    coverage: list[dict[str, Any]] | None = None,
+    analysis_counts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    coverage = _source_coverage(db, now)
-    analysis_counts = analysis_state(db, period_days=period_days, now=now)
+    coverage = coverage if coverage is not None else _source_coverage(db, now)                       # a list endpoint computes these once, not once per instrument
+    analysis_counts = analysis_counts if analysis_counts is not None else analysis_state(db, period_days=period_days, now=now)
     groups = _aggregate_groups(rows, now)
     counts = {label: sum(group["sentiment"] == label for group in groups)
               for label in ("positive", "negative", "neutral", "mixed")}
@@ -557,22 +559,119 @@ def aggregate_sector_sentiment(db: Session, sector: str, *, period_days: int = 7
 
 
 def list_sector_sentiment(db: Session, *, period_days: int = 7, now: datetime | None = None) -> list[dict[str, Any]]:
-    sectors = db.scalars(select(InstrumentSnapshot.sector).where(InstrumentSnapshot.sector.is_not(None)).distinct().order_by(InstrumentSnapshot.sector)).all()
-    return [aggregate_sector_sentiment(db, sector, period_days=period_days, now=now) for sector in sectors]
+    return _cached(("sectors", period_days), lambda: _list_sector_sentiment(db, period_days=period_days, now=now), now is not None)
+
+
+def _list_sector_sentiment(db: Session, *, period_days: int = 7, now: datetime | None = None) -> list[dict[str, Any]]:
+    """One aggregate per sector in a SINGLE pass (it used to reload every analysed row for each sector)."""
+    now = _aware_utc(now or datetime.now(timezone.utc))
+    cutoff = now - timedelta(days=period_days)
+    pairs = db.execute(select(InstrumentSnapshot.sector, InstrumentSnapshot.instrument_id).where(InstrumentSnapshot.sector.is_not(None))).all()
+    members: dict[str, set[Any]] = defaultdict(set)
+    for sector, instrument_id in pairs:
+        members[sector].add(instrument_id)
+    if not members:
+        return []
+    rows = _load_analysis_rows(db, cutoff)
+    coverage = _source_coverage(db, now)
+    counts = analysis_state(db, period_days=period_days, now=now)
+    analyzed_ids = {item.id for item, _ in rows}
+    wanted = set().union(*members.values())
+    candidates = db.execute(select(NewsItem.id, NewsItem.instrument_id).where(NewsItem.published_at >= cutoff, NewsItem.instrument_id.in_(wanted))).all()
+    out = []
+    for sector in sorted(members):
+        ids = members[sector]
+        filtered = [(item, analysis) for item, analysis in rows if item.instrument_id in ids]
+        unanalysed = sum(1 for item_id, instrument_id in candidates if instrument_id in ids and item_id not in analyzed_ids)
+        agg = _build_aggregate(db, filtered, scope="sector", scope_id=sector, now=now, period_days=period_days, unanalysed_count=unanalysed, coverage=coverage, analysis_counts=counts)
+        agg["events"] = [dict(e, items=e.get("items", [])[:LIST_ITEMS_PER_EVENT]) for e in agg["events"][:LIST_EVENTS]]
+        agg["coverage"] = {k: v for k, v in agg["coverage"].items() if k != "sources"} | {"sources_omitted_in_list": True}
+        out.append(agg)
+    return out
+
+
+_CACHE: dict[tuple, tuple[float, Any]] = {}
+CACHE_SECONDS = 60
+
+
+def _cached(key: tuple, compute, now_given: bool):
+    """60-second cache for the list endpoints (the underlying news changes every few minutes). Skipped when the caller fixes `now` (tests, replays), so results stay deterministic."""
+    import time as _t
+    if now_given:
+        return compute()
+    hit = _CACHE.get(key)
+    if hit and _t.monotonic() - hit[0] < CACHE_SECONDS:
+        return hit[1]
+    value = compute()
+    _CACHE[key] = (_t.monotonic(), value)
+    return value
+
+
+def clear_cache() -> None:
+    _CACHE.clear()
+
+
+LIST_EVENTS = 3          # events kept per instrument in the LIST view; the single-instrument endpoint still returns up to 25
+LIST_ITEMS_PER_EVENT = 2
 
 
 def list_instrument_sentiment(db: Session, *, period_days: int = 7, limit: int = 100, now: datetime | None = None) -> list[dict[str, Any]]:
+    return _cached(("instruments", period_days, limit), lambda: _list_instrument_sentiment(db, period_days=period_days, limit=limit, now=now), now is not None)
+
+
+def _list_instrument_sentiment(db: Session, *, period_days: int = 7, limit: int = 100, now: datetime | None = None) -> list[dict[str, Any]]:
+    """One sentiment aggregate per instrument that has analysed news, computed in a SINGLE pass.
+
+    It used to call the single-instrument aggregate once per instrument, and each call reloaded every analysed news row and recomputed the source coverage (about 38 seconds and 3 MB for 100
+    instruments). Now the rows, the coverage, the analysis counts, the snapshots and the unanalysed counts are each loaded once, and each instrument's aggregate is built from its own slice.
+    The list view keeps only the top events (and a couple of items per event) to stay small; the single-instrument endpoint has the full set."""
     now = _aware_utc(now or datetime.now(timezone.utc))
     cutoff = now - timedelta(days=period_days)
-    ids = db.scalars(select(NewsItem.instrument_id).join(NewsSentimentAnalysis,
-        NewsSentimentAnalysis.news_item_id == NewsItem.id).where(
-            NewsItem.instrument_id.is_not(None), NewsItem.published_at >= cutoff,
-            NewsSentimentAnalysis.classifier_version == CLASSIFIER_VERSION).distinct().limit(limit)).all()
-    return [aggregate_instrument_sentiment(db, instrument_id, period_days=period_days, now=now) for instrument_id in ids]
+    rows = _load_analysis_rows(db, cutoff)
+    ids: list[Any] = []
+    for item, _analysis in rows:
+        if item.instrument_id is not None and item.instrument_id not in ids:
+            ids.append(item.instrument_id)
+            if len(ids) >= limit:
+                break
+    if not ids:
+        return []
+    coverage = _source_coverage(db, now)
+    counts = analysis_state(db, period_days=period_days, now=now)
+    market_rows = [(item, analysis) for item, analysis in rows if item.instrument_id is None and analysis.relevance_scope in {"market", "macro", "global"}]
+    by_instrument: dict[Any, list[tuple[NewsItem, NewsSentimentAnalysis]]] = defaultdict(list)
+    for pair in rows:
+        if pair[0].instrument_id in ids:
+            by_instrument[pair[0].instrument_id].append(pair)
+    analyzed_ids = {item.id for item, _ in rows}
+    candidates = db.execute(select(NewsItem.id, NewsItem.instrument_id).where(NewsItem.published_at >= cutoff, NewsItem.instrument_id.in_(ids))).all()
+    unanalysed: dict[Any, int] = defaultdict(int)
+    for item_id, instrument_id in candidates:
+        if item_id not in analyzed_ids:
+            unanalysed[instrument_id] += 1
+    instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(ids)))}
+    snapshots = {sn.instrument_id: sn for sn in db.scalars(select(InstrumentSnapshot).where(InstrumentSnapshot.instrument_id.in_(ids)))}
+    out = []
+    for iid in ids:
+        instrument = instruments.get(iid)
+        if instrument is None:
+            continue
+        pairs = sorted(by_instrument.get(iid, []) + market_rows, key=lambda p: _aware_utc(p[0].published_at), reverse=True)
+        snap = snapshots.get(iid)
+        agg = _build_aggregate(db, pairs, scope="company", scope_id=str(iid), now=now, period_days=period_days, unanalysed_count=unanalysed.get(iid, 0), coverage=coverage, analysis_counts=counts)
+        agg["events"] = [dict(e, items=e.get("items", [])[:LIST_ITEMS_PER_EVENT]) for e in agg["events"][:LIST_EVENTS]]
+        agg["coverage"] = {k: v for k, v in agg["coverage"].items() if k != "sources"} | {"sources_omitted_in_list": True}
+        out.append(agg | {"instrument": {"id": str(instrument.id), "symbol": instrument.symbol, "name": instrument.display_name, "sector": snap.sector if snap else None, "industry": snap.industry if snap else None}})
+    return out
 
 
 def sentiment_history(db: Session, *, period_days: int = 90, instrument_id=None,
                       now: datetime | None = None) -> list[dict[str, Any]]:
+    return _cached(("history", period_days, str(instrument_id)), lambda: _sentiment_history(db, period_days=period_days, instrument_id=instrument_id, now=now), now is not None)
+
+
+def _sentiment_history(db: Session, *, period_days: int = 90, instrument_id=None,
+                       now: datetime | None = None) -> list[dict[str, Any]]:
     now = _aware_utc(now or datetime.now(timezone.utc))
     cutoff = now - timedelta(days=period_days)
     rows = _load_analysis_rows(db, cutoff)

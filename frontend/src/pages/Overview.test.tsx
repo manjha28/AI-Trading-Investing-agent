@@ -31,3 +31,11 @@ describe('Overview broker requests', () => {
     expect(calls.list.filter((p) => p === '/brokers/dhan/portfolio').length).toBe(1);
   });
 });
+
+describe('Overview does not sync on navigation', () => {
+  it('never fires a Dhan sync (snapshot or full) when the page opens; only reads the stored snapshot', async () => {
+    render(<OverviewPage workspace={workspace} brokerAccessAllowed />);
+    await waitFor(() => expect(screen.getByText('Total incl. cash')).toBeTruthy());
+    expect(calls.list.filter((p) => p.includes('/sync'))).toEqual([]);
+  });
+});

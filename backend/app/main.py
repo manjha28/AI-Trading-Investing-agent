@@ -150,6 +150,9 @@ async def lifespan(_app: FastAPI):
         master_warm_task = asyncio.create_task(dhan_master_warm_loop())      # every process warms its own in-memory copy
     if settings.master_bar_refresh_enabled and "pytest" not in sys.modules:
         master_bars_task = _leader(master_bar_refresh_loop, 'master_bars')
+    if settings.dhan_snapshot_refresh_enabled and "pytest" not in sys.modules:
+        from app.dhan_snapshot_refresh import dhan_snapshot_refresh_loop
+        _leader(dhan_snapshot_refresh_loop, 'dhan_snapshot')
     if settings.daily_close_refresh_enabled and "pytest" not in sys.modules:
         from app.daily_close_refresh import daily_close_refresh_loop
         _leader(daily_close_refresh_loop, 'daily_closes')

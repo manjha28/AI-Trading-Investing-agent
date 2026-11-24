@@ -3,9 +3,9 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -216,7 +216,10 @@ def _ensure_action_instrument_matches(
 
 @router.get("", response_model=list[CorporateActionResponse])
 def list_corporate_actions(
+    response: Response,
     instrument_id: UUID | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000, description="Newest first; page with offset. The total is in the X-Total-Count header."),
+    offset: int = Query(default=0, ge=0),
     active_session: UserSession = Depends(require_verified_session),
     db: Session = Depends(get_db),
 ):
@@ -228,9 +231,13 @@ def list_corporate_actions(
     )
     if instrument_id is not None:
         statement = statement.where(CorporateAction.instrument_id == instrument_id)
+    total_statement = select(func.count()).select_from(CorporateAction).where(CorporateAction.user_id == active_session.user_id)
+    if instrument_id is not None:
+        total_statement = total_statement.where(CorporateAction.instrument_id == instrument_id)
+    response.headers["X-Total-Count"] = str(db.scalar(total_statement) or 0)
     return [
         _action_response(action, symbol)
-        for action, symbol in db.execute(statement).all()
+        for action, symbol in db.execute(statement.limit(limit).offset(offset)).all()
     ]
 
 
