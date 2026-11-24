@@ -172,6 +172,8 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
       return;
     }
     let active = true;
+    setBrief(null);                    // never show the previous stock's scores while this one loads; a late reply for the old stock is ignored by `active`
+    setNotes([]);
     setError('');
     setBriefLoading(true);
     setBriefLoadError(null);

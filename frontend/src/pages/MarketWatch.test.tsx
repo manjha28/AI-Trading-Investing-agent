@@ -393,3 +393,17 @@ describe('MarketWatch · header counts and row selection', () => {
     expect(screen.getByRole('tab', { name: 'Chart' })).toBeTruthy();
   });
 });
+
+describe('MarketWatch · a search is never silently empty', () => {
+  it('says matches are hidden by the Watchlist tab and offers to show all', async () => {
+    mockApi();
+    render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
+    await screen.findByText('CCC');
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist' }));
+    fireEvent.change(screen.getByLabelText('Search symbols'), { target: { value: 'ongc' } });
+    const note = await screen.findByText(/hidden by the watchlist tab/);
+    expect(note.textContent).toContain('1 match');
+    fireEvent.click(within(note.closest('p')!).getByRole('button', { name: 'Show all' }));
+    await screen.findByText('ONGC');
+  });
+});

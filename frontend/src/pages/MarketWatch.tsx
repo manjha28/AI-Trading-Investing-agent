@@ -180,6 +180,12 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
 
   const sectors = useMemo(() => [...new Set(universe.map((u) => u.sector).filter((s): s is string => Boolean(s)))].sort(), [universe]);
 
+  // Matches that the Watchlist/Gainers/Live tab or the sector filter hides: a search must never look empty while the matches exist.
+  const hiddenByFilter = useMemo(() => {
+    const term = query.trim().toUpperCase();
+    if (!term || (mode === 'all' && !sector)) return [] as ViewRow[];
+    return rows.filter((r) => r.symbol.toUpperCase().includes(term) || r.name.toUpperCase().includes(term));
+  }, [rows, query, mode, sector]);
   const { view, fuzzy } = useMemo(() => {
     const term = query.trim().toUpperCase();
     const passes = (r: ViewRow) => (!sector || r.sector === sector) && (mode === 'all' || (mode === 'watchlist' && r.starred) || (mode === 'live' && r.live) || (mode === 'gainers' && (numeric(r.chgPct) ?? 0) > 0) || (mode === 'losers' && (numeric(r.chgPct) ?? 0) < 0));
@@ -353,6 +359,9 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
                 </li>
               ))}
             </ul>
+          )}
+          {view.length === 0 && hiddenByFilter.length > 0 && (
+            <p className="watch-fuzzy" role="status">{hiddenByFilter.length} match{hiddenByFilter.length === 1 ? '' : 'es'} for “{query.trim()}” {hiddenByFilter.length === 1 ? 'is' : 'are'} hidden by the {mode !== 'all' ? `${mode} tab` : ''}{mode !== 'all' && sector ? ' and the ' : ''}{sector ? 'sector filter' : ''}. <button type="button" className="secondary-button" onClick={() => { setMode('all'); setSector(''); }}>Show all</button></p>
           )}
           {fuzzy && <p className="watch-fuzzy" role="status">No exact match for “{query.trim()}” — showing the closest symbols.</p>}
           {loading ? <p className="table-empty">Loading the market universe…</p> : (

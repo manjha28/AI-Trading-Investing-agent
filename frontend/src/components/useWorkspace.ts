@@ -1202,6 +1202,8 @@ export function useWorkspace() {
   async function addInstrumentToWatchlist(instrumentId: string, symbol: string) {
     try {
       await apiRequest<void>(`/market-data/watchlist/${instrumentId}`, { method: 'POST' });
+      // The star must flip now: the watchlist read can take seconds, so the entry is added locally first and the refresh then replaces it with the server's.
+      setWatchlist((current) => (current.some((entry) => entry.instrument_id === instrumentId) ? current : [...current, { instrument_id: instrumentId, symbol } as WatchlistEntry]));
       await refreshWatchlist(true);
       setNotice(`${symbol} added to the quote-refresh watchlist.`);
     } catch (requestError) {
@@ -1212,6 +1214,7 @@ export function useWorkspace() {
   async function removeInstrumentFromWatchlist(instrumentId: string) {
     try {
       await apiRequest<void>(`/market-data/watchlist/${instrumentId}`, { method: 'DELETE' });
+      setWatchlist((current) => current.filter((entry) => entry.instrument_id !== instrumentId));
       await refreshWatchlist(true);
       setNotice('Instrument removed from the quote-refresh watchlist.');
     } catch (requestError) {

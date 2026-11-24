@@ -172,3 +172,16 @@ describe('DailyReport · compact list, full card on selection', () => {
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });
+
+describe('DailyReport · every horizon button is clickable', () => {
+  it('opens a Hold horizon and explains it instead of leaving a dead button', async () => {
+    const withWhy = { ...buy, horizons: { ...buy.horizons, swing: { recommendation: 'HOLD', score: 50, confidence: 60, why_not: ['Trend is flat'], data_note: null } } };
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [withWhy] } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    const swing = await screen.findByRole('tab', { name: /Swing/ });
+    expect((swing as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(swing);
+    expect(await screen.findByText(/Swing: Hold\./)).toBeTruthy(); expect(screen.getByText(/Trend is flat/)).toBeTruthy();
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
+});

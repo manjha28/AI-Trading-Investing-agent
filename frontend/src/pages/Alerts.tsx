@@ -214,9 +214,10 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
       enabled: editing?.enabled ?? true,
     };
     try {
-      await apiRequest<Rule>(editing ? `/alerts/rules/${editing.id}` : '/alerts/rules', {
+      const saved = await apiRequest<Rule>(editing ? `/alerts/rules/${editing.id}` : '/alerts/rules', {
         method: editing ? 'PATCH' : 'POST', body: JSON.stringify(body),
       });
+      if (saved && saved.id) setRules((current) => (current.some((item) => item.id === saved.id) ? current.map((item) => (item.id === saved.id ? saved : item)) : [saved, ...current]));
       setNotice(editing ? 'Alert rule updated.' : 'Alert rule created.');
       startCreate();
       await refresh();
@@ -242,6 +243,8 @@ export function Alerts({ portfolios, portfolioId }: { portfolios: Portfolio[]; p
     if (!window.confirm('Delete this alert rule and its events?')) return;
     try {
       await apiRequest<void>(`/alerts/rules/${rule.id}`, { method: 'DELETE' });
+      setRules((current) => current.filter((item) => item.id !== rule.id));        // gone at once; the refresh then confirms it from the server
+      setEvents((current) => current.filter((event) => (event as { rule_id?: string }).rule_id !== rule.id));
       await refresh();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not delete alert rule.');

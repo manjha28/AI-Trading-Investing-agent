@@ -106,6 +106,7 @@ export function apiRequest<T>(path: string, options: RequestInit = {}): Promise<
   if (options.signal || (options.body !== undefined && typeof options.body !== 'string')) {
     return performApiRequest<T>(path, options);
   }
+  if (method !== 'GET') inFlightRequests.clear();      // a write makes every read already in flight stale: the next read must go to the server, not join an older request
   const existing = inFlightRequests.get(key);
   if (existing) return existing as Promise<T>;
 

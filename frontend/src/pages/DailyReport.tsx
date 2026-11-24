@@ -98,7 +98,7 @@ export function sortByDisplayedScore(rows: Row[]): Row[] {
 function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
   const buyHorizons = HORIZONS.filter((h) => row.horizons[h]?.recommendation === 'BUY');
   const [horizon, setHorizon] = useState<string>(buyHorizons.includes('positional' as never) ? 'positional' : buyHorizons[0]);
-  const active = buyHorizons.includes(horizon as never) ? horizon : buyHorizons[0];
+  const active = HORIZONS.includes(horizon as never) ? horizon : buyHorizons[0];                // any horizon can be opened: a Hold or Avoid horizon explains itself instead of being a dead button
   const conf = row.horizons[active]?.buy_confidence ?? row.confidence;
   const levels = row.levels[active];
   return <article className="rt-buy">
@@ -111,12 +111,14 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
       {HORIZONS.map((h) => {
         const rec = row.horizons[h]?.recommendation;
         const on = rec === 'BUY';
-        return <button key={h} type="button" role="tab" aria-selected={active === h} disabled={!on} className={active === h ? 'active' : ''} onClick={() => setHorizon(h)} title={on ? HORIZON_SPAN[h] : `${REC_TEXT[rec ?? ''] ?? '—'} on this horizon`}>
+        return <button key={h} type="button" role="tab" aria-selected={active === h} className={active === h ? 'active' : ''} onClick={() => setHorizon(h)} title={on ? HORIZON_SPAN[h] : `${REC_TEXT[rec ?? ''] ?? '—'} on this horizon`}>
           {HORIZON_NAME[h]}<small>{on ? 'Buy' : REC_TEXT[rec ?? ''] ?? '—'}</small></button>;
       })}
     </div>
     {levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${cardState(levels, row.last_close).kind === 'in_band' ? 'rt-chip-ok' : 'rt-chip-warn'}`} title={cardState(levels, row.last_close).reason ?? undefined}>{cardState(levels, row.last_close).label}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}
-    {levels?.status === 'available' ? <Ladder levels={levels} /> : <p className="rt-note">{levels?.reason ?? 'No levels for this horizon.'}</p>}
+    {levels?.status === 'available' ? <Ladder levels={levels} /> : row.horizons[active]?.recommendation !== 'BUY'
+      ? <p className="rt-note"><b>{HORIZON_NAME[active]}: {REC_TEXT[row.horizons[active]?.recommendation ?? ''] ?? 'no call'}.</b> {[...(row.horizons[active]?.why_not ?? []), row.horizons[active]?.data_note].filter(Boolean).join(' · ') || 'No buy signal on this horizon, so no levels are drawn.'}</p>
+      : <p className="rt-note">{levels?.reason ?? 'No levels for this horizon.'}</p>}
     {levels?.status === 'available' && <p className="rt-note">Last close {inr(levels.reference_close)}{levels.prior_high_reference ? ` · prior high ${inr(levels.prior_high_reference)}` : ''} · {HORIZON_SPAN[active]}</p>}
     {levels?.status === 'available' && levels.event_gate && <p className="rt-note"><b>Event:</b> {levels.event_gate}</p>}
     {levels?.status === 'available' && levels.gates?.event_calendar_note?.startsWith('EVENT CALENDAR UNRELIABLE') && <p className="rt-note">{levels.gates.event_calendar_note}</p>}

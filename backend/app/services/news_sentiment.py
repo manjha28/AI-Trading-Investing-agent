@@ -584,7 +584,7 @@ def _list_sector_sentiment(db: Session, *, period_days: int = 7, now: datetime |
         filtered = [(item, analysis) for item, analysis in rows if item.instrument_id in ids]
         unanalysed = sum(1 for item_id, instrument_id in candidates if instrument_id in ids and item_id not in analyzed_ids)
         agg = _build_aggregate(db, filtered, scope="sector", scope_id=sector, now=now, period_days=period_days, unanalysed_count=unanalysed, coverage=coverage, analysis_counts=counts)
-        agg["events"] = [dict(e, items=e.get("items", [])[:LIST_ITEMS_PER_EVENT]) for e in agg["events"][:LIST_EVENTS]]
+        agg["events"] = [_list_event(e) for e in agg["events"][:LIST_EVENTS]]
         agg["coverage"] = {k: v for k, v in agg["coverage"].items() if k != "sources"} | {"sources_omitted_in_list": True}
         out.append(agg)
     return out
@@ -611,8 +611,14 @@ def clear_cache() -> None:
     _CACHE.clear()
 
 
-LIST_EVENTS = 3          # events kept per instrument in the LIST view; the single-instrument endpoint still returns up to 25
-LIST_ITEMS_PER_EVENT = 2
+LIST_EVENTS = 2          # events kept per instrument in the LIST view; the single-instrument endpoint still returns up to 25
+LIST_ITEMS_PER_EVENT = 1
+LIST_ITEM_KEYS = ("news_item_id", "source", "publisher", "url", "display_title", "published_at", "sentiment", "score")
+
+
+def _list_event(event: dict[str, Any]) -> dict[str, Any]:
+    """A list-view event: its own summary fields and one slim item (the single-instrument endpoint returns the full items)."""
+    return dict(event, items=[{k: v for k, v in item.items() if k in LIST_ITEM_KEYS} for item in event.get("items", [])[:LIST_ITEMS_PER_EVENT]])
 
 
 def list_instrument_sentiment(db: Session, *, period_days: int = 7, limit: int = 100, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -659,7 +665,7 @@ def _list_instrument_sentiment(db: Session, *, period_days: int = 7, limit: int 
         pairs = sorted(by_instrument.get(iid, []) + market_rows, key=lambda p: _aware_utc(p[0].published_at), reverse=True)
         snap = snapshots.get(iid)
         agg = _build_aggregate(db, pairs, scope="company", scope_id=str(iid), now=now, period_days=period_days, unanalysed_count=unanalysed.get(iid, 0), coverage=coverage, analysis_counts=counts)
-        agg["events"] = [dict(e, items=e.get("items", [])[:LIST_ITEMS_PER_EVENT]) for e in agg["events"][:LIST_EVENTS]]
+        agg["events"] = [_list_event(e) for e in agg["events"][:LIST_EVENTS]]
         agg["coverage"] = {k: v for k, v in agg["coverage"].items() if k != "sources"} | {"sources_omitted_in_list": True}
         out.append(agg | {"instrument": {"id": str(instrument.id), "symbol": instrument.symbol, "name": instrument.display_name, "sector": snap.sector if snap else None, "industry": snap.industry if snap else None}})
     return out
