@@ -4,6 +4,7 @@ import { messageOf } from './cryptoApi';
 import { ExecutionStateChip } from '../components/ExecutionStateChip';
 import { ArmConfirm } from '../components/ArmConfirm';
 import { refreshExecutionState } from '../hooks/useExecutionState';
+import { CryptoScanner } from './CryptoScanner';
 import { accountLine, testModeLine, todayLine, type VenueState } from '../lib/executionState';
 
 type Summary = { closed_trades: number; wins: number; losses: number; win_rate: number | null; gross_pnl: string; fees: string; slippage: string; net_pnl: string; avg_r: string | null };
@@ -151,6 +152,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
           )}
         </div>
       )}
+      <CryptoScanner />
     </section>
   );
 }

@@ -63,6 +63,12 @@ def run_pass(now: datetime | None = None) -> dict[str, int]:
         except Exception:  # noqa: BLE001
             db.rollback()
             logger.exception("crypto_forward_pass_failed")
+        try:                                                  # the multi-perpetual paper scanner: paper only, no order path
+            from app.delta_scanner import service as scanner_service
+            scanner_service.run_pass(db, now)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("delta_scanner_pass_failed")
         for user_id in set(db.scalars(select(DhanLiveOrder.user_id).where(DhanLiveOrder.status.in_(OPEN)))):
             try:
                 reconcile(db, user_id, lambda uid: ft_service.build_client(db, uid), now=now)
