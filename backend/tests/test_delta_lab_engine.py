@@ -85,3 +85,29 @@ def test_converting_maker_to_taker_adds_the_taker_fee():
     base = simulate(m, [sig], CostModel(slippage_bps=0, slippage_ticks_min=0), CFG)[0][0]
     allt = simulate(m, [sig], CostModel(slippage_bps=0, slippage_ticks_min=0, maker_to_taker_share=1.0), CFG)[0][0]
     assert allt["fees"] > base["fees"] and abs(base["fees"] - (60000 + 60600) * 0.001 * base["qty"] * 0.0002) < 1e-6
+
+
+# ---- round 2: maker execution (re-priced limit, cancel after the window), taker/taker comparison, adverse selection ----
+def test_a_repriced_maker_entry_follows_the_previous_close_fills_only_through_it_and_is_cancelled_after_the_window():
+    closes = [60000.0, 60010.0, 60020.0, 60030.0, 60040.0, 60050.0, 60060.0, 60070.0]
+    lows = [c - 5 for c in closes]
+    lows[3] = closes[2] - 0.5                      # bar 3 trades just through the re-priced bid (previous close 60020) -> fills at 60020
+    m = market(closes, highs=[c + 5 for c in closes], lows=lows)
+    sig = Signal(0, "T", "t", [Leg("long", 60000.0, 59500.0, None)], "limit", valid_bars=3, max_hold=2, reprice=True)
+    trades, _, counts = simulate(m, [sig], NOFRICTION, CFG)
+    assert counts == {} and trades[0]["entry_px"] == 60020.0 and trades[0]["entry_maker"] is True
+    assert "adverse_1m_bps" in trades[0] and "adverse_30m_bps" in trades[0]
+    never = market(closes, highs=[c + 5 for c in closes], lows=[c + 1 for c in closes])     # price never trades through a bid at the previous close
+    trades2, _, counts2 = simulate(never, [Signal(0, "T", "t", [Leg("long", 60000.0, 59500.0, None)], "limit", valid_bars=3, max_hold=2, reprice=True)], NOFRICTION, CFG)
+    assert trades2 == [] and counts2 == {"unfilled_signal": 1}                      # cancelled after the window: the signal is skipped, not chased
+
+
+def test_taker_taker_comparison_pays_taker_fees_and_slippage_on_both_legs():
+    highs = [60000.0] * 4 + [60700.0] + [60000.0] * 10
+    m = market([60000.0] * 15, highs=highs, lows=[59995.0] * 15)
+    sig = Signal(0, "T", "t", [Leg("long", 60000.0, 59400.0, 60600.0)], "limit", valid_bars=5, max_hold=10)
+    cost = CostModel(slippage_bps=1.0)
+    maker = simulate(m, [sig], cost, CFG)[0][0]
+    taker = simulate(m, [sig], CostModel(slippage_bps=1.0, all_taker=True), CFG)[0][0]
+    assert maker["entry_maker"] is True and taker["entry_maker"] is False
+    assert taker["fees"] > maker["fees"] and taker["slippage"] > maker["slippage"] and taker["net"] < maker["net"]

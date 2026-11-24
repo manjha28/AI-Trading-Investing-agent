@@ -162,6 +162,14 @@ async def lifespan(_app: FastAPI):
     if settings.daily_close_refresh_enabled and "pytest" not in sys.modules:
         from app.daily_close_refresh import daily_close_refresh_loop
         _leader(daily_close_refresh_loop, 'daily_closes')
+    if settings.delta_book_recorder_enabled and "pytest" not in sys.modules:
+        from pathlib import Path as _P
+
+        from app.delta_lab.recorder import Recorder
+
+        async def delta_book_recorder_loop() -> None:
+            await Recorder(["BTCUSD", "ETHUSD"], _P(settings.delta_book_dir)).run()
+        _leader(delta_book_recorder_loop, 'delta_book')
     if "pytest" not in sys.modules:
         from app.mcx_open_check import mcx_open_check_loop
         _leader(mcx_open_check_loop, 'mcx_open_check')

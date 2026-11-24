@@ -27,6 +27,7 @@ class CostModel:
     slippage_ticks_min: float = 1.0
     slippage_mult: float = 1.0           # 2.0 in the stress run
     maker_to_taker_share: float = 0.0    # 0.30 in the stress run: that share of maker fills (chosen by a fixed hash of the trade index) pays taker
+    all_taker: bool = False              # taker/taker comparison: resting limits become market orders at the next bar open, target exits pay the taker fee and slippage
     extra_latency_bars: int = 0          # 0 = fill at the next 1-minute bar open (250 ms latency is below the bar); 1 = the 1000 ms stress, one more bar
 
 
@@ -62,6 +63,7 @@ class Signal:
     valid_bars: int = 1
     max_hold: int = 60        # bars after entry
     tag: str = ""
+    reprice: bool = False     # maker entry: the limit is re-set every bar to the previous close (the best bid/ask proxy) until filled or the window ends
 
 
 def _slip(price: float, m: Market, cost: CostModel) -> float:
@@ -91,6 +93,7 @@ def simulate(m: Market, signals, cost: CostModel, cfg: RiskConfig, wallet: float
         # --- find the fill ---
         fill = _find_fill(m, sig, cost, n)
         if fill is None:
+            counts["unfilled_signal"] = counts.get("unfilled_signal", 0) + 1
             continue
         leg, ei, entry_px, entry_is_maker = fill
         order = OrderRequest(m.symbol, leg.side, D(str(round(entry_px, 8))), D(str(round(leg.stop, 8))), D(str(round(leg.target, 8))) if leg.target is not None else None, sig.family)
@@ -120,6 +123,8 @@ def _find_fill(m: Market, sig: Signal, cost: CostModel, n: int):
     lo = sig.idx + 1 + cost.extra_latency_bars
     if lo >= n:
         return None
+    if cost.all_taker and sig.mode == "limit":
+        sig = Signal(sig.idx, sig.family, sig.variant, sig.legs[:1], "market", sig.valid_bars, sig.max_hold, sig.tag)
     if sig.mode == "market":
         leg = sig.legs[0]
         px = m.o[lo]
@@ -140,8 +145,11 @@ def _find_fill(m: Market, sig: Signal, cost: CostModel, n: int):
     if sig.mode == "limit":
         leg = sig.legs[0]
         for j in range(lo, hi):
-            if (leg.side == "long" and m.l[j] < leg.trigger) or (leg.side == "short" and m.h[j] > leg.trigger):   # strictly THROUGH the limit
-                return leg, j, leg.trigger, True
+            px = (m.c[j - 1] if sig.reprice else leg.trigger)                         # re-priced each bar to the previous close when the order follows the book
+            if (leg.side == "long" and m.l[j] < px) or (leg.side == "short" and m.h[j] > px):   # strictly THROUGH the limit
+                if sig.reprice:
+                    leg = Leg(leg.side, px, leg.stop, leg.target)
+                return leg, j, px, True
         return None
     return None
 
@@ -169,7 +177,11 @@ def _run_trade(m: Market, sig: Signal, leg: Leg, ei: int, entry_px: float, entry
         if leg.target is not None and (j > ei or sig.mode == "market"):      # a mid-bar fill cannot also have reached the target before it filled
             tgt_hit = (m.h[j] > leg.target) if long else (m.l[j] < leg.target)
             if tgt_hit:
-                exit_px, exit_i, reason, exit_maker = leg.target, j, "target", True
+                if cost.all_taker:
+                    slip = _slip(leg.target, m, cost)
+                    exit_px, exit_i, reason, exit_maker = (leg.target - slip if long else leg.target + slip), j, "target", False
+                else:
+                    exit_px, exit_i, reason, exit_maker = leg.target, j, "target", True
                 break
     if exit_px is None:
         j = last_i + 1 if last_i + 1 < n else last_i
@@ -180,8 +192,8 @@ def _run_trade(m: Market, sig: Signal, leg: Leg, ei: int, entry_px: float, entry
     exit_taker = (not exit_maker) or _converted(trade_no + 7919, cost.maker_to_taker_share)
     cvq = m.cv * qty
     # reference (frictionless) prices, so slippage is reported separately from the price move
-    entry_ref = entry_px - (_slip(entry_px, m, cost) if (not entry_maker and sig.mode != "limit") else 0.0) * sign
-    exit_ref = exit_px + (_slip(exit_px, m, cost) * sign if reason in ("stop", "time", "liquidated_or_gap") else 0.0)
+    entry_ref = entry_px - (_slip(entry_px, m, cost) if not entry_maker else 0.0) * sign
+    exit_ref = exit_px + (_slip(exit_px, m, cost) * sign if (reason in ("stop", "time", "liquidated_or_gap") or (reason == "target" and not exit_maker)) else 0.0)
     gross = (exit_ref - entry_ref) * sign * cvq
     slippage = ((entry_px - entry_ref) * sign + (exit_ref - exit_px) * sign) * cvq
     if entry_maker and entry_taker:                                  # converted maker: pays the taker fee and the slippage on a market-like fill
@@ -207,6 +219,10 @@ def _run_trade(m: Market, sig: Signal, leg: Leg, ei: int, entry_px: float, entry
                 k = max(0, min(n - 1, int(np.searchsorted(m.t, ts))))
                 funding += rate * m.mc[k] * cvq * sign          # long pays a positive rate
     net = gross - slippage - fees - gst - funding
-    return {"entry_time": t_in, "exit_time": t_out, "exit_idx": exit_i, "entry_px": entry_px, "exit_px": exit_px, "gross": gross, "slippage": slippage, "fees": fees, "gst": gst,
+    adverse = {}
+    if entry_maker and not entry_taker:                              # how far the price moved against the fill 1/5/30 bars later (bps, positive = against us)
+        for k in (1, 5, 30):
+            adverse[f"adverse_{k}m_bps"] = -sign * (m.c[min(n - 1, ei + k)] - entry_px) / entry_px * 1e4
+    return {**adverse, "entry_time": t_in, "exit_time": t_out, "exit_idx": exit_i, "entry_px": entry_px, "exit_px": exit_px, "gross": gross, "slippage": slippage, "fees": fees, "gst": gst,
             "funding": funding, "funding_missing": missing, "net": net, "exit_reason": reason, "entry_maker": entry_maker and not entry_taker, "notional": entry_px * cvq,
             "bps_net": net / (entry_px * cvq) * 1e4 if entry_px * cvq else 0.0}

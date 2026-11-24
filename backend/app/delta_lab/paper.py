@@ -19,8 +19,9 @@ from . import data, families
 from .engine import simulate
 from .run import BASE, CFG
 
-OUT = Path(__file__).resolve().parents[3] / "reports" / "paper_live"
-KEEP_DAYS = 45
+REPORTS_DIR = Path(__file__).resolve().parents[3] / "reports"
+OUT = REPORTS_DIR / "paper_live"
+KEEP_DAYS = 75        # R3 ranks the 24-hour range against the last 60 days of hourly bars
 
 
 def refresh(symbol: str, now: int) -> None:
@@ -50,12 +51,35 @@ def run_cycle(symbol: str, variant: str, family: str, start_ts: int) -> dict:
     now = int(time.time()) // 60 * 60
     refresh(symbol, now)
     m = families.build_market(symbol, "live_")
-    sigs = dict(families.variants(m, family))[variant]
+    if family.startswith("R"):
+        from . import round2
+        sigs = {"R3": lambda: round2.r3(m, None)}[family]()      # round-2 families are added here as they pass
+    else:
+        sigs = dict(families.variants(m, family))[variant]
     start_idx = int(m.t.searchsorted(start_ts))
     trades, rows, counts = simulate(m, sigs, BASE, CFG, window=(start_idx, len(m.t)))   # CFG.mode is paper: nothing can be sent
     last_t = int(m.t[-1])
     done = [t for t in trades if t["exit_time"] <= last_t - 120 and t["exit_reason"] != "time" or t["exit_time"] < last_t - 3600]
     return {"trades": done, "open": len(trades) - len(done), "rejections": counts, "rejection_rows": rows, "last_bar": last_t}
+
+
+def weekly(result: dict, symbol: str, family: str) -> None:
+    """reports/paper_weekly.md: paper vs backtest, by ISO week. Slippage in paper is still modelled (the recorder's measured spread will replace it)."""
+    import numpy as np
+    res = REPORTS_DIR / "round2_results.json"
+    ref = json.loads(res.read_text())["families"].get(family, {}).get(symbol, {}) if res.exists() else {}
+    hold = (ref.get("holdout") or {}).get("maker_maker", {}).get("summary", {})
+    by: dict[str, list[dict]] = {}
+    for t in result["trades"]:
+        by.setdefault(datetime.fromtimestamp(t["entry_time"], tz=timezone.utc).strftime("%G-W%V"), []).append(t)
+    L = [f"# Paper run: {family} {symbol}", "", "*Paper trades on live Delta data through the same signal code, simulator and risk gate. No order is ever sent. Decision support, not investment advice.*", "",
+         f"Backtest holdout reference: {hold.get('net_bps_per_trade', float('nan')):.1f} net bps/trade over {hold.get('trades', '—')} trades.", "",
+         "| Week | Trades | Net bps/trade | Net $ | Maker fills | Rejections so far |", "|---|---|---|---|---|---|"]
+    for wk, ts in sorted(by.items()):
+        L.append(f"| {wk} | {len(ts)} | {np.mean([t['bps_net'] for t in ts]):.1f} | {sum(t['net'] for t in ts):.2f} | {sum(1 for t in ts if t['entry_maker'])} | {sum(result['rejections'].values())} |")
+    total = len(result["trades"])
+    L += ["", f"Total closed paper trades: {total} (open: {result['open']}). The run needs at least 4 weeks or 50 trades, whichever is later, before any comparison is read.", ""]
+    (REPORTS_DIR / "paper_weekly.md").write_text("\n".join(L))
 
 
 def write(result: dict, symbol: str, family: str) -> None:
@@ -77,11 +101,14 @@ def main() -> None:
     if a.mode != "paper":
         raise SystemExit("Refused: this engine is paper-only. Live orders go through the existing Delta execution (three layers), not through the lab.")
     OUT.mkdir(parents=True, exist_ok=True)
-    start_ts = int(time.time())
+    start_file = OUT / "start.txt"                      # the paper run keeps its start across restarts
+    start_ts = int(start_file.read_text()) if start_file.exists() else int(time.time())
+    start_file.write_text(str(start_ts))
     (OUT / "STOP").unlink(missing_ok=True)
     while not (OUT / "STOP").exists():
         result = run_cycle(a.symbol, a.variant, a.family, start_ts)
         write(result, a.symbol, a.family)
+        weekly(result, a.symbol, a.family)
         quote = record_quote(a.symbol)
         if quote:
             new = not (OUT / "quotes.csv").exists()

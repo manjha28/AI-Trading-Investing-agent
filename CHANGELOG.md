@@ -242,3 +242,4 @@
 - Delta strategy lab (app/delta_lab): shared risk gate and sizer, cost model, simulator, six pre-registered families, walk-forward and holdout, paper engine; live guard-rails now also apply the liquidation-safety rule
 - Daily report back to one card per stock (full card fetched on opening Why); MCX shows last close while closed; Dhan live flag on Fly
 - Research page: 22 Nov card look restored (research.css from 45e1fbd, card grid); MCX previous-close column
+- Delta lab round 2: maker-first simulator, Binance data, R0-R6 families, order-book recorder (off on Fly until a volume exists), paper run for R3 BTCUSD
