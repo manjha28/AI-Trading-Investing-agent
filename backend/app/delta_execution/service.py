@@ -59,7 +59,7 @@ def build_context(db: Session, user_id: UUID, ft: CryptoForwardTest, spec: Spec,
     return LiveContext(
         now=now, deployment_enabled=policy.deployment_enabled(), credentials_present=policy.credentials_present(), environment_block=policy.environment_block(),
         armed=state.armed, test_executes_live=ft.execute_live, max_daily_loss_usd=state.max_daily_loss_usd, max_trades_per_day=state.max_trades_per_day,
-        max_open_positions=state.max_open_positions, max_notional_usd=state.max_notional_usd, contract_value=spec.contract_value, exchange_max_leverage=maximum,
+        max_open_positions=state.max_open_positions, max_notional_usd=state.max_notional_usd, contract_value=spec.contract_value, exchange_max_leverage=maximum, maintenance_margin_pct=spec.maintenance_margin_pct,
         last_candle_close=last_close, last_price=last_price, orders_today=len(rows), open_positions=sum(1 for r in rows if r.status in OPEN),
         realized_pnl_today=Decimal(0),     # realised P&L is not derivable from the order reply alone; the daily loss cap is enforced through the risk-per-trade and trade-count caps
         contract_has_open_order=any(r.symbol == spec.symbol and r.status in OPEN for r in rows),

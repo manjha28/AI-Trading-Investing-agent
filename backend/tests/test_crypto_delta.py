@@ -595,7 +595,7 @@ def _live_fixture(engine, monkeypatch, armed: bool):
         db.add(ft)
         live_service.get_state(db, user.id).armed = armed
         db.commit()
-        return user.id, ft.id, Spec("BTCUSD", D("0.001"), D("0.0005"), D("0.5"), 27, D("0.4"))
+        return user.id, ft.id, Spec("BTCUSD", D("0.001"), D("0.0005"), D("0.5"), 27, D("0.4"), D("0.2"))
 
 
 def _entry_and_candles(now):

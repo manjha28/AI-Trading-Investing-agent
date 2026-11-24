@@ -30,6 +30,7 @@ class LiveContext:
     realized_pnl_today: Decimal
     contract_has_open_order: bool
     duplicate_signal: bool
+    maintenance_margin_pct: Decimal | None = None   # percent, e.g. 0.25; None = unknown, which fails the liquidation-safety check closed
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,16 @@ def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
         check("risk_per_trade", risk <= ctx.max_daily_loss_usd / 2, f"risk at the stop {risk:.2f} USD exceeds half the daily loss cap")
     else:
         check("notional_cap", False, "contract value or price unknown")
+    # the shared liquidation rule (app.delta_lab.risk): the stop must sit before liquidation and within half of the entry-to-liquidation distance
+    from app.delta_lab.risk import liquidation_price
+    if ctx.maintenance_margin_pct is not None and ctx.maintenance_margin_pct >= 0 and intent.leverage > 0 and intent.reference_price > 0:
+        long = intent.side == "buy"
+        liq = liquidation_price("long" if long else "short", intent.reference_price, Decimal(intent.leverage), ctx.maintenance_margin_pct / 100)
+        before = intent.stop_price > liq if long else intent.stop_price < liq
+        half = abs(intent.reference_price - intent.stop_price) <= Decimal("0.5") * abs(intent.reference_price - liq)
+        check("liquidation_safety", before and half, f"the stop {intent.stop_price} is not safely before the estimated liquidation price {liq:.2f} (it must be before it and within half the distance)")
+    else:
+        check("liquidation_safety", False, "maintenance margin unknown, so the liquidation price cannot be estimated")
     check("daily_loss_cap", ctx.realized_pnl_today > -ctx.max_daily_loss_usd, f"realised loss today {ctx.realized_pnl_today} reached the cap {ctx.max_daily_loss_usd}")
     check("daily_trade_cap", ctx.orders_today < ctx.max_trades_per_day, f"{ctx.orders_today} orders already today (cap {ctx.max_trades_per_day})")
     check("open_position_cap", ctx.open_positions < ctx.max_open_positions, f"{ctx.open_positions} positions already open (cap {ctx.max_open_positions})")

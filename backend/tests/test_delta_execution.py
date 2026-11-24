@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
+from dataclasses import replace
 from pydantic import SecretStr, ValidationError
 
 from app.config import settings
@@ -29,7 +30,7 @@ def intent(**over):
 
 def ctx(**over):
     base = dict(now=NOW, deployment_enabled=True, credentials_present=True, environment_block=None, armed=True, test_executes_live=True, max_daily_loss_usd=D("25"),
-                max_trades_per_day=6, max_open_positions=2, max_notional_usd=D("2000"), contract_value=D("0.001"), exchange_max_leverage=250, last_candle_close=CLOSE,
+                max_trades_per_day=6, max_open_positions=2, max_notional_usd=D("2000"), contract_value=D("0.001"), exchange_max_leverage=250, maintenance_margin_pct=D("0.25"), last_candle_close=CLOSE,
                 last_price=D("100000"), orders_today=0, open_positions=0, realized_pnl_today=D(0), contract_has_open_order=False, duplicate_signal=False)
     return gr.LiveContext(**{**base, **over})
 
@@ -180,3 +181,12 @@ def test_live_off_blocks_sending_and_a_switch_off_during_a_pass_is_respected(eng
         assert ft.execute_live is True                                                                              # the stale in-memory copy
         assert service.maybe_place(db, ft, SPEC, entries, [last], at, factory) is None and sent == []             # the fresh read wins: nothing is sent
         assert db.query(__import__("app.models.crypto_delta", fromlist=["DeltaLiveOrder"]).DeltaLiveOrder).count() == 0
+
+
+def test_liquidation_safety_blocks_a_stop_too_close_to_liquidation_and_unknown_margin_data():
+    # leverage 25x: liquidation about 3.75% from entry; the rule allows a stop at most half of that (1.9%) away
+    wide = intent(leverage=25)
+    assert "liquidation_safety" not in failed(gr.evaluate(wide, ctx()))                 # the existing 5 EMA test levels are tight enough
+    far = intent(leverage=25, stop_price=D("103000"), target_price=D("98800"))      # a short whose stop is 3% away: past half the distance to liquidation
+    assert "liquidation_safety" in failed(gr.evaluate(far, ctx()))
+    assert "liquidation_safety" in failed(gr.evaluate(wide, ctx(maintenance_margin_pct=None)))

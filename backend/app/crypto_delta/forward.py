@@ -47,6 +47,7 @@ class Spec:
     tick_size: Decimal | None
     product_id: int | None = None
     initial_margin_pct: Decimal | None = None      # percent of notional, as Delta publishes it
+    maintenance_margin_pct: Decimal | None = None  # percent of notional; None = unknown (the live liquidation-safety check then fails closed)
 
 
 def fetch_spec(symbol: str, *, transport: httpx.BaseTransport | None = None) -> Spec:
@@ -73,9 +74,10 @@ def fetch_spec(symbol: str, *, transport: httpx.BaseTransport | None = None) -> 
     try:
         product_id = int(product["id"])
         margin = Decimal(str(product["initial_margin"])) if product.get("initial_margin") is not None else None
+        maint = Decimal(str(product["maintenance_margin"])) if product.get("maintenance_margin") is not None else None
     except (KeyError, ValueError, ArithmeticError):
-        product_id, margin = None, None
-    return Spec(symbol, value, taker, tick, product_id, margin)
+        product_id, margin, maint = None, None, None
+    return Spec(symbol, value, taker, tick, product_id, margin, maint)
 
 
 def _trade(side: str, symbol: str, contracts: int, spec: Spec, signal_time: datetime, entry_time: datetime, exit_time: datetime | None,
