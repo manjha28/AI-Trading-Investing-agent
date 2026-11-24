@@ -15,10 +15,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_current_user
+from app.api.research import require_verified_session
 from app.api.trades import _OPTION_PATTERN, _dhan_trade_rows, _match_dhan_fills
 from app.db import get_db
-from app.models import BrokerMirror, User
+from app.models import BrokerMirror, UserSession
 from app.models.strategies import OptionContract
 
 router = APIRouter(prefix="/brokers/dhan", tags=["dhan-reconciliation"])
@@ -106,5 +106,5 @@ def build(db: Session, user_id: Any, day: date) -> dict[str, Any]:
 
 
 @router.get("/reconciliation")
-def reconciliation(day: date | None = Query(default=None), user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    return build(db, user.id, day or datetime.now(timezone.utc).astimezone(IST).date())
+def reconciliation(day: date | None = Query(default=None), session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
+    return build(db, session.user_id, day or datetime.now(timezone.utc).astimezone(IST).date())
