@@ -122,8 +122,8 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
     {levels?.status === 'available' && levels.gates?.event_calendar_note?.startsWith('EVENT CALENDAR UNRELIABLE') && <p className="rt-note">{levels.gates.event_calendar_note}</p>}
     {levels?.status === 'available' && (levels.pivot_support || levels.pivot_resistance) && <p className="rt-note">Pivot support {levels.pivot_support ? `${inr(levels.pivot_support.price)} (${levels.pivot_support.name})` : 'none below price'} · pivot resistance {levels.pivot_resistance ? `${inr(levels.pivot_resistance.price)} (${levels.pivot_resistance.name})` : 'none above price'}</p>}
     {conf && <details className="rt-fold rt-why"><summary>{conf.kind === 'factor_v2' ? 'Why this rank and grade?' : `Why ${Math.round(conf.score)}/100?`}</summary>
-      <ul className="rt-parts">{conf.parts.map((p) => <li key={p.key}><span>{p.label}<small> · {Math.round(p.weight * 100)}% weight</small></span><div className="rt-bar"><i style={{ width: `${p.value}%` }} /></div><b>{Math.round(p.value)}</b></li>)}</ul>
-      {conf.kind === 'factor_v2' && conf.setup && <ul className="rt-checks">{conf.setup.checks.map((c) => <li key={c.key}><b>{c.result === 'pass' ? 'Pass' : c.result === 'not_evaluated' ? 'Not evaluated' : c.veto ? 'Fail (veto)' : 'Fail'}</b> {c.label}<small> · {c.reason}</small></li>)}</ul>}
+      <ul className="rt-parts">{(conf.parts ?? []).map((p) => <li key={p.key}><span>{p.label}<small> · {Math.round(p.weight * 100)}% weight</small></span><div className="rt-bar"><i style={{ width: `${p.value}%` }} /></div><b>{Math.round(p.value)}</b></li>)}</ul>
+      {conf.kind === 'factor_v2' && conf.setup && <ul className="rt-checks">{(conf.setup.checks ?? []).map((c) => <li key={c.key}><b>{c.result === 'pass' ? 'Pass' : c.result === 'not_evaluated' ? 'Not evaluated' : c.veto ? 'Fail (veto)' : 'Fail'}</b> {c.label}<small> · {c.reason}</small></li>)}</ul>}
       <p className="rt-note">{conf.note}{conf.kind === 'factor_v2' ? '' : ' Provisional ranking of conviction, not a probability of profit.'}</p>
       {levels?.explanation && <p className="rt-note">{levels.explanation}</p>}{levels?.derivation && <p className="rt-note"><b>Levels:</b> {levels.derivation.rule}</p>}</details>}
     <footer><small>Researched {when(row.researched_at)}</small><button type="button" className="rt-btn rt-ghost" onClick={() => onOpen(row)}>Full research →</button></footer>
@@ -173,6 +173,7 @@ function ReportList({ groups, onOpen }: { groups: { key: string; title: string; 
   const [filters, setFilters] = useState<Filters>({ horizon: 'all', held: false, inBand: false, band: 'any', sort: 'score' });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const phone = useIsPhone();
+  const [full, setFull] = useState<Record<string, Row>>({});
   const all = groups.flatMap((g) => g.rows);
   const visible = (rows: Row[]) => {
     const kept = rows.filter((r) => (filters.horizon === 'all' || r.horizons[filters.horizon]?.recommendation === 'BUY') && (!filters.held || r.held)
@@ -183,6 +184,15 @@ function ReportList({ groups, onOpen }: { groups: { key: string; title: string; 
   const flat = shown.flatMap((g) => g.rows);
   const selected = flat.find((r) => r.instrument_id === selectedId) ?? (phone ? null : flat[0] ?? null);
   const set = <K extends keyof Filters>(k: K, v: Filters[K]) => setFilters((f) => ({ ...f, [k]: v }));
+  const selectedId2 = selected?.instrument_id;
+  // The list is the compact report; the long derivations and the "why" parts of the ONE selected card are fetched when it is selected.
+  useEffect(() => {
+    if (!selectedId2 || full[selectedId2]) return;
+    let live = true;
+    void apiRequest<Row>(`/research/daily-report/${selectedId2}`).then((r) => { if (live && r && r.instrument_id === selectedId2) setFull((cur) => ({ ...cur, [selectedId2]: r })); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [selectedId2, full]);
+  const detailRow = (row: Row): Row => (full[row.instrument_id] ? { ...row, ...full[row.instrument_id] } : row);
   return (
     <div className="dr">
       <div className="dr-filters" role="group" aria-label="Filter and sort the list">
@@ -201,9 +211,9 @@ function ReportList({ groups, onOpen }: { groups: { key: string; title: string; 
           ))}
           {flat.length === 0 && <p className="rt-note">No stocks match these filters.</p>}
         </div>
-        {!phone && selected && <div className="dr-detail" aria-label="Selected stock"><BuyCard key={selected.instrument_id} row={selected} onOpen={onOpen} /></div>}
+        {!phone && selected && <div className="dr-detail" aria-label="Selected stock"><BuyCard key={selected.instrument_id} row={detailRow(selected)} onOpen={onOpen} /></div>}
       </div>
-      {phone && <Sheet open={selected !== null && selectedId !== null} onClose={() => setSelectedId(null)} title={selected?.symbol ?? ''}>{selected && <BuyCard key={selected.instrument_id} row={selected} onOpen={onOpen} />}</Sheet>}
+      {phone && <Sheet open={selected !== null && selectedId !== null} onClose={() => setSelectedId(null)} title={selected?.symbol ?? ''}>{selected && <BuyCard key={selected.instrument_id} row={detailRow(selected)} onOpen={onOpen} />}</Sheet>}
     </div>
   );
 }

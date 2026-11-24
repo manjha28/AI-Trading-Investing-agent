@@ -831,9 +831,46 @@ def get_fundamentals_gaps(
             "disclaimer": DISCLAIMER}
 
 
+HEAVY_LEVEL_KEYS = ("explanation", "derivation", "support_levels", "resistance_levels", "pivots", "stop_reason", "r_definition")
+HEAVY_CONFIDENCE_KEYS = ("parts", "setup", "note")
+
+
+def _compact_row(row: dict) -> dict:
+    """The list view of a research card: the ladder, state, score and one-line confidence; the long derivations and the "why" parts come from GET /daily-report/{instrument_id}."""
+    def slim_conf(c):
+        return {k: v for k, v in c.items() if k not in HEAVY_CONFIDENCE_KEYS} if isinstance(c, dict) else c
+    out = dict(row)
+    out["levels"] = {h: ({k: v for k, v in lv.items() if k not in HEAVY_LEVEL_KEYS} if isinstance(lv, dict) else lv) for h, lv in (row.get("levels") or {}).items()}
+    out["horizons"] = {h: ({**hv, "buy_confidence": slim_conf(hv.get("buy_confidence"))} if isinstance(hv, dict) else hv) for h, hv in (row.get("horizons") or {}).items()}
+    out["confidence"] = slim_conf(row.get("confidence"))
+    out["compact"] = True
+    return out
+
+
+def _compact_report(report: dict) -> dict:
+    return {**report, "buckets": {b: [_compact_row(r) for r in rows] for b, rows in (report.get("buckets") or {}).items()}, "compact": True}
+
+
+@router.get("/daily-report/{instrument_id}")
+def get_daily_report_card(
+    instrument_id: str,
+    _session: UserSession = Depends(require_verified_session),
+    db: Session = Depends(get_db),
+):
+    """One research card in full (levels derivation, the "why" parts and setup checks) for the detail panel."""
+    from app.services import report_store
+    served = report_store.serve(db, _session.user_id)
+    for rows in (served["payload"].get("buckets") or {}).values():
+        for row in rows:
+            if row.get("instrument_id") == instrument_id:
+                return JSONResponse(row, headers={"Cache-Control": "private, max-age=30"})
+    raise HTTPException(status_code=404, detail="That stock is not in the daily report.")
+
+
 @router.get("/daily-report")
 def get_daily_report(
     request: Request,
+    compact: bool = Query(default=True, description="List view: omits the long derivations and the 'why' parts (fetch one card in full from /daily-report/{instrument_id}). compact=false returns everything."),
     bucket: str | None = Query(default=None, pattern="^(buy|setup_waiting|radar|hold|no_new_entry|stale_data|not_enough_data)$"),
     limit: int | None = Query(default=None, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
@@ -846,11 +883,11 @@ def get_daily_report(
     from app.services import report_store
     researching = research_daily.kick_missing(_session.user_id)   # newly added stocks start researching immediately
     served = report_store.serve(db, _session.user_id)
-    etag = f'"{served["etag"]}-{bucket or "all"}-{limit or 0}-{offset}"'
+    etag = f'"{served["etag"]}-{bucket or "all"}-{limit or 0}-{offset}-{"c" if compact else "f"}"'
     headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"}
     if request.headers.get("if-none-match") == etag and not researching:
         return Response(status_code=304, headers=headers)
-    report = served["payload"]
+    report = _compact_report(served["payload"]) if compact else served["payload"]
     if bucket:
         rows = (report.get("buckets") or {}).get(bucket, [])
         page = rows[offset: offset + limit] if limit else rows[offset:]

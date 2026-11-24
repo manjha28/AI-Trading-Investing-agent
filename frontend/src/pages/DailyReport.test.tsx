@@ -158,3 +158,17 @@ describe('DailyReport · stale data is its own bucket', () => {
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });
+
+describe('DailyReport · compact list, full card on selection', () => {
+  it('fetches the selected card in full once and shows its "why" parts, which the compact list omits', async () => {
+    const compact = { ...buy, confidence: { ...conf, parts: undefined }, horizons: { ...buy.horizons, positional: { ...buy.horizons.positional, buy_confidence: { ...conf, parts: undefined } } } };
+    mockApi.mockImplementation((path: unknown) => Promise.resolve(String(path).startsWith('/research/daily-report/i1') ? buy : { ...report, buckets: { ...report.buckets, buy: [compact] } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByText('Alpha Ltd')[0]).toBeTruthy());
+    await waitFor(() => expect(mockApi.mock.calls.some((c) => String(c[0]) === '/research/daily-report/i1')).toBe(true));
+    expect(mockApi.mock.calls.filter((c) => String(c[0]) === '/research/daily-report/i1').length).toBe(1);
+    fireEvent.click(await screen.findByText(/Why 72\/100\?/));
+    expect(await screen.findByText(/Evidence quality/)).toBeTruthy();
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
+});
