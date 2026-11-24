@@ -4,6 +4,7 @@ import { Banner, Button, Chip, DataTable, EmptyState, ScoreBar, Sheet, Tabs, typ
 import { formatIST } from '../lib/format';
 
 type Item = {
+  last_close?: string | null; last_close_date?: string | null;
   symbol: string; instrument_id: string; class: string; rank: number | null; scores: Record<string, number | null>; checklist: string | null; checks_passed?: number | null; checks_total?: number | null;
   unknown_count?: number; unknown_ids?: string[]; fail_count?: number; timing: string | null; kind: string | null; reasons: string[]; class_if_unknown_checks_cleared: string | null;
 };
@@ -22,6 +23,23 @@ const GAP_WORDS: Record<string, string> = { pledge: 'pledge', surveillance: 'ASM
 const SCORE_KEYS = ['Q', 'G', 'V', 'T', 'X'] as const;
 const NA_REASON = 'No score: fewer than 70% of its inputs are stored';
 const DISMISS_KEY = 'mb.shadow.dismissed';
+const PRICE_KEY = 'mb.price';
+export const PRICE_PRESETS: { label: string; max: string }[] = [{ label: 'Any price', max: '' }, { label: 'Below ₹20', max: '20' }, { label: 'Below ₹50', max: '50' }, { label: 'Below ₹100', max: '100' }, { label: 'Below ₹500', max: '500' }];
+/** The price filter lives in the URL (price_min, price_max) and local storage; the URL wins when both exist. */
+function initialPrice(): { min: string; max: string } {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    if (q.has('price_min') || q.has('price_max')) return { min: q.get('price_min') ?? '', max: q.get('price_max') ?? '' };
+    const saved = JSON.parse(window.localStorage.getItem(PRICE_KEY) ?? 'null') as { min?: string; max?: string } | null;
+    return { min: saved?.min ?? '', max: saved?.max ?? '' };
+  } catch { return { min: '', max: '' }; }
+}
+export function withinPrice(close: string | null | undefined, min: string, max: string): boolean {
+  if (min === '' && max === '') return true;
+  if (close == null || close === '') return false;           // unknown price never passes a price filter
+  const v = Number(close);
+  return (min === '' || v >= Number(min)) && (max === '' || v <= Number(max));
+}
 
 // The response is kept for the session: sorting and filtering are client-side, so a tab switch never refetches.
 let cache: Resp | null = null;
@@ -40,6 +58,7 @@ export function Multibagger({ onOpen }: { onOpen?: (symbol: string) => void }) {
   const [buyZone, setBuyZone] = useState(false);
   const [fewUnknown, setFewUnknown] = useState(false);
   const [minQ, setMinQ] = useState(0);
+  const [price, setPrice] = useState(initialPrice);
   const [selected, setSelected] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(() => { try { return window.sessionStorage.getItem(DISMISS_KEY) === '1'; } catch { return false; } });
 
@@ -66,13 +85,26 @@ export function Multibagger({ onOpen }: { onOpen?: (symbol: string) => void }) {
       .filter((i) => !buyZone || i.timing === 'buy_zone')
       .filter((i) => !fewUnknown || (i.unknown_count ?? 99) <= 1)
       .filter((i) => minQ <= 0 || (i.scores.Q ?? -1) >= minQ)
+      .filter((i) => withinPrice(i.last_close, price.min, price.max))
       .sort((a, b) => orderOf(a.class) - orderOf(b.class) || (b.checks_passed ?? -1) - (a.checks_passed ?? -1) || (b.scores.Q ?? -1) - (a.scores.Q ?? -1) || a.symbol.localeCompare(b.symbol));
-  }, [items, klass, showExcluded, query, buyZone, fewUnknown, minQ]);
+  }, [items, klass, showExcluded, query, buyZone, fewUnknown, minQ, price]);
+
+  useEffect(() => {                                              // keep the URL and local storage in step with the price filter
+    try {
+      const url = new URL(window.location.href);
+      for (const [k, v] of [['price_min', price.min], ['price_max', price.max]] as const) { if (v === '') url.searchParams.delete(k); else url.searchParams.set(k, v); }
+      window.history.replaceState(window.history.state, '', url);
+      window.localStorage.setItem(PRICE_KEY, JSON.stringify(price));
+    } catch { /* the filter still works without persistence */ }
+  }, [price]);
+  const priceActive = price.min !== '' || price.max !== '';
+  const priceEmpty = priceActive && rows.length === 0 && items.length > 0 ? `No stocks ${price.max !== '' && price.min === '' ? `below ₹${price.max}` : `between ₹${price.min || '0'} and ₹${price.max || '∞'}`} in the current universe.` : null;
 
   const columns: Column<Item>[] = useMemo(() => [
     { key: 'symbol', header: 'Stock', sticky: true, sortValue: (i) => i.symbol, render: (i) => <><strong>{i.symbol}</strong>{i.kind && i.kind !== 'default' ? <small className="ui-muted"> {i.kind.replace(/_/g, ' ')}</small> : null}</> },
     { key: 'class', header: 'Class', sortValue: (i) => orderOf(i.class), render: (i) => <Chip status={i.class} title={LONG[i.class]} /> },
     ...(hasRank ? [{ key: 'rank', header: 'Rank', align: 'right' as const, sortValue: (i: Item) => i.rank, render: (i: Item) => i.rank ?? '—' }] : []),
+    { key: 'price', header: 'Last close', align: 'right' as const, firstSort: 'asc', title: 'Latest stored daily close (₹)', sortValue: (i: Item) => (i.last_close == null ? null : Number(i.last_close)), render: (i: Item) => (i.last_close == null ? '—' : `₹${Number(i.last_close).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`) },
     ...SCORE_KEYS.map((k): Column<Item> => ({ key: k, header: k, firstSort: 'desc', title: { Q: 'Quality', G: 'Growth', V: 'Valuation', T: 'Timing', X: 'Cross-check' }[k], sortValue: (i) => i.scores[k], render: (i) => <ScoreBar value={i.scores[k]} label={k} naReason={NA_REASON} /> })),
     { key: 'checks', header: 'Checklist', sortValue: (i) => i.checks_passed, render: (i) => (i.checks_passed === null || i.checks_passed === undefined || !i.checks_total ? (i.checklist ?? '—') : <span title={i.checklist ?? ''}>{i.checks_passed}/{i.checks_total} <progress value={i.checks_passed} max={i.checks_total} aria-label="checks passed" /></span>) },
     { key: 'timing', header: 'Timing', sortValue: (i) => (i.timing === 'buy_zone' ? 0 : i.timing === 'wait_for_chart' ? 1 : 2), render: (i) => (i.timing === 'buy_zone' ? <Chip tone="positive">Buy zone</Chip> : i.timing === 'wait_for_chart' ? <Chip tone="caution">Wait for chart</Chip> : '—') },
@@ -101,12 +133,21 @@ export function Multibagger({ onOpen }: { onOpen?: (symbol: string) => void }) {
         <label><input type="checkbox" checked={fewUnknown} onChange={(e) => setFewUnknown(e.target.checked)} /> 0–1 unknown checks</label>
         <label>Min Q <input type="number" min={0} max={100} value={minQ} onChange={(e) => setMinQ(Number(e.target.value) || 0)} aria-label="Minimum Q score" /></label>
         <label><input type="checkbox" checked={showExcluded} onChange={(e) => { setShowExcluded(e.target.checked); if (!e.target.checked && EXCLUDED.has(klass)) setKlass('all'); }} /> Show excluded ({(counts.avoid ?? 0) + (counts.not_tradable ?? 0) + (counts.not_assessable ?? 0)})</label>
-        <span className="ui-muted" role="status">{rows.length} of {items.length}</span>
+        <span className="mb-price" role="group" aria-label="Price filter">
+          <select aria-label="Price preset" value={PRICE_PRESETS.some((p) => p.max === price.max && price.min === '') ? price.max : 'custom'} onChange={(e) => setPrice({ min: '', max: e.target.value === 'custom' ? price.max : e.target.value })}>
+            {PRICE_PRESETS.map((p) => <option key={p.label} value={p.max}>{p.label}</option>)}
+            <option value="custom">Custom…</option>
+          </select>
+          <input type="number" min={0} placeholder="Min ₹" value={price.min} onChange={(e) => setPrice({ ...price, min: e.target.value })} aria-label="Minimum price" />
+          <input type="number" min={0} placeholder="Max ₹" value={price.max} onChange={(e) => setPrice({ ...price, max: e.target.value })} aria-label="Maximum price" />
+        </span>
+        <span className="ui-muted" role="status">{rows.length} of {items.length} stocks</span>
       </div>
+      {priceActive && <p className="ui-muted">Price is the latest stored daily close. Low-price stocks are often illiquid: the tradability gates below are shown unchanged, and a stock with no stored close is left out of a price filter.</p>}
 
       <DataTable caption="Multibagger screen" columns={columns} rows={rows} rowKey={(i) => i.instrument_id} virtualiseAbove={40} loading={!data && !error} error={error} onRetry={load}
         selectedKey={items.find((i) => i.symbol === selected)?.instrument_id ?? null} onRowClick={(i) => setSelected(i.symbol)}
-        empty={<>No stocks match these filters. <Button variant="ghost" size="sm" onClick={() => { setKlass('all'); setQuery(''); setBuyZone(false); setFewUnknown(false); setMinQ(0); }}>Clear filters</Button></>} />
+        empty={<>{priceEmpty ?? 'No stocks match these filters.'} <Button variant="ghost" size="sm" onClick={() => { setKlass('all'); setQuery(''); setBuyZone(false); setFewUnknown(false); setMinQ(0); setPrice({ min: '', max: '' }); }}>Clear filters</Button></>} />
       <p className="ui-muted">{data?.disclaimer} A score exists only when 70% of its inputs are stored; unknown is shown as n/a and never as zero.</p>
       <Sheet open={selected !== null} onClose={() => setSelected(null)} title={selected ?? ''}>{selected && <StockDetail symbol={selected} onOpen={onOpen} />}</Sheet>
     </section>

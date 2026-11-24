@@ -46,3 +46,22 @@ def test_detail_is_owner_scoped(client, engine):  # noqa: F811
     client.cookies.clear()
     login(client, engine, "owner2@example.com")
     assert client.get("/api/v1/research/multibagger/BETA").status_code == 404
+
+
+def test_list_carries_the_latest_real_daily_close_or_null(client, engine):  # noqa: F811
+    from decimal import Decimal
+
+    from app.models import MarketBar
+    login(client, engine, "mbp@example.com")
+    seed(engine, "mbp@example.com", "PRICED", "watch")
+    seed(engine, "mbp@example.com", "NOPRICE", "watch")
+    with Session(engine) as db:
+        iid = db.scalar(select(Instrument.id).where(Instrument.symbol == "PRICED"))
+        for day, close in ((20, "17.40"), (23, "18.25")):                                    # TEST DATA bars
+            ts = datetime(2026, 11, day, 10, 0, tzinfo=timezone.utc)
+            db.add(MarketBar(instrument_id=iid, interval="1d", timestamp=ts, open=Decimal(close), high=Decimal(close), low=Decimal(close), close=Decimal(close), volume=Decimal(1000), source="test", is_synthetic=False, retrieved_at=ts))
+        db.commit()
+    by = {i["symbol"]: i for i in client.get("/api/v1/research/multibagger").json()["items"]}
+    assert by["PRICED"]["last_close"] == "18.25000000" or Decimal(by["PRICED"]["last_close"]) == Decimal("18.25")
+    assert by["PRICED"]["last_close_date"] == "2026-11-23"
+    assert by["NOPRICE"]["last_close"] is None and by["NOPRICE"]["last_close_date"] is None      # unknown, never zero

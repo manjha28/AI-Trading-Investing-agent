@@ -915,6 +915,22 @@ def pipeline_v2_compare(
     return {**pipeline_v2.compare(db, _session.user_id, limit=limit), "disclaimer": DISCLAIMER}
 
 
+def _latest_daily_closes(db: Session, instrument_ids: list) -> dict:
+    """{instrument_id: (close, session date IST)} from the newest REAL daily bar of each instrument; missing stays missing (never zero)."""
+    from zoneinfo import ZoneInfo
+
+    from app.models import MarketBar
+    if not instrument_ids:
+        return {}
+    newest = select(MarketBar.instrument_id.label("iid"), func.max(MarketBar.timestamp).label("ts")).where(
+        MarketBar.instrument_id.in_(instrument_ids), MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False)).group_by(MarketBar.instrument_id).subquery()
+    out: dict = {}
+    for iid, ts, close in db.execute(select(MarketBar.instrument_id, MarketBar.timestamp, MarketBar.close).join(
+            newest, (MarketBar.instrument_id == newest.c.iid) & (MarketBar.timestamp == newest.c.ts)).where(MarketBar.interval == "1d", MarketBar.is_synthetic.is_(False))).all():
+        out[iid] = (close, (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo("Asia/Kolkata")).date())
+    return out
+
+
 @router.get("/multibagger")
 def get_multibagger(
     klass: str | None = Query(default=None, alias="class", pattern="^(multibagger_candidate|quality_compounder|emerging|new_listing|watch|not_a_fit|not_tradable|avoid|not_assessable)$"),
@@ -935,6 +951,7 @@ def get_multibagger(
                       .where(MultibaggerAssessment.user_id == _session.user_id, MultibaggerAssessment.as_of == latest)).all()
     counts: dict[str, int] = {}
     items = []
+    closes = _latest_daily_closes(db, [a.instrument_id for a, _ in rows])
     for a, sym in rows:
         counts[a.klass] = counts.get(a.klass, 0) + 1
         c = a.checks or {}
@@ -944,7 +961,8 @@ def get_multibagger(
             continue
         all_checks = c.get("checks") or []
         unknown_ids = [k["id"] for k in all_checks if k.get("result") == "unknown"]
-        items.append({"symbol": sym, "instrument_id": str(a.instrument_id), "class": a.klass, "rank": a.rank, "scores": {"Q": a.q, "G": a.g, "V": a.v, "T": a.t, "X": a.x}, "checklist": c.get("checklist"),
+        last = closes.get(a.instrument_id)
+        items.append({"symbol": sym, "instrument_id": str(a.instrument_id), "last_close": str(last[0]) if last else None, "last_close_date": last[1].isoformat() if last else None, "class": a.klass, "rank": a.rank, "scores": {"Q": a.q, "G": a.g, "V": a.v, "T": a.t, "X": a.x}, "checklist": c.get("checklist"),
                       "checks_passed": c.get("checks_passed"), "checks_total": c.get("checks_total"), "unknown_count": len(unknown_ids), "unknown_ids": unknown_ids,
                       "fail_count": sum(1 for k in all_checks if k.get("result") == "fail"),
                       "timing": c.get("timing"), "kind": c.get("kind"), "reasons": (c.get("reasons") or [])[:3],

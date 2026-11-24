@@ -248,3 +248,4 @@
 - 2026-11-25 Journal: actual charges replace estimates (order-level rule, dedupe, upsert never erases); Dhan reconciliation route no longer shadowed (A2)
 - 2026-11-25 MCX watch: last session figures (OHLC, volume, OI, tick time) when closed; snapshot table 0077; expiry-day roll (A3)
 - 2026-11-25 Confidence: honest proof test (no model qualifies); label now 'Unproven · N similar setups' (A4)
+- 2026-11-25 Multibagger: price filter (presets, min/max, URL + local storage), last close per stock (A5)

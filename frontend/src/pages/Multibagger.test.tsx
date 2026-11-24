@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Multibagger, clearMultibaggerCache } from './Multibagger';
+import { Multibagger, clearMultibaggerCache, withinPrice } from './Multibagger';
 
 const mockApi = vi.hoisted(() => vi.fn());
 vi.mock('../api', () => ({ apiRequest: mockApi }));
@@ -104,5 +104,47 @@ describe('Multibagger screen', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('HTTP 502 from the backend');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByRole('table', { name: 'Multibagger screen' });
+  });
+});
+
+
+describe('Multibagger price filter', () => {
+  // TEST DATA: five stocks with chosen last closes; one has no stored close.
+  const priced = () => ({ enabled: true, shadow: false, as_of: '2026-11-23', disclaimer: 'Decision support, not investment advice.', counts: { watch: 5 },
+    items: [['LOW', '12.50'], ['MID', '45.00'], ['HIGH', '480.00'], ['BIG', '2500.00'], ['NONE', null]].map(([symbol, close], n) => ({ symbol, instrument_id: `p${n}`, class: 'watch', rank: null, scores: { Q: 50, G: 50, V: 50, T: 50, X: 50 }, checklist: '1 of 3', checks_passed: 1, checks_total: 3, unknown_count: 0, unknown_ids: [], fail_count: 0, timing: null, kind: 'default', reasons: [], class_if_unknown_checks_cleared: null, last_close: close, last_close_date: close ? '2026-11-23' : null })) });
+  beforeEach(() => { window.localStorage.clear(); window.history.replaceState(null, '', '/'); });
+
+  it('withinPrice: unknown prices never pass an active filter, bounds are inclusive', () => {
+    expect(withinPrice(null, '', '')).toBe(true);
+    expect(withinPrice(null, '', '50')).toBe(false);
+    expect(withinPrice('50', '', '50')).toBe(true);
+    expect(withinPrice('50.01', '', '50')).toBe(false);
+    expect(withinPrice('20', '25', '')).toBe(false);
+  });
+
+  it('filters by preset, combines with search, shows the count, and persists in the URL and local storage', async () => {
+    mockApi.mockResolvedValue(priced());
+    render(<Multibagger />);
+    await screen.findByRole('table', { name: 'Multibagger screen' });
+    expect(screen.getByText('5 of 5 stocks')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Price preset'), { target: { value: '50' } });
+    await waitFor(() => expect(screen.getByText('2 of 5 stocks')).toBeTruthy());               // LOW and MID; NONE has no close so it is left out
+    expect(window.location.search).toContain('price_max=50');
+    expect(JSON.parse(window.localStorage.getItem('mb.price') ?? '{}').max).toBe('50');
+    fireEvent.change(screen.getByLabelText('Search symbol'), { target: { value: 'MID' } });
+    await waitFor(() => expect(screen.getByText('1 of 5 stocks')).toBeTruthy());
+    expect(screen.getByText(/often illiquid/)).toBeTruthy();
+  });
+
+  it('custom min and max, and the empty message names the limit', async () => {
+    mockApi.mockResolvedValue(priced());
+    render(<Multibagger />);
+    await screen.findByRole('table', { name: 'Multibagger screen' });
+    fireEvent.change(screen.getByLabelText('Minimum price'), { target: { value: '100' } });
+    fireEvent.change(screen.getByLabelText('Maximum price'), { target: { value: '1000' } });
+    await waitFor(() => expect(screen.getByText('1 of 5 stocks')).toBeTruthy());                // HIGH only
+    fireEvent.change(screen.getByLabelText('Minimum price'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Maximum price'), { target: { value: '10' } });
+    await waitFor(() => expect(screen.getByText(/No stocks below ₹10 in the current universe\./)).toBeTruthy());
   });
 });
