@@ -3,19 +3,29 @@
 _Decision support, not investment advice._ Updated after every item.
 
 ## Morning summary (2 minutes)
+Pushed to origin/main (104 commits). Deployed to Fly: API v35 and web, both healthy, migrations 0077 and 0078 applied; lab app untouched. **Delta live and Dhan state are exactly as at the start** (Delta armed with one live test `5 EMA BTCUSD 5m`; Dhan disarmed, no live test; both deployment flags still true; re-read from the Fly DB after the deploy). Nothing new armed; the scanner and every new strategy are paper only.
+**Fly checks I could NOT do (no 2FA session, no local Postgres):** every logged-in check below was verified by tests and by unauthenticated probes only (all new routes answer 401). Please click through: Delta watch banner, MCX closed view, Journal "est" and Reconcile with Dhan (also run Backfill + Dhan sync first; reconciliation on Fly returned 0 matched trades for 23 and 24 Nov, reason not yet found), Multibagger price filter, depth panel (3 widths), forward-test mode lines, Daily report cards, the v2 toggle.
 
 | Item | Status | Evidence | You decide |
 |---|---|---|---|
-| Live-state baseline | Done | see "Live baseline" below | – |
-| A1 Delta watch outage | Partly done (code + tests; Fly deploy pending) | `CryptoWatch.test.tsx` "Crypto watch outage" | – |
-| A2 Journal est vs actual | Partly done (causes found + fixed + tests; 23/24 Nov reconcile NOT verifiable) | `test_dhan_charge_estimate.py` (3 new), `test_dhan_reconciliation.py::..without_portfolio_id` | Run a backfill on Fly after deploy; see A2 |
-| A3 MCX closed-market columns | Partly done (code + 3 tests; needs Fly deploy and a look at the live page; no MCX-open check possible overnight) | `test_mcx_calendar.py` (3 new) | – |
-| A4 Confidence proof | Done | `diagnostics/nexus-v2/overnight_a4_confidence_proof.py` (+`.json`); `test_win_confidence.py` | Answer below: No ML in use, score does not predict outcomes |
-| A5 Multibagger price filter | Done (live pass pending deploy) | `Multibagger.test.tsx` (3 new), `test_multibagger_api.py::..latest_real_daily_close..` | Universe widening (below) |
-| Forward test mode lines | Done (needs Fly look after deploy) | `executionState.test.ts`, `test_delta_execution.py::..never_even_constructs..` | – |
-| B1 Uniform cards | Done (local harness; Fly pass pending) | `frontend/e2e/layout/check.mjs` 15/15 ok; `diagnostics/ui/overnight-2026-11-25/{before,after}` | – |
-| B2 Sections v2 | Done behind flag `research_sections_v2` (default OFF) | `diagnostics/ui/overnight-2026-11-25/sections-old-vs-v2-*.png` | Flip the toggle "New sections layout (preview)" on the report and approve or reject |
-| A6/B3 deploy, C, D | Not started yet | – | – |
+| Live baseline and final check | Done | section below; re-read after deploy | - |
+| A1 Delta watch toast | Done, deployed | cause: 2 machines, machine-local store file, non-leader 503; `CryptoWatch.test.tsx` outage test | - |
+| A2 Journal est vs actual | Partly done | 3 bugs fixed, tests; 23/24 Nov vs Dhan NOT verified | run backfill and look at the gap |
+| A3 MCX closed columns | Partly done | code + 3 tests, deployed, not seen live | - |
+| A4 Confidence | Done | No ML in use; score does not predict outcomes; label now "Unproven" | - |
+| A5 Multibagger price filter | Done | 3 UI tests, 1 API test | universe stays ~295 (your default) |
+| Forward test mode lines | Done | `executionState.test.ts`, no-order-client test | - |
+| B1 Uniform cards | Done, deployed | `e2e/layout/check.mjs` 15/15; screenshots in `diagnostics/ui/overnight-2026-11-25/` | - |
+| B2 Sections v2 | Built, flag OFF | `sections-old-vs-v2-*.png` | review screenshots, then flip the toggle |
+| C1 Depth panel | Done, deployed | 9 backend + 4 frontend tests, real socket formats confirmed | check live on Fly |
+| C2 Depth-aware execution | Module + tests only | 7 tests; not wired to R3 or live; recorded-book measurement not run | - |
+| D1 Scanner | Done, deployed | paper only by structure; test poisons order functions | live sizing rules wait for you |
+| D2 Intraday research | **No strategy passed** | 278 variants, closest = funding extreme (not credible) | - |
+| D3 Pump/runner/parabolic | **No strategy passed** | 1,027 events, 485 coins, 23 delisted | - |
+| Unproven paper forward test | Started on Fly | scanner `Unproven: funding extreme (D2 candidate) top 10`, id 2257bf25, 10/10 symbols loading, paper only | - |
+| Full suites | Backend green except notes below; frontend 363 pass, build OK | | see test notes |
+**Test notes.** Three tests were marked xfail because they also fail at the pre-overnight commit `e22d2cf` (real clock vs fixture dates): `test_options_signal_api` (your default), `test_report_store::etag_304`, `test_research_levels::test_buckets`. `tests/test_ws_reliability.py` hangs or fails in this Codespace at the pre-overnight commit too and was excluded from the full run (one Delta reconnect test fails with the old and new collector alike). Security catch: my route-order fix made `/brokers/dhan/reconciliation` reachable and it only checked login; it now requires a verified session (found by `test_route_security_audit`).
+**Part D conclusions.** "No strategy passed" in both D2 and D3 on frozen holdouts; the holdout was looked at once per finalist, so I stopped iterating (more variants on the same holdout would be cherry-picking). Ideas that need fresh data are listed in D3.
 
 ## Live baseline (24 Nov ~18:30 UTC, read-only query of the Fly DB; nothing changed)
 - **Delta**: deployment flag `DELTA_LIVE_EXECUTION_ENABLED=true` on finbyte-nexus-api; per-user state ARMED (armed 17:59 UTC, caps $25/day loss, 6 trades/day, 2 open, $2000 notional). Live tests: ONE, `5 EMA BTCUSD 5m` (BTCUSD, 5m, 1 contract, `execute_live=true`). Wallet balance not queried (needs the Delta key; you said ~$3).
@@ -142,3 +152,6 @@ Finalist per type on the HOLDOUT (chosen on validation only, one look):
 | parabolic_short | first_lower_high (3.0 ATR, 15d), hash da38def90a759b85 | 56 / 51 | 48% | -2.9 / -5.6 | -55 | 84 | 10.0 | 20 | 0.78 | -9.2 to 2.8 | 0.00 | -8.6 | no |
 Reading it: the **runner** has 14 holdout events (under 30: anecdotal) and loses (-4.1% mean, PF 0.7). The **pump short** (fixed 3-day delay, the baseline) is the nearest: 28 events, 64% hit rate, +2.6% mean, PF 1.33, but its validation was negative (-7.3%), the bootstrap interval (-4.1 to +9.2) includes zero, DSR is 0.13 and it has only 28 events and 4 squeeze stop-outs. The **parabolic short** loses (-2.9% mean, PF 0.78) and 20 of 56 trades were stopped out by squeezes, worst single loss -55% with an 84% adverse move: shorting blow-offs without being squeezed did not work with these rules. The more elaborate entries (lower high, break of the higher low, blow-off candle) did not beat the plain fixed delay.
 **Why I stopped iterating.** The holdout has now been looked at once per type. Trying more variants and checking them on the same holdout would be exactly the cherry-picking you ruled out, and there is no fresh untouched data until the paper forward test produces some. What is left is a list of ideas that would need new data to test (different event thresholds, a funding-flip exit, a volatility-scaled stop); I did not run them. No D3 strategy was put into a forward test (none is close enough to justify one); the "Unproven" paper test remains the D2 funding-extreme candidate.
+
+## Final state check (after deploy, read from the Fly DB)
+Delta: deployment flag true, per-user ARMED (armed 17:59 UTC, unchanged), one live test `5 EMA BTCUSD 5m` (execute_live true, 1 contract). Dhan: deployment flag true, per-user DISARMED (unchanged), no live test. New this night: scanner row `Unproven: funding extreme` (paper only, no execute_live column exists). **Live Delta orders sent overnight:** not listed here because the order ledger was last read at the start of the night (one rejected BTCUSD buy at 19:50 UTC on 23 Nov, 1 contract, 25x, `rejected`); re-read the ledger on the Crypto > Forward test page for anything since.
