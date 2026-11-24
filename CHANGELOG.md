@@ -240,3 +240,4 @@
 - MCX watch: MCX calendar (holidays, evening-only days), no feed when closed, 'Feed not receiving data' with reason and Retry after 15 s, 09:05 IST check log; Needs attention is a compact list; Delta Live switch re-read at send time
 - Live orders: click Dhan/Delta not live in the Overview header, confirm a warning (no typed phrase); Needs attention removed from Overview
 - Delta strategy lab (app/delta_lab): shared risk gate and sizer, cost model, simulator, six pre-registered families, walk-forward and holdout, paper engine; live guard-rails now also apply the liquidation-safety rule
+- Daily report back to one card per stock (full card fetched on opening Why); MCX shows last close while closed; Dhan live flag on Fly

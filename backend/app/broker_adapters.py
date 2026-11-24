@@ -1269,6 +1269,36 @@ class DhanAdapter(BrokerAdapter):
         )
         return quotes.get(exchange_segment, {})
 
+    def get_last_close_quotes(self, access_token: str, tokens: Mapping[str, str], segment: str, security_ids: list[str]) -> dict[str, tuple[Decimal, Decimal | None]]:
+        """Last price and previous close straight from Dhan's quote endpoint, for a market that is closed or has not traded yet (open/high/low are 0 then,
+        which the normal batch treats as untraded and drops). Returns {security_id: (last_price, previous_close)}; a missing or zero price is left out, never zero."""
+        ids = [str(i) for i in security_ids if str(i).isdigit()]
+        if segment != "MCX_COMM" or not ids:
+            return {}
+        _wait_for_dhan_market_data()
+        payload = _request(
+            "POST", f"{self.api_root}/v2/marketfeed/quote", diagnostic_stage="market_quote_api_request",
+            headers={"access-token": access_token, "client-id": tokens["client_id"], "Accept": "application/json", "Content-Type": "application/json"},
+            json={segment: [int(i) for i in ids]},
+        )
+        self._check_market_data_payload(payload)
+        data = (payload.get("data") or {}).get(segment) if isinstance(payload.get("data"), dict) else None
+        out: dict[str, tuple[Decimal, Decimal | None]] = {}
+        for sid in ids:
+            rec = (data or {}).get(sid) or (data or {}).get(int(sid))
+            if not isinstance(rec, dict):
+                continue
+            tick = DhanAdapter.price_tick_for(segment, sid)
+            try:
+                last = Decimal(str(rec.get("last_price")))
+                close = Decimal(str((rec.get("ohlc") or {}).get("close")))
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+            if last <= 0 or tick is None:
+                continue
+            out[sid] = (_quantize_price_text(last, tick), _quantize_price_text(close, tick) if close > 0 else None)
+        return out
+
     def get_market_quotes_batch(
         self,
         access_token: str,

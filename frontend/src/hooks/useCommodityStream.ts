@@ -7,10 +7,12 @@ export type CommodityTick = {
   previous_close: string | null;
   change: string | null;
   change_pct: string | null;
-  open: string;
-  high: string;
-  low: string;
-  volume: string;
+  open: string | null;
+  high: string | null;
+  low: string | null;
+  volume: string | null;
+  /** True when this price is the last close shown while the market is closed. */
+  last_close?: boolean;
   /** Server clock at the moment the tick was relayed (the feed's own tick time is not relied on). */
   received_at: string;
   /** Local time the browser received it, for flash/age display. */

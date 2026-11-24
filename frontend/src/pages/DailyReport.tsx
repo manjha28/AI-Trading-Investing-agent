@@ -220,6 +220,16 @@ function ReportList({ groups, onOpen }: { groups: { key: string; title: string; 
   );
 }
 
+/** One card per stock, as before. The list payload is compact, so the long derivations and the "Why" parts of THIS card are fetched when its "Why" section is opened. */
+function LazyBuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
+  const [full, setFull] = useState<Row | null>(null);
+  const load = () => {
+    if (full) return;
+    void apiRequest<Row>(`/research/daily-report/${row.instrument_id}`).then((r) => { if (r && r.instrument_id === row.instrument_id) setFull(r); }).catch(() => undefined);
+  };
+  return <div onClickCapture={(e) => { if ((e.target as HTMLElement).closest('summary')) load(); }}><BuyCard row={full ? { ...row, ...full } : row} onOpen={onOpen} /></div>;
+}
+
 function CompactRow({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
   return <tr className={row.researching ? 'rt-skel' : ''}>
     <td><button type="button" className="rt-sym" onClick={() => onOpen(row)}>{row.symbol}</button><small className="rt-name">{row.name}</small></td>
@@ -273,7 +283,8 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
     <div className="rt-tiles">{tiles.map((t) => <button key={t.key} type="button" className={`rt-tile rt-tile-${t.key}${tab === t.key ? ' active' : ''}`} onClick={() => setTab(tab === t.key ? 'all' : t.key)}><b>{report.counts[t.key] ?? 0}</b><span>{t.label}</span><small>{t.hint}</small></button>)}</div>
     <div className="rt-seg rt-seg-wide" role="tablist" aria-label="Filter">{TABS.filter((t) => t.key !== 'setup_waiting' || hasWaiting).map((t) => <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''} onClick={() => setTab(t.key)}>{t.label}</button>)}</div>
     {total === 0 && <div className="rt-card rt-empty-state"><h3>Nothing to report yet</h3><p>Add a stock to a watchlist or record a holding. It is researched automatically and appears here within a minute or two.</p></div>}
-    {(buys.length > 0 || waiting.length > 0) && <ReportList onOpen={open} groups={[{ key: 'buy', title: 'Ready to buy', hint: 'the price is in the band now', rows: buys }, { key: 'waiting', title: 'Set up, waiting', hint: 'levels are set; price is not in the buy band yet', rows: waiting }]} />}
+    {buys.length > 0 && <><h3 className="rt-h">Ready to buy <small>highest confidence first, by the number shown on each card</small></h3><div className="rt-buy-grid">{sortByDisplayedScore(buys).map((r) => <LazyBuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
+    {waiting.length > 0 && <><h3 className="rt-h">Set up, waiting <small>levels are set; price is not in the buy band yet</small></h3><div className="rt-buy-grid">{waiting.map((r) => <LazyBuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
     {others.length > 0 && <div className="rt-card rt-compact"><div className="rt-table-wrap"><table className="rt-table"><thead><tr><th>Stock</th><th>Portfolio</th><th>What to do</th><th title="Swing / Positional / Long-term">S · P · L</th><th className="r">Last close</th><th>Researched</th></tr></thead>
       <tbody>{others.map((r) => <CompactRow key={r.instrument_id} row={r} onOpen={open} />)}</tbody></table></div>
       {allOthers.length > limit && <p className="rt-note"><button type="button" className="rt-btn rt-ghost" onClick={() => setLimit(limit + 100)}>Show more ({allOthers.length - limit} remaining)</button></p>}

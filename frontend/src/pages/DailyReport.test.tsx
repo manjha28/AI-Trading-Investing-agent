@@ -25,7 +25,7 @@ describe('DailyReport', () => {
   it('shows the buy card with confidence, levels and the hold row, and opens a stock', async () => {
     const onOpen = vi.fn();
     render(<DailyReport onOpen={onOpen} />);
-    await waitFor(() => expect(screen.getAllByText('Alpha Ltd')[0]).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
     expect(screen.getByRole('img', { name: /Confidence 72 out of 100, High/ })).toBeTruthy();
     expect(screen.getByText('₹95.00')).toBeTruthy();
     expect(screen.getByText(/keep holding/)).toBeTruthy();
@@ -37,11 +37,10 @@ describe('DailyReport', () => {
   it('v2: shows a neutral factor rank with the setup grade, a Set up waiting group, and no confidence wording', async () => {
     mockApi.mockImplementation(() => Promise.resolve(reportV2));
     render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByText('Alpha Ltd')[0]).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
     expect(screen.getAllByText('Factor rank 12th of 249 (factor screen)').length).toBeGreaterThan(0);
     expect(screen.getByText('Gamma Ltd')).toBeTruthy();
     expect(screen.getAllByText(/Set up, waiting/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByText('Gamma Ltd').closest('button') as HTMLElement);                  // the detail panel shows the selected stock
     expect(screen.getAllByText('Wait for a pullback into 100.00-103.00').length).toBeGreaterThan(0);
     expect(screen.queryByRole('img', { name: /Confidence \d+ out of 100/ })).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
@@ -51,22 +50,22 @@ describe('DailyReport', () => {
     const gated = { ...buy, levels: { positional: { ...levels, event_gate: 'results on 2026-11-25 (2 session(s) ahead): no entry-now signal until it has passed.', gates: { event_calendar_note: 'EVENT CALENDAR UNRELIABLE: the NSE filings feed has not updated since 2026-11-05 (17 days).' } } } };
     mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [gated] } }));
     render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByText('Alpha Ltd')[0]).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
     expect(screen.getByText(/results on 2026-11-25/)).toBeTruthy();
     expect(screen.getByText(/EVENT CALENDAR UNRELIABLE/)).toBeTruthy();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 
   it('shows the measured win probability with its sample, band label and expected R, and nothing when the backend sends none', async () => {
-    const win = { line: 'Measured win rate 38% (avg setup 27%) · based on 212 similar past setups', band_label: 'High (not yet separating)', tooltip: '80% interval 31-45%.', expected_r: 0.21 };
+    const win = { line: 'Confidence 38% (avg setup 27%) · based on 212 similar past setups', band_label: 'High (not yet separating)', tooltip: '80% interval 31-45%.', expected_r: 0.21 };
     const card = (c: typeof confV2 & { win_confidence?: typeof win }) => ({ ...buy, horizons: { positional: { recommendation: 'BUY', score: 80, confidence: 80, buy_confidence: c, why_not: [] } }, confidence: c });
     mockApi.mockImplementation(() => Promise.resolve({ ...reportV2, buckets: { ...reportV2.buckets, buy: [card({ ...confV2, win_confidence: win })], setup_waiting: [] } }));
     const first = render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText(/Measured win rate 38% \(avg setup 27%\) · based on 212 similar past setups · High \(not yet separating\) · expected \+0.21R/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Confidence 38% \(avg setup 27%\) · based on 212 similar past setups · High \(not yet separating\) · expected \+0.21R/)).toBeTruthy());
     first.unmount();
     mockApi.mockImplementation(() => Promise.resolve({ ...reportV2, buckets: { ...reportV2.buckets, buy: [card(confV2)], setup_waiting: [] } }));
     render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByText('Alpha Ltd')[0]).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
     expect(screen.queryByText(/similar past setups/)).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
@@ -80,7 +79,7 @@ describe('DailyReport', () => {
     first.unmount();
     mockApi.mockImplementation(() => Promise.resolve({ ...reportV2, buckets: { ...reportV2.buckets, buy: [card(confV2)], setup_waiting: [] } }));
     render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByText('Alpha Ltd')[0]).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
     expect(screen.queryByText(/past setups/)).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
@@ -92,12 +91,10 @@ describe('DailyReport', () => {
     // headline (best horizon) order would be A, B, C; the number shown on the cards is 71, 75, 72
     mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [mk('a', 'AAA', 71, 90, true), mk('b', 'BBB', 75, 80, false), mk('c', 'CCC', 72, 70, true)] }, counts: { ...report.counts, buy: 3 } }));
     render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByText('BBB Ltd')[0]).toBeTruthy());
-    const order = [...document.querySelectorAll('.dr-row')].map((b) => b.querySelector('strong')?.textContent);
-    expect(order).toEqual(['BBB', 'CCC', 'AAA']);                                              // the list is sorted by the number shown on each card
-    expect(screen.queryByText(/prior high/)).toBeNull();                                          // BBB (selected first) has no prior high: that part of the line is hidden, not "prior high —"
-    fireEvent.click(document.querySelectorAll('.dr-row')[1]);
-    expect(screen.getAllByText(/prior high/).length).toBe(1);
+    await waitFor(() => expect(screen.getByText('BBB Ltd')).toBeTruthy());
+    const order = screen.getAllByRole('button').map((b) => b.textContent).filter((t) => ['AAA', 'BBB', 'CCC'].includes(t ?? ''));
+    expect(order.slice(0, 3)).toEqual(['BBB', 'CCC', 'AAA']);
+    expect(screen.getAllByText(/prior high/).length).toBe(2);                                    // BBB has no prior high: that part of the line is hidden, not "prior high —"
     expect(screen.queryByText(/prior high —/)).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
@@ -110,65 +107,18 @@ describe('DailyReport', () => {
     await waitFor(() => expect(screen.getByText(/Listed recently: only 2 weekly candles stored; positional needs 40/)).toBeTruthy());
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
-
-  it('lists candidates as compact rows with state, band, stop and first target, and a Held chip with the quantity', async () => {
-    const held = { ...buy, held: true, quantity: '1250', last_close: '108.00', levels: { positional: { ...levels, reference_close: '108.00', entry_label: undefined } } };
-    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [held] } }));
-    render(<DailyReport onOpen={vi.fn()} />);
-    const row = (await screen.findAllByText('Alpha Ltd'))[0].closest('button') as HTMLElement;
-    expect(row.textContent).toContain('Held: 1,250');
-    expect(row.textContent).toContain('Wait: above band');                                         // never a bare "Wait for entry"
-    expect(row.textContent).toContain('₹100.00–₹103.00'); expect(row.textContent).toContain('Stop ₹95.00'); expect(row.textContent).toMatch(/T1 ₹115\.00/);
-    expect(screen.getAllByText(/Wait: price ₹108\.00 is above the band/).length).toBeGreaterThan(0);   // the full reason is on the detail card
-    mockApi.mockImplementation(() => Promise.resolve(report));
-  });
-
-  it('filters by held and by buy band, and the sort control says exactly what it sorts by', async () => {
-    const mk = (id: string, sym: string, close: string, isHeld: boolean) => ({ ...buy, instrument_id: id, symbol: sym, name: `${sym} Ltd`, held: isHeld, quantity: isHeld ? '5' : null, last_close: close, levels: { positional: { ...levels, reference_close: close, entry_label: undefined } } });
-    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [mk('a', 'AAA', '101.5', false), mk('b', 'BBB', '110', true)] }, counts: { ...report.counts, buy: 2 } }));
-    render(<DailyReport onOpen={vi.fn()} />);
-    await screen.findAllByText('AAA Ltd');
-    const symbols = () => [...document.querySelectorAll('.dr-row strong')].map((n) => n.textContent);
-    expect(symbols().sort()).toEqual(['AAA', 'BBB']);
-    fireEvent.click(screen.getByLabelText('In buy band')); expect(symbols()).toEqual(['AAA']);
-    fireEvent.click(screen.getByLabelText('In buy band')); fireEvent.click(screen.getByLabelText('Held')); expect(symbols()).toEqual(['BBB']);
-    expect(screen.getByRole('option', { name: 'Confidence score shown on the card, highest first' })).toBeTruthy();
-    expect(screen.getByRole('option', { name: 'Distance from price to the buy band, nearest first' })).toBeTruthy();
-    mockApi.mockImplementation(() => Promise.resolve(report));
-  });
-
-  it('collapses Needs data by default and keeps the reason on each row', async () => {
-    const short = { ...hold, instrument_id: 'i9', symbol: 'NEWCO', name: 'New Co Ltd', held: false, quantity: null, bucket: 'not_enough_data', action: 'Insufficient evidence: no annual statements stored.' };
-    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, not_enough_data: [short] }, counts: { ...report.counts, not_enough_data: 1 } }));
-    render(<DailyReport onOpen={vi.fn()} />);
-    const summary = await screen.findByText(/Needs data \(1\)/);
-    expect((summary.closest('details') as HTMLDetailsElement).open).toBe(false);
-    expect(screen.getByText(/no annual statements stored/)).toBeTruthy();
-    mockApi.mockImplementation(() => Promise.resolve(report));
-  });
 });
 
-describe('DailyReport · stale data is its own bucket', () => {
-  it('lists stocks whose stored close or research is old under Not current, with the reason, apart from Needs data', async () => {
-    const stale = { ...hold, instrument_id: 'i7', symbol: 'OLDCO', name: 'Old Co Ltd', held: false, quantity: null, bucket: 'stale_data', action: 'Not current: the last stored close is 2026-11-20, older than the last completed session (2026-11-23); levels are not built from it' };
-    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, stale_data: [stale] }, counts: { ...report.counts, stale_data: 1 } }));
-    render(<DailyReport onOpen={vi.fn()} />);
-    expect(await screen.findByText(/levels are not built from it/)).toBeTruthy();
-    expect(screen.getAllByText('Not current').length).toBeGreaterThan(0);
-    mockApi.mockImplementation(() => Promise.resolve(report));
-  });
-});
-
-describe('DailyReport · compact list, full card on selection', () => {
-  it('fetches the selected card in full once and shows its "why" parts, which the compact list omits', async () => {
+describe('DailyReport · compact payload, full card on demand', () => {
+  it('fetches a card in full only when its Why section is opened, and shows its parts', async () => {
     const compact = { ...buy, confidence: { ...conf, parts: undefined }, horizons: { ...buy.horizons, positional: { ...buy.horizons.positional, buy_confidence: { ...conf, parts: undefined } } } };
     mockApi.mockImplementation((path: unknown) => Promise.resolve(String(path).startsWith('/research/daily-report/i1') ? buy : { ...report, buckets: { ...report.buckets, buy: [compact] } }));
     render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByText('Alpha Ltd')[0]).toBeTruthy());
-    await waitFor(() => expect(mockApi.mock.calls.some((c) => String(c[0]) === '/research/daily-report/i1')).toBe(true));
-    expect(mockApi.mock.calls.filter((c) => String(c[0]) === '/research/daily-report/i1').length).toBe(1);
+    await screen.findByText('Alpha Ltd');
+    expect(mockApi.mock.calls.some((c) => String(c[0]) === '/research/daily-report/i1')).toBe(false);   // nothing is fetched per card up front
     fireEvent.click(await screen.findByText(/Why 72\/100\?/));
     expect(await screen.findByText(/Evidence quality/)).toBeTruthy();
+    expect(mockApi.mock.calls.filter((c) => String(c[0]) === '/research/daily-report/i1').length).toBe(1);
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });

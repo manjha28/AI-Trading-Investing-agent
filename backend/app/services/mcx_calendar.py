@@ -48,8 +48,8 @@ def session_state(now: datetime | None = None) -> dict:
 
 def _next_open(local: datetime) -> datetime:
     probe = local
-    for _ in range(14 * 24 * 4):
-        probe = (probe + timedelta(minutes=15)).replace(second=0, microsecond=0)
+    for _ in range(14 * 24 * 60):
+        probe = (probe + timedelta(minutes=1)).replace(second=0, microsecond=0)
         if session_state_open(probe):
             return probe
     return local

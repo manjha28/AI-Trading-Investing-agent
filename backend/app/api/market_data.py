@@ -7824,12 +7824,27 @@ async def dhan_commodity_quote_stream(
     pump_task = asyncio.create_task(pump()) if market["open"] else None
     try:
         if not market["open"]:
+            try:                                           # Dhan reports the last price and previous close even before the first trade; open/high/low are 0 then
+                closes = await asyncio.to_thread(adapter.get_last_close_quotes, tokens["access_token"], tokens, "MCX_COMM", [sid for _seg, sid in subscriptions.values()])
+            except Exception:  # noqa: BLE001 - the page then shows the contracts without prices, never zeros
+                closes = {}
+                logger.warning("mcx_last_close_unavailable")
             await websocket.send_json({"type": "status", "status": "market_closed", "reason": market["reason"],
                                        "next_open": market["next_open"], "message": f"Market closed · {market['reason']}. Showing the last close; the live feed opens with the session ({market['hours']})."})
             for key, bar in snapshot.items():
                 message = tick_message(key, bar)
                 message["last_close"] = True
                 await websocket.send_json(message)
+            for key, (sid_kind, sid) in subscriptions.items():
+                if key in snapshot or sid not in closes:
+                    continue
+                last, prev = closes[sid]
+                change = last - prev if prev else None
+                await websocket.send_json({"type": "tick", "key": key, "symbol": symbols[key], "ltp": str(last), "previous_close": str(prev) if prev else None,
+                                           "change": str(change) if change is not None else None,
+                                           "change_pct": str((change / prev * Decimal("100")).quantize(Decimal("0.01"))) if change is not None and prev else None,
+                                           "open": None, "high": None, "low": None, "volume": None, "last_close": True,
+                                           "received_at": datetime.now(timezone.utc).isoformat()})
             await monitor                                   # keep the socket for pings only; nothing is subscribed
             return
         await websocket.send_json({"type": "status", "status": "connecting", "message": "Market open, waiting for the first tick."})
