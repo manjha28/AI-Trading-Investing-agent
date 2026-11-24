@@ -27,3 +27,20 @@ export function todayLine(v: VenueState): string {
   const t = v.today;
   return `Today: ${t.sent_to_broker} sent to ${venueName(v)}${t.sent_to_broker ? ` (${t.rejected_by_broker} rejected by the broker)` : ''} · ${t.blocked_attempts} blocked attempt${t.blocked_attempts === 1 ? '' : 's'} (never sent)`;
 }
+
+
+/** One unambiguous line per forward test, derived only from the backend's effective state and the test's own live flag. */
+export function testModeLine(v: VenueState | null | undefined, executeLive: boolean | undefined): string {
+  const name = v ? venueName(v) : 'the broker';
+  if (executeLive && v?.effective.state === 'LIVE') return `LIVE: orders are sent to ${name}`;
+  if (executeLive && v) return `Paper: no orders sent (this test is flagged live, but ${name} is ${SHORT[v.effective.state]}: ${v.effective.reasons[0] ?? 'blocked'})`;
+  return 'Paper: no orders sent';
+}
+
+/** One line for the whole account on this venue. */
+export function accountLine(v: VenueState): string {
+  const n = venueName(v);
+  const s = v.effective.state;
+  if (s === 'LIVE') return `Account: LIVE · ${n} orders can be sent now (${v.live_tests} test${v.live_tests === 1 ? '' : 's'} flagged live)`;
+  return `Account: ${s === 'OFF' ? 'OFF' : 'ARMED but blocked'} · no orders are sent to ${n} (${v.effective.reasons[0] ?? 'blocked'})`;
+}

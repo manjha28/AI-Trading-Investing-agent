@@ -4,7 +4,7 @@ import { messageOf } from './cryptoApi';
 import { ExecutionStateChip } from '../components/ExecutionStateChip';
 import { ArmConfirm } from '../components/ArmConfirm';
 import { refreshExecutionState } from '../hooks/useExecutionState';
-import { todayLine, type VenueState } from '../lib/executionState';
+import { accountLine, testModeLine, todayLine, type VenueState } from '../lib/executionState';
 
 type Summary = { closed_trades: number; wins: number; losses: number; win_rate: number | null; gross_pnl: string; fees: string; slippage: string; net_pnl: string; avg_r: string | null };
 type Trade = { side: string; entry_time: string; exit_time: string | null; entry_fill: string; exit_fill: string; exit_reason: string; net_pnl: string; r_multiple: string | null };
@@ -92,7 +92,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
       {live && (
         <div className="crypto-live" aria-label="Live order controls">
           <h3>Live orders <ExecutionStateChip venue={live.execution} /></h3>
-          <p className="crypto-sub">{live.execution.label}: {live.execution.effective.state.replace(/_/g, ' ')}{live.execution.effective.reasons.length ? `. ${live.execution.effective.reasons.join('; ')}.` : '.'} Limits: {live.limits.max_contracts} contract, leverage {live.limits.leverage}, daily loss cap {live.limits.max_daily_loss_usd} USD, notional cap {live.limits.max_notional_usd} USD.</p>
+          <p className="crypto-sub" data-testid="account-mode"><strong>{accountLine(live.execution)}</strong>. Limits: {live.limits.max_contracts} contract, leverage {live.limits.leverage}, daily loss cap {live.limits.max_daily_loss_usd} USD, notional cap {live.limits.max_notional_usd} USD.</p>
           <p className="crypto-sub">{todayLine(live.execution)}</p>
           {live.execution.deployment_flag.enabled && live.credentials_present && !live.armed && (
             <p><button type="button" className="secondary-button" onClick={() => setConfirming(true)} disabled={busy}>Turn live orders on…</button></p>
@@ -115,10 +115,11 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
       )}
       {tests.length === 0 ? <p className="crypto-sub">No forward tests yet.</p> : (
         <table className="crypto-table">
-          <thead><tr><th>Test</th><th>Status</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Updated</th><th /></tr></thead>
+          <thead><tr><th>Test</th><th>Mode</th><th>Status</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Updated</th><th /></tr></thead>
           <tbody>{tests.map((t) => (
             <tr key={t.id}>
               <td><button type="button" className="link-button" onClick={() => show(t.id)}>{t.name}</button></td>
+              <td data-testid="test-mode">{testModeLine(live?.execution, t.execute_live)}</td>
               <td>{t.status}{t.last_error ? ' · data issue' : ''}</td>
               <td>{t.summary?.closed_trades ?? '—'}</td>
               <td>{t.summary?.win_rate == null ? '—' : `${(t.summary.win_rate * 100).toFixed(1)}%`}</td>

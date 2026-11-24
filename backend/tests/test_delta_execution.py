@@ -149,6 +149,19 @@ def test_paper_only_test_places_nothing():
     assert service.maybe_place(DB(), FT(), SPEC, [], [Candle(CLOSE, D(1), D(1), D(1), D(1), D(1))], NOW) is None
 
 
+def test_paper_only_test_never_even_constructs_the_order_client():
+    calls = []
+    class FT:
+        execute_live = False
+    class DB:
+        def refresh(self, _row): pass
+    factory = lambda: calls.append("client constructed") or (_ for _ in ()).throw(AssertionError("order client must not be built for a paper test"))  # noqa: E731
+    candle = Candle(CLOSE, D(1), D(1), D(1), D(1), D(1))
+    entries = [{"side": "buy", "entry_time": CLOSE, "signal_time": CLOSE, "entry_raw": D(1), "stop": D("0.5"), "closed_same_bar": False}]
+    assert service.maybe_place(DB(), FT(), SPEC, entries, [candle], NOW, factory) is None
+    assert calls == []                                                                  # the adapter seam is never reached by a paper test
+
+
 # ---- a forward test with Live: off can never send, whatever else is on (armed, flag, credentials) ----
 def test_live_off_blocks_sending_and_a_switch_off_during_a_pass_is_respected(engine, monkeypatch):  # noqa: F811
     from sqlalchemy.orm import Session

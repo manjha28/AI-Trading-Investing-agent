@@ -7,7 +7,7 @@ import { formatIST } from '../lib/formatIST';
 import { ExecutionStateChip } from '../components/ExecutionStateChip';
 import { ArmConfirm } from '../components/ArmConfirm';
 import { refreshExecutionState } from '../hooks/useExecutionState';
-import { todayLine, type VenueState } from '../lib/executionState';
+import { todayLine, accountLine, testModeLine, type VenueState } from '../lib/executionState';
 
 type Limits = { max_order_quantity: number; allowed_strategies: string[]; product: string; segment: string; entry_window_ist: string[]; max_daily_loss_inr: string; max_trades_per_day: number; max_open_positions: number; max_notional_inr: string };
 type LiveStatus = {
@@ -61,7 +61,7 @@ function LivePanel({ status, reload }: { status: LiveStatus | null; reload: () =
         <li>Daily loss cap ₹{status.limits.max_daily_loss_inr} · {status.limits.max_trades_per_day} orders/day · {status.limits.max_open_positions} open · ₹{status.limits.max_notional_inr} per order</li>
       </ul>
       <p className="sl-muted">{todayLine(status.execution)} · estimated realised {fmtMoney(status.today.realized_pnl)} (the Dhan contract note is the authority).</p>
-      {status.execution.effective.state !== "LIVE" && <Notice tone="info">{status.execution.label}: {status.execution.effective.state.replace(/_/g, " ")}. {status.execution.effective.reasons.join("; ")}.</Notice>}
+      <Notice tone="info"><strong>{accountLine(status.execution)}</strong></Notice>
       {!status.deployment_enabled && <Notice tone="info">Live execution is switched <strong>off on this deployment</strong>. To allow it, set <code>DHAN_LIVE_EXECUTION_ENABLED=true</code> in the backend environment and restart. Dhan also requires a static IP for order APIs, which a Codespace does not have.</Notice>}
       {status.environment_block && <Notice tone="info">Live orders are blocked in this environment ({status.environment_block}).</Notice>}
       {error && <Notice tone="bad">{error}</Notice>}
@@ -187,7 +187,7 @@ export function ForwardTest() {
             {tests.map((t) => (
               <li key={t.id}><button type="button" className={selected?.id === t.id ? 'active' : ''} onClick={() => { setConfirmDelete(false); void open(t.id); }}>
                 <strong>{t.name}</strong>
-                <small>{t.status} · {t.whole_market_watch_list ? 'entire Market watch list' : `${t.instrument_count} symbols`} · from {t.start_date} · qty {t.quantity}{t.execute_live ? ' · LIVE-FLAGGED' : ' · paper'}{t.summary ? ` · ${t.summary.closed_trades} trades · net ${fmtMoney(t.summary.net_pnl)}` : ''}</small></button></li>
+                <small>{t.status} · {t.whole_market_watch_list ? 'entire Market watch list' : `${t.instrument_count} symbols`} · from {t.start_date} · qty {t.quantity}{' · '}{testModeLine(status?.execution, t.execute_live)}{t.summary ? ` · ${t.summary.closed_trades} trades · net ${fmtMoney(t.summary.net_pnl)}` : ''}</small></button></li>
             ))}
           </ul>
         )}
@@ -196,7 +196,7 @@ export function ForwardTest() {
       {selected && (
         <section className="sl-card" aria-label="Forward test detail">
           <div className="sl-card-head">
-            <h3>{selected.name} <Pill tone={selected.status === 'active' ? 'ok' : 'warn'}>{selected.status}</Pill> {selected.execute_live ? <Pill tone="bad">live-flagged</Pill> : <Pill tone="info">paper</Pill>}</h3>
+            <h3>{selected.name} <Pill tone={selected.status === 'active' ? 'ok' : 'warn'}>{selected.status}</Pill> {selected.execute_live && status?.execution.effective.state === 'LIVE' ? <Pill tone="bad">LIVE: orders are sent to Dhan</Pill> : <Pill tone="info">{testModeLine(status?.execution, selected.execute_live)}</Pill>}</h3>
             <div className="sl-row">
               <button type="button" onClick={() => void act('/refresh')}>Refresh now</button>
               {selected.status === 'active' ? <button type="button" onClick={() => void act('/pause')}>Pause</button> : <button type="button" onClick={() => void act('/resume')}>Resume</button>}

@@ -1,19 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { footerWording, sidebarWording, todayLine, type ExecutionStates, type VenueState } from './executionState';
+import { accountLine, testModeLine, type VenueState } from './executionState';
 
-const v = (venue: 'dhan' | 'delta', state: 'OFF' | 'ARMED_BUT_BLOCKED' | 'LIVE', reasons: string[], today = { sent_to_broker: 0, rejected_by_broker: 0, blocked_attempts: 0 }): VenueState => ({ venue, label: venue, deployment_flag: { name: 'X', enabled: true }, armed: false, armed_at: null, window: { kind: 'x', text: 'x', open_now: true }, strategies: [], live_tests: 0, effective: { state, reasons }, limits: {}, today });
-const states = (dhan: VenueState, delta: VenueState): ExecutionStates => ({ dhan, delta, as_of: 'x' });
+const venue = (state: 'OFF' | 'ARMED_BUT_BLOCKED' | 'LIVE', reasons: string[] = [], liveTests = 0): VenueState => ({
+  venue: 'delta', label: 'Delta', deployment_flag: { name: 'DELTA_LIVE_EXECUTION_ENABLED', enabled: true }, armed: state !== 'OFF', armed_at: null, window: { kind: 'always', text: '24x7', open_now: true },
+  strategies: [], live_tests: liveTests, effective: { state, reasons }, limits: {}, today: { sent_to_broker: 0, rejected_by_broker: 0, blocked_attempts: 0 },
+});
 
-describe('execution wording comes from the effective state', () => {
-  it('prints each venue state in the sidebar and the first reason in the footer', () => {
-    const s = states(v('dhan', 'OFF', ['you have not armed live execution']), v('delta', 'LIVE', []));
-    expect(sidebarWording(s)).toBe('Execution · Dhan OFF · Delta LIVE');
-    expect(footerWording(s)).toBe('Dhan OFF (you have not armed live execution) · Delta LIVE');
-    expect(sidebarWording(null)).toContain('checking'); expect(footerWording(states(v('dhan', 'ARMED_BUT_BLOCKED', ['outside the entry window']), v('delta', 'OFF', ['flag off'])))).toContain('Dhan ARMED BUT BLOCKED (outside the entry window)');
+describe('forward test mode lines (TEST DATA states)', () => {
+  it('says LIVE only when the account is LIVE and the test is flagged live', () => {
+    expect(testModeLine(venue('LIVE', [], 1), true)).toBe('LIVE: orders are sent to Delta');
+    expect(testModeLine(venue('LIVE', [], 1), false)).toBe('Paper: no orders sent');
   });
-  it('never calls a blocked attempt a sent order, and never says "off" while claiming sent orders without saying when', () => {
-    const line = todayLine(v('delta', 'OFF', ['flag off'], { sent_to_broker: 1, rejected_by_broker: 1, blocked_attempts: 2 }));
-    expect(line).toBe('Today: 1 sent to Delta (1 rejected by the broker) · 2 blocked attempts (never sent)');
-    expect(todayLine(v('dhan', 'LIVE', [], { sent_to_broker: 0, rejected_by_broker: 0, blocked_attempts: 1 }))).toBe('Today: 0 sent to Dhan · 1 blocked attempt (never sent)');
+  it('a live-flagged test on a blocked or off account is paper, with the reason, never a contradiction', () => {
+    expect(testModeLine(venue('ARMED_BUT_BLOCKED', ['stale price']), true)).toContain('Paper: no orders sent');
+    expect(testModeLine(venue('ARMED_BUT_BLOCKED', ['stale price']), true)).not.toContain('LIVE: orders');
+    expect(testModeLine(venue('OFF', ['not armed']), true)).toContain('Paper: no orders sent');
+    expect(testModeLine(null, true)).toBe('Paper: no orders sent');
+  });
+  it('one account line per state', () => {
+    expect(accountLine(venue('LIVE', [], 1))).toBe('Account: LIVE · Delta orders can be sent now (1 test flagged live)');
+    expect(accountLine(venue('OFF', ['you have not armed live execution']))).toBe('Account: OFF · no orders are sent to Delta (you have not armed live execution)');
+    expect(accountLine(venue('ARMED_BUT_BLOCKED', ['x']))).toContain('ARMED but blocked');
   });
 });
