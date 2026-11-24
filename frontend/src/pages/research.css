@@ -418,3 +418,39 @@
 .rt-buy .rt-ladder-keys b { font-size: 13px; overflow-wrap: anywhere; }
 .rt-range { display: grid; } .rt-range span { white-space: nowrap; }
 .rt-buy .rt-rankbadge { min-width: 0; max-width: 45%; }
+
+/* ---- Uniform cards (overnight 2026-11-25): every section has a fixed slot, so cards in a row are the same height and sections line up.
+   Missing content leaves the slot empty or shows "—"; it never shortens the card. The "Why" fold opens as an overlay so it cannot stretch its row. ---- */
+.rt-buy-grid { align-items: stretch; }
+.rt-buy { position: relative; display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 560px; }
+.rt-buy > header { height: 56px; flex: none; overflow: hidden; }
+.rt-buy .rt-head-id { min-width: 0; flex: 1; } .rt-buy .rt-sym, .rt-buy .rt-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.rt-buy > .rt-price, .rt-buy > p:first-of-type { flex: none; }
+.rt-buy .rt-chips { height: 26px; flex: none; margin-top: 0; flex-wrap: nowrap; overflow: hidden; }
+.rt-buy .rt-chips .rt-chip { white-space: nowrap; }
+.rt-buy > .rt-seg { flex: none; height: 50px; flex-wrap: nowrap; width: 100%; } .rt-buy > .rt-seg button { flex: 1; min-width: 0; }
+.rt-slot-status { height: 38px; flex: none; overflow: hidden; } .rt-slot-status .rt-setup { margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rt-slot-ladder { height: 150px; flex: none; overflow: hidden; } .rt-slot-ladder > .rt-note { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; margin: 0; }
+.rt-slot-ladder .rt-ladder-keys { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: 44px 44px; }
+.rt-slot-ladder .rt-ladder-keys li { min-width: 0; overflow: hidden; } .rt-slot-ladder .rt-ladder-keys li.mid { grid-column: span 2; }
+.rt-slot-ladder .rt-ladder-keys li.bad { order: 1; } .rt-slot-ladder .rt-ladder-keys li.mid { order: 2; } .rt-slot-ladder .rt-ladder-keys li.good { order: 3; }
+.rt-slot-ladder .rt-range { display: flex; gap: 4px; flex-wrap: nowrap; white-space: nowrap; }
+.rt-slot-notes { height: 104px; flex: none; overflow: hidden; display: grid; align-content: start; gap: 2px; } .rt-slot-notes .rt-note { margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rt-buy .rt-why { flex: none; height: 28px; margin-top: auto; }
+.rt-buy .rt-why[open] > :not(summary) { position: absolute; left: 8px; right: 8px; z-index: 6; }
+.rt-buy .rt-why[open] { position: static; }
+.rt-buy .rt-why[open]::after { content: ''; position: absolute; inset: 0; z-index: 4; background: var(--rt-panel); opacity: .96; pointer-events: none; border-radius: 10px; }
+.rt-buy .rt-why[open] > summary { position: absolute; z-index: 7; left: 14px; top: 10px; }
+.rt-buy .rt-why[open] > :not(summary) { top: 40px; max-height: calc(100% - 100px); overflow: auto; }
+.rt-buy > footer { height: 40px; flex: none; margin-top: 0; } .rt-buy > footer small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rt-buy > footer .rt-btn { white-space: nowrap; }
+.rt-buy .rt-chips .rt-chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+
+/* ---- research_sections_v2 (flag, default OFF): Ready to buy, Hold and Radar in one card style ---- */
+.rt-v2-toggle { font-size: 12px; color: var(--rt-muted); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.rt-v2 { display: grid; gap: 14px; } .rt-v2 section { display: grid; gap: 8px; }
+.rt-v2-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; } .rt-v2-bar input[type=search] { min-width: 240px; padding: 6px 10px; background: var(--rt-raised); color: var(--rt-text); border: 1px solid var(--rt-border); border-radius: 8px; }
+.rt-v2-bar select { background: var(--rt-raised); color: var(--rt-text); border: 1px solid var(--rt-border); border-radius: 6px; padding: 4px 6px; }
+.rt-count { background: var(--rt-raised); border: 1px solid var(--rt-border); border-radius: 10px; padding: 0 8px; font-size: 12px; margin-left: 6px; }
+.rt-buy-hold { border-top-color: #6aa9ff; } .rt-buy-radar { border-top-color: #b48cff; }
+.rt-slot-status .rt-action { color: var(--rt-text); }

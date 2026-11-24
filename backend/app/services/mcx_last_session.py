@@ -44,17 +44,21 @@ def load_snapshots(db: Session, security_ids: list[str]) -> dict[str, McxLastSna
     return {r.security_id: r for r in rows if r is not None}
 
 
+def _text(v: Any) -> str | None:
+    return None if v is None else str(v)
+
+
 def closed_tick(key: str, symbol: str, p: dict[str, Any], *, source: str) -> dict[str, Any]:
     """The tick message for a closed market, with the change recomputed in Decimal from last and previous close."""
-    last = Decimal(p["ltp"]) if p.get("ltp") else None
-    prev = Decimal(p["previous_close"]) if p.get("previous_close") else None
+    last = Decimal(str(p["ltp"])) if p.get("ltp") else None
+    prev = Decimal(str(p["previous_close"])) if p.get("previous_close") else None
     change = last - prev if last is not None and prev else None
     return {
         "type": "tick", "key": key, "symbol": symbol, "ltp": str(last) if last is not None else None,
         "previous_close": str(prev) if prev else None,
         "change": str(change) if change is not None else None,
         "change_pct": str((change / prev * Decimal("100")).quantize(Decimal("0.01"))) if change is not None and prev else None,
-        "open": p.get("open"), "high": p.get("high"), "low": p.get("low"), "volume": p.get("volume"), "oi": p.get("oi"),
-        "tick_time": p.get("tick_time"), "session_date": p.get("session_date"), "last_close": True, "source": source,
+        "open": _text(p.get("open")), "high": _text(p.get("high")), "low": _text(p.get("low")), "volume": _text(p.get("volume")), "oi": _text(p.get("oi")),
+        "tick_time": _text(p.get("tick_time")), "session_date": _text(p.get("session_date")), "last_close": True, "source": source,
         "received_at": datetime.now(timezone.utc).isoformat(),
     }

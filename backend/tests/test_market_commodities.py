@@ -145,8 +145,12 @@ def test_commodity_stream_seeds_from_a_snapshot_then_streams_ticks_with_python_c
     monkeypatch.setattr(DhanAdapter, "stream_watchlist_market_quotes", _scripted_feed(items, seen))
     monkeypatch.setattr(market_data, "_default_market_data_source", lambda *_a: "dhan")
     monkeypatch.setattr(market_data, "_fresh_dhan_tokens_worker", lambda *_a: {"access_token": "t", "client_id": "c"})
+    from app.services import mcx_calendar
+    monkeypatch.setattr(mcx_calendar, "session_state", lambda now=None: {"open": True, "reason": None, "hours": "09:00-23:55", "next_open": None})   # the test is about the open path whatever the real clock says
     with client.websocket_connect("/api/v1/market-data/commodities/stream", headers={"origin": "http://localhost:5173"}) as socket:
-        messages = [socket.receive_json() for _ in range(5)]
+        messages = []
+        while sum(1 for m in messages if m["type"] == "tick") < 3 and len(messages) < 12:      # statuses and ticks interleave; read until the live tick has arrived
+            messages.append(socket.receive_json())
     assert seen["subscriptions"] == {"mcx:111": ("MCX_COMM", "111"), "mcx:222": ("MCX_COMM", "222")}
     ticks = [m for m in messages if m["type"] == "tick"]
     assert [t["symbol"] for t in ticks] == ["GOLD", "CRUDEOIL", "GOLD"]  # snapshot rows first, then the live tick

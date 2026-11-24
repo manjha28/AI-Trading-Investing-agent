@@ -10,6 +10,7 @@ import random
 import asyncio
 import re
 import threading
+import sys
 import time
 from collections import OrderedDict
 from functools import lru_cache
@@ -7709,6 +7710,25 @@ async def dhan_watchlist_quote_stream(
     await _dhan_quote_stream(websocket, watchlist_id, db)
 
 
+def _snapshot_db(action: str, *args: Any) -> Any:
+    """MCX snapshot reads and writes on their own session (worker thread). Skipped under pytest, where the real database is not reachable."""
+    if "pytest" in sys.modules:
+        return {} if action == "load" else None
+    from sqlalchemy.orm import Session as OwnSession
+
+    from app.db import engine as own_engine
+    from app.services import mcx_last_session as last_session
+    try:
+        with OwnSession(own_engine) as own:
+            if action == "load":
+                return last_session.load_snapshots(own, args[0])
+            sid, symbol, payload, session_day = args
+            return last_session.save_snapshot(own, sid, symbol, payload, session_day, force=True)
+    except Exception:  # noqa: BLE001  the watch still shows what Dhan returns
+        logger.warning("mcx_snapshot_db_failed action=%s", action)
+        return {} if action == "load" else None
+
+
 @router.websocket("/commodities/stream")
 async def dhan_commodity_quote_stream(
     websocket: WebSocket,
@@ -7807,17 +7827,25 @@ async def dhan_commodity_quote_stream(
     task = asyncio.current_task()
 
     def _remember(key: str, bar: Any, previous: Decimal | None) -> None:
-        """Keep the latest live figures (throttled) so the watch can show them after the close."""
-        if not market["open"]:
+        """Keep the latest live figures (throttled) so the watch can show them after the close. Runs on a worker thread with its own session, never on the feed's loop."""
+        if not market["open"] or "pytest" in sys.modules:
             return
-        try:
-            from app.services import mcx_last_session as last_session
-            sid = subscriptions[key][1]
-            last_session.save_snapshot(db, sid, symbols[key], {"ltp": bar.close, "previous_close": previous, "open": bar.open, "high": bar.high, "low": bar.low,
-                                                              "volume": bar.volume, "oi": None, "tick_time": datetime.now(timezone.utc).isoformat()},
-                                       datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Kolkata")).date())
-        except Exception:  # noqa: BLE001  a failed save never interrupts the feed
-            logger.warning("mcx_snapshot_save_failed")
+        sid = subscriptions[key][1]
+        payload = {"ltp": bar.close, "previous_close": previous, "open": bar.open, "high": bar.high, "low": bar.low, "volume": bar.volume, "oi": None,
+                   "tick_time": datetime.now(timezone.utc).isoformat()}
+        symbol, session_day = symbols[key], datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Kolkata")).date()
+
+        def work() -> None:
+            try:
+                from sqlalchemy.orm import Session as OwnSession
+
+                from app.db import engine as own_engine
+                from app.services import mcx_last_session as last_session
+                with OwnSession(own_engine) as own:
+                    last_session.save_snapshot(own, sid, symbol, payload, session_day)
+            except Exception:  # noqa: BLE001  a failed save never interrupts the feed
+                logger.warning("mcx_snapshot_save_failed")
+        asyncio.get_running_loop().run_in_executor(None, work)
 
     def tick_message(key: str, bar: Any) -> dict[str, Any]:
         previous = previous_closes.get(key)
@@ -7855,7 +7883,7 @@ async def dhan_commodity_quote_stream(
             from app.services import mcx_last_session as last_session
 
             today_ist = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
-            stored = await asyncio.to_thread(last_session.load_snapshots, db, [sid for _seg, sid in subscriptions.values()])
+            stored = await asyncio.to_thread(_snapshot_db, "load", [sid for _seg, sid in subscriptions.values()])
             for key, (sid_kind, sid) in subscriptions.items():
                 saved = stored.get(sid)
                 if saved is not None and saved.payload.get("ltp"):                      # 1: what the live ticks last stored
@@ -7882,7 +7910,7 @@ async def dhan_commodity_quote_stream(
                 message = last_session.closed_tick(key, symbols[key], payload, source="dhan_quote_and_daily_bar")
                 await websocket.send_json(message)
                 if message["ltp"] is not None:
-                    await asyncio.to_thread(last_session.save_snapshot, db, sid, symbols[key], {k: payload[k] for k in payload}, daily["session_date"] if daily else None, force=True)
+                    await asyncio.to_thread(_snapshot_db, "save", sid, symbols[key], dict(payload), daily["session_date"] if daily else None)
             await monitor                                   # keep the socket for pings only; nothing is subscribed
             return
         await websocket.send_json({"type": "status", "status": "connecting", "message": "Market open, waiting for the first tick."})

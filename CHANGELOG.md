@@ -249,3 +249,4 @@
 - 2026-11-25 MCX watch: last session figures (OHLC, volume, OI, tick time) when closed; snapshot table 0077; expiry-day roll (A3)
 - 2026-11-25 Confidence: honest proof test (no model qualifies); label now 'Unproven · N similar setups' (A4)
 - 2026-11-25 Multibagger: price filter (presets, min/max, URL + local storage), last close per stock (A5)
+- 2026-11-25 Daily report: uniform card heights, Why as overlay (B1); research_sections_v2 flag for Ready/Hold/Radar cards, default off (B2)
