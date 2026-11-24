@@ -55,7 +55,8 @@ const CommodityRow = memo(function CommodityRow({ contract, tick, selected, live
     <tr className={`${selected ? 'watch-selected' : ''} ${tick ? '' : 'watch-nodata'}`} title={tick ? undefined : 'No trade yet — price unknown'} onClick={() => onSelect(contract.key)} aria-selected={selected}>
       <td className="watch-symbol"><span className={`watch-dot ${tick && live ? 'live' : ''}`} /><strong>{contract.symbol}</strong><small>{contract.name ?? contract.contract}</small></td>
       <td className="watch-num watch-age">{contract.expiry}<br /><small>{contract.days_to_expiry}d</small></td>
-      <td className={`watch-num watch-ltp ${flash ? `flash-${flash}` : ''}`}>{price(tick?.ltp)}</td>
+      <td className={`watch-num watch-ltp ${flash ? `flash-${flash}` : ''}`}>{price(tick?.ltp)}{tick?.last_close && <small title="Last close: the market is closed"> close</small>}</td>
+      <td className="watch-num" title="Previous session close">{price(tick?.previous_close)}</td>
       <td className={`watch-num ${tone(tick?.change)}`}>{signed(tick?.change)}</td>
       <td className={`watch-num ${tone(tick?.change_pct)}`}>{signed(tick?.change_pct, '%')}</td>
       <td className="watch-range" aria-label="Day range"><DayRange low={tick?.low} high={tick?.high} last={tick?.ltp} /></td>
@@ -143,6 +144,7 @@ export function CommodityWatch() {
                 <th><button type="button" onClick={() => sortBy('symbol')}>Commodity{arrow('symbol')}</button></th>
                 <th className="watch-num"><button type="button" onClick={() => sortBy('expiry')}>Expiry{arrow('expiry')}</button></th>
                 <th className="watch-num"><button type="button" onClick={() => sortBy('ltp')}>LTP{arrow('ltp')}</button></th>
+                <th className="watch-num">Prev close</th>
                 <th className="watch-num"><button type="button" onClick={() => sortBy('change')}>Chg{arrow('change')}</button></th>
                 <th className="watch-num"><button type="button" onClick={() => sortBy('change_pct')}>Chg %{arrow('change_pct')}</button></th>
                 <th>Day range</th>

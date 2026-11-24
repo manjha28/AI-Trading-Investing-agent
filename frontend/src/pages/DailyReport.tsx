@@ -3,8 +3,7 @@ import { apiRequest } from '../api';
 import type { Instrument } from './researchTypes';
 import { formatIST } from '../lib/formatIST';
 import { tickPrice } from '../lib/formatPrice';
-import { bandText, cardState, rLabel } from '../lib/cardState';
-import { Chip, Sheet } from '../components/ui/kit';
+import { cardState } from '../lib/cardState';
 
 export type Levels = {
   status: string; reason?: string; entry_status?: string; selected_setup?: string; breakout_trigger?: string | null; stop_reason?: string; stop_method?: string; explanation?: string; direction?: string; technical_score?: number; market_regime?: string; risk_reward?: Record<string, number>;
@@ -130,94 +129,6 @@ function BuyCard({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
       {levels?.explanation && <p className="rt-note">{levels.explanation}</p>}{levels?.derivation && <p className="rt-note"><b>Levels:</b> {levels.derivation.rule}</p>}</details>}
     <footer><small>Researched {when(row.researched_at)}</small><button type="button" className="rt-btn rt-ghost" onClick={() => onOpen(row)}>Full research →</button></footer>
   </article>;
-}
-
-type SortKey = 'score' | 'symbol' | 'distance';
-const SORT_LABEL: Record<SortKey, string> = { score: 'Confidence score shown on the card, highest first', symbol: 'Symbol, A to Z', distance: 'Distance from price to the buy band, nearest first' };
-type Filters = { horizon: string; held: boolean; inBand: boolean; band: string; sort: SortKey };
-
-/** Phones get the detail in a bottom sheet instead of a side panel. */
-function useIsPhone(): boolean {
-  const query = '(max-width: 640px)';
-  const get = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(query).matches;
-  const [phone, setPhone] = useState(get);
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return undefined;
-    const m = window.matchMedia(query); const on = () => setPhone(m.matches);
-    m.addEventListener('change', on); return () => m.removeEventListener('change', on);
-  }, []);
-  return phone;
-}
-
-function shownLevels(row: Row) { const h = displayedHorizon(row) ?? HORIZONS.find((x) => row.levels[x]?.status === 'available'); return { horizon: h, levels: h ? row.levels[h] ?? null : null }; }
-const distance = (row: Row): number => {
-  const { levels } = shownLevels(row); const close = Number(row.last_close ?? levels?.reference_close); const lo = Number(levels?.entry_zone?.low); const hi = Number(levels?.entry_zone?.high);
-  return [close, lo, hi].some(Number.isNaN) ? Number.POSITIVE_INFINITY : close < lo ? lo - close : close > hi ? close - hi : 0;
-};
-
-function ListRow({ row, selected, onSelect }: { row: Row; selected: boolean; onSelect: (row: Row) => void }) {
-  const { horizon, levels } = shownLevels(row);
-  const state = cardState(levels, row.last_close);
-  const conf = (horizon ? row.horizons[horizon]?.buy_confidence : null) ?? row.confidence;
-  return (
-    <li>
-      <button type="button" className={`dr-row${selected ? ' selected' : ''}`} aria-pressed={selected} onClick={() => onSelect(row)}>
-        <span className="dr-sym"><strong>{row.symbol}</strong><small>{row.name}</small></span>
-        <span className="dr-chips"><Chip status="buy" />{horizon && <small className="ui-muted">{HORIZON_NAME[horizon]}</small>}<Chip tone={state.tone} title={state.reason ?? state.label}>{state.short}</Chip>{row.held && <Chip tone="info" title={`You hold ${row.quantity}`}>Held: {row.quantity ? Number(row.quantity).toLocaleString('en-IN') : '—'}</Chip>}</span>
-        <span className="dr-nums"><span title="Entry band">{bandText(levels)}</span><span title="Stop">Stop {levels?.stop ? inr(levels.stop) : '—'}</span><span title="First target">{rLabel(levels) === '—' ? 'T1 —' : `T1 ${inr(levels?.targets?.[0]?.price)} · ${rLabel(levels)}`}</span></span>
-        <span className="dr-score" title={conf?.win_confidence?.line ?? undefined}>{conf ? (conf.kind === 'factor_v2' ? (conf.grade ?? '—') : Math.round(conf.score)) : '—'}</span>
-      </button>
-    </li>
-  );
-}
-
-function ReportList({ groups, onOpen }: { groups: { key: string; title: string; hint: string; rows: Row[] }[]; onOpen: (row: Row) => void }) {
-  const [filters, setFilters] = useState<Filters>({ horizon: 'all', held: false, inBand: false, band: 'any', sort: 'score' });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const phone = useIsPhone();
-  const [full, setFull] = useState<Record<string, Row>>({});
-  const all = groups.flatMap((g) => g.rows);
-  const visible = (rows: Row[]) => {
-    const kept = rows.filter((r) => (filters.horizon === 'all' || r.horizons[filters.horizon]?.recommendation === 'BUY') && (!filters.held || r.held)
-      && (!filters.inBand || cardState(shownLevels(r).levels, r.last_close).kind === 'in_band') && (filters.band === 'any' || ((displayedHorizon(r) ? r.horizons[displayedHorizon(r) as string]?.buy_confidence : null) ?? r.confidence)?.band === filters.band));
-    return filters.sort === 'symbol' ? [...kept].sort((a, b) => a.symbol.localeCompare(b.symbol)) : filters.sort === 'distance' ? [...kept].sort((a, b) => distance(a) - distance(b) || a.symbol.localeCompare(b.symbol)) : sortByDisplayedScore(kept);
-  };
-  const shown = groups.map((g) => ({ ...g, rows: visible(g.rows) }));
-  const flat = shown.flatMap((g) => g.rows);
-  const selected = flat.find((r) => r.instrument_id === selectedId) ?? (phone ? null : flat[0] ?? null);
-  const set = <K extends keyof Filters>(k: K, v: Filters[K]) => setFilters((f) => ({ ...f, [k]: v }));
-  const selectedId2 = selected?.instrument_id;
-  // The list is the compact report; the long derivations and the "why" parts of the ONE selected card are fetched when it is selected.
-  useEffect(() => {
-    if (!selectedId2 || full[selectedId2]) return;
-    let live = true;
-    void apiRequest<Row>(`/research/daily-report/${selectedId2}`).then((r) => { if (live && r && r.instrument_id === selectedId2) setFull((cur) => ({ ...cur, [selectedId2]: r })); }).catch(() => undefined);
-    return () => { live = false; };
-  }, [selectedId2, full]);
-  const detailRow = (row: Row): Row => (full[row.instrument_id] ? { ...row, ...full[row.instrument_id] } : row);
-  return (
-    <div className="dr">
-      <div className="dr-filters" role="group" aria-label="Filter and sort the list">
-        <label>Horizon<select value={filters.horizon} onChange={(e) => set('horizon', e.target.value)}><option value="all">All</option>{HORIZONS.map((h) => <option key={h} value={h}>{HORIZON_NAME[h]}</option>)}</select></label>
-        <label>Confidence<select value={filters.band} onChange={(e) => set('band', e.target.value)}><option value="any">Any</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option></select></label>
-        <label><input type="checkbox" checked={filters.held} onChange={(e) => set('held', e.target.checked)} /> Held</label>
-        <label><input type="checkbox" checked={filters.inBand} onChange={(e) => set('inBand', e.target.checked)} /> In buy band</label>
-        <label>Sort by<select value={filters.sort} onChange={(e) => set('sort', e.target.value as SortKey)}>{(Object.keys(SORT_LABEL) as SortKey[]).map((k) => <option key={k} value={k}>{SORT_LABEL[k]}</option>)}</select></label>
-        <span className="ui-muted" role="status">{flat.length} of {all.length}</span>
-      </div>
-      <div className="dr-split">
-        <div className="dr-list" aria-label="Buy candidates">
-          {shown.map((g) => g.rows.length > 0 && (
-            <section key={g.key}><h3 className="dr-group">{g.title} <span className="ui-muted">{g.rows.length}</span><small>{g.hint}</small></h3>
-              <ul>{g.rows.map((r) => <ListRow key={r.instrument_id} row={r} selected={selected?.instrument_id === r.instrument_id} onSelect={(row) => setSelectedId(row.instrument_id)} />)}</ul></section>
-          ))}
-          {flat.length === 0 && <p className="rt-note">No stocks match these filters.</p>}
-        </div>
-        {!phone && selected && <div className="dr-detail" aria-label="Selected stock"><BuyCard key={selected.instrument_id} row={detailRow(selected)} onOpen={onOpen} /></div>}
-      </div>
-      {phone && <Sheet open={selected !== null && selectedId !== null} onClose={() => setSelectedId(null)} title={selected?.symbol ?? ''}>{selected && <BuyCard key={selected.instrument_id} row={detailRow(selected)} onOpen={onOpen} />}</Sheet>}
-    </div>
-  );
 }
 
 /** One card per stock, as before. The list payload is compact, so the long derivations and the "Why" parts of THIS card are fetched when its "Why" section is opened. */

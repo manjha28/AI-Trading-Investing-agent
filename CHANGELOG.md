@@ -241,3 +241,4 @@
 - Live orders: click Dhan/Delta not live in the Overview header, confirm a warning (no typed phrase); Needs attention removed from Overview
 - Delta strategy lab (app/delta_lab): shared risk gate and sizer, cost model, simulator, six pre-registered families, walk-forward and holdout, paper engine; live guard-rails now also apply the liquidation-safety rule
 - Daily report back to one card per stock (full card fetched on opening Why); MCX shows last close while closed; Dhan live flag on Fly
+- Research page: 22 Nov card look restored (research.css from 45e1fbd, card grid); MCX previous-close column
