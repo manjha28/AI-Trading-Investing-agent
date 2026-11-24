@@ -28,8 +28,12 @@ def _schedule_for(row: Any, is_option: Callable[[Any], bool]) -> str | None:
 
 def estimate_missing_charges(rows: list[Any], is_option: Callable[[Any], bool]) -> list[Any]:
     """Return the rows with an estimated `charges` on copies of those that have none. Rows with real charges are returned untouched."""
+    # An order with ANY real charge from Dhan is never estimated: its remaining fills stay unknown rather than getting a second, double-counted brokerage.
+    actual_orders = {str(r.order_id or r.trade_id) for r in rows if r.charges is not None}
     groups: dict[tuple[str, str], list[int]] = {}
     for i, row in enumerate(rows):
+        if str(row.order_id or row.trade_id) in actual_orders:
+            continue
         if row.charges is not None or row.quantity is None or row.price is None or row.price <= 0 or row.side not in ("BUY", "SELL"):
             continue
         schedule = _schedule_for(row, is_option)

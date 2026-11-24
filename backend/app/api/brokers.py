@@ -984,6 +984,8 @@ def _upsert_dhan_trade(db: Session, row: DhanTradeMirror) -> bool:
         "symbol", "security_id", "exchange_segment", "side", "quantity",
         "price", "charges", "currency", "trade_at", "synced_at",
     ):
+        if field == "charges" and row.charges is None:
+            continue   # a later sync without charges (e.g. the day trade book) never erases actual charges already stored
         setattr(existing, field, getattr(row, field))
     return False
 

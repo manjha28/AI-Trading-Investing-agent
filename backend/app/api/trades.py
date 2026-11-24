@@ -186,7 +186,10 @@ def _dhan_trade_rows(db: Session, user_id: UUID) -> list[DhanTradeMirror]:
     selected: dict[str, DhanTradeMirror] = {}
     for row in rows:
         current = selected.get(row.trade_id)
-        if current is None or (row.source == "dhan" and current.source == "dhan_csv"):
+        # A row carrying real charges wins over one without; otherwise the live "dhan" row wins over the CSV copy.
+        if current is None or (row.charges is not None and current.charges is None) or (
+            (row.charges is None) == (current.charges is None) and row.source == "dhan" and current.source == "dhan_csv"
+        ):
             selected[row.trade_id] = row
     ordered = sorted(selected.values(), key=lambda row: (row.trade_at, row.trade_id))
     # Charges Dhan has not supplied yet are ESTIMATED on display copies (never stored, always flagged); a row with real charges is untouched.

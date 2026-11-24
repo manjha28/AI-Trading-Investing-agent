@@ -58,3 +58,9 @@ def test_contracts_missing_from_the_master_are_listed_with_why(client, engine): 
         db.commit()
         body = build(db, uid, DAY)
     assert body["contracts_without_master"][0]["symbol"] == "NIFTY 27 OCT 22750 PUT" and "expired contracts drop out" in body["contracts_without_master"][0]["reason"] and "27 Oct" in body["contracts_without_master"][0]["reason"]
+
+
+def test_dhan_reconciliation_route_answers_without_portfolio_id(client, engine):  # noqa: F811
+    login(client, engine, "recon2@example.com")
+    r = client.get("/api/v1/brokers/dhan/reconciliation")           # the generic /{slug}/reconciliation used to shadow this and 422
+    assert r.status_code == 200 and "journal" in r.json() and "dhan" in r.json()

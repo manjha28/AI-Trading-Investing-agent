@@ -59,3 +59,43 @@ def test_dhan_trading_symbols_are_recognised_as_options_so_they_are_priced_and_l
         assert _contract_details(fill("o9", "BUY", 65, "10", symbol=symbol))[1:] == (strike, kind)
     assert _classify_segment("NSE_FNO", "NIFTY-Nov2026-FUT") == "future"
     assert _classify_segment("NSE_EQ", "TCS") == "equity"
+
+
+def test_estimate_then_actual_for_the_same_trade_actual_replaces_estimate():
+    before = estimate_missing_charges([fill("o5", "BUY", 65, "20", trade_id="t5")], is_option)[0]
+    assert before.charges_estimated is True
+    after = estimate_missing_charges([fill("o5", "BUY", 65, "20", trade_id="t5", charges=D("11.50"))], is_option)[0]
+    assert after.charges == D("11.50") and not getattr(after, "charges_estimated", False)
+
+
+def test_partial_actuals_some_fills_of_an_order_leave_the_other_fills_unestimated():
+    legs = [fill("o6", "BUY", 65, "20", charges=D("9.00")), fill("o6", "BUY", 65, "20"), fill("o7", "BUY", 65, "20")]
+    out = estimate_missing_charges(legs, is_option)
+    assert out[0].charges == D("9.00")
+    assert out[1].charges is None and not hasattr(out[1], "charges_estimated")     # no second brokerage on an order Dhan already charged
+    assert out[2].charges_estimated is True                                         # a different order with no actuals is still estimated
+
+
+def test_backfill_upsert_adds_actual_charges_to_existing_rows_and_never_erases_them():
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+
+    from app.api.brokers import _upsert_dhan_trade
+    from app.models import Base, DhanTradeMirror as M
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine, tables=[M.__table__])
+    uid = __import__("uuid").uuid4()
+
+    def row(charges):
+        r = fill("o9", "BUY", 65, "20", trade_id="t9", charges=charges)
+        r.id, r.user_id, r.tags = __import__("uuid").uuid4(), uid, []
+        return r
+    with Session(engine) as db:
+        assert _upsert_dhan_trade(db, row(None)) is True                    # first sync: no charges yet
+        db.flush()
+        assert _upsert_dhan_trade(db, row(D("12.34"))) is False             # backfill brings the actual charges: the row is updated
+        db.flush()
+        assert _upsert_dhan_trade(db, row(None)) is False                   # a later sync without charges must not erase them
+        db.flush()
+        assert db.scalar(select(M.charges)) == D("12.34")
