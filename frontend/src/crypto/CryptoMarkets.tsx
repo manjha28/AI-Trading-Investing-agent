@@ -90,7 +90,7 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
         {candles && candles.count > 0
           ? <CryptoCandleChart candles={candles.candles} />
           : chartLoading ? <div className="table-empty" role="status" aria-busy="true">Loading {resolution} candles…</div>
-          : !chartError && <div className="table-empty">No {resolution} candles stored for {symbol}. Download them from Delta's public history to chart and backtest.</div>}
+          : !chartError && <div className="table-empty">No {resolution} candles stored for {symbol}. <button className="primary-button" type="button" onClick={() => void download()} disabled={syncing}>{syncing ? 'Downloading…' : `Download ${DEFAULT_DAYS[resolution]}d of ${resolution} candles`}</button></div>}
         <div className="crypto-chart-actions">
           <button className="primary-button" type="button" onClick={() => void download()} disabled={syncing}>{syncing ? 'Downloading…' : `Download ${DEFAULT_DAYS[resolution]}d of ${resolution} candles`}</button>
           <span className="crypto-sub">

@@ -128,3 +128,12 @@ class AppFlag(Base):
     key: Mapped[str] = mapped_column(String(48), primary_key=True)
     value: Mapped[str] = mapped_column(String(120), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SentimentAggregateCache(Base):
+    """Precomputed news-sentiment list payloads (instruments, sectors, history), written by the sentiment job so a page load reads one row instead of aggregating thousands."""
+    __tablename__ = "sentiment_aggregate_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[list] = mapped_column(JSON_DOCUMENT, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

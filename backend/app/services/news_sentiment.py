@@ -559,7 +559,7 @@ def aggregate_sector_sentiment(db: Session, sector: str, *, period_days: int = 7
 
 
 def list_sector_sentiment(db: Session, *, period_days: int = 7, now: datetime | None = None) -> list[dict[str, Any]]:
-    return _cached(("sectors", period_days), lambda: _list_sector_sentiment(db, period_days=period_days, now=now), now is not None)
+    return _cached(("sectors", period_days), lambda: _list_sector_sentiment(db, period_days=period_days, now=now), now is not None, db)
 
 
 def _list_sector_sentiment(db: Session, *, period_days: int = 7, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -594,17 +594,57 @@ _CACHE: dict[tuple, tuple[float, Any]] = {}
 CACHE_SECONDS = 60
 
 
-def _cached(key: tuple, compute, now_given: bool):
-    """60-second cache for the list endpoints (the underlying news changes every few minutes). Skipped when the caller fixes `now` (tests, replays), so results stay deterministic."""
+STORED_SECONDS = 15 * 60
+
+
+def _cached(key: tuple, compute, now_given: bool, db: Session | None = None, *, force: bool = False):
+    """Read-through cache for the list endpoints: a row the sentiment job precomputed (fresh within 15 minutes), else a 60-second in-process copy, else compute and store.
+    Skipped when the caller fixes `now` (tests, replays) so results stay deterministic."""
     import time as _t
+
+    from fastapi.encoders import jsonable_encoder
+
+    from app.models.crypto_delta import SentimentAggregateCache
     if now_given:
         return compute()
+    name = ":".join(str(k) for k in key)[:64]
+    if db is not None and not force:
+        row = db.get(SentimentAggregateCache, name)
+        if row is not None and (datetime.now(timezone.utc) - _aware_utc(row.computed_at)).total_seconds() < STORED_SECONDS:
+            return row.payload
     hit = _CACHE.get(key)
-    if hit and _t.monotonic() - hit[0] < CACHE_SECONDS:
+    if hit and not force and _t.monotonic() - hit[0] < CACHE_SECONDS:
         return hit[1]
     value = compute()
     _CACHE[key] = (_t.monotonic(), value)
+    if db is not None:
+        try:
+            payload = jsonable_encoder(value)
+            row = db.get(SentimentAggregateCache, name)
+            if row is None:
+                db.add(SentimentAggregateCache(key=name, payload=payload, computed_at=datetime.now(timezone.utc)))
+            else:
+                row.payload, row.computed_at = payload, datetime.now(timezone.utc)
+            db.commit()
+        except Exception:  # noqa: BLE001 - a cache write failure must never fail the request
+            db.rollback()
     return value
+
+
+def stored_is_stale(db: Session, max_age_seconds: int = 300) -> bool:
+    from app.models.crypto_delta import SentimentAggregateCache
+    row = db.get(SentimentAggregateCache, "instruments:7:100")
+    return row is None or (datetime.now(timezone.utc) - _aware_utc(row.computed_at)).total_seconds() > max_age_seconds
+
+
+def precompute_aggregates(db: Session) -> dict[str, int]:
+    """Called by the sentiment job after each batch: rebuilds the list payloads once so no page load has to."""
+    out = {}
+    for name, key, fn in (("instruments", ("instruments", 7, 100), lambda: _list_instrument_sentiment(db, period_days=7, limit=100)),
+                          ("sectors", ("sectors", 7), lambda: _list_sector_sentiment(db, period_days=7)),
+                          ("history", ("history", 90, "None"), lambda: _sentiment_history(db, period_days=90, instrument_id=None))):
+        out[name] = len(_cached(key, fn, False, db, force=True))
+    return out
 
 
 def clear_cache() -> None:
@@ -622,7 +662,7 @@ def _list_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_instrument_sentiment(db: Session, *, period_days: int = 7, limit: int = 100, now: datetime | None = None) -> list[dict[str, Any]]:
-    return _cached(("instruments", period_days, limit), lambda: _list_instrument_sentiment(db, period_days=period_days, limit=limit, now=now), now is not None)
+    return _cached(("instruments", period_days, limit), lambda: _list_instrument_sentiment(db, period_days=period_days, limit=limit, now=now), now is not None, db)
 
 
 def _list_instrument_sentiment(db: Session, *, period_days: int = 7, limit: int = 100, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -673,7 +713,7 @@ def _list_instrument_sentiment(db: Session, *, period_days: int = 7, limit: int 
 
 def sentiment_history(db: Session, *, period_days: int = 90, instrument_id=None,
                       now: datetime | None = None) -> list[dict[str, Any]]:
-    return _cached(("history", period_days, str(instrument_id)), lambda: _sentiment_history(db, period_days=period_days, instrument_id=instrument_id, now=now), now is not None)
+    return _cached(("history", period_days, str(instrument_id)), lambda: _sentiment_history(db, period_days=period_days, instrument_id=instrument_id, now=now), now is not None, db)
 
 
 def _sentiment_history(db: Session, *, period_days: int = 90, instrument_id=None,

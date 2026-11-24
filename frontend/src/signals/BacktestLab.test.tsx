@@ -34,6 +34,7 @@ const comparisonBody = {
 };
 
 const universes = { max_strategies: 12, max_instruments: 50, note: 'Intraday timeframes are built from stored 1-minute bars.', presets: [
+  { key: 'has_1m', label: 'Everything with ≥ 1 year of 1-minute data', available: 0, symbols: [], excluded: [], min_bars_1m: 20000, coverage: { needed_bars: 20000, needed_sessions: 53, symbols_checked: 341, qualifying: 0, best_bars: 7517, best_symbol: 'BHAGERIA', best_sessions: 20, median_bars: 312 } },
   { key: 'watchlist', label: 'My watchlist', available: 1, symbols: ['SBIN'], excluded: [], min_bars_1m: 20000 },
   { key: 'nifty50', label: 'Nifty 50', available: 2, symbols: ['TCS', 'INFY'], min_bars_1m: 20000, excluded: [{ symbol: 'MARUTI', reason: 'not in the instrument master' }, { symbol: 'WIPRO', reason: 'only 375 stored 1-minute bars (need 20000)' }] },
 ] };
@@ -236,5 +237,14 @@ describe('BacktestLab · walk-forward, sweeps and comparison', () => {
     expect(within(netRow).getByText((-2500).toLocaleString('en-IN', { minimumFractionDigits: 2 })).className).not.toContain('lab-best');
     expect(panel.getByText('2026-02')).toBeTruthy();                      // monthly net
     expect(panel.getByText('INFY')).toBeTruthy();                         // shared symbols only
+  });
+
+  it('says exactly why no symbol qualifies: the bars needed against the best and the median stored', async () => {
+    render(<BacktestLab meta={meta} strategies={strategies} />);
+    await screen.findByText(/Nifty 50 — 2 usable/);
+    fireEvent.change(screen.getByLabelText('Symbol set'), { target: { value: 'has_1m' } });
+    const note = await screen.findByText(/No symbol qualifies yet/);
+    expect(note.textContent).toContain('needs 20,000 stored 1-minute bars (about 53 sessions)');
+    expect(note.textContent).toContain('the best is BHAGERIA with 7,517 bars (about 20 sessions)'); expect(note.textContent).toContain('median has 312');
   });
 });

@@ -46,6 +46,6 @@ def test_compact_daily_report_drops_the_long_fields_and_keeps_what_the_list_show
     out = _compact_report({"buckets": {"buy": [row]}, "counts": {"buy": 1}})["buckets"]["buy"][0]
     kept, original = out["levels"]["positional"], levels
     assert out["compact"] is True and kept["entry_zone"] == original["entry_zone"] and kept["stop"] == "0.5" and kept["targets"] == original["targets"]
-    assert not {"explanation", "derivation", "support_levels", "resistance_levels", "pivots"} & set(kept)
+    assert not {"explanation", "derivation", "support_levels", "resistance_levels", "pivots", "stop_reason"} & set(kept)
     assert out["confidence"]["score"] == 70 and out["confidence"]["win_confidence"]["line"].startswith("Measured") and not {"parts", "setup", "note"} & set(out["confidence"])
     assert "parts" not in out["horizons"]["positional"]["buy_confidence"] and row["confidence"]["parts"], "the stored full row is untouched"

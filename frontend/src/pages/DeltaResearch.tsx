@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '../api';
 import { formatIST } from '../lib/formatIST';
+import { useSlow } from '../hooks/useSlow';
 import { CryptoWatch } from '../crypto/CryptoWatch';
 
 type FeedStatus = {
@@ -105,6 +106,8 @@ export function DeltaResearchPage() {
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const slow = useSlow(status === null && error === null, 8_000);
 
   const refreshData = useCallback(async (query = '') => {
     const [overviewResult, marketsResult, eventsResult] = await Promise.allSettled([
@@ -197,7 +200,7 @@ export function DeltaResearchPage() {
       cancelled = true;
       source?.close();
     };
-  }, [refreshData]);
+  }, [refreshData, attempt]);
 
   useEffect(() => {
     if (!selectedProduct) {
@@ -234,7 +237,7 @@ export function DeltaResearchPage() {
         </div>
         {error && <p className="broker-sync-time" role="alert">{error}</p>}
         {dataError && <p className="broker-sync-time" role="alert">{dataError}</p>}
-        {!status && !error && <div className="table-empty" role="status">Loading Delta research…</div>}
+        {!status && !error && <div className="table-empty" role="status" aria-busy="true">{slow ? 'Still loading: the backend is slow to answer. Nothing is wrong with your data. ' : 'Loading Delta research… '}{slow && <button type="button" className="secondary-button" onClick={() => setAttempt((n) => n + 1)}>Retry now</button>}</div>}
         {status && <>
           <div className="metrics-row" aria-label="Public research health">
             <article className="metric"><span>Collection</span><strong>{status.enabled ? 'Enabled' : 'Disabled'}</strong></article>

@@ -1,5 +1,7 @@
 """Shared usability classification for stored and API quote objects."""
 
+import sys
+import time as _time
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import logging
@@ -155,6 +157,12 @@ def resolve_market_price(
     }
 
 
+# The newest stored daily session per venue and source changes at most a few times a day, but it was recomputed (a scan of the bar table) three times per watchlist row, about 75 ms each on the hosted
+# database. A 60-second copy removes that; it is off under pytest so tests that insert bars see them at once.
+_SESSION_CACHE: dict[tuple[str, str], tuple[float, date]] = {}
+_SESSION_CACHE_SECONDS = 0 if "pytest" in sys.modules else 60
+
+
 def venue_last_completed_session(
     db: Session, instrument: Any, quote_source: str | None
 ) -> date | None:
@@ -170,6 +178,11 @@ def venue_last_completed_session(
     ):
         return None
     bar_source = QUOTE_SOURCE_BAR_SOURCE.get(quote_source, quote_source)
+    cache_key = (instrument.country, bar_source)
+    hit = _SESSION_CACHE.get(cache_key)
+    now_m = _time.monotonic()
+    if hit is not None and now_m - hit[0] < _SESSION_CACHE_SECONDS:
+        return hit[1]
     latest_timestamp = db.scalar(
         select(func.max(MarketBar.timestamp))
         .join(Instrument, Instrument.id == MarketBar.instrument_id)
@@ -181,6 +194,7 @@ def venue_last_completed_session(
     )
     if latest_timestamp is None:
         return None
+    _SESSION_CACHE[cache_key] = (now_m, _utc(latest_timestamp).date())
     # Stored daily keys are UTC midnight of the exchange-local session date.
     return _utc(latest_timestamp).date()
 

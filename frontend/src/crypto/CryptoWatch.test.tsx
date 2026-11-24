@@ -104,3 +104,12 @@ describe('Crypto watch refresh', () => {
     vi.useRealTimers();
   });
 });
+
+describe('Crypto chart empty state', () => {
+  it('offers a Download button right in the empty message when the chosen resolution has no stored candles', async () => {
+    apiRequest.mockImplementation((path: string) => Promise.resolve(path.includes('/delta-research/markets') ? markets : path.includes('/crypto-delta/feed') ? { available: true, wanted: true, state: 'connected', connected: true, last_event_at: null } : path.includes('/crypto-delta/candles?') ? { symbol: 'AAAUSD', resolution: '15m', source: 'x', count: 0, candles: [], gaps: 0 } : {}));
+    render(<CryptoMarkets {...props} />);
+    const empty = await screen.findByText(/No 15m candles stored for AAAUSD/);
+    expect(within(empty).getByRole('button', { name: /Download \d+d of 15m candles/ })).toBeTruthy();
+  });
+});

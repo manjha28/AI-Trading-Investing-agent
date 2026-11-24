@@ -477,3 +477,30 @@ def test_sector_sentiment_list_matches_the_single_sector_aggregate():
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_list_payloads_are_precomputed_by_the_job_and_read_back_from_the_table():
+    from app.models.crypto_delta import SentimentAggregateCache
+    from app.services.news_sentiment import clear_cache, list_instrument_sentiment, precompute_aggregates, stored_is_stale
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as db:
+            inst = _instrument("PRECOMP")
+            db.add(inst); db.flush()
+            db.add(InstrumentSnapshot(instrument_id=inst.id, sector="Industrials", industry="x", source="test", fetched_at=NOW))
+            _source(db, "google_news")
+            db.add(_news(headline="Q results: profit rose", instrument_id=inst.id, stamp=datetime.now(timezone.utc))); db.commit()
+            analyze_news_items(db, now=datetime.now(timezone.utc), vader=lambda _text: 0.0)
+            clear_cache()
+            assert stored_is_stale(db)
+            counts = precompute_aggregates(db)
+            assert counts["instruments"] == 1 and counts["sectors"] == 1 and not stored_is_stale(db)
+            row = db.get(SentimentAggregateCache, "instruments:7:100")
+            assert row is not None and row.payload[0]["instrument"]["symbol"] == "PRECOMP"
+            clear_cache()                                                    # a page load now reads the stored row, not the news tables
+            row.payload = [{"marker": "from the table"}]; db.commit()
+            assert list_instrument_sentiment(db, period_days=7, limit=100) == [{"marker": "from the table"}]
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()

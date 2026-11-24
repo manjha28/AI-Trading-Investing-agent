@@ -71,6 +71,12 @@ logging.getLogger("uvicorn.access").addFilter(BrokerCallbackAccessLogFilter())
 def _process_sentiment_batch() -> None:
     with Session(engine) as db:
         analyze_news_items(db, limit=500, period_days=3650)
+        try:
+            from app.services import news_sentiment
+            if news_sentiment.stored_is_stale(db):
+                news_sentiment.precompute_aggregates(db)           # the pages read these rows; the job builds them
+        except Exception:  # noqa: BLE001 - a precompute failure must not stop the analysis batch; pages then compute on demand
+            logging.getLogger(__name__).warning("sentiment aggregate precompute failed")
 
 
 async def news_sentiment_processing_loop() -> None:

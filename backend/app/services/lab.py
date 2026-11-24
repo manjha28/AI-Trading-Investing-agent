@@ -87,7 +87,11 @@ def resolve_universe(db: Session, user_id: UUID, preset: str) -> dict[str, Any]:
         else:
             included.append(inst)
     included = included[:MAX_LAB_INSTRUMENTS]
-    return {"preset": preset, "instruments": included, "excluded": excluded, "bars": {str(i.id): counts.get(i.id, 0) for i in included}}
+    stored = sorted((counts.get(inst.id, 0), inst.symbol) for inst in (richest(sym) for sym in wanted) if inst is not None)
+    coverage = {"needed_bars": MIN_BARS_1M, "needed_sessions": MIN_BARS_1M // 375, "symbols_checked": len(stored), "qualifying": len(included),
+                "best_bars": stored[-1][0] if stored else 0, "best_symbol": stored[-1][1] if stored else None, "best_sessions": (stored[-1][0] // 375) if stored else 0,
+                "median_bars": stored[len(stored) // 2][0] if stored else 0}
+    return {"preset": preset, "instruments": included, "excluded": excluded, "coverage": coverage, "bars": {str(i.id): counts.get(i.id, 0) for i in included}}
 
 
 def describe_presets(db: Session, user_id: UUID) -> list[dict[str, Any]]:
@@ -96,7 +100,7 @@ def describe_presets(db: Session, user_id: UUID) -> list[dict[str, Any]]:
     for preset in PRESETS:
         u = resolve_universe(db, user_id, preset)
         out.append({"key": preset, "label": labels[preset], "available": len(u["instruments"]), "excluded": u["excluded"],
-                    "symbols": [i.symbol for i in u["instruments"]], "min_bars_1m": MIN_BARS_1M})
+                    "symbols": [i.symbol for i in u["instruments"]], "min_bars_1m": MIN_BARS_1M, "coverage": u.get("coverage")})
     return out
 
 

@@ -160,6 +160,15 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
   useEffect(() => {
     void apiRequest<AnnotationOptions>('/trades/annotation-options').then(setAnnotationOptions).catch(() => undefined);
   }, []);
+  // The filter dropdowns list only what has trades in the shown currency: an option with zero trades is a dead end. (Inline editing still suggests every known name.)
+  const countBy = (pick: (trade: JournalTrade) => string | null | undefined) => {
+    const counts = new Map<string, number>();
+    journalTrades.filter((trade) => trade.currency === journalCurrency).forEach((trade) => { const v = (pick(trade) ?? '').trim(); if (v) counts.set(v, (counts.get(v) ?? 0) + 1); });
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  };
+  const filterStrategies = useMemo(() => countBy((t) => t.strategy), [journalTrades, journalCurrency]); // eslint-disable-line react-hooks/exhaustive-deps
+  const filterSetups = useMemo(() => countBy((t) => t.setup), [journalTrades, journalCurrency]); // eslint-disable-line react-hooks/exhaustive-deps
+  const currencyHasTrades = journalTrades.some((trade) => trade.currency === journalCurrency);
   const daySummaries = useMemo(
     () => new Map((journalAnalytics?.daily ?? []).map((item) => [item.date, item])),
     [journalAnalytics],
@@ -380,8 +389,8 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
         <label>From<input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
         <label>To<input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
         <label>Currency<select value={journalCurrency} onChange={(event) => setJournalCurrency(event.target.value)}><option value="USD">USD</option><option value="INR">INR</option></select></label>
-        <label>Strategy<select value={strategyFilter} onChange={(event) => setStrategyFilter(event.target.value)}><option value="">All strategies</option>{strategies.map((strategy) => <option value={strategy} key={strategy}>{strategy}</option>)}</select></label>
-        <label>Setup<select value={setupFilter} onChange={(event) => setSetupFilter(event.target.value)}><option value="">All setups</option>{setups.map((setup) => <option value={setup} key={setup}>{setup}</option>)}</select></label>
+        <label>Strategy<select value={strategyFilter} onChange={(event) => setStrategyFilter(event.target.value)}><option value="">All strategies</option>{filterStrategies.map(([strategy, count]) => <option value={strategy} key={strategy}>{strategy} ({count})</option>)}</select></label>
+        <label>Setup<select value={setupFilter} onChange={(event) => setSetupFilter(event.target.value)}><option value="">All setups</option>{filterSetups.map(([setup, count]) => <option value={setup} key={setup}>{setup} ({count})</option>)}</select></label>
         <label>Side<select value={sideFilter} onChange={(event) => setSideFilter(event.target.value)}><option value="">All sides</option><option value="long">Long</option><option value="short">Short</option></select></label>
         <label>Market<select value={assetFilter} onChange={(event) => setAssetFilter(event.target.value)}><option value="">All markets</option><option value="equity">Equity</option><option value="future">Future</option><option value="option">Option</option></select></label>
         {(dateFrom || dateTo || selectedDate || strategyFilter || setupFilter || sideFilter || assetFilter || search) && <button className="journal-clear-filters" type="button" onClick={clearFilters}><X size={13} /> Clear filters</button>}
@@ -472,7 +481,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
             : `${journalTrades.length} fill rows · ${journalAnalytics.fill_count} Dhan fills. ${journalTrades.length === journalAnalytics.fill_count ? 'Counts reconcile.' : `Count mismatch: expected ${journalAnalytics.fill_count} fills.`}`}
         </p>}
         {journalView !== 'broker-history' && journalAnalytics && journalAnalytics.unattributed_fill_rows > 0 && <p className="journal-data-quality" role="status">Data quality: {journalAnalytics.unattributed_fill_rows} fill is unattributable (including security ID 0 with no symbol); excluded from real open positions.</p>}
-        {journalView === 'broker-history' ? <DhanTradeAndCashHistory /> : journalLoadState === 'idle' || journalLoadState === 'loading' ? <div className="table-empty">Loading trades…</div> : journalLoadState === 'failed' ? <div className="error-message" role="alert">Trades unavailable: {journalLoadError} <button type="button" onClick={() => void refreshJournalTrades(journalView === 'fills' ? 'fills' : 'trades').catch(() => undefined)}>Retry</button></div> : filteredTrades.length === 0 ? <div className="table-empty">{journalTrades.length ? 'No trades match these filters.' : 'No journal trades recorded yet.'}</div> : (
+        {journalView === 'broker-history' ? <DhanTradeAndCashHistory /> : journalLoadState === 'idle' || journalLoadState === 'loading' ? <div className="table-empty">Loading trades…</div> : journalLoadState === 'failed' ? <div className="error-message" role="alert">Trades unavailable: {journalLoadError} <button type="button" onClick={() => void refreshJournalTrades(journalView === 'fills' ? 'fills' : 'trades').catch(() => undefined)}>Retry</button></div> : filteredTrades.length === 0 ? <div className="table-empty">{!currencyHasTrades && journalTrades.length > 0 ? `No ${journalCurrency} trades. Your recorded trades are in ${[...new Set(journalTrades.map((trade) => trade.currency))].join(', ')}.` : !currencyHasTrades ? `No ${journalCurrency} trades recorded yet.` : 'No trades match these filters.'}</div> : (
           <div className="table-scroll journal-table-scroll">
             <table className="journal-table">
               <thead><tr>

@@ -831,7 +831,7 @@ def get_fundamentals_gaps(
             "disclaimer": DISCLAIMER}
 
 
-HEAVY_LEVEL_KEYS = ("explanation", "derivation", "support_levels", "resistance_levels", "pivots", "stop_reason", "r_definition")
+LEVEL_KEEP = ("status", "reason", "entry_zone", "stop", "targets", "entry_status", "entry_label", "reference_close", "prior_high_reference", "ready_to_buy", "event_gate", "selected_setup", "direction", "watch_band", "pivot_support", "pivot_resistance", "gates", "breakout_trigger")
 HEAVY_CONFIDENCE_KEYS = ("parts", "setup", "note")
 
 
@@ -840,7 +840,8 @@ def _compact_row(row: dict) -> dict:
     def slim_conf(c):
         return {k: v for k, v in c.items() if k not in HEAVY_CONFIDENCE_KEYS} if isinstance(c, dict) else c
     out = dict(row)
-    out["levels"] = {h: ({k: v for k, v in lv.items() if k not in HEAVY_LEVEL_KEYS} if isinstance(lv, dict) else lv) for h, lv in (row.get("levels") or {}).items()}
+    # the list keeps what a row and the ladder need; the derivations, support/resistance lists and pivots come with the full card
+    out["levels"] = {h: ({k: v for k, v in lv.items() if k in LEVEL_KEEP} if isinstance(lv, dict) else lv) for h, lv in (row.get("levels") or {}).items()}
     out["horizons"] = {h: ({**hv, "buy_confidence": slim_conf(hv.get("buy_confidence"))} if isinstance(hv, dict) else hv) for h, hv in (row.get("horizons") or {}).items()}
     out["confidence"] = slim_conf(row.get("confidence"))
     out["compact"] = True

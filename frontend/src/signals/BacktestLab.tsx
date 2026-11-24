@@ -6,7 +6,8 @@ import { LineChart } from './charts';
 import { TradePlot } from './TradePlot';
 import type { Meta, StrategyRow, Trade } from './types';
 
-type Preset = { key: string; label: string; available: number; symbols: string[]; excluded: { symbol: string; reason: string }[]; min_bars_1m: number };
+type Coverage = { needed_bars: number; needed_sessions: number; symbols_checked: number; qualifying: number; best_bars: number; best_symbol: string | null; best_sessions: number; median_bars: number };
+type Preset = { key: string; label: string; available: number; symbols: string[]; excluded: { symbol: string; reason: string }[]; min_bars_1m: number; coverage?: Coverage | null };
 type Universes = { presets: Preset[]; max_strategies: number; max_instruments: number; note: string };
 type Headline = { total_trades?: number | null; net_profit?: string | null; profit_factor_net?: number | string | null; win_rate?: number | null; max_drawdown_pct?: number | null; expectancy_per_trade?: string | null; return_pct?: number | null };
 type Metrics = Headline & { gross_pnl_before_costs?: string | null; total_charges?: string | null; total_slippage?: string | null; sharpe_ratio?: number | null };
@@ -189,10 +190,13 @@ export function BacktestLab({ meta, strategies }: { meta: Meta; strategies: Stra
             </select>
           </Field>
           {current && (
+            <>
+            {current.available === 0 && current.coverage && current.coverage.symbols_checked > 0 && <p className="sl-muted" role="status">No symbol qualifies yet: a backtest needs {current.coverage.needed_bars.toLocaleString('en-IN')} stored 1-minute bars (about {current.coverage.needed_sessions} sessions). Of {current.coverage.symbols_checked} checked, the best is {current.coverage.best_symbol} with {current.coverage.best_bars.toLocaleString('en-IN')} bars (about {current.coverage.best_sessions} sessions) and the median has {current.coverage.median_bars.toLocaleString('en-IN')}. Run a 1-minute backfill to add history.</p>}
             <details className="lab-coverage"><summary>{current.available} symbols with enough 1-minute data{current.excluded.length ? ` · ${current.excluded.length} left out` : ''}</summary>
               <p className="sl-muted">Using: {current.symbols.join(', ') || '—'}</p>
               {current.excluded.length > 0 && <ul>{current.excluded.slice(0, 60).map((e) => <li key={e.symbol}><strong>{e.symbol}</strong> — {e.reason}</li>)}</ul>}
             </details>
+            </>
           )}
           <div className="sl-card-head"><h3>3 · Window and costs</h3></div>
           <div className="sl-row">
