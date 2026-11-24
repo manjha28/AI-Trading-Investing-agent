@@ -6,6 +6,9 @@ import { messageOf, type Market } from './cryptoApi';
 type Mode = 'all' | 'watchlist' | 'gainers' | 'losers';
 type SortKey = 'symbol' | 'last' | 'chg' | 'chgPct' | 'volume' | 'oi' | 'funding';
 const POLL_MS = 1_000;
+/** After a failed poll wait 2 s, 5 s, 15 s, then 60 s (capped); one success returns to normal. */
+export const BACKOFF_MS = [2_000, 5_000, 15_000, 60_000];
+const istTime = (d: Date) => d.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
 const STALE_AFTER_S = 90;
 
 export const num = (value: string | null | undefined): number | null => { if (value === null || value === undefined || value === '') return null; const n = Number(value); return Number.isFinite(n) ? n : null; };
@@ -66,7 +69,9 @@ const Row = memo(function Row({ m, selected, starred, live, onSelect, onStar }: 
 export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; setSymbol?: (symbol: string) => void; onSelect?: (m: Market) => void }) {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loading, setLoading] = useState(true);       // never say "no contracts" while the first request is in flight
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ since: Date; message: string } | null>(null);
+  const lastGood = useRef<Date | null>(null);
+  const failures = useRef(0);
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<Mode>('all');
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'volume', dir: -1 });
@@ -89,13 +94,29 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
         for (const m of items) byId.set(m.product_id, m);
         return [...byId.values()];
       });
+      failures.current = 0; lastGood.current = new Date();
       setError(null);
-    } catch (e) { setError(messageOf(e)); } finally { setLoading(false); }
+    } catch (e) {
+      failures.current += 1;
+      setError((cur) => cur ?? { since: new Date(), message: messageOf(e) });   // one banner, never a new alert per failed poll
+    } finally { setLoading(false); }
   }, []);
   useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => { void load(); setTick((n) => n + 1); }, POLL_MS);
-    return () => window.clearInterval(timer);
+    let timer: number | undefined;
+    let stopped = false;
+    const schedule = () => {
+      if (stopped) return;
+      const wait = failures.current === 0 ? POLL_MS : BACKOFF_MS[Math.min(failures.current - 1, BACKOFF_MS.length - 1)];
+      timer = window.setTimeout(run, wait);
+    };
+    const run = async () => {
+      if (document.hidden) { schedule(); return; }          // no requests while the tab is hidden
+      await load(); setTick((n) => n + 1); schedule();
+    };
+    const onVisible = () => { if (!document.hidden && failures.current === 0) { window.clearTimeout(timer); void run(); } };
+    document.addEventListener('visibilitychange', onVisible);
+    void run();
+    return () => { stopped = true; window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [load]);
 
   const onStar = useCallback((sym: string) => setStarred((cur) => {
@@ -163,7 +184,11 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
         <FeedToggle onChange={setWanted} />
         <span className="watch-note">Delta Exchange India · public feed · decision support, not investment advice</span>
       </div>
-      {error && <p className="alerts-notice" role="alert">{error}</p>}
+      {error && (
+        <p className="alerts-notice" role="alert">
+          Research data unavailable since {istTime(error.since)} IST{lastGood.current ? ` · showing last data from ${istTime(lastGood.current)} IST` : ''} · <button type="button" className="link-button" onClick={() => { failures.current = 0; void load(); }}>Retry</button>
+        </p>
+      )}
       <section className="data-section watch-table-panel" aria-label="Perpetual contracts">
         <div className="watch-toolbar">
           <input type="search" placeholder="Search contract, e.g. SOL" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search contracts" />

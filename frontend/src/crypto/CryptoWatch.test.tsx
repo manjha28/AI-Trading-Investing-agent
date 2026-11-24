@@ -113,3 +113,29 @@ describe('Crypto chart empty state', () => {
     expect(within(empty).getByRole('button', { name: /Download \d+d of 15m candles/ })).toBeTruthy();
   });
 });
+
+
+describe('Crypto watch outage', () => {
+  it('shows one banner and backs off 2 s, 5 s, 15 s, 60 s while the store is down, then recovers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    const times: number[] = [];
+    let down = true;
+    apiRequest.mockImplementation((path: string) => {
+      if (!path.includes('/delta-research/markets')) return Promise.resolve({});
+      times.push(Date.now());
+      return down ? Promise.reject(new Error('Delta research store is unavailable.')) : Promise.resolve(markets);
+    });
+    render(<CryptoWatch symbol="AAAUSD" />);
+    for (let i = 0; i < 70; i += 1) await vi.advanceTimersByTimeAsync(1_000);   // 70 s outage
+    const gaps = times.slice(1).map((t, i) => (t - times[i]) / 1000);
+    expect(gaps.slice(0, 3)).toEqual([2, 5, 15]);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(60);
+    expect(times.length).toBeLessThanOrEqual(6);                                  // not one request per second
+    expect(screen.getAllByRole('alert')).toHaveLength(1);                         // one banner, not a stack
+    expect(screen.getByRole('alert').textContent).toContain('Research data unavailable since');
+    down = false;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(screen.queryByRole('alert')).toBeNull();                               // cleared when data returns
+    vi.useRealTimers();
+  });
+});

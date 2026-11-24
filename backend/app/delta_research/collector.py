@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import json
 import logging
@@ -610,6 +611,46 @@ def set_feed_wanted(on: bool) -> None:
         db.commit()
 
 
+STORE_MACHINE_FLAG = "delta_store_machine"
+
+
+def record_store_machine() -> None:
+    """Remember which Fly machine holds the research store (its file is machine-local), so other replicas can hand the request over."""
+    machine = os.environ.get("FLY_MACHINE_ID")
+    if not machine:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from sqlalchemy.orm import Session
+
+        from app.db import engine
+        from app.models.crypto_delta import AppFlag
+        with Session(engine) as db:
+            row = db.get(AppFlag, STORE_MACHINE_FLAG)
+            now = datetime.now(timezone.utc)
+            if row is None:
+                db.add(AppFlag(key=STORE_MACHINE_FLAG, value=machine, updated_at=now))
+            else:
+                row.value, row.updated_at = machine, now
+            db.commit()
+    except Exception:  # noqa: BLE001  best effort; the store still works on this machine
+        pass
+
+
+def store_machine() -> str | None:
+    try:
+        from sqlalchemy.orm import Session
+
+        from app.db import engine
+        from app.models.crypto_delta import AppFlag
+        with Session(engine) as db:
+            row = db.get(AppFlag, STORE_MACHINE_FLAG)
+            return row.value if row else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class DeltaResearchManager:
     """Runs the public collector while the owner wants it. A watcher follows the stored on/off choice every few seconds, so the switch works from any request."""
 
@@ -622,6 +663,7 @@ class DeltaResearchManager:
         return self.task is not None and not self.task.done()
 
     def _launch(self) -> None:
+        record_store_machine()
         self.collector = DeltaPublicCollector(settings.delta_research_db_path or "")
         self.task = asyncio.create_task(self.collector.start(), name="delta-research-manager")
 

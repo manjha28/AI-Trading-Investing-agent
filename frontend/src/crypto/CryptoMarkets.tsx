@@ -29,17 +29,29 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
       const result = await apiRequest<{ items: Market[] }>('/delta-research/markets?limit=500&slim=true');
       setMarkets(result.items);
       setMarketsError(null);
+      return true;
     } catch (error) {
       setMarketsError(messageOf(error));
+      return false;
     } finally {
       setMarketsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadMarkets();
-    const timer = window.setInterval(() => void loadMarkets(), 15_000);
-    return () => window.clearInterval(timer);
+    // 15 s normally; after failures back off 15 s, 60 s (capped); nothing while the tab is hidden.
+    let timer: number | undefined;
+    let stopped = false;
+    let failed = 0;
+    const run = async () => {
+      if (!document.hidden) {
+        const ok = await loadMarkets();
+        failed = ok ? 0 : failed + 1;
+      }
+      if (!stopped) timer = window.setTimeout(() => void run(), failed === 0 ? 15_000 : failed === 1 ? 15_000 : 60_000);
+    };
+    void run();
+    return () => { stopped = true; window.clearTimeout(timer); };
   }, [loadMarkets]);
 
   const loadChart = useCallback(async () => {

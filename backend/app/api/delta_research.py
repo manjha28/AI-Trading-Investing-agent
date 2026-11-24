@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -9,7 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.research import require_verified_session
 from app.config import settings
-from app.delta_research.collector import delta_research_manager
+from app.delta_research.collector import delta_research_manager, store_machine
 from app.delta_research.service import DISCLAIMER, DeltaResearchStatus, get_status
 from app.delta_research.store import DeltaResearchStore
 from app.models import UserSession
@@ -25,7 +26,12 @@ def _read_store() -> DeltaResearchStore:
     try:
         return DeltaResearchStore(settings.delta_research_db_path, read_only=True)
     except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="Delta research store is unavailable.") from exc
+        # The store file is local to the machine running the collector. A replica without it hands the request to the machine that has it.
+        headers: dict[str, str] = {"Retry-After": "5"}
+        mine, holder = os.environ.get("FLY_MACHINE_ID"), store_machine()
+        if mine and holder and holder != mine:
+            headers["fly-replay"] = f"instance={holder}"
+        raise HTTPException(status_code=503, detail="Delta research store is unavailable.", headers=headers) from exc
 
 
 @router.get("/status", response_model=DeltaResearchStatus)

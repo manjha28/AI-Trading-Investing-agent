@@ -244,3 +244,4 @@
 - Research page: 22 Nov card look restored (research.css from 45e1fbd, card grid); MCX previous-close column
 - Delta lab round 2: maker-first simulator, Binance data, R0-R6 families, order-book recorder (off on Fly until a volume exists), paper run for R3 BTCUSD
 - Delta lab round 3: frozen R3 paper test on Fly (finbyte-delta-lab, volume), trade-level deflated Sharpe, status reports; Daily report card layout rework (not yet deployed, awaiting owner OK)
+- 2026-11-25 Delta watch: replay to the store machine, one banner, backoff and hidden-tab pause (A1)
