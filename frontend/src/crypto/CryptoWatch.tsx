@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../api';
+import { DepthPanel } from './DepthPanel';
 import { FeedToggle } from './FeedToggle';
 import { messageOf, type Market } from './cryptoApi';
 
@@ -124,7 +125,8 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
     try { window.localStorage.setItem('crypto.watchlist', JSON.stringify(next)); } catch { /* per-viewer convenience only */ }
     return next;
   }), []);
-  const select = useCallback((m: Market) => { setSymbol?.(m.symbol); onSelect?.(m); }, [setSymbol, onSelect]);
+  const [depthSymbol, setDepthSymbol] = useState<string | null>(null);   // clicking a perpetual opens its depth panel; closing it closes the socket
+  const select = useCallback((m: Market) => { setSymbol?.(m.symbol); onSelect?.(m); setDepthSymbol(m.symbol); }, [setSymbol, onSelect]);
 
   const live = useMemo(() => markets.filter((m) => m.state === 'live'), [markets]);
   const rows = useMemo(() => {
@@ -224,6 +226,7 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
         </div>
         <p className="crypto-sub">Delta public data, refreshed every {POLL_MS / 1000} seconds. Unknown values show —.</p>
       </section>
+      <DepthPanel symbol={depthSymbol} onClose={() => setDepthSymbol(null)} />
     </div>
   );
 }

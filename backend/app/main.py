@@ -11,6 +11,7 @@ from app.api.alerts import router as alerts_router
 from app.api.brokers import router as brokers_router
 from app.api.corporate_actions import router as corporate_actions_router
 from app.api.news import router as news_router
+from app.api.delta_depth import router as delta_depth_router
 from app.api.delta_research import router as delta_research_router
 from app.api.execution import router as execution_router
 from app.api.forward_tests import live_router as dhan_live_router, router as forward_tests_router
@@ -352,6 +353,7 @@ app.include_router(news_router, prefix="/api/v1")
 app.include_router(research_router, prefix="/api/v1")
 app.include_router(position_theses_router, prefix="/api/v1")
 app.include_router(delta_research_router, prefix="/api/v1")
+app.include_router(delta_depth_router, prefix="/api/v1")
 app.include_router(execution_router, prefix="/api/v1")
 app.include_router(forward_tests_router, prefix="/api/v1")
 app.include_router(dhan_live_router, prefix="/api/v1")
