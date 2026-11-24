@@ -10,7 +10,8 @@ _Decision support, not investment advice._ Updated after every item.
 | A1 Delta watch outage | Partly done (code + tests; Fly deploy pending) | `CryptoWatch.test.tsx` "Crypto watch outage" | – |
 | A2 Journal est vs actual | Partly done (causes found + fixed + tests; 23/24 Nov reconcile NOT verifiable) | `test_dhan_charge_estimate.py` (3 new), `test_dhan_reconciliation.py::..without_portfolio_id` | Run a backfill on Fly after deploy; see A2 |
 | A3 MCX closed-market columns | Partly done (code + 3 tests; needs Fly deploy and a look at the live page; no MCX-open check possible overnight) | `test_mcx_calendar.py` (3 new) | – |
-| A4 to A6, B, C, D | Not started yet | – | – |
+| A4 Confidence proof | Done | `diagnostics/nexus-v2/overnight_a4_confidence_proof.py` (+`.json`); `test_win_confidence.py` | Answer below: No ML in use, score does not predict outcomes |
+| A5 to A6, B, C, D | Not started yet | – | – |
 
 ## Live baseline (24 Nov ~18:30 UTC, read-only query of the Fly DB; nothing changed)
 - **Delta**: deployment flag `DELTA_LIVE_EXECUTION_ENABLED=true` on finbyte-nexus-api; per-user state ARMED (armed 17:59 UTC, caps $25/day loss, 6 trades/day, 2 open, $2000 notional). Live tests: ONE, `5 EMA BTCUSD 5m` (BTCUSD, 5m, 1 contract, `execute_live=true`). Wallet balance not queried (needs the Delta key; you said ~$3).
@@ -36,3 +37,20 @@ Estimates are never stored (computed on display copies at read time), so the bac
 ## A3. MCX watch when closed
 Closed-market ticks now carry last price (labelled close), change and % vs previous close, open, high, low, volume, open interest, time of the last stored tick, and a "Market closed · last close <date time IST>" stamp above the table. Source order per contract: (1) snapshot stored from live ticks (new table `mcx_last_snapshots`, migration 0077, throttled to one write per 30 s per contract, forced at session end); (2) Dhan quote endpoint + Dhan daily history (`/v2/charts/historical`, `oi: true`) for the last completed session; (3) unknown shown as "—", never zero. Yahoo is not used (Dhan had the data path). Contract roll: on a contract's expiry day, after the session closes, it is treated as expired and the next month is shown. Source is logged in the tick (`source`).
 Tests: weekend, after 23:30 (US summer) and 23:55 (US winter) closed, 23:50 winter still open; Decimal change recompute and unknown-stays-unknown; snapshot save/throttle/force/load. NOT tested: the websocket end to end and the expiry-day roll against a DB (no Postgres in this Codespace; `alembic check` could not be run here, the migration is a plain create_table and `alembic heads` shows a single head 0077).
+
+## A4. Is the confidence score real? (plain answer)
+**Is any ML model used for confidence? No.** **Does the score predict outcomes? No** (on the latest holdout nothing beat the base rate in a way that holds up).
+**What produces each number the app shows** (all hand-written or lookup, nothing trained at runtime):
+1. *Win rate "N% · n past setups"* (`services/win_confidence.py`, called from `stock_verdict._win_confidence`): a **lookup of similar past setups** (tercile-binned setup/stack/rs60/dist52/stop%/regime/size, weakest feature dropped until >=30 matches) with beta-binomial shrinkage toward the base rate (k=50). Model file `win_confidence_model.json`, built from 1,915 replayed setups.
+2. *Ring score / "factor rank"* (`services/research_confidence.py`, `universe_rank.py`): a **percentile of a hand-weighted five-factor rank** (or the older 0.40/0.25/0.20/0.15 formula). Not a probability.
+3. *Setup grade A/B/C* (`setup_grade.py`): rules.
+4. *Component confidence %* in the research report: data coverage x agreement, rules. *AI confidence %*: Gemini, separate, never mixed in.
+**ML models in the repo:** only the LightGBM experiment scripts under `diagnostics/nexus-v2/` (`phase7b_lgbm.py`, and tonight's script). No weights are stored, nothing in `backend/app` imports lightgbm. Earlier result confirmed: positional holdout AUC **0.426** (match-rate 0.503), swing "too little data to run honestly" (112 holdout setups). The "0.557" you remember is not in the Phase 7b report; tonight's table has swing match-rate AUC 0.553 on a different split, which may be it.
+**Tonight's proof** (script above; train earliest 50% / tune next 25% / holdout latest 25%, holdout touched once per family with the variant chosen on tune; 62 variants recorded in the JSON; 5 buckets, 90% bootstrap):
+| Horizon | Holdout (n, dates, base win rate) | Best per family: AUC / Brier vs base | Qualifies |
+|---|---|---|---|
+| Swing | 112, 2025-01-28..2026-07-03, 18.8% | match-rate 0.553 / 0.1531 vs 0.1534; logistic 0.680 / 0.1816; LightGBM 0.695 / 0.1414; monotone LGBM 0.562 / 0.1622 | **none** (LightGBM beats base on Brier but top bucket net R is not above the bottom with separated intervals, and holds in 1 of 3 slices) |
+| Positional | 311, 2024-12-16..2026-07-03, 29.9% | match-rate 0.497 / 0.2109 vs 0.2133; logistic 0.573 / 0.2371; LightGBM 0.526 / 0.2094; monotone 0.543 / 0.2082 | **none** (Brier gain is tiny, buckets overlap, 2 of 3 slices at best but no separation) |
+| Long-term | not testable (4 decision dates, 12-month outcome) | – | – |
+Isotonic/Platt were fitted on the tune window and then judged on the holdout; calibrated variants that win on tune are optimistic by construction, and they still did not qualify. Swing LightGBM is the one to watch (AUC 0.69 on 112 setups) but 112 setups is too few to trust; re-test when the forward record has data (first resolutions mid-December).
+**Display rule applied.** No model qualified, so no flag was switched on. The match-rate number stays, but its label is now "Unproven · N similar setups" (was "High (not yet separating)"); High/Medium are never shown until a holdout or the live forward record shows separation. Changed `win_confidence.score`, `DailyReport.shownBand`, 3 tests.

@@ -119,8 +119,8 @@ def test_a_live_separating_horizon_drops_the_not_yet_separating_label():
     b = {"setup": "pullback"}
     m = {"version": "t", "horizons": {"swing": {"p0": 0.3, "order": ["setup"], "setups": [{"bins": b, "win": i % 3 == 0, "net_r": 0.0} for i in range(60)], "cuts": {}, "validation": {"separating": False}}}}
     try:
-        assert wc.score("swing", b, m)["band_label"].endswith("(not yet separating)")
+        assert wc.score("swing", b, m)["band_label"].startswith("Unproven")
         wc.LIVE_SEPARATING["swing"] = True
-        assert "not yet separating" not in wc.score("swing", b, m)["band_label"]
+        assert "Unproven" not in wc.score("swing", b, m)["band_label"]
     finally:
         wc.LIVE_SEPARATING.clear()

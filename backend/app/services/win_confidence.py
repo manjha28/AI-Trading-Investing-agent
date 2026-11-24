@@ -178,6 +178,7 @@ def find_matches(rows: Sequence[dict[str, Any]], bins: dict[str, str | None], or
 
 
 # ───────────────────────── scoring ─────────────────────────
+# Until a holdout shows the bands separate (stored validation or the live forward record), the band label is "Unproven · N similar setups", never High or Medium.
 def score(horizon: str, bins: dict[str, str | None], model: dict[str, Any], *, required_unknown: bool = False, cfg: ConfidenceConfig | None = None) -> dict[str, Any]:
     cfg = cfg or ConfidenceConfig()
     hz = (model.get("horizons") or {}).get(horizon)
@@ -199,7 +200,7 @@ def score(horizon: str, bins: dict[str, str | None], model: dict[str, Any], *, r
     win_text = {"swing": "reached T1 before the stop within 15 sessions", "positional": "reached T1 before the stop within 60 sessions", "long_term": "beat the NIFTY 500 over the next 12 months"}[horizon]
     return {"available": True, "calibrated": pct, "win_probability": round(conf, 4), "base_rate": round(p0, 4), "base_rate_pct": base, "n_matches": n_raw, "n_effective": round(n, 1), "wins": w_raw,
             "interval": [round(lo, 4), round(hi, 4)], "features_used": used, "features_dropped": [f for f in hz["order"] if f not in used], "band": band, "separating": separating,
-            "band_label": band if separating else f"{band} (not yet separating)", "expected_r": None if ev is None else round(ev, 3), "data_penalty_applied": bool(required_unknown), "win_definition": win_text,
+            "band_label": band if separating else f"Unproven · {n_raw} similar setups", "expected_r": None if ev is None else round(ev, 3), "data_penalty_applied": bool(required_unknown), "win_definition": win_text,
             "line": f"Measured win rate {pct}% (avg setup {base}%) · based on {n_raw} similar past setups", "tooltip": f"{round(cfg.interval * 100)}% interval {round(lo * 100)}-{round(hi * 100)}%. Win = {win_text}."
             + (f" Matched on: {', '.join(used) or 'nothing (all setups)'}." ) + (" A required input is unknown, so the evidence was halved." if required_unknown else "")
             + ("" if ev is None else f" Matched setups' average net R {ev:+.2f}."), "model_version": model.get("version"), "validated": separating}

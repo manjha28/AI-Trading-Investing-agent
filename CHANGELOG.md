@@ -247,3 +247,4 @@
 - 2026-11-25 Delta watch: replay to the store machine, one banner, backoff and hidden-tab pause (A1)
 - 2026-11-25 Journal: actual charges replace estimates (order-level rule, dedupe, upsert never erases); Dhan reconciliation route no longer shadowed (A2)
 - 2026-11-25 MCX watch: last session figures (OHLC, volume, OI, tick time) when closed; snapshot table 0077; expiry-day roll (A3)
+- 2026-11-25 Confidence: honest proof test (no model qualifies); label now 'Unproven · N similar setups' (A4)

@@ -41,7 +41,7 @@ const bandClass = (band?: string) => (band === 'High' ? 'good' : band === 'Mediu
 /** The calibration band is shown only when the stored validation says the buckets separate; otherwise the number stands alone, marked Unproven. */
 export function shownBand(conf: Confidence): string | null {
   const w = conf.win_confidence;
-  return w?.band_label && !/not yet separating/i.test(w.band_label) ? (w.band ?? w.band_label) : null;
+  return w?.band_label && !/not yet separating|unproven/i.test(w.band_label) ? (w.band ?? w.band_label) : null;
 }
 
 /** "Win rate 50% · 118 past setups": the one short evidence chip; the full sentence lives in the Why fold. */

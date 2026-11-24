@@ -47,7 +47,7 @@ def test_bands_are_relative_to_the_base_rate_and_labelled_until_separating():
     b = {"setup": "pullback", "regime": "uptrend"}
     strong = _model(_setups([(b, 90, 60)]), 0.30)                                # 60% win rate on 150 matches, base 30%
     s = wc.score("swing", b, strong)
-    assert s["band"] == "High" and s["calibrated"] > 40 and s["band_label"] == "High (not yet separating)" and s["n_matches"] == 150
+    assert s["band"] == "High" and s["calibrated"] > 40 and s["band_label"].startswith("Unproven") and "High" not in s["band_label"] and s["n_matches"] == 150
     assert wc.score("swing", b, _model(_setups([(b, 90, 60)]), 0.30, sep=True))["band_label"] == "High"
     thin = wc.score("swing", b, _model(_setups([(b, 20, 10)]), 0.30))
     assert thin["band"] == "Medium"                                              # above the base rate but under 100 matches
