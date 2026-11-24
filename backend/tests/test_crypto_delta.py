@@ -635,6 +635,7 @@ def test_live_order_is_placed_only_when_every_layer_allows_and_is_idempotent(cli
         assert again.id == row.id and calls.count("/v2/orders") == 1
         # a paper-only test never reaches the broker
         ft.execute_live = False
+        db.commit()                                                  # the switch is read back from the database when sending
         assert live_service.maybe_place(db, ft, spec, entries, candles, at, factory) is None
 
 
