@@ -60,7 +60,7 @@ describe('Multibagger screen', () => {
     expect(header.getAttribute('aria-sort')).toBe('descending');
     const first = rowsIn()[0].textContent ?? '';
     expect(first).toMatch(/8\d|89/);                                                                       // highest Q first; stocks with no Q score sort last
-  });
+  }, 20_000);   // own timeout: it re-renders a 271-row table four times and exceeded the default 5 s only when the whole suite runs in parallel (6.9 s seen); alone it takes about 1 s
 
   it('shows unknown scores as n/a with a reason, never as an empty bar', async () => {
     mockApi.mockResolvedValue(response());
