@@ -1,0 +1,683 @@
+{
+ "cuts": {
+  "train": [
+   "2022-03-14",
+   "2025-10-04"
+  ],
+  "validation": [
+   "2025-10-04",
+   "2026-04-27"
+  ],
+  "holdout": [
+   "2026-04-27",
+   "2026-10-28"
+  ]
+ },
+ "coins_loaded": 822,
+ "delisted_coins": 23,
+ "events_total": 1027,
+ "events_coins": 485,
+ "events_per_split": {
+  "train": 512,
+  "validation": 258,
+  "holdout": 257
+ },
+ "variants_this_round": 14,
+ "variants_total_with_prior": 292,
+ "finalists": [
+  {
+   "type": "runner",
+   "rule": "close_above_prior_swing_high",
+   "trail_atr": 3.0,
+   "hold_days": 20,
+   "param_hash": "5020a7ad781dc430",
+   "validation": {
+    "events": 13,
+    "coins": 13,
+    "hit_rate": 0.38461538461538464,
+    "mean_net_pct": 12.333510734016219,
+    "median_net_pct": -8.550508460846132,
+    "worst_loss_pct": -27.016850248792508,
+    "profit_factor": 2.2266730232135585,
+    "avg_days": 14.923076923076923,
+    "max_adverse_before_exit_pct": 35.954556994160946,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 0
+   },
+   "train": {
+    "events": 54,
+    "coins": 47,
+    "hit_rate": 0.3333333333333333,
+    "mean_net_pct": -5.337027961370793,
+    "median_net_pct": -13.927438408184978,
+    "worst_loss_pct": -37.86262923993956,
+    "profit_factor": 0.6180855255431026,
+    "avg_days": 16.333333333333332,
+    "max_adverse_before_exit_pct": 40.59070521996374,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 3
+   },
+   "holdout": {
+    "events": 14,
+    "coins": 13,
+    "hit_rate": 0.2857142857142857,
+    "mean_net_pct": -4.084890636362748,
+    "median_net_pct": -14.96739280876193,
+    "worst_loss_pct": -30.73729154902779,
+    "profit_factor": 0.7007819486269092,
+    "avg_days": 13.5,
+    "max_adverse_before_exit_pct": 31.461088895724398,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 0
+   },
+   "holdout_bootstrap90_net_pct": [
+    -15.671606879419336,
+    8.733896888821134
+   ],
+   "holdout_thirds_net_pct": [
+    -5.784697482020737,
+    -11.148786787573691,
+    -2.544543577046872
+   ],
+   "top_coin_share_of_profit": 0.5762773644395384,
+   "deflated_probability": 0.05715354789161459,
+   "random_entry_mean_net_pct": 2.5388679044982303,
+   "checks": {
+    "events_ge_30": false,
+    "profit_factor_ge_1.3": false,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "many_coins_not_one_or_two": false,
+    "random_entry_baseline_loses": false
+   },
+   "passed": false,
+   "anecdotal_under_30_events": true
+  },
+  {
+   "type": "pump_short",
+   "rule": "fixed_delay_3d",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "param_hash": "f09a8fb1d1ce989c",
+   "validation": {
+    "events": 28,
+    "coins": 28,
+    "hit_rate": 0.39285714285714285,
+    "mean_net_pct": -7.300722723706346,
+    "median_net_pct": -18.773444447246547,
+    "worst_loss_pct": -50.086585763418356,
+    "profit_factor": 0.5909450252841584,
+    "avg_days": 9.964285714285714,
+    "max_adverse_before_exit_pct": 54.70444985609917,
+    "squeeze_stop_outs": 13,
+    "delisted_coin_trades": 0
+   },
+   "train": {
+    "events": 142,
+    "coins": 124,
+    "hit_rate": 0.5070422535211268,
+    "mean_net_pct": -2.034892023124681,
+    "median_net_pct": 0.21061277042755416,
+    "worst_loss_pct": -46.81570767255903,
+    "profit_factor": 0.8315207452789068,
+    "avg_days": 12.880281690140846,
+    "max_adverse_before_exit_pct": 75.93179049939098,
+    "squeeze_stop_outs": 39,
+    "delisted_coin_trades": 5
+   },
+   "holdout": {
+    "events": 28,
+    "coins": 28,
+    "hit_rate": 0.6428571428571429,
+    "mean_net_pct": 2.586122264058605,
+    "median_net_pct": 9.549471690519725,
+    "worst_loss_pct": -32.69530577775734,
+    "profit_factor": 1.327879385861446,
+    "avg_days": 12.928571428571429,
+    "max_adverse_before_exit_pct": 35.171428571428585,
+    "squeeze_stop_outs": 4,
+    "delisted_coin_trades": 0
+   },
+   "holdout_bootstrap90_net_pct": [
+    -4.064715644780273,
+    9.156419873547513
+   ],
+   "holdout_thirds_net_pct": [
+    -3.175613253151103,
+    2.3831607295319235,
+    5.333343954720823
+   ],
+   "top_coin_share_of_profit": 0.14438684080609665,
+   "deflated_probability": 0.13075221201252923,
+   "random_entry_mean_net_pct": -0.16798333261564252,
+   "checks": {
+    "events_ge_30": false,
+    "profit_factor_ge_1.3": true,
+    "positive_in_2_of_3_subperiods": true,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "many_coins_not_one_or_two": true,
+    "random_entry_baseline_loses": true
+   },
+   "passed": false,
+   "anecdotal_under_30_events": true
+  },
+  {
+   "type": "parabolic_short",
+   "rule": "first_lower_high",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "param_hash": "da38def90a759b85",
+   "validation": {
+    "events": 40,
+    "coins": 39,
+    "hit_rate": 0.45,
+    "mean_net_pct": -7.26007167102425,
+    "median_net_pct": -17.228485156748068,
+    "worst_loss_pct": -57.193975821347976,
+    "profit_factor": 0.575795843350523,
+    "avg_days": 9.525,
+    "max_adverse_before_exit_pct": 90.55306427503736,
+    "squeeze_stop_outs": 17,
+    "delisted_coin_trades": 0
+   },
+   "train": {
+    "events": 228,
+    "coins": 181,
+    "hit_rate": 0.44298245614035087,
+    "mean_net_pct": -4.832897231795508,
+    "median_net_pct": -15.937204150511796,
+    "worst_loss_pct": -46.29496226054654,
+    "profit_factor": 0.6596952654335917,
+    "avg_days": 10.587719298245615,
+    "max_adverse_before_exit_pct": 201.41337411559076,
+    "squeeze_stop_outs": 104,
+    "delisted_coin_trades": 6
+   },
+   "holdout": {
+    "events": 56,
+    "coins": 51,
+    "hit_rate": 0.48214285714285715,
+    "mean_net_pct": -2.93267342033579,
+    "median_net_pct": -5.633210470833534,
+    "worst_loss_pct": -55.01289758427068,
+    "profit_factor": 0.7775709216083374,
+    "avg_days": 10.017857142857142,
+    "max_adverse_before_exit_pct": 84.1620626151013,
+    "squeeze_stop_outs": 20,
+    "delisted_coin_trades": 0
+   },
+   "holdout_bootstrap90_net_pct": [
+    -9.200042673602473,
+    2.7752841289683814
+   ],
+   "holdout_thirds_net_pct": [
+    -1.1499903595242953,
+    -9.084608206612726,
+    -2.164943601726004
+   ],
+   "top_coin_share_of_profit": 0.11956974040248664,
+   "deflated_probability": 0.0005181189044373147,
+   "random_entry_mean_net_pct": -8.636165383004624,
+   "checks": {
+    "events_ge_30": true,
+    "profit_factor_ge_1.3": false,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "many_coins_not_one_or_two": true,
+    "random_entry_baseline_loses": true
+   },
+   "passed": false,
+   "anecdotal_under_30_events": false
+  }
+ ],
+ "variants": [
+  {
+   "type": "runner",
+   "rule": "breakout_confirm",
+   "trail_atr": 3.0,
+   "hold_days": 20,
+   "train": {
+    "events": 349,
+    "coins": 236,
+    "hit_rate": 0.2636103151862464,
+    "mean_net_pct": -2.7698614274227342,
+    "median_net_pct": -17.451974462507845,
+    "worst_loss_pct": -40.85022574343207,
+    "profit_factor": 0.8215516324517131,
+    "avg_days": 13.515759312320917,
+    "max_adverse_before_exit_pct": 89.09880010211897,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 9
+   },
+   "validation": {
+    "events": 124,
+    "coins": 111,
+    "hit_rate": 0.27419354838709675,
+    "mean_net_pct": -6.0007700300224505,
+    "median_net_pct": -18.01847039825086,
+    "worst_loss_pct": -40.08261385345227,
+    "profit_factor": 0.6337371674738299,
+    "avg_days": 13.008064516129032,
+    "max_adverse_before_exit_pct": 66.3740882680183,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.08636890020736784
+  },
+  {
+   "type": "runner",
+   "rule": "first_pullback_holds",
+   "trail_atr": 3.0,
+   "hold_days": 20,
+   "train": {
+    "events": 335,
+    "coins": 229,
+    "hit_rate": 0.25970149253731345,
+    "mean_net_pct": -4.184138316907478,
+    "median_net_pct": -17.958995108158263,
+    "worst_loss_pct": -43.84339983381066,
+    "profit_factor": 0.730701800190872,
+    "avg_days": 14.2,
+    "max_adverse_before_exit_pct": 89.25245406493833,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 9
+   },
+   "validation": {
+    "events": 108,
+    "coins": 100,
+    "hit_rate": 0.3425925925925926,
+    "mean_net_pct": -2.596911951041538,
+    "median_net_pct": -15.131177372070576,
+    "worst_loss_pct": -42.788824313709945,
+    "profit_factor": 0.8217835021253131,
+    "avg_days": 14.851851851851851,
+    "max_adverse_before_exit_pct": 63.19018404907975,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.09446738354044007
+  },
+  {
+   "type": "runner",
+   "rule": "close_above_prior_swing_high",
+   "trail_atr": 3.0,
+   "hold_days": 20,
+   "train": {
+    "events": 54,
+    "coins": 47,
+    "hit_rate": 0.3333333333333333,
+    "mean_net_pct": -5.337027961370793,
+    "median_net_pct": -13.927438408184978,
+    "worst_loss_pct": -37.86262923993956,
+    "profit_factor": 0.6180855255431026,
+    "avg_days": 16.333333333333332,
+    "max_adverse_before_exit_pct": 40.59070521996374,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 3
+   },
+   "validation": {
+    "events": 13,
+    "coins": 13,
+    "hit_rate": 0.38461538461538464,
+    "mean_net_pct": 12.333510734016219,
+    "median_net_pct": -8.550508460846132,
+    "worst_loss_pct": -27.016850248792508,
+    "profit_factor": 2.2266730232135585,
+    "avg_days": 14.923076923076923,
+    "max_adverse_before_exit_pct": 35.954556994160946,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.05649397923052306
+  },
+  {
+   "type": "runner",
+   "rule": "first_pullback_holds",
+   "trail_atr": 2.0,
+   "hold_days": 15,
+   "train": {
+    "events": 335,
+    "coins": 229,
+    "hit_rate": 0.24477611940298508,
+    "mean_net_pct": -5.927976851958987,
+    "median_net_pct": -15.454815462155597,
+    "worst_loss_pct": -36.31127579997036,
+    "profit_factor": 0.5603722160203802,
+    "avg_days": 9.325373134328359,
+    "max_adverse_before_exit_pct": 83.14072059823249,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 9
+   },
+   "validation": {
+    "events": 108,
+    "coins": 100,
+    "hit_rate": 0.24074074074074073,
+    "mean_net_pct": -5.85021790850567,
+    "median_net_pct": -15.322017382048081,
+    "worst_loss_pct": -42.788824313709945,
+    "profit_factor": 0.5856871082927081,
+    "avg_days": 9.333333333333334,
+    "max_adverse_before_exit_pct": 63.19018404907975,
+    "squeeze_stop_outs": 0,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.18880489654564153
+  },
+  {
+   "type": "pump_short",
+   "rule": "first_lower_high",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 299,
+    "coins": 217,
+    "hit_rate": 0.47157190635451507,
+    "mean_net_pct": -3.584476771709191,
+    "median_net_pct": -6.0811125470755565,
+    "worst_loss_pct": -46.602308040757364,
+    "profit_factor": 0.7253515530188894,
+    "avg_days": 11.133779264214047,
+    "max_adverse_before_exit_pct": 201.41337411559076,
+    "squeeze_stop_outs": 124,
+    "delisted_coin_trades": 8
+   },
+   "validation": {
+    "events": 63,
+    "coins": 58,
+    "hit_rate": 0.36507936507936506,
+    "mean_net_pct": -9.688603165311973,
+    "median_net_pct": -21.07674846551785,
+    "worst_loss_pct": -57.193975821347976,
+    "profit_factor": 0.4724599888851554,
+    "avg_days": 9.063492063492063,
+    "max_adverse_before_exit_pct": 95.78121167525143,
+    "squeeze_stop_outs": 31,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.18146093553624879
+  },
+  {
+   "type": "pump_short",
+   "rule": "break_last_higher_low",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 23,
+    "coins": 23,
+    "hit_rate": 0.4782608695652174,
+    "mean_net_pct": -1.9488341112163399,
+    "median_net_pct": -0.6421959678089139,
+    "worst_loss_pct": -39.712331446187115,
+    "profit_factor": 0.7597541376451754,
+    "avg_days": 14.304347826086957,
+    "max_adverse_before_exit_pct": 41.91744778819273,
+    "squeeze_stop_outs": 3,
+    "delisted_coin_trades": 0
+   },
+   "validation": {
+    "events": 1,
+    "coins": 1,
+    "hit_rate": 0.0,
+    "mean_net_pct": -37.33935779801599,
+    "median_net_pct": -37.33935779801599,
+    "worst_loss_pct": -37.33935779801599,
+    "profit_factor": 0.0,
+    "avg_days": 10.0,
+    "max_adverse_before_exit_pct": 50.150408250966905,
+    "squeeze_stop_outs": 1,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.18184707623997318
+  },
+  {
+   "type": "pump_short",
+   "rule": "funding_hot_longs_leaving",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 95,
+    "coins": 81,
+    "hit_rate": 0.47368421052631576,
+    "mean_net_pct": -2.7836963367077923,
+    "median_net_pct": -1.0046790198209448,
+    "worst_loss_pct": -42.63391487994338,
+    "profit_factor": 0.7732440032843303,
+    "avg_days": 12.578947368421053,
+    "max_adverse_before_exit_pct": 201.41337411559076,
+    "squeeze_stop_outs": 31,
+    "delisted_coin_trades": 1
+   },
+   "validation": {
+    "events": 18,
+    "coins": 18,
+    "hit_rate": 0.2777777777777778,
+    "mean_net_pct": -11.88328245835445,
+    "median_net_pct": -25.32379224222712,
+    "worst_loss_pct": -46.46665166397189,
+    "profit_factor": 0.43405144445512606,
+    "avg_days": 9.333333333333334,
+    "max_adverse_before_exit_pct": 90.30554834242189,
+    "squeeze_stop_outs": 10,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.16026306848799846
+  },
+  {
+   "type": "pump_short",
+   "rule": "blowoff_then_close_below_low",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 14,
+    "coins": 13,
+    "hit_rate": 0.35714285714285715,
+    "mean_net_pct": -12.629469333020365,
+    "median_net_pct": -27.010473881612494,
+    "worst_loss_pct": -44.51666693061718,
+    "profit_factor": 0.3391776478731522,
+    "avg_days": 10.928571428571429,
+    "max_adverse_before_exit_pct": 53.5135135135135,
+    "squeeze_stop_outs": 6,
+    "delisted_coin_trades": 0
+   },
+   "validation": {
+    "events": 0
+   },
+   "sharpe": -0.49748327147035776
+  },
+  {
+   "type": "pump_short",
+   "rule": "fixed_delay_3d",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 142,
+    "coins": 124,
+    "hit_rate": 0.5070422535211268,
+    "mean_net_pct": -2.034892023124681,
+    "median_net_pct": 0.21061277042755416,
+    "worst_loss_pct": -46.81570767255903,
+    "profit_factor": 0.8315207452789068,
+    "avg_days": 12.880281690140846,
+    "max_adverse_before_exit_pct": 75.93179049939098,
+    "squeeze_stop_outs": 39,
+    "delisted_coin_trades": 5
+   },
+   "validation": {
+    "events": 28,
+    "coins": 28,
+    "hit_rate": 0.39285714285714285,
+    "mean_net_pct": -7.300722723706346,
+    "median_net_pct": -18.773444447246547,
+    "worst_loss_pct": -50.086585763418356,
+    "profit_factor": 0.5909450252841584,
+    "avg_days": 9.964285714285714,
+    "max_adverse_before_exit_pct": 54.70444985609917,
+    "squeeze_stop_outs": 13,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.11000555165074787
+  },
+  {
+   "type": "pump_short",
+   "rule": "first_lower_high",
+   "trail_atr": 2.0,
+   "hold_days": 10,
+   "train": {
+    "events": 299,
+    "coins": 217,
+    "hit_rate": 0.39464882943143814,
+    "mean_net_pct": -5.27852446394875,
+    "median_net_pct": -11.493091748924227,
+    "worst_loss_pct": -46.29496226054654,
+    "profit_factor": 0.5454513804171622,
+    "avg_days": 7.488294314381271,
+    "max_adverse_before_exit_pct": 201.41337411559076,
+    "squeeze_stop_outs": 76,
+    "delisted_coin_trades": 8
+   },
+   "validation": {
+    "events": 63,
+    "coins": 58,
+    "hit_rate": 0.2857142857142857,
+    "mean_net_pct": -11.15519732512018,
+    "median_net_pct": -19.871987821432434,
+    "worst_loss_pct": -41.438036677233725,
+    "profit_factor": 0.37869501546070344,
+    "avg_days": 6.174603174603175,
+    "max_adverse_before_exit_pct": 95.78121167525143,
+    "squeeze_stop_outs": 26,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.3051238699397806
+  },
+  {
+   "type": "parabolic_short",
+   "rule": "first_lower_high",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 228,
+    "coins": 181,
+    "hit_rate": 0.44298245614035087,
+    "mean_net_pct": -4.832897231795508,
+    "median_net_pct": -15.937204150511796,
+    "worst_loss_pct": -46.29496226054654,
+    "profit_factor": 0.6596952654335917,
+    "avg_days": 10.587719298245615,
+    "max_adverse_before_exit_pct": 201.41337411559076,
+    "squeeze_stop_outs": 104,
+    "delisted_coin_trades": 6
+   },
+   "validation": {
+    "events": 40,
+    "coins": 39,
+    "hit_rate": 0.45,
+    "mean_net_pct": -7.26007167102425,
+    "median_net_pct": -17.228485156748068,
+    "worst_loss_pct": -57.193975821347976,
+    "profit_factor": 0.575795843350523,
+    "avg_days": 9.525,
+    "max_adverse_before_exit_pct": 90.55306427503736,
+    "squeeze_stop_outs": 17,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.19880737754257002
+  },
+  {
+   "type": "parabolic_short",
+   "rule": "blowoff_then_close_below_low",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 8,
+    "coins": 8,
+    "hit_rate": 0.25,
+    "mean_net_pct": -16.963252019172224,
+    "median_net_pct": -29.477985806396745,
+    "worst_loss_pct": -44.51666693061718,
+    "profit_factor": 0.2883022740624779,
+    "avg_days": 9.875,
+    "max_adverse_before_exit_pct": 53.5135135135135,
+    "squeeze_stop_outs": 5,
+    "delisted_coin_trades": 0
+   },
+   "validation": {
+    "events": 0
+   },
+   "sharpe": null
+  },
+  {
+   "type": "parabolic_short",
+   "rule": "funding_hot_longs_leaving",
+   "trail_atr": 3.0,
+   "hold_days": 15,
+   "train": {
+    "events": 68,
+    "coins": 61,
+    "hit_rate": 0.45588235294117646,
+    "mean_net_pct": -4.2808009540108385,
+    "median_net_pct": -3.4635903416449483,
+    "worst_loss_pct": -42.63391487994338,
+    "profit_factor": 0.6710726619014065,
+    "avg_days": 12.176470588235293,
+    "max_adverse_before_exit_pct": 201.41337411559076,
+    "squeeze_stop_outs": 23,
+    "delisted_coin_trades": 1
+   },
+   "validation": {
+    "events": 9,
+    "coins": 9,
+    "hit_rate": 0.2222222222222222,
+    "mean_net_pct": -17.97694188172661,
+    "median_net_pct": -34.711290913417706,
+    "worst_loss_pct": -46.46665166397189,
+    "profit_factor": 0.3297588234907622,
+    "avg_days": 6.888888888888889,
+    "max_adverse_before_exit_pct": 55.20195838433295,
+    "squeeze_stop_outs": 7,
+    "delisted_coin_trades": 0
+   },
+   "sharpe": -0.22509581559235758
+  },
+  {
+   "type": "parabolic_short",
+   "rule": "break_last_higher_low",
+   "trail_atr": 2.0,
+   "hold_days": 10,
+   "train": {
+    "events": 7,
+    "coins": 7,
+    "hit_rate": 0.7142857142857143,
+    "mean_net_pct": -0.23981013911491011,
+    "median_net_pct": 6.941039963930037,
+    "worst_loss_pct": -19.676255530151696,
+    "profit_factor": 0.9559814166275471,
+    "avg_days": 10.285714285714286,
+    "max_adverse_before_exit_pct": 32.64869490800173,
+    "squeeze_stop_outs": 1,
+    "delisted_coin_trades": 0
+   },
+   "validation": {
+    "events": 0
+   },
+   "sharpe": null
+  }
+ ],
+ "not_testable": {
+  "open_interest": "no OI history; 'funding hot while OI falls' uses funding only"
+ },
+ "evaa_case": {
+  "on_delta_india": true,
+  "symbol": "EVAAUSD",
+  "first_candle": "2025-10-07",
+  "peak_high": 13.7644,
+  "peak_day": "2025-10-27",
+  "last_close": 2.1766,
+  "drawdown_from_peak_pct": -84.18674261137427,
+  "days_listed": 414
+ }
+}
