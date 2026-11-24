@@ -7484,9 +7484,9 @@ def _mcx_close_time(now: datetime) -> datetime_time:
 
 
 def _mcx_session_open(now: datetime) -> bool:
-    """MCX trades Mon-Fri 09:00 to 23:30 IST (23:55 in the US winter); display hint only, the feed is the source of truth."""
-    local = _utc(now).astimezone(ZoneInfo("Asia/Kolkata"))
-    return local.weekday() < 5 and MCX_HOURS_IST[0] <= local.time() < _mcx_close_time(now)
+    """MCX session state from the MCX calendar (weekdays, hours, holidays; see services/mcx_calendar.py)."""
+    from app.services import mcx_calendar
+    return bool(mcx_calendar.session_state(now)["open"])
 
 
 def _mcx_front_contracts(db: Session, today: date) -> list[Any]:
@@ -7525,6 +7525,7 @@ def get_commodities(
         "exchange": "MCX",
         "hours_ist": f"{MCX_HOURS_IST[0].strftime('%H:%M')}–{_mcx_close_time(now).strftime('%H:%M')} Mon–Fri",
         "session_open": _mcx_session_open(now),
+        "session": __import__("app.services.mcx_calendar", fromlist=["x"]).session_state(now),
         "instruments": [
             {
                 "key": f"mcx:{row.security_id}", "security_id": row.security_id, "symbol": row.underlying_symbol,
@@ -7743,11 +7744,15 @@ async def dhan_commodity_quote_stream(
         await websocket.send_json({"type": "status", "status": "unavailable", "message": "No MCX contracts are available in the stored derivatives master."})
         await websocket.close(code=1000, reason="No subscriptions")
         return
+    from app.services import mcx_calendar
+    market = mcx_calendar.session_state(now)
+    expired = [row.trading_symbol for row in contracts if row.expiry < now.astimezone(ZoneInfo("Asia/Kolkata")).date()]
+    logger.info("mcx_stream_open open=%s reason=%s contracts=%d nearest_expiry=%s", market["open"], market["reason"], len(contracts), min((r.expiry for r in contracts), default=None))
     adapter = DhanAdapter()
     try:
         tokens = await asyncio.to_thread(_fresh_dhan_tokens_worker, active_session.user_id, adapter)
     except HTTPException:
-        await websocket.send_json({"type": "status", "status": "unavailable", "message": "Reconnect Dhan on the Brokers page to renew its session."})
+        await websocket.send_json({"type": "status", "status": "unavailable", "reason": "auth", "message": "Feed not receiving data: Dhan authentication failed. Reconnect Dhan on the Brokers page."})
         await websocket.close(code=4401)
         return
     # One REST snapshot at connect time: the day's reference close (for change) and the current prices, so the
@@ -7815,16 +7820,33 @@ async def dhan_commodity_quote_stream(
                 task.cancel()
 
     monitor = asyncio.create_task(watch_client())
-    pump_task = asyncio.create_task(pump())
+    # market closed: no live feed at all, only the last close from the REST snapshot, clearly labelled
+    pump_task = asyncio.create_task(pump()) if market["open"] else None
     try:
-        await websocket.send_json({
-            "type": "status", "status": "active" if _mcx_session_open(now) else "market_closed",
-            "message": None if _mcx_session_open(now) else "MCX is closed (09:00–23:30 IST, 23:55 in the US winter, Mon–Fri); showing the last feed values.",
-        })
+        if not market["open"]:
+            await websocket.send_json({"type": "status", "status": "market_closed", "reason": market["reason"],
+                                       "next_open": market["next_open"], "message": f"Market closed · {market['reason']}. Showing the last close; the live feed opens with the session ({market['hours']})."})
+            for key, bar in snapshot.items():
+                message = tick_message(key, bar)
+                message["last_close"] = True
+                await websocket.send_json(message)
+            await monitor                                   # keep the socket for pings only; nothing is subscribed
+            return
+        await websocket.send_json({"type": "status", "status": "connecting", "message": "Market open, waiting for the first tick."})
         for key, bar in snapshot.items():
             await websocket.send_json(tick_message(key, bar))
+        first_tick = time.monotonic()
+        got_tick = False
         while True:
-            event = await events.get()
+            try:
+                event = await asyncio.wait_for(events.get(), timeout=15 if not got_tick else None)
+            except asyncio.TimeoutError:
+                reason = ("contract expired or not found: " + ", ".join(expired)) if expired else (
+                    "subscription accepted but no packets (contract may not be trading, or Dhan data access is not enabled for MCX)")
+                logger.warning("mcx_no_ticks_after_15s reason=%s", reason)
+                await websocket.send_json({"type": "status", "status": "no_data", "reason": reason, "message": "Feed not receiving data: " + reason})
+                got_tick = True                             # report once; ticks that arrive later still flow
+                continue
             kind = event["type"]
             if kind == "status":
                 await websocket.send_json({"type": "status", "status": event["status"], "message": event.get("message")})
@@ -7833,13 +7855,16 @@ async def dhan_commodity_quote_stream(
                 if isinstance(value, Decimal) and value > 0:
                     previous_closes[event["instrument_id"]] = value
             elif kind == "error":
-                await websocket.send_json({"type": "status", "status": "unavailable", "message": event["message"]})
+                await websocket.send_json({"type": "status", "status": "unavailable", "reason": "auth" if event.get("status_code") in (401, 403) else "upstream", "message": "Feed not receiving data: " + str(event["message"])})
                 await websocket.close(code=_dhan_feed_close_code(event.get("status_code"), "commodity_upstream_rejected"))
                 return
             elif kind == "tick":
                 key, bar = event["instrument_id"], event["bar"]
                 if key not in symbols:
                     continue
+                if not got_tick:
+                    got_tick = True
+                    await websocket.send_json({"type": "status", "status": "active", "message": None})
                 moment = time.monotonic()
                 if moment - last_sent.get(key, 0.0) < 0.4:  # at most ~2.5 updates/second per contract
                     continue
@@ -7849,7 +7874,8 @@ async def dhan_commodity_quote_stream(
         pass
     finally:
         monitor.cancel()
-        pump_task.cancel()
+        if pump_task is not None:
+            pump_task.cancel()
 
 
 @router.websocket("/universe/stream")

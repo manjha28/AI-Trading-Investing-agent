@@ -17,7 +17,7 @@ export type CommodityTick = {
   receivedAt: number;
 };
 
-export type CommodityStreamStatus = 'idle' | 'connecting' | 'active' | 'reconnecting' | 'market_closed' | 'unavailable' | 'stale';
+export type CommodityStreamStatus = 'idle' | 'connecting' | 'active' | 'reconnecting' | 'market_closed' | 'unavailable' | 'stale' | 'no_data';
 
 type Message = {
   type?: string;
@@ -36,6 +36,7 @@ export function useCommodityStream(enabled = true) {
   const [status, setStatus] = useState<CommodityStreamStatus>('idle');
   const [message, setMessage] = useState<string | null>(null);
   const [ticks, setTicks] = useState<Record<string, CommodityTick>>({});
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!enabled) { setStatus('idle'); return undefined; }
@@ -75,7 +76,7 @@ export function useCommodityStream(enabled = true) {
         try { parsed = JSON.parse(String(event.data)) as Message; } catch { return; }
         if (parsed.type === 'status' && parsed.status) {
           const next = parsed.status as CommodityStreamStatus;
-          if (['connecting', 'active', 'reconnecting', 'market_closed', 'unavailable', 'idle'].includes(next)) {
+          if (['connecting', 'active', 'reconnecting', 'market_closed', 'unavailable', 'idle', 'no_data'].includes(next)) {
             // a packet-bearing "active" must not hide a closed-market notice from the server
             setStatus((current) => (next === 'active' && current === 'market_closed' ? current : next));
           }
@@ -112,7 +113,8 @@ export function useCommodityStream(enabled = true) {
       window.clearInterval(heartbeat);
       socket?.close();
     };
-  }, [enabled]);
+  }, [enabled, attempt]);
 
-  return { status, message, ticks };
+  const retry = () => { setStatus('connecting'); setMessage(null); setAttempt((n) => n + 1); };
+  return { status, message, ticks, retry };
 }

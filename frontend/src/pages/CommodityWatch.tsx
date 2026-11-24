@@ -7,7 +7,7 @@ type Contract = {
   key: string; security_id: string; symbol: string; name: string | null; contract: string; expiry: string;
   days_to_expiry: number; lot_size: string | null; tick_size: string | null;
 };
-type Commodities = { count: number; exchange: string; hours_ist: string; session_open: boolean; instruments: Contract[]; disclaimer: string };
+type Commodities = { count: number; exchange: string; hours_ist: string; session_open: boolean; session?: { open: boolean; reason: string | null; hours: string; next_open: string | null }; instruments: Contract[]; disclaimer: string };
 
 const numeric = (value: string | null | undefined): number | null => {
   if (value === null || value === undefined || value === '') return null;
@@ -70,16 +70,17 @@ export function CommodityWatch() {
   const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'symbol', dir: 'asc' });
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const { status: streamStatus, message: streamMessage, ticks } = useCommodityStream(true);
+  const { status: streamStatus, message: streamMessage, ticks, retry } = useCommodityStream(true);
   // The server decides the session once, at connect time, so a connection opened before the close would keep saying
   // LIVE. The label therefore follows the clock and the age of the newest tick, never a stale "active".
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 15_000); return () => window.clearInterval(timer); }, []);
-  const open = mcxSessionOpen(new Date(now));
+  const open = data?.session ? data.session.open : mcxSessionOpen(new Date(now));   // the server's MCX calendar (holidays, evening-only days) wins over the clock guess
   const newestTick = Math.max(0, ...Object.values(ticks).map((t) => t.receivedAt));
   const quiet = open && streamStatus === 'active' && newestTick > 0 && now - newestTick > STALE_AFTER_MS;
   const status: CommodityStreamStatus = !open ? 'market_closed' : quiet ? 'stale' : streamStatus;
-  const message = !open ? 'MCX is closed (09:00–23:30 IST, 23:55 in the US winter, Mon–Fri); showing the last received prices.'
+  const message = !open ? `Market closed · ${data?.session?.reason ?? 'outside MCX hours'}. Prices shown are the last close.`
+    : streamStatus === 'no_data' ? (streamMessage ?? 'Feed not receiving data.')
     : quiet ? 'No ticks for over 2 minutes — the exchange may be on a break or holiday. Prices shown are the last received.' : streamMessage;
 
   useEffect(() => {
@@ -121,7 +122,7 @@ export function CommodityWatch() {
   }, [ticks]);
   const selected = contracts.find((c) => c.key === selectedKey) ?? null;
   const tick = selected ? ticks[selected.key] : undefined;
-  const label = status === 'active' ? 'LIVE' : status === 'stale' ? 'NO RECENT TICKS' : status === 'market_closed' ? 'MCX CLOSED' : status === 'unavailable' ? 'FEED UNAVAILABLE' : status === 'idle' ? 'IDLE' : 'CONNECTING';
+  const label = status === 'active' ? 'LIVE' : status === 'stale' ? 'NO RECENT TICKS' : status === 'market_closed' ? 'MARKET CLOSED' : status === 'no_data' ? 'FEED NOT RECEIVING DATA' : status === 'unavailable' ? 'FEED UNAVAILABLE' : status === 'idle' ? 'IDLE' : 'CONNECTING';
 
   return (
     <div className="watch-page">
@@ -133,7 +134,7 @@ export function CommodityWatch() {
         <span className="negative">▼ <b>{stats.down}</b></span>
         <span className="watch-note">MCX · {data?.hours_ist ?? '09:00–23:30 IST'} · front-month futures · Dhan live feed · decision support, not investment advice</span>
       </div>
-      {(error || (message && status !== 'active')) && <p className="alerts-notice" role="alert">{error ?? message}</p>}
+      {(error || (message && status !== 'active')) && <p className="alerts-notice" role="alert">{error ?? message}{open && (status === 'no_data' || status === 'unavailable') && <> <button type="button" className="secondary-button" onClick={retry}>Retry</button></>}</p>}
       <div className="watch-split">
         <section className="data-section watch-table-panel" aria-label="Commodity watch">
           <div className="watch-scroll">

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommodityWatch, mcxSessionOpen } from './CommodityWatch';
 
-const stream = vi.hoisted(() => ({ value: { status: 'active', message: null as string | null, ticks: {} as Record<string, unknown> } }));
+const stream = vi.hoisted(() => ({ value: { status: 'active', message: null, ticks: {} } as { status: string; message: string | null; ticks: Record<string, unknown>; retry?: () => void } }));
 vi.mock('../hooks/useCommodityStream', () => ({ useCommodityStream: () => stream.value }));
 
 const contracts = {
@@ -23,7 +23,7 @@ const OPEN_TUESDAY = Date.UTC(2026, 10, 17, 6, 30);
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'], now: OPEN_TUESDAY });
-  stream.value = { status: 'active', message: null, ticks: {} };
+  stream.value = { status: 'active', message: null, ticks: {}, retry: undefined };
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(contracts), { status: 200, headers: { 'Content-Type': 'application/json' } })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -86,9 +86,9 @@ describe('CommodityWatch', () => {
     stream.value = { status: 'active', message: null, ticks: { 'mcx:2': tick('mcx:2', 'GOLD', { receivedAt: Date.UTC(2026, 10, 20, 17, 59) }) } };
     const { unmount } = render(<CommodityWatch />);
     await screen.findByText('GOLD');
-    expect(screen.getByText('● MCX CLOSED')).toBeTruthy();
+    expect(screen.getByText('● MARKET CLOSED')).toBeTruthy();
     expect(screen.queryByText('● LIVE')).toBeNull();
-    expect(screen.getByText(/MCX is closed \(09:00–23:30 IST, 23:55 in the US winter, Mon–Fri\)/)).toBeTruthy();
+    expect(screen.getByText(/Market closed · outside MCX hours\. Prices shown are the last close/)).toBeTruthy();
     expect(rowOf('GOLD').querySelector('.watch-dot.live')).toBeNull();        // no live dot after the close
     expect(document.querySelector('.watch-strip')?.textContent).toMatch(/1 with prices/);
     unmount();
@@ -171,5 +171,17 @@ describe('mcxSessionOpen', () => {
     expect(at('2026-07-15T18:00:00Z')).toBe(false);   // summer: 23:30 closed
     expect(at('2026-11-21T06:30:00Z')).toBe(false);   // Saturday midday
     expect(at('2026-11-22T06:30:00Z')).toBe(false);   // Sunday midday
+  });
+
+  it('when the market is open but the feed gets no data it says so with the reason and a Retry button, never "connecting"', async () => {
+    const retry = vi.fn();
+    stream.value = { status: 'no_data', message: 'Feed not receiving data: contract expired or not found: GOLD', ticks: {}, retry };
+    render(<CommodityWatch />);
+    await screen.findByText('GOLD');
+    expect(screen.getByText(/FEED NOT RECEIVING DATA/)).toBeTruthy();
+    expect(screen.getByText(/contract expired or not found: GOLD/)).toBeTruthy();
+    expect(screen.queryByText(/CONNECTING/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(retry).toHaveBeenCalled();
   });
 });

@@ -237,3 +237,4 @@
 - One execution state per venue (OFF / ARMED BUT BLOCKED / LIVE) read by every screen; blocked attempts are separate from the order ledger; arming has a confirmation step naming venue, strategy, quantity cap and leverage
 - Journal headline numbers follow the search box; alerts and watchlist stars update at once; Hold horizons open; research page clears the previous stock; daily close refresh, background Dhan snapshot refresh, bounded payloads
 - Top loading bar; compact daily report slimmer; watchlist venue-session cache; sentiment aggregates precomputed by the job (migration 0076)
+- MCX watch: MCX calendar (holidays, evening-only days), no feed when closed, 'Feed not receiving data' with reason and Retry after 15 s, 09:05 IST check log; Needs attention is a compact list; Delta Live switch re-read at send time

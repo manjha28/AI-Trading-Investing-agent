@@ -162,6 +162,9 @@ async def lifespan(_app: FastAPI):
     if settings.daily_close_refresh_enabled and "pytest" not in sys.modules:
         from app.daily_close_refresh import daily_close_refresh_loop
         _leader(daily_close_refresh_loop, 'daily_closes')
+    if "pytest" not in sys.modules:
+        from app.mcx_open_check import mcx_open_check_loop
+        _leader(mcx_open_check_loop, 'mcx_open_check')
     if settings.forward_test_enabled and "pytest" not in sys.modules:
         forward_task = _leader(forward_test_loop, 'forward_tests')
     if fundamentals_feed.feed_configured() and "pytest" not in sys.modules:

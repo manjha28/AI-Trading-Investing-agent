@@ -1,17 +1,30 @@
-import { Button, Chip } from './ui/kit';
+import { useState } from 'react';
 
-export type AttentionItem = { id: string; tone: 'negative' | 'caution' | 'info'; text: string; action?: { label: string; onClick: () => void } };
+export type AttentionItem = { id: string; tone: 'negative' | 'caution' | 'info'; text: string; count?: number; action?: { label: string; onClick: () => void } };
 
-/** The first thing Overview answers: what needs you now. Nothing listed means nothing is pending, and it says so. */
+const ICON = { negative: '●', caution: '▲', info: 'ℹ' } as const;
+const MAX_ROWS = 5;
+
+/** A quiet list in the Multibagger style: one row per item (icon, short text, count, link), five rows then "Show all".
+ *  Nothing is rendered when nothing needs attention or while it is still being worked out. */
 export function NeedsAttention({ items, loading }: { items: AttentionItem[]; loading?: boolean }) {
+  const [all, setAll] = useState(false);
+  if (loading || items.length === 0) return null;
+  const shown = all ? items : items.slice(0, MAX_ROWS);
   return (
     <section className="needs-attention" aria-label="Needs attention">
-      <h2>Needs attention {!loading && <Chip tone={items.length ? 'caution' : 'positive'}>{items.length ? `${items.length}` : 'all clear'}</Chip>}</h2>
-      {loading ? <p className="ui-muted" role="status" aria-busy="true">Checking…</p> : items.length === 0 ? <p className="ui-muted">Nothing needs your attention right now: no new alerts and every priced position is current.</p> : (
-        <ul>{items.map((i) => (
-          <li key={i.id}><Chip tone={i.tone}>{i.tone === 'negative' ? 'Act' : i.tone === 'caution' ? 'Check' : 'Info'}</Chip><span>{i.text}</span>{i.action && <Button size="sm" onClick={i.action.onClick}>{i.action.label}</Button>}</li>
-        ))}</ul>
-      )}
+      <h2>Needs attention <span className="na-total">{items.length}</span></h2>
+      <ul>
+        {shown.map((i) => (
+          <li key={i.id} className={`na-${i.tone}`}>
+            <span className="na-icon" aria-label={i.tone === 'negative' ? 'Act' : i.tone === 'caution' ? 'Check' : 'Info'}>{ICON[i.tone]}</span>
+            <span className="na-text">{i.text}</span>
+            {i.count !== undefined && <span className="na-count">{i.count}</span>}
+            {i.action && <button type="button" className="na-link" onClick={i.action.onClick}>{i.action.label}</button>}
+          </li>
+        ))}
+      </ul>
+      {items.length > MAX_ROWS && <button type="button" className="na-link na-more" onClick={() => setAll((v) => !v)}>{all ? 'Show fewer' : `Show all ${items.length}`}</button>}
     </section>
   );
 }
