@@ -10,6 +10,7 @@ from pydantic import SecretStr, ValidationError
 
 from app.config import settings
 from app.crypto_delta.candles import Candle
+from tests.test_crypto_delta import engine  # noqa: F401
 from app.crypto_delta.forward import Spec
 from app.delta_execution import client as dclient, guardrails as gr, policy, service
 from app.delta_execution.intent import DeltaOrderIntent, client_order_id
@@ -142,4 +143,40 @@ def test_leverage_call_is_capped_at_25(creds):
 def test_paper_only_test_places_nothing():
     class FT:
         execute_live = False
-    assert service.maybe_place(None, FT(), SPEC, [], [Candle(CLOSE, D(1), D(1), D(1), D(1), D(1))], NOW) is None
+    class DB:
+        def refresh(self, _row): pass
+    assert service.maybe_place(DB(), FT(), SPEC, [], [Candle(CLOSE, D(1), D(1), D(1), D(1), D(1))], NOW) is None
+
+
+# ---- a forward test with Live: off can never send, whatever else is on (armed, flag, credentials) ----
+def test_live_off_blocks_sending_and_a_switch_off_during_a_pass_is_respected(engine, monkeypatch):  # noqa: F811
+    from sqlalchemy.orm import Session
+
+    from app.delta_execution import policy
+    from app.models import User
+    from app.models.crypto_delta import CryptoForwardTest, DeltaLiveState
+    monkeypatch.setattr(settings, "delta_live_execution_enabled", True)
+    monkeypatch.setattr(settings, "delta_api_key", SecretStr("k")); monkeypatch.setattr(settings, "delta_api_secret", SecretStr("s"))
+    monkeypatch.setattr(policy, "environment_block", lambda: None)
+    sent = []
+    factory = lambda: dclient.DeltaOrderClient(transport=httpx.MockTransport(lambda r: (sent.append(str(r.url)), httpx.Response(200, json={"success": True, "result": {"id": 1}}))[1]))  # noqa: E731
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    close = now.replace(second=0, microsecond=0) - timedelta(minutes=now.minute % 5)
+    last = Candle(close - timedelta(minutes=5), D("100000"), D("100100"), D("99800"), D("100000"), D("1"))
+    entries = [{"side": "sell", "entry_time": last.open_time, "signal_time": last.open_time - timedelta(minutes=5), "entry_raw": D("100050"), "stop": D("100400"), "closed_same_bar": False}]
+    with Session(engine) as db:
+        user = User(email="liveoff@example.com", password_hash="x", email_verified=True, created_at=now)
+        db.add(user); db.flush()
+        db.add(DeltaLiveState(user_id=user.id, armed=True, max_daily_loss_usd=D(25), max_trades_per_day=6, max_open_positions=2, max_notional_usd=D(2000), updated_at=now))
+        ft = CryptoForwardTest(user_id=user.id, name="t", symbol="BTCUSD", resolution="5m", params={"ema": 5, "rr": "3", "direction": -1}, contracts=1, slippage_bps=D(5), start_time=now, status="active", execute_live=False, created_at=now, updated_at=now)
+        db.add(ft); db.commit()
+        at = close + timedelta(seconds=20)
+        assert service.maybe_place(db, ft, SPEC, entries, [last], at, factory) is None and sent == []             # Live: off, armed, flag on, credentials set: still nothing is sent
+        ft.execute_live = True; db.commit()
+        # the owner switches it off from another request while this pass holds a stale copy that still says Live: on
+        with Session(engine) as other:
+            other.get(CryptoForwardTest, ft.id).execute_live = False; other.commit()
+        assert ft.execute_live is True                                                                              # the stale in-memory copy
+        assert service.maybe_place(db, ft, SPEC, entries, [last], at, factory) is None and sent == []             # the fresh read wins: nothing is sent
+        assert db.query(__import__("app.models.crypto_delta", fromlist=["DeltaLiveOrder"]).DeltaLiveOrder).count() == 0

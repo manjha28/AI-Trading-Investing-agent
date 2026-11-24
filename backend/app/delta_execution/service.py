@@ -70,6 +70,7 @@ def build_context(db: Session, user_id: UUID, ft: CryptoForwardTest, spec: Spec,
 def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaOrderIntent, *, now: datetime, last_close: datetime | None, last_price: Decimal | None,
                   client_factory: ClientFactory = DeltaOrderClient) -> DeltaLiveOrder | None:
     """Run the guard-rails on one intent and, only if EVERY check passes, set the leverage and place it. Idempotent per signal."""
+    db.refresh(ft)                                  # the Live switch is read from the database at the moment of sending, never from a copy loaded earlier in the pass
     user_id = ft.user_id
     cid = client_order_id(intent, user_id)
     existing = db.scalar(select(DeltaLiveOrder).where(DeltaLiveOrder.client_order_id == cid))
@@ -113,6 +114,7 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
 def maybe_place(db: Session, ft: CryptoForwardTest, spec: Spec, entries: list[dict[str, Any]], candles: list[Candle], now: datetime,
                 client_factory: ClientFactory = DeltaOrderClient) -> DeltaLiveOrder | None:
     """Turn a paper entry that formed on the newest completed candle into a live intent. Older entries are never replayed into live orders."""
+    db.refresh(ft)                                  # a test switched to Live: off after this pass began must not send
     if not ft.execute_live or not candles:
         return None
     last = candles[-1]
