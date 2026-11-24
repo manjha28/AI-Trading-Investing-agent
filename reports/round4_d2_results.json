@@ -1,0 +1,4399 @@
+{
+ "cuts": {
+  "train": [
+   "2024-12-24",
+   "2025-12-09"
+  ],
+  "validation": [
+   "2025-12-09",
+   "2026-06-02"
+  ],
+  "holdout": [
+   "2026-06-02",
+   "2026-11-24"
+  ]
+ },
+ "symbols": [
+  "BTCUSD",
+  "XAUTUSD",
+  "ETHUSD",
+  "PAXGUSD",
+  "SOLUSD",
+  "EVAAUSD",
+  "AIOTUSD",
+  "BLESSUSD",
+  "SLVONUSD",
+  "LISTAUSD"
+ ],
+ "symbol_history_start": {
+  "BTCUSD": "2024-12-24",
+  "XAUTUSD": "2026-04-17",
+  "ETHUSD": "2024-12-24",
+  "PAXGUSD": "2026-02-19",
+  "SOLUSD": "2024-12-24",
+  "EVAAUSD": "2025-10-07",
+  "AIOTUSD": "2026-04-14",
+  "BLESSUSD": "2025-10-07",
+  "SLVONUSD": "2026-02-26",
+  "LISTAUSD": "2024-12-24"
+ },
+ "variants_this_round": 130,
+ "variants_total_with_prior": 278,
+ "variance_of_sharpe_across_variants": 0.0009932005064828223,
+ "finalists": [
+  {
+   "family": "F1_sweep",
+   "mode": "maker",
+   "params": [
+    96,
+    1.5,
+    2,
+    2.0
+   ],
+   "param_hash": "865ed9321a1fc918",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 638,
+    "gross_bps_per_trade": 3.350830154849139,
+    "net_bps_per_trade": -6.089082544994128,
+    "profit_factor": 0.9555122561380223,
+    "max_drawdown_bps": 11406.994713073453,
+    "win_rate": 0.390282131661442
+   },
+   "train": {
+    "trades": 723,
+    "gross_bps_per_trade": -1.6745199770705472,
+    "net_bps_per_trade": -10.988718713585069,
+    "profit_factor": 0.9243208158394247,
+    "max_drawdown_bps": 19820.028492392288,
+    "win_rate": 0.338865836791148
+   },
+   "holdout": {
+    "trades": 878,
+    "gross_bps_per_trade": -17.230836768243766,
+    "net_bps_per_trade": -27.17567564011165,
+    "profit_factor": 0.8240926878013394,
+    "max_drawdown_bps": 23921.289519297854,
+    "win_rate": 0.3530751708428246,
+    "missed_fills": 69,
+    "missed_would_net_bps": -62.742386089081926
+   },
+   "holdout_bootstrap90_net_bps": [
+    -56.21088654746947,
+    3.2879614051038577
+   ],
+   "holdout_thirds_net_bps": [
+    -29.33927053132429,
+    -24.421100205486688,
+    -27.64553661424611
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     88,
+     -11.74714292077196
+    ],
+    "XAUTUSD": [
+     93,
+     -28.638368503814803
+    ],
+    "ETHUSD": [
+     81,
+     8.576377312302668
+    ],
+    "PAXGUSD": [
+     95,
+     -29.452516695552042
+    ],
+    "SOLUSD": [
+     76,
+     -11.326022005337808
+    ],
+    "EVAAUSD": [
+     85,
+     -108.41129697317672
+    ],
+    "AIOTUSD": [
+     93,
+     -9.723171157860445
+    ],
+    "BLESSUSD": [
+     90,
+     7.580946589746004
+    ],
+    "SLVONUSD": [
+     126,
+     -24.569862225479177
+    ],
+    "LISTAUSD": [
+     51,
+     -91.4963443179301
+    ]
+   },
+   "deflated_probability": 2.1541190310281344e-05,
+   "random_baseline_mean_net_bps": -11.57240317241892,
+   "checks": {
+    "profit_factor_ge_1.3": false,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": true,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  },
+  {
+   "family": "F1_sweep",
+   "mode": "taker",
+   "params": [
+    96,
+    1.5,
+    2,
+    2.0
+   ],
+   "param_hash": "b10d2f98e4ce0167",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 688,
+    "gross_bps_per_trade": 19.033806951420384,
+    "net_bps_per_trade": 2.8430001178448077,
+    "profit_factor": 1.0215020276420859,
+    "max_drawdown_bps": 9847.529722646963,
+    "win_rate": 0.4127906976744186
+   },
+   "train": {
+    "trades": 753,
+    "gross_bps_per_trade": 0.18740454736375203,
+    "net_bps_per_trade": -15.31655751372523,
+    "profit_factor": 0.8960964580591002,
+    "max_drawdown_bps": 23584.17099862647,
+    "win_rate": 0.3466135458167331
+   },
+   "holdout": {
+    "trades": 916,
+    "gross_bps_per_trade": -8.740899711381479,
+    "net_bps_per_trade": -25.61958458037711,
+    "profit_factor": 0.835086938522269,
+    "max_drawdown_bps": 23297.727254388235,
+    "win_rate": 0.3635371179039301
+   },
+   "holdout_bootstrap90_net_bps": [
+    -54.187093931176726,
+    3.4616338853617807
+   ],
+   "holdout_thirds_net_bps": [
+    -24.037240056056895,
+    -31.70423805232627,
+    -21.28941828431034
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     90,
+     -17.056401499115335
+    ],
+    "XAUTUSD": [
+     95,
+     -35.68369003877217
+    ],
+    "ETHUSD": [
+     81,
+     6.825180126849383
+    ],
+    "PAXGUSD": [
+     97,
+     -36.75193236910156
+    ],
+    "SOLUSD": [
+     76,
+     -20.205536114124023
+    ],
+    "EVAAUSD": [
+     85,
+     -106.85203736537194
+    ],
+    "AIOTUSD": [
+     103,
+     9.251731614623129
+    ],
+    "BLESSUSD": [
+     93,
+     20.331629872296464
+    ],
+    "SLVONUSD": [
+     125,
+     -28.342850743226947
+    ],
+    "LISTAUSD": [
+     71,
+     -59.34203673647877
+    ]
+   },
+   "deflated_probability": 2.0152446198795637e-05,
+   "random_baseline_mean_net_bps": -14.200802033267019,
+   "checks": {
+    "profit_factor_ge_1.3": false,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": true,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  },
+  {
+   "family": "F2_funding",
+   "mode": "maker",
+   "params": [
+    0.9,
+    12,
+    48,
+    2.5
+   ],
+   "param_hash": "f8cd2cf1705f6587",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 125,
+    "gross_bps_per_trade": -20.84842863648583,
+    "net_bps_per_trade": -24.80497386448583,
+    "profit_factor": 0.9079397016239235,
+    "max_drawdown_bps": 12973.233654749822,
+    "win_rate": 0.336
+   },
+   "train": {
+    "trades": 121,
+    "gross_bps_per_trade": 2.2643104191503856,
+    "net_bps_per_trade": -3.2231945932462915,
+    "profit_factor": 0.9848981811647384,
+    "max_drawdown_bps": 8229.256342276709,
+    "win_rate": 0.36363636363636365
+   },
+   "holdout": {
+    "trades": 144,
+    "gross_bps_per_trade": 217.02555099996428,
+    "net_bps_per_trade": 219.93939942704762,
+    "profit_factor": 1.9198220503540575,
+    "max_drawdown_bps": 6553.3209848463885,
+    "win_rate": 0.3541666666666667,
+    "missed_fills": 32,
+    "missed_would_net_bps": 168.73072066283578
+   },
+   "holdout_bootstrap90_net_bps": [
+    -2.1005479311911133,
+    491.8259250161763
+   ],
+   "holdout_thirds_net_bps": [
+    437.48002655744835,
+    133.22131891587364,
+    76.05546049868003
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     17,
+     -47.275328790050736
+    ],
+    "XAUTUSD": [
+     1,
+     -52.33549069982415
+    ],
+    "ETHUSD": [
+     19,
+     102.88198336183272
+    ],
+    "SOLUSD": [
+     2,
+     -91.91620736290172
+    ],
+    "EVAAUSD": [
+     34,
+     505.39797740120144
+    ],
+    "AIOTUSD": [
+     18,
+     405.6999436536766
+    ],
+    "BLESSUSD": [
+     32,
+     356.4723375617952
+    ],
+    "LISTAUSD": [
+     21,
+     -244.61336623371187
+    ]
+   },
+   "deflated_probability": 0.7047313520748018,
+   "random_baseline_mean_net_bps": -14.020254567746571,
+   "checks": {
+    "profit_factor_ge_1.3": true,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": true,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": true,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  },
+  {
+   "family": "F2_funding",
+   "mode": "taker",
+   "params": [
+    0.9,
+    12,
+    48,
+    2.5
+   ],
+   "param_hash": "00bd99ec7d9baf79",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 150,
+    "gross_bps_per_trade": -2.7319544279137213,
+    "net_bps_per_trade": -14.135044544580378,
+    "profit_factor": 0.9450507033059551,
+    "max_drawdown_bps": 11394.58528262099,
+    "win_rate": 0.35333333333333333
+   },
+   "train": {
+    "trades": 133,
+    "gross_bps_per_trade": 11.347390692319758,
+    "net_bps_per_trade": -0.3738699392592046,
+    "profit_factor": 0.9981749452288863,
+    "max_drawdown_bps": 8360.956255605268,
+    "win_rate": 0.38345864661654133
+   },
+   "holdout": {
+    "trades": 165,
+    "gross_bps_per_trade": 219.64421094365022,
+    "net_bps_per_trade": 214.58358638304426,
+    "profit_factor": 1.9419516303235755,
+    "max_drawdown_bps": 6923.790411013091,
+    "win_rate": 0.38181818181818183
+   },
+   "holdout_bootstrap90_net_bps": [
+    14.784628483112183,
+    452.91339333445677
+   ],
+   "holdout_thirds_net_bps": [
+    456.7874371062736,
+    92.17041778825245,
+    94.57436371574384
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     17,
+     -51.851728169920555
+    ],
+    "XAUTUSD": [
+     1,
+     -59.89592907145244
+    ],
+    "ETHUSD": [
+     19,
+     98.42779151497689
+    ],
+    "SOLUSD": [
+     2,
+     -99.70109077862693
+    ],
+    "EVAAUSD": [
+     36,
+     458.1502028949619
+    ],
+    "AIOTUSD": [
+     26,
+     354.81767102938386
+    ],
+    "BLESSUSD": [
+     33,
+     332.14788849414833
+    ],
+    "LISTAUSD": [
+     31,
+     -64.60018926949702
+    ]
+   },
+   "deflated_probability": 0.7541473686386618,
+   "random_baseline_mean_net_bps": -10.485689788858375,
+   "checks": {
+    "profit_factor_ge_1.3": true,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": true,
+    "bootstrap90_lower_above_0": true,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": true,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  },
+  {
+   "family": "F4_session",
+   "mode": "maker",
+   "params": [
+    "us",
+    4,
+    true
+   ],
+   "param_hash": "101c4d5f9e1fc241",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 1165,
+    "gross_bps_per_trade": 5.843857946679454,
+    "net_bps_per_trade": -5.326339332719687,
+    "profit_factor": 0.9393048246043525,
+    "max_drawdown_bps": 15002.216492352702,
+    "win_rate": 0.41373390557939915
+   },
+   "train": {
+    "trades": 1405,
+    "gross_bps_per_trade": -17.34081015929602,
+    "net_bps_per_trade": -28.074479322285338,
+    "profit_factor": 0.7405830529678218,
+    "max_drawdown_bps": 40581.44266251064,
+    "win_rate": 0.4170818505338078
+   },
+   "holdout": {
+    "trades": 1527,
+    "gross_bps_per_trade": -0.9784480031202517,
+    "net_bps_per_trade": -12.439405803054761,
+    "profit_factor": 0.8533630284388131,
+    "max_drawdown_bps": 22770.347396269397,
+    "win_rate": 0.3654223968565815,
+    "missed_fills": 123,
+    "missed_would_net_bps": 65.08118538370312
+   },
+   "holdout_bootstrap90_net_bps": [
+    -26.9173522252947,
+    2.1915801606579675
+   ],
+   "holdout_thirds_net_bps": [
+    -29.412604377723664,
+    -15.111734655999081,
+    7.143611008115319
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     172,
+     -9.260173760818157
+    ],
+    "XAUTUSD": [
+     170,
+     -15.882006786749995
+    ],
+    "ETHUSD": [
+     171,
+     -9.479267375018695
+    ],
+    "PAXGUSD": [
+     172,
+     -15.203001221479132
+    ],
+    "SOLUSD": [
+     171,
+     -26.393253454767986
+    ],
+    "EVAAUSD": [
+     160,
+     -10.23298351163507
+    ],
+    "AIOTUSD": [
+     124,
+     10.600738937251226
+    ],
+    "BLESSUSD": [
+     162,
+     3.6857308481105546
+    ],
+    "SLVONUSD": [
+     164,
+     -16.062461869811656
+    ],
+    "LISTAUSD": [
+     61,
+     -58.90529943886566
+    ]
+   },
+   "deflated_probability": 1.5823885227694845e-06,
+   "random_baseline_mean_net_bps": -13.691863816961051,
+   "checks": {
+    "profit_factor_ge_1.3": false,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": true,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  },
+  {
+   "family": "F4_session",
+   "mode": "taker",
+   "params": [
+    "us",
+    4,
+    true
+   ],
+   "param_hash": "87872c87570fc97f",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 1267,
+    "gross_bps_per_trade": 22.574308992857492,
+    "net_bps_per_trade": 4.582221098224493,
+    "profit_factor": 1.0552367443834132,
+    "max_drawdown_bps": 8562.935113113403,
+    "win_rate": 0.4198895027624309
+   },
+   "train": {
+    "trades": 1498,
+    "gross_bps_per_trade": -7.77698675913052,
+    "net_bps_per_trade": -24.70292649511183,
+    "profit_factor": 0.7707746884778028,
+    "max_drawdown_bps": 38215.51342876493,
+    "win_rate": 0.41188251001335113
+   },
+   "holdout": {
+    "trades": 1647,
+    "gross_bps_per_trade": 10.6775337579584,
+    "net_bps_per_trade": -7.790699622733769,
+    "profit_factor": 0.906440869065624,
+    "max_drawdown_bps": 21519.705890521018,
+    "win_rate": 0.3551912568306011
+   },
+   "holdout_bootstrap90_net_bps": [
+    -21.563428760513208,
+    6.306333633045552
+   ],
+   "holdout_thirds_net_bps": [
+    -28.440836589490097,
+    -9.022473865662406,
+    13.083463368366246
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     175,
+     -10.992913778509244
+    ],
+    "XAUTUSD": [
+     175,
+     -23.25356601105735
+    ],
+    "ETHUSD": [
+     174,
+     -10.979673180908643
+    ],
+    "PAXGUSD": [
+     175,
+     -22.32472643036267
+    ],
+    "SOLUSD": [
+     174,
+     -33.42177761973901
+    ],
+    "EVAAUSD": [
+     175,
+     9.30718518209126
+    ],
+    "AIOTUSD": [
+     156,
+     46.958976733442775
+    ],
+    "BLESSUSD": [
+     174,
+     -0.5482879381822919
+    ],
+    "SLVONUSD": [
+     171,
+     -20.485821299629045
+    ],
+    "LISTAUSD": [
+     98,
+     -5.728050863724109
+    ]
+   },
+   "deflated_probability": 4.71352467745767e-06,
+   "random_baseline_mean_net_bps": -9.7677397668628,
+   "checks": {
+    "profit_factor_ge_1.3": false,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": true,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  },
+  {
+   "family": "F5_cross",
+   "mode": "taker",
+   "params": [
+    6,
+    24,
+    true
+   ],
+   "param_hash": "85013b0cf3c0a077",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 700,
+    "gross_bps_per_trade": 36.110148678631006,
+    "net_bps_per_trade": 17.667627020773867,
+    "profit_factor": 1.0829573589174435,
+    "max_drawdown_bps": 15874.555448707299,
+    "win_rate": 0.48714285714285716
+   },
+   "train": {
+    "trades": 252,
+    "gross_bps_per_trade": -194.86884336767656,
+    "net_bps_per_trade": -212.61007081212108,
+    "profit_factor": 0.6328503961767497,
+    "max_drawdown_bps": 63186.14439806558,
+    "win_rate": 0.4523809523809524
+   },
+   "holdout": {
+    "trades": 696,
+    "gross_bps_per_trade": 11.067348168371675,
+    "net_bps_per_trade": -6.108213108927178,
+    "profit_factor": 0.9793058926155653,
+    "max_drawdown_bps": 23494.88503557801,
+    "win_rate": 0.5014367816091954
+   },
+   "holdout_bootstrap90_net_bps": [
+    -95.76542924862694,
+    78.28532415313127
+   ],
+   "holdout_thirds_net_bps": [
+    13.074091541598644,
+    -8.093583670124286,
+    -23.9433794568498
+   ],
+   "per_symbol_holdout_net_bps": {
+    "ETHUSD": [
+     35,
+     35.0438434017182
+    ],
+    "SOLUSD": [
+     51,
+     -113.11836572939282
+    ],
+    "LISTAUSD": [
+     95,
+     -52.944050231310584
+    ],
+    "BLESSUSD": [
+     127,
+     -123.89208326371121
+    ],
+    "EVAAUSD": [
+     118,
+     224.14057236648077
+    ],
+    "XAUTUSD": [
+     31,
+     2.4346145375502153
+    ],
+    "PAXGUSD": [
+     36,
+     17.907555180834482
+    ],
+    "BTCUSD": [
+     29,
+     18.051521264827922
+    ],
+    "AIOTUSD": [
+     123,
+     -43.77017847256954
+    ],
+    "SLVONUSD": [
+     51,
+     -24.575089905517036
+    ]
+   },
+   "deflated_probability": 0.005865127565281181,
+   "random_baseline_mean_net_bps": -25.699215017681194,
+   "checks": {
+    "profit_factor_ge_1.3": false,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": true,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": true
+  },
+  {
+   "family": "F6_5ema",
+   "mode": "maker",
+   "params": [
+    5,
+    3.0,
+    0
+   ],
+   "param_hash": "786bcab0a695e549",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 2323,
+    "gross_bps_per_trade": -11.074256188719719,
+    "net_bps_per_trade": -21.444604070553556,
+    "profit_factor": 0.7718262898706305,
+    "max_drawdown_bps": 51513.52150776596,
+    "win_rate": 0.24881618596642274
+   },
+   "train": {
+    "trades": 2796,
+    "gross_bps_per_trade": -0.995836896710514,
+    "net_bps_per_trade": -10.816187080008081,
+    "profit_factor": 0.8974135586827969,
+    "max_drawdown_bps": 37453.25265229059,
+    "win_rate": 0.2550071530758226
+   },
+   "holdout": {
+    "trades": 3121,
+    "gross_bps_per_trade": -10.34407719503473,
+    "net_bps_per_trade": -20.915240418200387,
+    "profit_factor": 0.7908985028530333,
+    "max_drawdown_bps": 68003.9375369488,
+    "win_rate": 0.23614226209548222,
+    "missed_fills": 746,
+    "missed_would_net_bps": 2.1791978182230785
+   },
+   "holdout_bootstrap90_net_bps": [
+    -31.807368529292244,
+    -9.20179499208882
+   ],
+   "holdout_thirds_net_bps": [
+    -26.806216005579927,
+    -23.168559327469985,
+    -12.39090783034358
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     315,
+     -10.643377030226686
+    ],
+    "XAUTUSD": [
+     327,
+     -11.759360488541919
+    ],
+    "ETHUSD": [
+     317,
+     -14.8952303551884
+    ],
+    "PAXGUSD": [
+     314,
+     -10.552157729254482
+    ],
+    "SOLUSD": [
+     315,
+     -33.02133517882956
+    ],
+    "EVAAUSD": [
+     313,
+     -4.127939806252692
+    ],
+    "AIOTUSD": [
+     314,
+     -66.45704633638996
+    ],
+    "BLESSUSD": [
+     341,
+     -7.817968574710815
+    ],
+    "SLVONUSD": [
+     302,
+     -14.430157511655818
+    ],
+    "LISTAUSD": [
+     263,
+     -39.7650646712428
+    ]
+   },
+   "deflated_probability": 5.272449143944868e-13,
+   "random_baseline_mean_net_bps": -23.160410527243585,
+   "checks": {
+    "profit_factor_ge_1.3": false,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": false,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  },
+  {
+   "family": "F6_5ema",
+   "mode": "taker",
+   "params": [
+    5,
+    3.0,
+    -1
+   ],
+   "param_hash": "8e2aa28c50ea4b30",
+   "chosen_on": "validation net bps per trade",
+   "validation": {
+    "trades": 1747,
+    "gross_bps_per_trade": -2.888147700557194,
+    "net_bps_per_trade": -17.702633126143915,
+    "profit_factor": 0.8175745025942693,
+    "max_drawdown_bps": 31347.03635065278,
+    "win_rate": 0.2987979393245564
+   },
+   "train": {
+    "trades": 2024,
+    "gross_bps_per_trade": 3.2101622825443092,
+    "net_bps_per_trade": -12.355804829115772,
+    "profit_factor": 0.8798361911399528,
+    "max_drawdown_bps": 29285.795167890483,
+    "win_rate": 0.27223320158102765
+   },
+   "holdout": {
+    "trades": 2336,
+    "gross_bps_per_trade": -12.134953962550275,
+    "net_bps_per_trade": -28.138297666745487,
+    "profit_factor": 0.7267929338508454,
+    "max_drawdown_bps": 66435.51539312134,
+    "win_rate": 0.2589897260273973
+   },
+   "holdout_bootstrap90_net_bps": [
+    -40.00722947372653,
+    -15.745955249107151
+   ],
+   "holdout_thirds_net_bps": [
+    -30.74472819051528,
+    -31.286535653650287,
+    -22.27943595442138
+   ],
+   "per_symbol_holdout_net_bps": {
+    "BTCUSD": [
+     233,
+     -9.300983690069408
+    ],
+    "XAUTUSD": [
+     226,
+     -16.3912334316779
+    ],
+    "ETHUSD": [
+     228,
+     -7.542520459663839
+    ],
+    "PAXGUSD": [
+     221,
+     -14.239031410654947
+    ],
+    "SOLUSD": [
+     214,
+     -26.98562172660507
+    ],
+    "EVAAUSD": [
+     246,
+     -26.89800809076673
+    ],
+    "AIOTUSD": [
+     244,
+     -58.08662837121963
+    ],
+    "BLESSUSD": [
+     237,
+     -52.85633982893822
+    ],
+    "SLVONUSD": [
+     200,
+     -9.481491545487275
+    ],
+    "LISTAUSD": [
+     287,
+     -48.79712047616193
+    ]
+   },
+   "deflated_probability": 1.5849876966456122e-11,
+   "random_baseline_mean_net_bps": -10.460315806273089,
+   "checks": {
+    "profit_factor_ge_1.3": false,
+    "trades_ge_100": true,
+    "positive_in_2_of_3_subperiods": false,
+    "bootstrap90_lower_above_0": false,
+    "deflated_prob_ge_0.9": false,
+    "works_on_2_symbols": false,
+    "random_baseline_loses": true
+   },
+   "passed": false,
+   "event_universe": false
+  }
+ ],
+ "variants": [
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    1,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1232,
+    "gross_bps_per_trade": 4.626092551030707,
+    "net_bps_per_trade": -10.063801274456308,
+    "profit_factor": 0.9136738047738452,
+    "max_drawdown_bps": 27670.21162446148,
+    "win_rate": 0.39204545454545453
+   },
+   "validation": {
+    "trades": 1119,
+    "gross_bps_per_trade": 9.2734590302258,
+    "net_bps_per_trade": -5.646900813384564,
+    "profit_factor": 0.9419999260801689,
+    "max_drawdown_bps": 12496.89879804865,
+    "win_rate": 0.39499553172475427
+   },
+   "sharpe_trade_trainval": -0.020948017313088457
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    1,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1160,
+    "gross_bps_per_trade": -3.981955796623999,
+    "net_bps_per_trade": -12.663281120761933,
+    "profit_factor": 0.8931264306503927,
+    "max_drawdown_bps": 27209.214895051136,
+    "win_rate": 0.3689655172413793
+   },
+   "validation": {
+    "trades": 1034,
+    "gross_bps_per_trade": -6.013393727308489,
+    "net_bps_per_trade": -14.378438815316226,
+    "profit_factor": 0.8546723838857183,
+    "max_drawdown_bps": 15780.806571761377,
+    "win_rate": 0.38104448742746616
+   },
+   "sharpe_trade_trainval": -0.03530485710031512
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    1,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1202,
+    "gross_bps_per_trade": 6.223157751096484,
+    "net_bps_per_trade": -8.947761732680558,
+    "profit_factor": 0.9272831939061392,
+    "max_drawdown_bps": 28397.964944018197,
+    "win_rate": 0.34608985024958405
+   },
+   "validation": {
+    "trades": 1088,
+    "gross_bps_per_trade": 8.362746431803513,
+    "net_bps_per_trade": -7.131610091174433,
+    "profit_factor": 0.9320789647638217,
+    "max_drawdown_bps": 12623.18392877838,
+    "win_rate": 0.35294117647058826
+   },
+   "sharpe_trade_trainval": -0.019162805961212507
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    1,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1134,
+    "gross_bps_per_trade": -2.263742968284831,
+    "net_bps_per_trade": -11.428312023399469,
+    "profit_factor": 0.9075604540264584,
+    "max_drawdown_bps": 28926.07977788144,
+    "win_rate": 0.3271604938271605
+   },
+   "validation": {
+    "trades": 1006,
+    "gross_bps_per_trade": -10.588702047864293,
+    "net_bps_per_trade": -19.550521480766875,
+    "profit_factor": 0.81707815625769,
+    "max_drawdown_bps": 20881.143997022024,
+    "win_rate": 0.3349900596421471
+   },
+   "sharpe_trade_trainval": -0.03622720794573069
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    2,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1574,
+    "gross_bps_per_trade": 8.870365327595941,
+    "net_bps_per_trade": -6.064466504043188,
+    "profit_factor": 0.9523787746631763,
+    "max_drawdown_bps": 29030.024289052577,
+    "win_rate": 0.4040660736975858
+   },
+   "validation": {
+    "trades": 1489,
+    "gross_bps_per_trade": 7.880005841917797,
+    "net_bps_per_trade": -7.259472373327335,
+    "profit_factor": 0.9347732704569409,
+    "max_drawdown_bps": 17869.07105745513,
+    "win_rate": 0.41907320349227667
+   },
+   "sharpe_trade_trainval": -0.01590138302816449
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    2,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1498,
+    "gross_bps_per_trade": 0.20727143649267876,
+    "net_bps_per_trade": -8.630763403627482,
+    "profit_factor": 0.9319699438211372,
+    "max_drawdown_bps": 25504.49809587765,
+    "win_rate": 0.3925233644859813
+   },
+   "validation": {
+    "trades": 1368,
+    "gross_bps_per_trade": -8.91851322002594,
+    "net_bps_per_trade": -17.30864050109319,
+    "profit_factor": 0.850059597857662,
+    "max_drawdown_bps": 28273.0535584236,
+    "win_rate": 0.3961988304093567
+   },
+   "sharpe_trade_trainval": -0.03298287056050632
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    2,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1511,
+    "gross_bps_per_trade": 15.941450646561236,
+    "net_bps_per_trade": 0.5586823421270853,
+    "profit_factor": 1.0041809229181509,
+    "max_drawdown_bps": 25911.84766406437,
+    "win_rate": 0.36598279285241564
+   },
+   "validation": {
+    "trades": 1441,
+    "gross_bps_per_trade": 9.12681723665209,
+    "net_bps_per_trade": -6.5577675062347955,
+    "profit_factor": 0.9442163031940668,
+    "max_drawdown_bps": 17290.088941087244,
+    "win_rate": 0.38653712699514226
+   },
+   "sharpe_trade_trainval": -0.006002497794891092
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    1.5,
+    2,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1441,
+    "gross_bps_per_trade": 5.854048792940016,
+    "net_bps_per_trade": -3.37790869907942,
+    "profit_factor": 0.9744782674519061,
+    "max_drawdown_bps": 25223.213521110516,
+    "win_rate": 0.3573907009021513
+   },
+   "validation": {
+    "trades": 1325,
+    "gross_bps_per_trade": -9.088834785295782,
+    "net_bps_per_trade": -17.95511230755993,
+    "profit_factor": 0.8512766278831668,
+    "max_drawdown_bps": 29181.68280769101,
+    "win_rate": 0.3652830188679245
+   },
+   "sharpe_trade_trainval": -0.02403414349490206
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    1,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 935,
+    "gross_bps_per_trade": -4.175867423384984,
+    "net_bps_per_trade": -18.959315659748622,
+    "profit_factor": 0.8486231256880956,
+    "max_drawdown_bps": 21569.25863539727,
+    "win_rate": 0.3764705882352941
+   },
+   "validation": {
+    "trades": 944,
+    "gross_bps_per_trade": 14.157608065437179,
+    "net_bps_per_trade": -0.8122148397535011,
+    "profit_factor": 0.9921360532146555,
+    "max_drawdown_bps": 9892.785148147126,
+    "win_rate": 0.4025423728813559
+   },
+   "sharpe_trade_trainval": -0.026210847635479997
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    1,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 873,
+    "gross_bps_per_trade": -14.074423576049,
+    "net_bps_per_trade": -22.827037876163548,
+    "profit_factor": 0.8209036798428117,
+    "max_drawdown_bps": 22375.050203453633,
+    "win_rate": 0.35051546391752575
+   },
+   "validation": {
+    "trades": 868,
+    "gross_bps_per_trade": -3.4650693178071625,
+    "net_bps_per_trade": -11.751082213544494,
+    "profit_factor": 0.8886245555106411,
+    "max_drawdown_bps": 12023.032289357378,
+    "win_rate": 0.3870967741935484
+   },
+   "sharpe_trade_trainval": -0.04635548543536498
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    1,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 918,
+    "gross_bps_per_trade": -2.0957452419385967,
+    "net_bps_per_trade": -17.26276716296256,
+    "profit_factor": 0.8672110576817248,
+    "max_drawdown_bps": 20797.328223487573,
+    "win_rate": 0.33769063180827885
+   },
+   "validation": {
+    "trades": 919,
+    "gross_bps_per_trade": 13.72102465247367,
+    "net_bps_per_trade": -1.9132473404534258,
+    "profit_factor": 0.9826544824277503,
+    "max_drawdown_bps": 9193.358688439524,
+    "win_rate": 0.3601741022850925
+   },
+   "sharpe_trade_trainval": -0.024280487308094078
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    1,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 858,
+    "gross_bps_per_trade": -11.812434059707497,
+    "net_bps_per_trade": -20.92710449968419,
+    "profit_factor": 0.8398931746261384,
+    "max_drawdown_bps": 21480.768010512114,
+    "win_rate": 0.317016317016317
+   },
+   "validation": {
+    "trades": 848,
+    "gross_bps_per_trade": -7.93351839283217,
+    "net_bps_per_trade": -16.876292273728396,
+    "profit_factor": 0.8502583970918826,
+    "max_drawdown_bps": 15524.41523549222,
+    "win_rate": 0.3419811320754717
+   },
+   "sharpe_trade_trainval": -0.04894257777683551
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    2,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1240,
+    "gross_bps_per_trade": 6.318693683476566,
+    "net_bps_per_trade": -8.781426304829887,
+    "profit_factor": 0.9340781460753833,
+    "max_drawdown_bps": 25165.62019752436,
+    "win_rate": 0.3919354838709677
+   },
+   "validation": {
+    "trades": 1258,
+    "gross_bps_per_trade": 8.753659831286386,
+    "net_bps_per_trade": -6.507399874198511,
+    "profit_factor": 0.9445375616326324,
+    "max_drawdown_bps": 14926.264393985663,
+    "win_rate": 0.4165341812400636
+   },
+   "sharpe_trade_trainval": -0.017382138824606513
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    2,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1175,
+    "gross_bps_per_trade": -2.833390870823093,
+    "net_bps_per_trade": -11.81162101507841,
+    "profit_factor": 0.9113600385459939,
+    "max_drawdown_bps": 22022.663599674164,
+    "win_rate": 0.37617021276595747
+   },
+   "validation": {
+    "trades": 1153,
+    "gross_bps_per_trade": -8.797719586699488,
+    "net_bps_per_trade": -17.234277569353438,
+    "profit_factor": 0.8584927716316192,
+    "max_drawdown_bps": 24771.137261588658,
+    "win_rate": 0.39375542064180397
+   },
+   "sharpe_trade_trainval": -0.03575965262118539
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    2,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1201,
+    "gross_bps_per_trade": 13.729308950902297,
+    "net_bps_per_trade": -1.8193746973075349,
+    "profit_factor": 0.9869757050851183,
+    "max_drawdown_bps": 24294.552900987193,
+    "win_rate": 0.3563696919233972
+   },
+   "validation": {
+    "trades": 1221,
+    "gross_bps_per_trade": 7.3846322401972175,
+    "net_bps_per_trade": -8.520436059557078,
+    "profit_factor": 0.9309635412170204,
+    "max_drawdown_bps": 21022.286102930902,
+    "win_rate": 0.3808353808353808
+   },
+   "sharpe_trade_trainval": -0.010204673659880247
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    24,
+    2.0,
+    2,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1144,
+    "gross_bps_per_trade": 4.423803593554519,
+    "net_bps_per_trade": -4.921245441847581,
+    "profit_factor": 0.9643230846324733,
+    "max_drawdown_bps": 22130.001284302372,
+    "win_rate": 0.34527972027972026
+   },
+   "validation": {
+    "trades": 1125,
+    "gross_bps_per_trade": -11.390599250014919,
+    "net_bps_per_trade": -20.36100304512603,
+    "profit_factor": 0.8407106629849663,
+    "max_drawdown_bps": 30124.499283936508,
+    "win_rate": 0.36088888888888887
+   },
+   "sharpe_trade_trainval": -0.02791954116775861
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    1,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 900,
+    "gross_bps_per_trade": 3.4308414488569703,
+    "net_bps_per_trade": -11.323876774476371,
+    "profit_factor": 0.9068780819622545,
+    "max_drawdown_bps": 23734.318025365177,
+    "win_rate": 0.38
+   },
+   "validation": {
+    "trades": 812,
+    "gross_bps_per_trade": 4.681838525097177,
+    "net_bps_per_trade": -10.388728304952085,
+    "profit_factor": 0.901667018542418,
+    "max_drawdown_bps": 12137.809052308901,
+    "win_rate": 0.3916256157635468
+   },
+   "sharpe_trade_trainval": -0.026461502016365435
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    1,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 858,
+    "gross_bps_per_trade": -5.702372814009026,
+    "net_bps_per_trade": -14.468971463775933,
+    "profit_factor": 0.8816413772911431,
+    "max_drawdown_bps": 23096.27116181837,
+    "win_rate": 0.358974358974359
+   },
+   "validation": {
+    "trades": 757,
+    "gross_bps_per_trade": -10.637081594839803,
+    "net_bps_per_trade": -19.098357129185903,
+    "profit_factor": 0.8228821232518917,
+    "max_drawdown_bps": 15212.450163475687,
+    "win_rate": 0.3751651254953765
+   },
+   "sharpe_trade_trainval": -0.040304783156436555
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    1,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 882,
+    "gross_bps_per_trade": 7.5710361966597475,
+    "net_bps_per_trade": -7.542383261957045,
+    "profit_factor": 0.9404279254343121,
+    "max_drawdown_bps": 22887.567082591555,
+    "win_rate": 0.3424036281179138
+   },
+   "validation": {
+    "trades": 798,
+    "gross_bps_per_trade": 5.959547845332928,
+    "net_bps_per_trade": -9.636474971083114,
+    "profit_factor": 0.914894527292265,
+    "max_drawdown_bps": 11548.173423994005,
+    "win_rate": 0.35714285714285715
+   },
+   "sharpe_trade_trainval": -0.018658598287109755
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    1,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 843,
+    "gross_bps_per_trade": -1.563594307193595,
+    "net_bps_per_trade": -10.686537240764176,
+    "profit_factor": 0.9151799281426696,
+    "max_drawdown_bps": 23041.201656030407,
+    "win_rate": 0.3250296559905101
+   },
+   "validation": {
+    "trades": 746,
+    "gross_bps_per_trade": -12.131973042144887,
+    "net_bps_per_trade": -21.110566959705213,
+    "profit_factor": 0.816721604954169,
+    "max_drawdown_bps": 16654.596086064314,
+    "win_rate": 0.339142091152815
+   },
+   "sharpe_trade_trainval": -0.03412372074629887
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    2,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1148,
+    "gross_bps_per_trade": -1.9865412972225558,
+    "net_bps_per_trade": -16.908524543738235,
+    "profit_factor": 0.8698170532358349,
+    "max_drawdown_bps": 26460.11234293926,
+    "win_rate": 0.3989547038327526
+   },
+   "validation": {
+    "trades": 1070,
+    "gross_bps_per_trade": 5.046142756007588,
+    "net_bps_per_trade": -10.393346677169985,
+    "profit_factor": 0.9132161229801845,
+    "max_drawdown_bps": 15660.451723766124,
+    "win_rate": 0.4177570093457944
+   },
+   "sharpe_trade_trainval": -0.03446338115536466
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    2,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1089,
+    "gross_bps_per_trade": -5.770953373439847,
+    "net_bps_per_trade": -14.64145904928925,
+    "profit_factor": 0.8872664824058467,
+    "max_drawdown_bps": 22212.783811171903,
+    "win_rate": 0.3856749311294766
+   },
+   "validation": {
+    "trades": 990,
+    "gross_bps_per_trade": -9.131883904805374,
+    "net_bps_per_trade": -17.827000085108406,
+    "profit_factor": 0.8557377652078089,
+    "max_drawdown_bps": 19585.224543169446,
+    "win_rate": 0.397979797979798
+   },
+   "sharpe_trade_trainval": -0.039478148550878896
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    2,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1124,
+    "gross_bps_per_trade": 4.6782388535283825,
+    "net_bps_per_trade": -10.637656021471619,
+    "profit_factor": 0.9214708089831474,
+    "max_drawdown_bps": 25520.750787771158,
+    "win_rate": 0.36565836298932386
+   },
+   "validation": {
+    "trades": 1050,
+    "gross_bps_per_trade": 11.179276725831299,
+    "net_bps_per_trade": -4.783522493692508,
+    "profit_factor": 0.9616272062345792,
+    "max_drawdown_bps": 14410.714026038015,
+    "win_rate": 0.3904761904761905
+   },
+   "sharpe_trade_trainval": -0.017476723571948207
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    1.5,
+    2,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1065,
+    "gross_bps_per_trade": -0.22013401112163175,
+    "net_bps_per_trade": -9.471629646332898,
+    "profit_factor": 0.9298974154381154,
+    "max_drawdown_bps": 21999.86244894082,
+    "win_rate": 0.3530516431924883
+   },
+   "validation": {
+    "trades": 971,
+    "gross_bps_per_trade": -5.1178292975034525,
+    "net_bps_per_trade": -14.30723012551581,
+    "profit_factor": 0.8885218810447362,
+    "max_drawdown_bps": 19178.730434371206,
+    "win_rate": 0.3717816683831102
+   },
+   "sharpe_trade_trainval": -0.025844838696589312
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    1,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 691,
+    "gross_bps_per_trade": 10.287870559065185,
+    "net_bps_per_trade": -4.599991120384883,
+    "profit_factor": 0.964532026985932,
+    "max_drawdown_bps": 16505.28346719733,
+    "win_rate": 0.37771345875542695
+   },
+   "validation": {
+    "trades": 698,
+    "gross_bps_per_trade": 7.262813966312596,
+    "net_bps_per_trade": -7.855460329532682,
+    "profit_factor": 0.929554133158822,
+    "max_drawdown_bps": 12648.373144608082,
+    "win_rate": 0.4040114613180516
+   },
+   "sharpe_trade_trainval": -0.013910451514592033
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    1,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 654,
+    "gross_bps_per_trade": 0.3577853802613871,
+    "net_bps_per_trade": -8.482208741298253,
+    "profit_factor": 0.9351394803660009,
+    "max_drawdown_bps": 16644.646947502653,
+    "win_rate": 0.3547400611620795
+   },
+   "validation": {
+    "trades": 646,
+    "gross_bps_per_trade": -8.359611766826308,
+    "net_bps_per_trade": -16.764901016052313,
+    "profit_factor": 0.8525127797230462,
+    "max_drawdown_bps": 13045.644332873348,
+    "win_rate": 0.39164086687306504
+   },
+   "sharpe_trade_trainval": -0.027891365290440374
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    1,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 680,
+    "gross_bps_per_trade": 14.992683978152245,
+    "net_bps_per_trade": -0.22418181890658054,
+    "profit_factor": 0.9983310149530827,
+    "max_drawdown_bps": 15725.470890959901,
+    "win_rate": 0.3426470588235294
+   },
+   "validation": {
+    "trades": 685,
+    "gross_bps_per_trade": 9.085443907621999,
+    "net_bps_per_trade": -6.649091957341504,
+    "profit_factor": 0.9437178943520589,
+    "max_drawdown_bps": 12391.967540447864,
+    "win_rate": 0.3678832116788321
+   },
+   "sharpe_trade_trainval": -0.006947100215532008
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    1,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 645,
+    "gross_bps_per_trade": 5.387830875232059,
+    "net_bps_per_trade": -3.7702090472485534,
+    "profit_factor": 0.9718624766970385,
+    "max_drawdown_bps": 16575.51144251005,
+    "win_rate": 0.324031007751938
+   },
+   "validation": {
+    "trades": 637,
+    "gross_bps_per_trade": -9.134382531324283,
+    "net_bps_per_trade": -18.140847218137477,
+    "profit_factor": 0.8484530094528349,
+    "max_drawdown_bps": 13276.05453525718,
+    "win_rate": 0.3532182103610675
+   },
+   "sharpe_trade_trainval": -0.02195800784865522
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    2,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 906,
+    "gross_bps_per_trade": -6.022103114521582,
+    "net_bps_per_trade": -21.149951842446534,
+    "profit_factor": 0.8483786668593478,
+    "max_drawdown_bps": 25025.834035630858,
+    "win_rate": 0.37969094922737306
+   },
+   "validation": {
+    "trades": 920,
+    "gross_bps_per_trade": 6.824034758352659,
+    "net_bps_per_trade": -8.681304340016908,
+    "profit_factor": 0.9300897094022423,
+    "max_drawdown_bps": 14464.062275096687,
+    "win_rate": 0.42717391304347824
+   },
+   "sharpe_trade_trainval": -0.035110515521572516
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    2,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 857,
+    "gross_bps_per_trade": -10.046380210113346,
+    "net_bps_per_trade": -19.113156547336207,
+    "profit_factor": 0.8636183188145352,
+    "max_drawdown_bps": 21484.816583616626,
+    "win_rate": 0.3628938156359393
+   },
+   "validation": {
+    "trades": 849,
+    "gross_bps_per_trade": -8.545335056968518,
+    "net_bps_per_trade": -17.266047416214693,
+    "profit_factor": 0.8663010895975938,
+    "max_drawdown_bps": 17468.042175161303,
+    "win_rate": 0.4075382803297998
+   },
+   "sharpe_trade_trainval": -0.041783946969042245
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    2,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 888,
+    "gross_bps_per_trade": 1.4672667906897785,
+    "net_bps_per_trade": -14.007022611337248,
+    "profit_factor": 0.9032805734425277,
+    "max_drawdown_bps": 24145.346614301176,
+    "win_rate": 0.3536036036036036
+   },
+   "validation": {
+    "trades": 907,
+    "gross_bps_per_trade": 10.705898152852175,
+    "net_bps_per_trade": -5.327159008118063,
+    "profit_factor": 0.9592693054453828,
+    "max_drawdown_bps": 13835.984888411147,
+    "win_rate": 0.39691289966923926
+   },
+   "sharpe_trade_trainval": -0.020289177740074424
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    48,
+    2.0,
+    2,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 842,
+    "gross_bps_per_trade": -2.373020531788893,
+    "net_bps_per_trade": -11.730777902929033,
+    "profit_factor": 0.9187970567290902,
+    "max_drawdown_bps": 20864.754240487535,
+    "win_rate": 0.33966745843230406
+   },
+   "validation": {
+    "trades": 838,
+    "gross_bps_per_trade": -6.134360915233025,
+    "net_bps_per_trade": -15.367885612727054,
+    "profit_factor": 0.8860933958617262,
+    "max_drawdown_bps": 18908.023781771044,
+    "win_rate": 0.38066825775656327
+   },
+   "sharpe_trade_trainval": -0.027952065977213586
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    1,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 585,
+    "gross_bps_per_trade": 1.7849473647189922,
+    "net_bps_per_trade": -13.099657938699814,
+    "profit_factor": 0.901774557706573,
+    "max_drawdown_bps": 21149.518439588817,
+    "win_rate": 0.35555555555555557
+   },
+   "validation": {
+    "trades": 521,
+    "gross_bps_per_trade": 8.176314574241584,
+    "net_bps_per_trade": -6.929832505412926,
+    "profit_factor": 0.9415244829490269,
+    "max_drawdown_bps": 8716.036164522055,
+    "win_rate": 0.39923224568138194
+   },
+   "sharpe_trade_trainval": -0.021305449602230537
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    1,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 567,
+    "gross_bps_per_trade": -7.145309105324859,
+    "net_bps_per_trade": -16.045383061233142,
+    "profit_factor": 0.8795105383943915,
+    "max_drawdown_bps": 21351.931160467837,
+    "win_rate": 0.3403880070546737
+   },
+   "validation": {
+    "trades": 490,
+    "gross_bps_per_trade": -5.394910335001458,
+    "net_bps_per_trade": -13.897534137042271,
+    "profit_factor": 0.8839019582166776,
+    "max_drawdown_bps": 9689.38165154702,
+    "win_rate": 0.3816326530612245
+   },
+   "sharpe_trade_trainval": -0.0314229146051491
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    1,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 580,
+    "gross_bps_per_trade": 7.251322800748378,
+    "net_bps_per_trade": -7.919228077699902,
+    "profit_factor": 0.9426153842050201,
+    "max_drawdown_bps": 20705.243148124315,
+    "win_rate": 0.31551724137931036
+   },
+   "validation": {
+    "trades": 517,
+    "gross_bps_per_trade": 12.058916415229602,
+    "net_bps_per_trade": -3.650568095408697,
+    "profit_factor": 0.9709465512963238,
+    "max_drawdown_bps": 8436.76515173897,
+    "win_rate": 0.37524177949709864
+   },
+   "sharpe_trade_trainval": -0.010962733784428975
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    1,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 562,
+    "gross_bps_per_trade": -1.8177512221696481,
+    "net_bps_per_trade": -11.01313817056822,
+    "profit_factor": 0.9193155679125523,
+    "max_drawdown_bps": 21745.959044371302,
+    "win_rate": 0.304270462633452
+   },
+   "validation": {
+    "trades": 486,
+    "gross_bps_per_trade": -5.6306001953509925,
+    "net_bps_per_trade": -14.739298506050586,
+    "profit_factor": 0.884440675000847,
+    "max_drawdown_bps": 12613.655848652917,
+    "win_rate": 0.3559670781893004
+   },
+   "sharpe_trade_trainval": -0.023718795723921514
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    2,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 759,
+    "gross_bps_per_trade": -7.4445710973739905,
+    "net_bps_per_trade": -22.634273611207977,
+    "profit_factor": 0.8412993292142131,
+    "max_drawdown_bps": 26289.241530783464,
+    "win_rate": 0.37681159420289856
+   },
+   "validation": {
+    "trades": 696,
+    "gross_bps_per_trade": 13.809830176055458,
+    "net_bps_per_trade": -1.7754915243755716,
+    "profit_factor": 0.985980407489741,
+    "max_drawdown_bps": 8101.070896332184,
+    "win_rate": 0.4410919540229885
+   },
+   "sharpe_trade_trainval": -0.028164590327814345
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    2,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 729,
+    "gross_bps_per_trade": -9.33507507497879,
+    "net_bps_per_trade": -18.359914227242168,
+    "profit_factor": 0.8697490380780344,
+    "max_drawdown_bps": 21949.987318899002,
+    "win_rate": 0.36899862825788754
+   },
+   "validation": {
+    "trades": 646,
+    "gross_bps_per_trade": -0.15639781652560095,
+    "net_bps_per_trade": -9.017408277051912,
+    "profit_factor": 0.9314055484855885,
+    "max_drawdown_bps": 10481.556229499249,
+    "win_rate": 0.4179566563467492
+   },
+   "sharpe_trade_trainval": -0.030249800040753776
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    2,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 753,
+    "gross_bps_per_trade": 0.18740454736375203,
+    "net_bps_per_trade": -15.31655751372523,
+    "profit_factor": 0.8960964580591002,
+    "max_drawdown_bps": 23584.17099862647,
+    "win_rate": 0.3466135458167331
+   },
+   "validation": {
+    "trades": 688,
+    "gross_bps_per_trade": 19.033806951420384,
+    "net_bps_per_trade": 2.8430001178448077,
+    "profit_factor": 1.0215020276420859,
+    "max_drawdown_bps": 9847.529722646963,
+    "win_rate": 0.4127906976744186
+   },
+   "sharpe_trade_trainval": -0.01319038366781498
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    1.5,
+    2,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 723,
+    "gross_bps_per_trade": -1.6745199770705472,
+    "net_bps_per_trade": -10.988718713585069,
+    "profit_factor": 0.9243208158394247,
+    "max_drawdown_bps": 19820.028492392288,
+    "win_rate": 0.338865836791148
+   },
+   "validation": {
+    "trades": 638,
+    "gross_bps_per_trade": 3.350830154849139,
+    "net_bps_per_trade": -6.089082544994128,
+    "profit_factor": 0.9555122561380223,
+    "max_drawdown_bps": 11406.994713073453,
+    "win_rate": 0.390282131661442
+   },
+   "sharpe_trade_trainval": -0.016852557178242435
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    1,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 450,
+    "gross_bps_per_trade": 14.503054173949211,
+    "net_bps_per_trade": -0.49835800271744424,
+    "profit_factor": 0.9964828274135415,
+    "max_drawdown_bps": 13682.541995593445,
+    "win_rate": 0.3711111111111111
+   },
+   "validation": {
+    "trades": 450,
+    "gross_bps_per_trade": 6.846095976517768,
+    "net_bps_per_trade": -8.432505171260006,
+    "profit_factor": 0.9340504572883027,
+    "max_drawdown_bps": 9146.876010799555,
+    "win_rate": 0.4066666666666667
+   },
+   "sharpe_trade_trainval": -0.008537199034889092
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    1,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 435,
+    "gross_bps_per_trade": 4.137507731812731,
+    "net_bps_per_trade": -4.797074590026353,
+    "profit_factor": 0.9661000701329215,
+    "max_drawdown_bps": 14734.170984017801,
+    "win_rate": 0.3563218390804598
+   },
+   "validation": {
+    "trades": 421,
+    "gross_bps_per_trade": -7.8918782235054215,
+    "net_bps_per_trade": -16.50502205010875,
+    "profit_factor": 0.8727456434358885,
+    "max_drawdown_bps": 9637.413940888222,
+    "win_rate": 0.38954869358669836
+   },
+   "sharpe_trade_trainval": -0.02012033730290965
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    1,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 445,
+    "gross_bps_per_trade": 22.799411220929073,
+    "net_bps_per_trade": 7.51904375913132,
+    "profit_factor": 1.0514548111157431,
+    "max_drawdown_bps": 12418.30801534585,
+    "win_rate": 0.3303370786516854
+   },
+   "validation": {
+    "trades": 448,
+    "gross_bps_per_trade": 11.934720349975706,
+    "net_bps_per_trade": -4.0529739524796415,
+    "profit_factor": 0.9694017370078901,
+    "max_drawdown_bps": 9019.08388186361,
+    "win_rate": 0.38392857142857145
+   },
+   "sharpe_trade_trainval": 0.0029225962992505145
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    1,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 430,
+    "gross_bps_per_trade": 11.956469408436352,
+    "net_bps_per_trade": 2.722068378203809,
+    "profit_factor": 1.0188112819448756,
+    "max_drawdown_bps": 14327.03726490977,
+    "win_rate": 0.3186046511627907
+   },
+   "validation": {
+    "trades": 419,
+    "gross_bps_per_trade": -7.048674046774939,
+    "net_bps_per_trade": -16.373759809304772,
+    "profit_factor": 0.8786221892791186,
+    "max_drawdown_bps": 12521.454249552773,
+    "win_rate": 0.36515513126491644
+   },
+   "sharpe_trade_trainval": -0.011446087833606153
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    2,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 593,
+    "gross_bps_per_trade": -7.83816744266091,
+    "net_bps_per_trade": -23.174056034566473,
+    "profit_factor": 0.8480004755317756,
+    "max_drawdown_bps": 21687.08586079049,
+    "win_rate": 0.37268128161888703
+   },
+   "validation": {
+    "trades": 598,
+    "gross_bps_per_trade": 14.647120965896656,
+    "net_bps_per_trade": -1.1436195299227405,
+    "profit_factor": 0.991394734429883,
+    "max_drawdown_bps": 8531.910742609685,
+    "win_rate": 0.44648829431438125
+   },
+   "sharpe_trade_trainval": -0.025305495990723056
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    2,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 567,
+    "gross_bps_per_trade": -9.205295515876793,
+    "net_bps_per_trade": -18.32945274339002,
+    "profit_factor": 0.8783455966851665,
+    "max_drawdown_bps": 18959.975714318505,
+    "win_rate": 0.36331569664902996
+   },
+   "validation": {
+    "trades": 554,
+    "gross_bps_per_trade": -0.37674960870698165,
+    "net_bps_per_trade": -9.43205050130626,
+    "profit_factor": 0.9317795652476547,
+    "max_drawdown_bps": 9462.78093988809,
+    "win_rate": 0.4223826714801444
+   },
+   "sharpe_trade_trainval": -0.028255765719904347
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    2,
+    2.0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 589,
+    "gross_bps_per_trade": 2.047978916608907,
+    "net_bps_per_trade": -13.51484082872217,
+    "profit_factor": 0.9138976860010778,
+    "max_drawdown_bps": 19126.89929347298,
+    "win_rate": 0.34465195246179964
+   },
+   "validation": {
+    "trades": 594,
+    "gross_bps_per_trade": 17.273372060399215,
+    "net_bps_per_trade": 0.9497439661231227,
+    "profit_factor": 1.0068128576709743,
+    "max_drawdown_bps": 10165.125970440373,
+    "win_rate": 0.4208754208754209
+   },
+   "sharpe_trade_trainval": -0.01164117514598668
+  },
+  {
+   "family": "F1_sweep",
+   "params": [
+    96,
+    2.0,
+    2,
+    2.0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 564,
+    "gross_bps_per_trade": 1.3523542755556228,
+    "net_bps_per_trade": -7.949942521430193,
+    "profit_factor": 0.9484466402322531,
+    "max_drawdown_bps": 17170.177291009186,
+    "win_rate": 0.33687943262411346
+   },
+   "validation": {
+    "trades": 551,
+    "gross_bps_per_trade": 1.0177868136529766,
+    "net_bps_per_trade": -8.578262404132866,
+    "profit_factor": 0.9405423230257913,
+    "max_drawdown_bps": 12205.363887239602,
+    "win_rate": 0.3992740471869328
+   },
+   "sharpe_trade_trainval": -0.015004170001067936
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    24,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 182,
+    "gross_bps_per_trade": 49.01330004366579,
+    "net_bps_per_trade": 33.92303997498448,
+    "profit_factor": 1.2641116316010022,
+    "max_drawdown_bps": 3219.5937375282465,
+    "win_rate": 0.3626373626373626
+   },
+   "validation": {
+    "trades": 211,
+    "gross_bps_per_trade": -30.824050201326056,
+    "net_bps_per_trade": -46.5174217581981,
+    "profit_factor": 0.7464076180084221,
+    "max_drawdown_bps": 13318.897928727582,
+    "win_rate": 0.3080568720379147
+   },
+   "sharpe_trade_trainval": -0.019163619203260648
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    24,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 168,
+    "gross_bps_per_trade": 23.640317710204563,
+    "net_bps_per_trade": 14.761850007823611,
+    "profit_factor": 1.1121280972591587,
+    "max_drawdown_bps": 2836.1429199013496,
+    "win_rate": 0.35714285714285715
+   },
+   "validation": {
+    "trades": 180,
+    "gross_bps_per_trade": -53.22272032306428,
+    "net_bps_per_trade": -62.44996322306426,
+    "profit_factor": 0.6746693171150605,
+    "max_drawdown_bps": 14619.759439552026,
+    "win_rate": 0.2722222222222222
+   },
+   "sharpe_trade_trainval": -0.05274680514784167
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    24,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 171,
+    "gross_bps_per_trade": 45.083220290399126,
+    "net_bps_per_trade": 30.3833080067734,
+    "profit_factor": 1.1867692789992725,
+    "max_drawdown_bps": 4463.35912138508,
+    "win_rate": 0.4269005847953216
+   },
+   "validation": {
+    "trades": 193,
+    "gross_bps_per_trade": -22.082899812061918,
+    "net_bps_per_trade": -35.892696508953094,
+    "profit_factor": 0.8200792651209384,
+    "max_drawdown_bps": 9294.015252253388,
+    "win_rate": 0.37305699481865284
+   },
+   "sharpe_trade_trainval": -0.008651677470968391
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    24,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 157,
+    "gross_bps_per_trade": 4.770843670652592,
+    "net_bps_per_trade": -3.621436848455688,
+    "profit_factor": 0.9787413537497853,
+    "max_drawdown_bps": 4837.584498221589,
+    "win_rate": 0.4140127388535032
+   },
+   "validation": {
+    "trades": 162,
+    "gross_bps_per_trade": -56.98941730545349,
+    "net_bps_per_trade": -63.731699802367054,
+    "profit_factor": 0.7047228420471268,
+    "max_drawdown_bps": 13904.177566754515,
+    "win_rate": 0.3395061728395062
+   },
+   "sharpe_trade_trainval": -0.06301616187441665
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    48,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 168,
+    "gross_bps_per_trade": 1.6785404791147043,
+    "net_bps_per_trade": -12.327913958385281,
+    "profit_factor": 0.9252055920977169,
+    "max_drawdown_bps": 6727.146960551425,
+    "win_rate": 0.26785714285714285
+   },
+   "validation": {
+    "trades": 193,
+    "gross_bps_per_trade": -38.808022864728954,
+    "net_bps_per_trade": -53.56463078700873,
+    "profit_factor": 0.7586350991537566,
+    "max_drawdown_bps": 15684.658118227784,
+    "win_rate": 0.25906735751295334
+   },
+   "sharpe_trade_trainval": -0.0584888974112612
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    48,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 155,
+    "gross_bps_per_trade": -10.820644963428723,
+    "net_bps_per_trade": -18.7844720505255,
+    "profit_factor": 0.8914820919701212,
+    "max_drawdown_bps": 7196.492783751999,
+    "win_rate": 0.24516129032258063
+   },
+   "validation": {
+    "trades": 163,
+    "gross_bps_per_trade": -64.88953914312039,
+    "net_bps_per_trade": -73.40829834557438,
+    "profit_factor": 0.6843038574678797,
+    "max_drawdown_bps": 16943.202070534528,
+    "win_rate": 0.2331288343558282
+   },
+   "sharpe_trade_trainval": -0.0763311497235498
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    48,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 152,
+    "gross_bps_per_trade": -5.198888380819393,
+    "net_bps_per_trade": -18.614735772266762,
+    "profit_factor": 0.9109480275232534,
+    "max_drawdown_bps": 7139.295964203935,
+    "win_rate": 0.3881578947368421
+   },
+   "validation": {
+    "trades": 169,
+    "gross_bps_per_trade": -23.312032366334094,
+    "net_bps_per_trade": -37.78311257343468,
+    "profit_factor": 0.8535208411721981,
+    "max_drawdown_bps": 10321.754574701263,
+    "win_rate": 0.34911242603550297
+   },
+   "sharpe_trade_trainval": -0.0460866373106972
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    6,
+    48,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 140,
+    "gross_bps_per_trade": 13.733210302080755,
+    "net_bps_per_trade": 6.525542659223616,
+    "profit_factor": 1.0307323755740132,
+    "max_drawdown_bps": 7557.097830111973,
+    "win_rate": 0.37142857142857144
+   },
+   "validation": {
+    "trades": 141,
+    "gross_bps_per_trade": -69.27348391345161,
+    "net_bps_per_trade": -76.78110595600481,
+    "profit_factor": 0.7174696073982758,
+    "max_drawdown_bps": 15022.617256751651,
+    "win_rate": 0.3191489361702128
+   },
+   "sharpe_trade_trainval": -0.05002839510679074
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    24,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 159,
+    "gross_bps_per_trade": 41.86888124206764,
+    "net_bps_per_trade": 27.483329729489007,
+    "profit_factor": 1.219919746564344,
+    "max_drawdown_bps": 3608.8009411135326,
+    "win_rate": 0.3710691823899371
+   },
+   "validation": {
+    "trades": 186,
+    "gross_bps_per_trade": -21.170377588827215,
+    "net_bps_per_trade": -35.73556360764441,
+    "profit_factor": 0.8071737475419402,
+    "max_drawdown_bps": 10149.4784682583,
+    "win_rate": 0.3064516129032258
+   },
+   "sharpe_trade_trainval": -0.014852851545244553
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    24,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 143,
+    "gross_bps_per_trade": 14.234510629297487,
+    "net_bps_per_trade": 6.157329643283505,
+    "profit_factor": 1.0496199307821625,
+    "max_drawdown_bps": 2917.9662097618734,
+    "win_rate": 0.3706293706293706
+   },
+   "validation": {
+    "trades": 157,
+    "gross_bps_per_trade": -43.163907156374435,
+    "net_bps_per_trade": -51.26439744936806,
+    "profit_factor": 0.7315869765667534,
+    "max_drawdown_bps": 11714.323594640533,
+    "win_rate": 0.29936305732484075
+   },
+   "sharpe_trade_trainval": -0.05867844646126357
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    24,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 151,
+    "gross_bps_per_trade": 36.81377094598796,
+    "net_bps_per_trade": 23.43998717446478,
+    "profit_factor": 1.1463015906379916,
+    "max_drawdown_bps": 4572.120729597249,
+    "win_rate": 0.4304635761589404
+   },
+   "validation": {
+    "trades": 165,
+    "gross_bps_per_trade": -10.510723306982982,
+    "net_bps_per_trade": -24.241122358498117,
+    "profit_factor": 0.8877752225412345,
+    "max_drawdown_bps": 11651.31535459195,
+    "win_rate": 0.3878787878787879
+   },
+   "sharpe_trade_trainval": -0.00263826576701189
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    24,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 137,
+    "gross_bps_per_trade": 6.097951975961145,
+    "net_bps_per_trade": -0.964787856155641,
+    "profit_factor": 0.9941900475517386,
+    "max_drawdown_bps": 4808.369639924568,
+    "win_rate": 0.4233576642335766
+   },
+   "validation": {
+    "trades": 139,
+    "gross_bps_per_trade": -37.452581050418644,
+    "net_bps_per_trade": -44.04423334538264,
+    "profit_factor": 0.8038374433090038,
+    "max_drawdown_bps": 14290.872204726924,
+    "win_rate": 0.38848920863309355
+   },
+   "sharpe_trade_trainval": -0.042569070290966404
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    48,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 142,
+    "gross_bps_per_trade": 8.65952245882848,
+    "net_bps_per_trade": -4.482022446101082,
+    "profit_factor": 0.9724198502056487,
+    "max_drawdown_bps": 7082.8167980440085,
+    "win_rate": 0.2887323943661972
+   },
+   "validation": {
+    "trades": 171,
+    "gross_bps_per_trade": -51.518717536287674,
+    "net_bps_per_trade": -63.906806100615164,
+    "profit_factor": 0.713495530110493,
+    "max_drawdown_bps": 18400.534601810243,
+    "win_rate": 0.23976608187134502
+   },
+   "sharpe_trade_trainval": -0.06746111847670848
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    48,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 128,
+    "gross_bps_per_trade": 11.094226839497178,
+    "net_bps_per_trade": 4.320470495747188,
+    "profit_factor": 1.0270363264932905,
+    "max_drawdown_bps": 6275.532309091729,
+    "win_rate": 0.28125
+   },
+   "validation": {
+    "trades": 143,
+    "gross_bps_per_trade": -57.40303647143261,
+    "net_bps_per_trade": -63.778285121782275,
+    "profit_factor": 0.7213456104169547,
+    "max_drawdown_bps": 16367.4824376045,
+    "win_rate": 0.22377622377622378
+   },
+   "sharpe_trade_trainval": -0.054861832400006506
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    48,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 133,
+    "gross_bps_per_trade": 11.347390692319758,
+    "net_bps_per_trade": -0.3738699392592046,
+    "profit_factor": 0.9981749452288863,
+    "max_drawdown_bps": 8360.956255605268,
+    "win_rate": 0.38345864661654133
+   },
+   "validation": {
+    "trades": 150,
+    "gross_bps_per_trade": -2.7319544279137213,
+    "net_bps_per_trade": -14.135044544580378,
+    "profit_factor": 0.9450507033059551,
+    "max_drawdown_bps": 11394.58528262099,
+    "win_rate": 0.35333333333333333
+   },
+   "sharpe_trade_trainval": -0.011521817284047478
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.9,
+    12,
+    48,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 121,
+    "gross_bps_per_trade": 2.2643104191503856,
+    "net_bps_per_trade": -3.2231945932462915,
+    "profit_factor": 0.9848981811647384,
+    "max_drawdown_bps": 8229.256342276709,
+    "win_rate": 0.36363636363636365
+   },
+   "validation": {
+    "trades": 125,
+    "gross_bps_per_trade": -20.84842863648583,
+    "net_bps_per_trade": -24.80497386448583,
+    "profit_factor": 0.9079397016239235,
+    "max_drawdown_bps": 12973.233654749822,
+    "win_rate": 0.336
+   },
+   "sharpe_trade_trainval": -0.020186322557812462
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    24,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 104,
+    "gross_bps_per_trade": 34.79166903478634,
+    "net_bps_per_trade": 20.521452005940187,
+    "profit_factor": 1.1570754200267341,
+    "max_drawdown_bps": 2350.7908875086127,
+    "win_rate": 0.38461538461538464
+   },
+   "validation": {
+    "trades": 128,
+    "gross_bps_per_trade": -60.159895361608335,
+    "net_bps_per_trade": -76.52538700223334,
+    "profit_factor": 0.6292575057465981,
+    "max_drawdown_bps": 11298.036640846893,
+    "win_rate": 0.2734375
+   },
+   "sharpe_trade_trainval": -0.07527689081905059
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    24,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 92,
+    "gross_bps_per_trade": -1.265102516428499,
+    "net_bps_per_trade": -9.376479097950236,
+    "profit_factor": 0.9312280874762938,
+    "max_drawdown_bps": 3052.35468411857,
+    "win_rate": 0.3804347826086957
+   },
+   "validation": {
+    "trades": 111,
+    "gross_bps_per_trade": -71.88430726033282,
+    "net_bps_per_trade": -81.54831826483732,
+    "profit_factor": 0.6202989909249931,
+    "max_drawdown_bps": 11751.270583166783,
+    "win_rate": 0.25225225225225223
+   },
+   "sharpe_trade_trainval": -0.11478710474583323
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    24,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 99,
+    "gross_bps_per_trade": 48.84349980272148,
+    "net_bps_per_trade": 35.19494651989321,
+    "profit_factor": 1.2282355575435553,
+    "max_drawdown_bps": 3560.0451931234597,
+    "win_rate": 0.48484848484848486
+   },
+   "validation": {
+    "trades": 119,
+    "gross_bps_per_trade": -84.97153740971372,
+    "net_bps_per_trade": -97.80992143912547,
+    "profit_factor": 0.568734713316543,
+    "max_drawdown_bps": 12662.684930053845,
+    "win_rate": 0.33613445378151263
+   },
+   "sharpe_trade_trainval": -0.07793402973153557
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    24,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 89,
+    "gross_bps_per_trade": -12.14755681451674,
+    "net_bps_per_trade": -19.610916685303245,
+    "profit_factor": 0.8838842743454913,
+    "max_drawdown_bps": 5585.807764710136,
+    "win_rate": 0.47191011235955055
+   },
+   "validation": {
+    "trades": 99,
+    "gross_bps_per_trade": -99.9852715628406,
+    "net_bps_per_trade": -106.13700259314359,
+    "profit_factor": 0.5496007473984118,
+    "max_drawdown_bps": 11214.944712587312,
+    "win_rate": 0.32323232323232326
+   },
+   "sharpe_trade_trainval": -0.14243855117274892
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    48,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 100,
+    "gross_bps_per_trade": 7.026924522375677,
+    "net_bps_per_trade": -6.006588587624332,
+    "profit_factor": 0.9616850839170877,
+    "max_drawdown_bps": 4199.040493518424,
+    "win_rate": 0.32
+   },
+   "validation": {
+    "trades": 121,
+    "gross_bps_per_trade": -61.39604357088349,
+    "net_bps_per_trade": -77.37476886840417,
+    "profit_factor": 0.6975670566345167,
+    "max_drawdown_bps": 15521.286021424754,
+    "win_rate": 0.2231404958677686
+   },
+   "sharpe_trade_trainval": -0.07990793981993849
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    48,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 90,
+    "gross_bps_per_trade": -6.138309902572052,
+    "net_bps_per_trade": -13.333107624794275,
+    "profit_factor": 0.9188669214268045,
+    "max_drawdown_bps": 4961.479931233145,
+    "win_rate": 0.3
+   },
+   "validation": {
+    "trades": 104,
+    "gross_bps_per_trade": -79.3079896169594,
+    "net_bps_per_trade": -88.75197083811324,
+    "profit_factor": 0.6671405221930867,
+    "max_drawdown_bps": 15339.008869895733,
+    "win_rate": 0.22115384615384615
+   },
+   "sharpe_trade_trainval": -0.09084882993539505
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    48,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 92,
+    "gross_bps_per_trade": 30.423907210301053,
+    "net_bps_per_trade": 18.679778003779326,
+    "profit_factor": 1.0957676608992741,
+    "max_drawdown_bps": 3449.44558898534,
+    "win_rate": 0.4673913043478261
+   },
+   "validation": {
+    "trades": 110,
+    "gross_bps_per_trade": -38.56701459653111,
+    "net_bps_per_trade": -53.677032060167484,
+    "profit_factor": 0.8146625008464727,
+    "max_drawdown_bps": 11075.855035950137,
+    "win_rate": 0.33636363636363636
+   },
+   "sharpe_trade_trainval": -0.03147445184412307
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    6,
+    48,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 86,
+    "gross_bps_per_trade": 12.471209108843949,
+    "net_bps_per_trade": 6.609833620471853,
+    "profit_factor": 1.0321042063924635,
+    "max_drawdown_bps": 4890.824523627346,
+    "win_rate": 0.4418604651162791
+   },
+   "validation": {
+    "trades": 92,
+    "gross_bps_per_trade": -53.86814177748731,
+    "net_bps_per_trade": -63.53711086987862,
+    "profit_factor": 0.7867876961548453,
+    "max_drawdown_bps": 11216.397346290041,
+    "win_rate": 0.33695652173913043
+   },
+   "sharpe_trade_trainval": -0.04335034488725599
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    24,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 97,
+    "gross_bps_per_trade": 66.13625155550807,
+    "net_bps_per_trade": 52.10759179777611,
+    "profit_factor": 1.4109643041736672,
+    "max_drawdown_bps": 2560.851899970042,
+    "win_rate": 0.38144329896907214
+   },
+   "validation": {
+    "trades": 106,
+    "gross_bps_per_trade": -47.502954379666235,
+    "net_bps_per_trade": -61.479334337213416,
+    "profit_factor": 0.7167676512534462,
+    "max_drawdown_bps": 9729.10355806693,
+    "win_rate": 0.25471698113207547
+   },
+   "sharpe_trade_trainval": -0.014459198151789034
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    24,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 85,
+    "gross_bps_per_trade": 21.707993902712897,
+    "net_bps_per_trade": 14.354729220359962,
+    "profit_factor": 1.1072805368968648,
+    "max_drawdown_bps": 2861.410218476258,
+    "win_rate": 0.36470588235294116
+   },
+   "validation": {
+    "trades": 92,
+    "gross_bps_per_trade": -65.41313823064694,
+    "net_bps_per_trade": -72.86425554586434,
+    "profit_factor": 0.6686143434905805,
+    "max_drawdown_bps": 9545.663672767912,
+    "win_rate": 0.25
+   },
+   "sharpe_trade_trainval": -0.06794120395441113
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    24,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 93,
+    "gross_bps_per_trade": 61.90914050229865,
+    "net_bps_per_trade": 48.700363857137354,
+    "profit_factor": 1.300555732116284,
+    "max_drawdown_bps": 3066.0594522551964,
+    "win_rate": 0.46236559139784944
+   },
+   "validation": {
+    "trades": 95,
+    "gross_bps_per_trade": -61.584679274132355,
+    "net_bps_per_trade": -72.69830697413235,
+    "profit_factor": 0.716109806981372,
+    "max_drawdown_bps": 9306.088903729742,
+    "win_rate": 0.3473684210526316
+   },
+   "sharpe_trade_trainval": -0.021659116281555073
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    24,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 82,
+    "gross_bps_per_trade": -10.811859324492836,
+    "net_bps_per_trade": -17.35947369644406,
+    "profit_factor": 0.9039901976805658,
+    "max_drawdown_bps": 5150.565225141907,
+    "win_rate": 0.4268292682926829
+   },
+   "validation": {
+    "trades": 82,
+    "gross_bps_per_trade": -95.16485857317296,
+    "net_bps_per_trade": -100.00955508536809,
+    "profit_factor": 0.6259862607612231,
+    "max_drawdown_bps": 11024.30142036882,
+    "win_rate": 0.35365853658536583
+   },
+   "sharpe_trade_trainval": -0.10853374813702354
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    48,
+    1.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 91,
+    "gross_bps_per_trade": 23.113151349138143,
+    "net_bps_per_trade": 10.037931904083205,
+    "profit_factor": 1.06277200334788,
+    "max_drawdown_bps": 4449.810530737877,
+    "win_rate": 0.3076923076923077
+   },
+   "validation": {
+    "trades": 100,
+    "gross_bps_per_trade": -81.113985747867,
+    "net_bps_per_trade": -92.88362300286698,
+    "profit_factor": 0.6354792891717375,
+    "max_drawdown_bps": 14598.512529899894,
+    "win_rate": 0.2
+   },
+   "sharpe_trade_trainval": -0.07841156447841674
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    48,
+    1.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 80,
+    "gross_bps_per_trade": 27.201685696048806,
+    "net_bps_per_trade": 21.273124696048804,
+    "profit_factor": 1.1314836938570256,
+    "max_drawdown_bps": 4870.650117303111,
+    "win_rate": 0.3
+   },
+   "validation": {
+    "trades": 86,
+    "gross_bps_per_trade": -82.17612288894533,
+    "net_bps_per_trade": -87.72767502266622,
+    "profit_factor": 0.6626375117938288,
+    "max_drawdown_bps": 13033.640238919437,
+    "win_rate": 0.19767441860465115
+   },
+   "sharpe_trade_trainval": -0.058110923104808504
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    48,
+    2.5
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 85,
+    "gross_bps_per_trade": 36.04184227650669,
+    "net_bps_per_trade": 24.666489747094943,
+    "profit_factor": 1.1235035472481707,
+    "max_drawdown_bps": 5472.3607449956025,
+    "win_rate": 0.43529411764705883
+   },
+   "validation": {
+    "trades": 87,
+    "gross_bps_per_trade": -52.84371356093668,
+    "net_bps_per_trade": -61.105924750591846,
+    "profit_factor": 0.7970752910491268,
+    "max_drawdown_bps": 10309.253597505594,
+    "win_rate": 0.2988505747126437
+   },
+   "sharpe_trade_trainval": -0.027437143372620782
+  },
+  {
+   "family": "F2_funding",
+   "params": [
+    0.95,
+    12,
+    48,
+    2.5
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 76,
+    "gross_bps_per_trade": 31.518805851263856,
+    "net_bps_per_trade": 27.13652219994806,
+    "profit_factor": 1.1301544770095169,
+    "max_drawdown_bps": 5365.066900389507,
+    "win_rate": 0.42105263157894735
+   },
+   "validation": {
+    "trades": 74,
+    "gross_bps_per_trade": -53.66921917479483,
+    "net_bps_per_trade": -56.56264965452455,
+    "profit_factor": 0.8109246642046539,
+    "max_drawdown_bps": 10137.699029650754,
+    "win_rate": 0.2972972972972973
+   },
+   "sharpe_trade_trainval": -0.019630555742140107
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    2,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1441,
+    "gross_bps_per_trade": -10.487068711527689,
+    "net_bps_per_trade": -27.37658987738473,
+    "profit_factor": 0.6428590332602954,
+    "max_drawdown_bps": 39582.4168391321,
+    "win_rate": 0.40041637751561415
+   },
+   "validation": {
+    "trades": 1208,
+    "gross_bps_per_trade": -5.606538977033506,
+    "net_bps_per_trade": -23.678062155841456,
+    "profit_factor": 0.6313702980020519,
+    "max_drawdown_bps": 28968.04656937487,
+    "win_rate": 0.3526490066225166
+   },
+   "sharpe_trade_trainval": -0.12197983664606321
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    2,
+    true
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1321,
+    "gross_bps_per_trade": -21.405272077290103,
+    "net_bps_per_trade": -32.10736140355808,
+    "profit_factor": 0.5816388613874919,
+    "max_drawdown_bps": 42706.86891865479,
+    "win_rate": 0.40953822861468586
+   },
+   "validation": {
+    "trades": 1074,
+    "gross_bps_per_trade": -18.328769511150384,
+    "net_bps_per_trade": -29.650222025116864,
+    "profit_factor": 0.5556652910847455,
+    "max_drawdown_bps": 32339.93158275453,
+    "win_rate": 0.3547486033519553
+   },
+   "sharpe_trade_trainval": -0.1511177838755497
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    2,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1442,
+    "gross_bps_per_trade": 14.696700773783483,
+    "net_bps_per_trade": -2.1948387546492487,
+    "profit_factor": 0.9668207972297126,
+    "max_drawdown_bps": 14014.178660367406,
+    "win_rate": 0.45561719833564496
+   },
+   "validation": {
+    "trades": 1210,
+    "gross_bps_per_trade": 1.807103446702476,
+    "net_bps_per_trade": -16.26727671858678,
+    "profit_factor": 0.7260916917884038,
+    "max_drawdown_bps": 19969.051763200092,
+    "win_rate": 0.4041322314049587
+   },
+   "sharpe_trade_trainval": -0.03484270370800723
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    2,
+    false
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1320,
+    "gross_bps_per_trade": 0.09467444729068902,
+    "net_bps_per_trade": -10.624416461800218,
+    "profit_factor": 0.8427334380991434,
+    "max_drawdown_bps": 15843.687126187639,
+    "win_rate": 0.45151515151515154
+   },
+   "validation": {
+    "trades": 1072,
+    "gross_bps_per_trade": -8.899626987140634,
+    "net_bps_per_trade": -20.191343405051082,
+    "profit_factor": 0.6571723544905131,
+    "max_drawdown_bps": 21928.511507920535,
+    "win_rate": 0.4207089552238806
+   },
+   "sharpe_trade_trainval": -0.06504324612987272
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    4,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1441,
+    "gross_bps_per_trade": -8.41656719431953,
+    "net_bps_per_trade": -25.306088360176574,
+    "profit_factor": 0.7163852025460375,
+    "max_drawdown_bps": 37479.450713857565,
+    "win_rate": 0.41360166551006244
+   },
+   "validation": {
+    "trades": 1208,
+    "gross_bps_per_trade": -4.612337582376534,
+    "net_bps_per_trade": -22.683860761184484,
+    "profit_factor": 0.7174644142858385,
+    "max_drawdown_bps": 28307.490293063318,
+    "win_rate": 0.37748344370860926
+   },
+   "sharpe_trade_trainval": -0.09553236389349554
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    4,
+    true
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1321,
+    "gross_bps_per_trade": -18.326818192367295,
+    "net_bps_per_trade": -29.028907518635272,
+    "profit_factor": 0.6712682809469459,
+    "max_drawdown_bps": 39654.76257001404,
+    "win_rate": 0.43300529901589707
+   },
+   "validation": {
+    "trades": 1074,
+    "gross_bps_per_trade": -15.399256362125293,
+    "net_bps_per_trade": -26.720708876091773,
+    "profit_factor": 0.6698287261201186,
+    "max_drawdown_bps": 29665.05926877723,
+    "win_rate": 0.3761638733705773
+   },
+   "sharpe_trade_trainval": -0.1134786686607774
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    4,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1442,
+    "gross_bps_per_trade": 13.246434218182983,
+    "net_bps_per_trade": -3.6451053102497526,
+    "profit_factor": 0.9553149111019565,
+    "max_drawdown_bps": 19101.584454272823,
+    "win_rate": 0.44105409153952846
+   },
+   "validation": {
+    "trades": 1210,
+    "gross_bps_per_trade": -0.6980120202544883,
+    "net_bps_per_trade": -18.77239218554374,
+    "profit_factor": 0.7584835087906988,
+    "max_drawdown_bps": 22868.046614985957,
+    "win_rate": 0.4115702479338843
+   },
+   "sharpe_trade_trainval": -0.03867303758018103
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "asia",
+    4,
+    false
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1320,
+    "gross_bps_per_trade": -1.7546895599963013,
+    "net_bps_per_trade": -12.473780469087206,
+    "profit_factor": 0.8491169647575675,
+    "max_drawdown_bps": 19038.069676410025,
+    "win_rate": 0.43787878787878787
+   },
+   "validation": {
+    "trades": 1072,
+    "gross_bps_per_trade": -6.597954853379524,
+    "net_bps_per_trade": -17.88967127128997,
+    "profit_factor": 0.7568148576832343,
+    "max_drawdown_bps": 19313.45598555191,
+    "win_rate": 0.43097014925373134
+   },
+   "sharpe_trade_trainval": -0.059211358675828975
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    2,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1470,
+    "gross_bps_per_trade": -3.243726445643195,
+    "net_bps_per_trade": -20.186583588500337,
+    "profit_factor": 0.7157378136369918,
+    "max_drawdown_bps": 32498.496664788865,
+    "win_rate": 0.41564625850340137
+   },
+   "validation": {
+    "trades": 1238,
+    "gross_bps_per_trade": -5.309988196568477,
+    "net_bps_per_trade": -23.41855039366056,
+    "profit_factor": 0.6510761300079383,
+    "max_drawdown_bps": 29124.954719706475,
+    "win_rate": 0.35218093699515346
+   },
+   "sharpe_trade_trainval": -0.09589139244354707
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    2,
+    true
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1357,
+    "gross_bps_per_trade": -12.019919734528436,
+    "net_bps_per_trade": -22.776603595987535,
+    "profit_factor": 0.6840524617485488,
+    "max_drawdown_bps": 34408.67192018404,
+    "win_rate": 0.42078113485630064
+   },
+   "validation": {
+    "trades": 1137,
+    "gross_bps_per_trade": -14.406186781711321,
+    "net_bps_per_trade": -25.763812111526622,
+    "profit_factor": 0.6218280873423357,
+    "max_drawdown_bps": 29415.401229854684,
+    "win_rate": 0.3755496921723835
+   },
+   "sharpe_trade_trainval": -0.10552042207482906
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    2,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1470,
+    "gross_bps_per_trade": 4.196741278267446,
+    "net_bps_per_trade": -12.7461158645897,
+    "profit_factor": 0.8177516456724783,
+    "max_drawdown_bps": 18732.12209899441,
+    "win_rate": 0.4238095238095238
+   },
+   "validation": {
+    "trades": 1239,
+    "gross_bps_per_trade": 3.4835651584873766,
+    "net_bps_per_trade": -14.62636220228744,
+    "profit_factor": 0.7718838053772638,
+    "max_drawdown_bps": 22256.438871144517,
+    "win_rate": 0.41081517352703795
+   },
+   "sharpe_trade_trainval": -0.05061558006798491
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    2,
+    false
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1344,
+    "gross_bps_per_trade": -5.2906066816059445,
+    "net_bps_per_trade": -16.026053110177372,
+    "profit_factor": 0.7756473783663979,
+    "max_drawdown_bps": 21493.54574213856,
+    "win_rate": 0.41964285714285715
+   },
+   "validation": {
+    "trades": 1078,
+    "gross_bps_per_trade": -9.36625064693028,
+    "net_bps_per_trade": -20.668922261030463,
+    "profit_factor": 0.6788244786059822,
+    "max_drawdown_bps": 23443.120633970997,
+    "win_rate": 0.42393320964749537
+   },
+   "sharpe_trade_trainval": -0.0668700461967508
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    4,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1470,
+    "gross_bps_per_trade": -7.372771255122168,
+    "net_bps_per_trade": -24.315628397979317,
+    "profit_factor": 0.7261689040130576,
+    "max_drawdown_bps": 39303.08594347604,
+    "win_rate": 0.40408163265306124
+   },
+   "validation": {
+    "trades": 1238,
+    "gross_bps_per_trade": -7.2136427813225446,
+    "net_bps_per_trade": -25.322204978414625,
+    "profit_factor": 0.6992353897252505,
+    "max_drawdown_bps": 31553.825493931243,
+    "win_rate": 0.364297253634895
+   },
+   "sharpe_trade_trainval": -0.09002721267151594
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    4,
+    true
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1357,
+    "gross_bps_per_trade": -16.703654374710336,
+    "net_bps_per_trade": -27.460338236169438,
+    "profit_factor": 0.6942740396620507,
+    "max_drawdown_bps": 41430.95895749393,
+    "win_rate": 0.4023581429624171
+   },
+   "validation": {
+    "trades": 1137,
+    "gross_bps_per_trade": -18.18084742386044,
+    "net_bps_per_trade": -29.53847275367574,
+    "profit_factor": 0.6531332307046162,
+    "max_drawdown_bps": 33857.59165159569,
+    "win_rate": 0.376429199648197
+   },
+   "sharpe_trade_trainval": -0.10478007754360115
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    4,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1470,
+    "gross_bps_per_trade": 7.474589478177764,
+    "net_bps_per_trade": -9.468267664679376,
+    "profit_factor": 0.8876559853334214,
+    "max_drawdown_bps": 18224.190203767852,
+    "win_rate": 0.45510204081632655
+   },
+   "validation": {
+    "trades": 1239,
+    "gross_bps_per_trade": 4.030257417810757,
+    "net_bps_per_trade": -14.079669942964061,
+    "profit_factor": 0.818611860142777,
+    "max_drawdown_bps": 19949.28351967915,
+    "win_rate": 0.4317998385794996
+   },
+   "sharpe_trade_trainval": -0.03831859573625396
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "europe",
+    4,
+    false
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1344,
+    "gross_bps_per_trade": -1.2938207343746388,
+    "net_bps_per_trade": -12.029267162946066,
+    "profit_factor": 0.8601116016912601,
+    "max_drawdown_bps": 16247.118862083747,
+    "win_rate": 0.46130952380952384
+   },
+   "validation": {
+    "trades": 1078,
+    "gross_bps_per_trade": -9.16038620816362,
+    "net_bps_per_trade": -20.463057822263806,
+    "profit_factor": 0.7413225974968575,
+    "max_drawdown_bps": 22681.299692347115,
+    "win_rate": 0.42857142857142855
+   },
+   "sharpe_trade_trainval": -0.0511373185424423
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    2,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1498,
+    "gross_bps_per_trade": -10.651052254659996,
+    "net_bps_per_trade": -27.576991990641307,
+    "profit_factor": 0.7041387465707659,
+    "max_drawdown_bps": 42186.7860859046,
+    "win_rate": 0.3931909212283044
+   },
+   "validation": {
+    "trades": 1267,
+    "gross_bps_per_trade": 14.610021897411125,
+    "net_bps_per_trade": -3.382065997221869,
+    "profit_factor": 0.9535039116304406,
+    "max_drawdown_bps": 8790.301674494576,
+    "win_rate": 0.4080505130228887
+   },
+   "sharpe_trade_trainval": -0.06237519856002594
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    2,
+    true
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1405,
+    "gross_bps_per_trade": -19.306417397423182,
+    "net_bps_per_trade": -30.040086560412504,
+    "profit_factor": 0.677823926218501,
+    "max_drawdown_bps": 42373.09937032317,
+    "win_rate": 0.40213523131672596
+   },
+   "validation": {
+    "trades": 1165,
+    "gross_bps_per_trade": -0.6063312101276331,
+    "net_bps_per_trade": -11.776528489526774,
+    "profit_factor": 0.8455415286288364,
+    "max_drawdown_bps": 16571.117843326963,
+    "win_rate": 0.4008583690987124
+   },
+   "sharpe_trade_trainval": -0.08263446808197958
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    2,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1500,
+    "gross_bps_per_trade": 24.086088977478152,
+    "net_bps_per_trade": 7.004269618811484,
+    "profit_factor": 1.0910539870568503,
+    "max_drawdown_bps": 5414.947534121063,
+    "win_rate": 0.4633333333333333
+   },
+   "validation": {
+    "trades": 1275,
+    "gross_bps_per_trade": -9.887838219609797,
+    "net_bps_per_trade": -28.24083683255098,
+    "profit_factor": 0.6653609996871546,
+    "max_drawdown_bps": 36481.65361883676,
+    "win_rate": 0.3905882352941176
+   },
+   "sharpe_trade_trainval": -0.03416256579723691
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    2,
+    false
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1383,
+    "gross_bps_per_trade": 10.455140496894527,
+    "net_bps_per_trade": -0.40304875907076615,
+    "profit_factor": 0.9948407109201595,
+    "max_drawdown_bps": 13236.380054178737,
+    "win_rate": 0.4685466377440347
+   },
+   "validation": {
+    "trades": 1131,
+    "gross_bps_per_trade": -19.343294877742654,
+    "net_bps_per_trade": -30.79289034370198,
+    "profit_factor": 0.6343378506289493,
+    "max_drawdown_bps": 35369.4782551829,
+    "win_rate": 0.39080459770114945
+   },
+   "sharpe_trade_trainval": -0.05497584991951964
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    4,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1498,
+    "gross_bps_per_trade": -7.77698675913052,
+    "net_bps_per_trade": -24.70292649511183,
+    "profit_factor": 0.7707746884778028,
+    "max_drawdown_bps": 38215.51342876493,
+    "win_rate": 0.41188251001335113
+   },
+   "validation": {
+    "trades": 1267,
+    "gross_bps_per_trade": 22.574308992857492,
+    "net_bps_per_trade": 4.582221098224493,
+    "profit_factor": 1.0552367443834132,
+    "max_drawdown_bps": 8562.935113113403,
+    "win_rate": 0.4198895027624309
+   },
+   "sharpe_trade_trainval": -0.035289745040226174
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    4,
+    true
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1405,
+    "gross_bps_per_trade": -17.34081015929602,
+    "net_bps_per_trade": -28.074479322285338,
+    "profit_factor": 0.7405830529678218,
+    "max_drawdown_bps": 40581.44266251064,
+    "win_rate": 0.4170818505338078
+   },
+   "validation": {
+    "trades": 1165,
+    "gross_bps_per_trade": 5.843857946679454,
+    "net_bps_per_trade": -5.326339332719687,
+    "profit_factor": 0.9393048246043525,
+    "max_drawdown_bps": 15002.216492352702,
+    "win_rate": 0.41373390557939915
+   },
+   "sharpe_trade_trainval": -0.055331337183909625
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    4,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1500,
+    "gross_bps_per_trade": 26.752576580863586,
+    "net_bps_per_trade": 9.670757222196917,
+    "profit_factor": 1.1054942759498751,
+    "max_drawdown_bps": 7554.140321535915,
+    "win_rate": 0.4633333333333333
+   },
+   "validation": {
+    "trades": 1275,
+    "gross_bps_per_trade": -10.635955121330804,
+    "net_bps_per_trade": -28.988953734271984,
+    "profit_factor": 0.697839375237017,
+    "max_drawdown_bps": 37687.02670115105,
+    "win_rate": 0.3905882352941176
+   },
+   "sharpe_trade_trainval": -0.02584984292632738
+  },
+  {
+   "family": "F4_session",
+   "params": [
+    "us",
+    4,
+    false
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1383,
+    "gross_bps_per_trade": 13.784053950550016,
+    "net_bps_per_trade": 2.9258646945847295,
+    "profit_factor": 1.0315809152961788,
+    "max_drawdown_bps": 12789.175638367446,
+    "win_rate": 0.4656543745480839
+   },
+   "validation": {
+    "trades": 1131,
+    "gross_bps_per_trade": -25.772750130416778,
+    "net_bps_per_trade": -37.22234559637611,
+    "profit_factor": 0.6139918148747432,
+    "max_drawdown_bps": 42907.420956093934,
+    "win_rate": 0.39964633068081346
+   },
+   "sharpe_trade_trainval": -0.051323953089705575
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    2.0,
+    -1
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 2109,
+    "gross_bps_per_trade": 2.8713413152708886,
+    "net_bps_per_trade": -12.134120705355002,
+    "profit_factor": 0.874624167730108,
+    "max_drawdown_bps": 31475.3848211516,
+    "win_rate": 0.31721194879089615
+   },
+   "validation": {
+    "trades": 1813,
+    "gross_bps_per_trade": -8.003262497979767,
+    "net_bps_per_trade": -22.72449280796322,
+    "profit_factor": 0.7507486165925537,
+    "max_drawdown_bps": 41548.90569294841,
+    "win_rate": 0.3342526199669057
+   },
+   "sharpe_trade_trainval": -0.05914972040205341
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    2.0,
+    -1
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1947,
+    "gross_bps_per_trade": -4.320971590574752,
+    "net_bps_per_trade": -13.23661789129381,
+    "profit_factor": 0.862344231067392,
+    "max_drawdown_bps": 25868.62589147842,
+    "win_rate": 0.29275808936825887
+   },
+   "validation": {
+    "trades": 1608,
+    "gross_bps_per_trade": -17.670412132969954,
+    "net_bps_per_trade": -25.885506934275927,
+    "profit_factor": 0.7198974191001026,
+    "max_drawdown_bps": 42109.95339344454,
+    "win_rate": 0.2997512437810945
+   },
+   "sharpe_trade_trainval": -0.06493823475151278
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    2.0,
+    0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 3203,
+    "gross_bps_per_trade": 5.428388176853377,
+    "net_bps_per_trade": -9.846332018900602,
+    "profit_factor": 0.9010825654972149,
+    "max_drawdown_bps": 50975.466644189975,
+    "win_rate": 0.31782703715266936
+   },
+   "validation": {
+    "trades": 2744,
+    "gross_bps_per_trade": -4.341506023514514,
+    "net_bps_per_trade": -20.780342157625302,
+    "profit_factor": 0.7667292835109591,
+    "max_drawdown_bps": 59236.154851564286,
+    "win_rate": 0.3174198250728863
+   },
+   "sharpe_trade_trainval": -0.04942543594373842
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    2.0,
+    0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 3095,
+    "gross_bps_per_trade": -3.25002016875211,
+    "net_bps_per_trade": -12.574287271498475,
+    "profit_factor": 0.8721596100561032,
+    "max_drawdown_bps": 43216.027355890765,
+    "win_rate": 0.2940226171243942
+   },
+   "validation": {
+    "trades": 2533,
+    "gross_bps_per_trade": -12.45335371410278,
+    "net_bps_per_trade": -22.320529889389004,
+    "profit_factor": 0.7513370864998167,
+    "max_drawdown_bps": 58260.641875358815,
+    "win_rate": 0.2897749703908409
+   },
+   "sharpe_trade_trainval": -0.0558511284514391
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    3.0,
+    -1
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 2024,
+    "gross_bps_per_trade": 3.2101622825443092,
+    "net_bps_per_trade": -12.355804829115772,
+    "profit_factor": 0.8798361911399528,
+    "max_drawdown_bps": 29285.795167890483,
+    "win_rate": 0.27223320158102765
+   },
+   "validation": {
+    "trades": 1747,
+    "gross_bps_per_trade": -2.888147700557194,
+    "net_bps_per_trade": -17.702633126143915,
+    "profit_factor": 0.8175745025942693,
+    "max_drawdown_bps": 31347.03635065278,
+    "win_rate": 0.2987979393245564
+   },
+   "sharpe_trade_trainval": -0.047615160103664476
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    3.0,
+    -1
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 1886,
+    "gross_bps_per_trade": -4.508807067793062,
+    "net_bps_per_trade": -13.8553678957358,
+    "profit_factor": 0.8628734782723176,
+    "max_drawdown_bps": 26180.52611646244,
+    "win_rate": 0.2523860021208908
+   },
+   "validation": {
+    "trades": 1563,
+    "gross_bps_per_trade": -15.029725437607095,
+    "net_bps_per_trade": -23.314250945604535,
+    "profit_factor": 0.7595398909971424,
+    "max_drawdown_bps": 37156.21814390156,
+    "win_rate": 0.2616762635956494
+   },
+   "sharpe_trade_trainval": -0.05806430990869015
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    3.0,
+    0
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 2863,
+    "gross_bps_per_trade": 7.102003199277482,
+    "net_bps_per_trade": -8.638336908651265,
+    "profit_factor": 0.9192611988282097,
+    "max_drawdown_bps": 43392.137128526796,
+    "win_rate": 0.27698218651763884
+   },
+   "validation": {
+    "trades": 2464,
+    "gross_bps_per_trade": -1.4112665230357537,
+    "net_bps_per_trade": -18.466668493612055,
+    "profit_factor": 0.8055412045543283,
+    "max_drawdown_bps": 49976.908878977796,
+    "win_rate": 0.27962662337662336
+   },
+   "sharpe_trade_trainval": -0.03710650650846584
+  },
+  {
+   "family": "F6_5ema",
+   "params": [
+    5,
+    3.0,
+    0
+   ],
+   "mode": "maker",
+   "train": {
+    "trades": 2796,
+    "gross_bps_per_trade": -0.995836896710514,
+    "net_bps_per_trade": -10.816187080008081,
+    "profit_factor": 0.8974135586827969,
+    "max_drawdown_bps": 37453.25265229059,
+    "win_rate": 0.2550071530758226
+   },
+   "validation": {
+    "trades": 2323,
+    "gross_bps_per_trade": -11.074256188719719,
+    "net_bps_per_trade": -21.444604070553556,
+    "profit_factor": 0.7718262898706305,
+    "max_drawdown_bps": 51513.52150776596,
+    "win_rate": 0.24881618596642274
+   },
+   "sharpe_trade_trainval": -0.04391205991263724
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    6,
+    1,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 6056,
+    "gross_bps_per_trade": 0.958199088455641,
+    "net_bps_per_trade": -17.24807436918967,
+    "profit_factor": 0.7889756459379881,
+    "max_drawdown_bps": 106142.35864419155,
+    "win_rate": 0.4017503302509908
+   },
+   "validation": {
+    "trades": 16800,
+    "gross_bps_per_trade": -0.8158137155057703,
+    "net_bps_per_trade": -19.539797192976007,
+    "profit_factor": 0.6324509718742657,
+    "max_drawdown_bps": 328351.690300611,
+    "win_rate": 0.32666666666666666
+   },
+   "sharpe_trade_trainval": -0.08597350821159286
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    6,
+    1,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 6056,
+    "gross_bps_per_trade": -0.9556038083409888,
+    "net_bps_per_trade": -19.24629204158075,
+    "profit_factor": 0.7666801265117101,
+    "max_drawdown_bps": 117496.26027107483,
+    "win_rate": 0.41512549537648613
+   },
+   "validation": {
+    "trades": 16800,
+    "gross_bps_per_trade": 0.8177929225652906,
+    "net_bps_per_trade": -17.890366457107326,
+    "profit_factor": 0.6555932342446456,
+    "max_drawdown_bps": 301955.45964776445,
+    "win_rate": 0.34339285714285717
+   },
+   "sharpe_trade_trainval": -0.08285184520214407
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    6,
+    4,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1516,
+    "gross_bps_per_trade": -16.82552037897719,
+    "net_bps_per_trade": -34.7694411768004,
+    "profit_factor": 0.798707515042976,
+    "max_drawdown_bps": 53916.90486044366,
+    "win_rate": 0.4525065963060686
+   },
+   "validation": {
+    "trades": 4200,
+    "gross_bps_per_trade": -6.790069726706013,
+    "net_bps_per_trade": -25.48369261634887,
+    "profit_factor": 0.7493253985978604,
+    "max_drawdown_bps": 107280.77286803738,
+    "win_rate": 0.425
+   },
+   "sharpe_trade_trainval": -0.051380028710830465
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    6,
+    4,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1516,
+    "gross_bps_per_trade": 16.838180495843975,
+    "net_bps_per_trade": -1.5250227168869077,
+    "profit_factor": 0.9902153215496656,
+    "max_drawdown_bps": 37560.27295147245,
+    "win_rate": 0.4577836411609499
+   },
+   "validation": {
+    "trades": 4200,
+    "gross_bps_per_trade": 6.790348468034591,
+    "net_bps_per_trade": -11.89317149946541,
+    "profit_factor": 0.8744194661977504,
+    "max_drawdown_bps": 69861.6974546613,
+    "win_rate": 0.43476190476190474
+   },
+   "sharpe_trade_trainval": -0.016819220941532344
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    6,
+    24,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 252,
+    "gross_bps_per_trade": 194.7405420860278,
+    "net_bps_per_trade": 176.26272191142456,
+    "profit_factor": 1.458907157320045,
+    "max_drawdown_bps": 13300.042694392461,
+    "win_rate": 0.5
+   },
+   "validation": {
+    "trades": 700,
+    "gross_bps_per_trade": -36.10327445205269,
+    "net_bps_per_trade": -55.04932422276696,
+    "profit_factor": 0.7797223885341305,
+    "max_drawdown_bps": 44154.34344531211,
+    "win_rate": 0.46
+   },
+   "sharpe_trade_trainval": 0.0030065249261322083
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    6,
+    24,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 252,
+    "gross_bps_per_trade": -194.86884336767656,
+    "net_bps_per_trade": -212.61007081212108,
+    "profit_factor": 0.6328503961767497,
+    "max_drawdown_bps": 63186.14439806558,
+    "win_rate": 0.4523809523809524
+   },
+   "validation": {
+    "trades": 700,
+    "gross_bps_per_trade": 36.110148678631006,
+    "net_bps_per_trade": 17.667627020773867,
+    "profit_factor": 1.0829573589174435,
+    "max_drawdown_bps": 15874.555448707299,
+    "win_rate": 0.48714285714285716
+   },
+   "sharpe_trade_trainval": -0.021030549180602032
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    24,
+    1,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 5984,
+    "gross_bps_per_trade": 2.2552285051082737,
+    "net_bps_per_trade": -15.988150069758035,
+    "profit_factor": 0.8051872278166888,
+    "max_drawdown_bps": 95556.50205462077,
+    "win_rate": 0.4127673796791444
+   },
+   "validation": {
+    "trades": 16800,
+    "gross_bps_per_trade": 0.42036372744823036,
+    "net_bps_per_trade": -18.28072713100415,
+    "profit_factor": 0.6519978558721878,
+    "max_drawdown_bps": 307332.47121011914,
+    "win_rate": 0.3293452380952381
+   },
+   "sharpe_trade_trainval": -0.07969570150596272
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    24,
+    1,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 5984,
+    "gross_bps_per_trade": -2.2521427572568955,
+    "net_bps_per_trade": -20.536571669021605,
+    "profit_factor": 0.7565425371258416,
+    "max_drawdown_bps": 125425.12261441078,
+    "win_rate": 0.4072526737967914
+   },
+   "validation": {
+    "trades": 16800,
+    "gross_bps_per_trade": -0.41892301829189116,
+    "net_bps_per_trade": -19.077117874125225,
+    "profit_factor": 0.6376599376218474,
+    "max_drawdown_bps": 321082.9499825907,
+    "win_rate": 0.34214285714285714
+   },
+   "sharpe_trade_trainval": -0.0876928364104716
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    24,
+    4,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1496,
+    "gross_bps_per_trade": 10.609291892807683,
+    "net_bps_per_trade": -7.564489786336704,
+    "profit_factor": 0.9518654613456428,
+    "max_drawdown_bps": 26186.801217086082,
+    "win_rate": 0.4485294117647059
+   },
+   "validation": {
+    "trades": 4200,
+    "gross_bps_per_trade": -0.12665439761131395,
+    "net_bps_per_trade": -18.889589259992267,
+    "profit_factor": 0.8087496355198818,
+    "max_drawdown_bps": 80753.36335821454,
+    "win_rate": 0.4083333333333333
+   },
+   "sharpe_trade_trainval": -0.03171151743194237
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    24,
+    4,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1496,
+    "gross_bps_per_trade": -10.60630573346831,
+    "net_bps_per_trade": -28.944288760206277,
+    "profit_factor": 0.8270293995226571,
+    "max_drawdown_bps": 51453.906115165955,
+    "win_rate": 0.47593582887700536
+   },
+   "validation": {
+    "trades": 4200,
+    "gross_bps_per_trade": 0.12909218079548282,
+    "net_bps_per_trade": -18.462258671109282,
+    "profit_factor": 0.8117299825207929,
+    "max_drawdown_bps": 79402.09446173123,
+    "win_rate": 0.4392857142857143
+   },
+   "sharpe_trade_trainval": -0.042244398444942884
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    24,
+    24,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 248,
+    "gross_bps_per_trade": -105.6799786427322,
+    "net_bps_per_trade": -125.23195012861933,
+    "profit_factor": 0.7529275826597213,
+    "max_drawdown_bps": 48003.93620036874,
+    "win_rate": 0.4798387096774194
+   },
+   "validation": {
+    "trades": 700,
+    "gross_bps_per_trade": 8.201245047772982,
+    "net_bps_per_trade": -10.326122770798445,
+    "profit_factor": 0.9556176844301895,
+    "max_drawdown_bps": 23018.158271939217,
+    "win_rate": 0.42428571428571427
+   },
+   "sharpe_trade_trainval": -0.025135648402906517
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    24,
+    24,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 248,
+    "gross_bps_per_trade": 105.66783695730356,
+    "net_bps_per_trade": 88.71658263673916,
+    "profit_factor": 1.2220644516174721,
+    "max_drawdown_bps": 31739.5315929095,
+    "win_rate": 0.5120967741935484
+   },
+   "validation": {
+    "trades": 700,
+    "gross_bps_per_trade": -8.182529989506609,
+    "net_bps_per_trade": -26.906590742363758,
+    "profit_factor": 0.8877058488963867,
+    "max_drawdown_bps": 37932.13911031229,
+    "win_rate": 0.5028571428571429
+   },
+   "sharpe_trade_trainval": 0.0020808966927662203
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    72,
+    1,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 5792,
+    "gross_bps_per_trade": 4.272567654597108,
+    "net_bps_per_trade": -13.884362659456759,
+    "profit_factor": 0.826580090621083,
+    "max_drawdown_bps": 87381.02809287813,
+    "win_rate": 0.4138466850828729
+   },
+   "validation": {
+    "trades": 16800,
+    "gross_bps_per_trade": 0.45142607875064716,
+    "net_bps_per_trade": -18.214444121606494,
+    "profit_factor": 0.649575902335245,
+    "max_drawdown_bps": 306090.0234161986,
+    "win_rate": 0.32821428571428574
+   },
+   "sharpe_trade_trainval": -0.0778928720407661
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    72,
+    1,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 5792,
+    "gross_bps_per_trade": -4.27144397632959,
+    "net_bps_per_trade": -22.33122636945804,
+    "profit_factor": 0.7351886351479551,
+    "max_drawdown_bps": 130072.68940096522,
+    "win_rate": 0.4076312154696133
+   },
+   "validation": {
+    "trades": 16800,
+    "gross_bps_per_trade": -0.4495568471909718,
+    "net_bps_per_trade": -19.105115218262398,
+    "profit_factor": 0.6348198901852646,
+    "max_drawdown_bps": 321444.8349791627,
+    "win_rate": 0.33726190476190476
+   },
+   "sharpe_trade_trainval": -0.0907227144826828
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    72,
+    4,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1448,
+    "gross_bps_per_trade": 23.229314373908167,
+    "net_bps_per_trade": 4.9131953276374505,
+    "profit_factor": 1.0324972443207283,
+    "max_drawdown_bps": 21031.325017417934,
+    "win_rate": 0.46892265193370164
+   },
+   "validation": {
+    "trades": 4200,
+    "gross_bps_per_trade": 1.4291864810836423,
+    "net_bps_per_trade": -17.251437177487787,
+    "profit_factor": 0.8231958296947951,
+    "max_drawdown_bps": 74435.35174753949,
+    "win_rate": 0.4145238095238095
+   },
+   "sharpe_trade_trainval": -0.023046113705149886
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    72,
+    4,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 1448,
+    "gross_bps_per_trade": -23.232973905728567,
+    "net_bps_per_trade": -41.16050126829762,
+    "profit_factor": 0.7642229727154473,
+    "max_drawdown_bps": 60562.57263730978,
+    "win_rate": 0.4516574585635359
+   },
+   "validation": {
+    "trades": 4200,
+    "gross_bps_per_trade": -1.4235430407558167,
+    "net_bps_per_trade": -20.06291938218439,
+    "profit_factor": 0.7964690963889386,
+    "max_drawdown_bps": 86474.88182925187,
+    "win_rate": 0.43761904761904763
+   },
+   "sharpe_trade_trainval": -0.05070408741086875
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    72,
+    24,
+    false
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 240,
+    "gross_bps_per_trade": 260.8076662431953,
+    "net_bps_per_trade": 240.27172196819524,
+    "profit_factor": 1.7337500739538922,
+    "max_drawdown_bps": 16271.841950692127,
+    "win_rate": 0.5125
+   },
+   "validation": {
+    "trades": 700,
+    "gross_bps_per_trade": 15.20479257060361,
+    "net_bps_per_trade": -3.295663564396382,
+    "profit_factor": 0.9855249726794032,
+    "max_drawdown_bps": 28363.499897492507,
+    "win_rate": 0.45
+   },
+   "sharpe_trade_trainval": 0.03659721286312112
+  },
+  {
+   "family": "F5_cross",
+   "params": [
+    72,
+    24,
+    true
+   ],
+   "mode": "taker",
+   "train": {
+    "trades": 240,
+    "gross_bps_per_trade": -260.873907553786,
+    "net_bps_per_trade": -276.437963278786,
+    "profit_factor": 0.5289899514645473,
+    "max_drawdown_bps": 84378.89817133934,
+    "win_rate": 0.48333333333333334
+   },
+   "validation": {
+    "trades": 700,
+    "gross_bps_per_trade": -15.169128605396654,
+    "net_bps_per_trade": -33.85152961325379,
+    "profit_factor": 0.8604240431109482,
+    "max_drawdown_bps": 40147.40419037022,
+    "win_rate": 0.4828571428571429
+   },
+   "sharpe_trade_trainval": -0.05944602539882081
+  }
+ ],
+ "not_testable": {
+  "F2_open_interest_filter": "no open-interest history is published; the funding + stall part was tested",
+  "F3_book_imbalance_trade_flow": "only a day or two of recorded book exists",
+  "delisted_perps": "Delta publishes no candles for delisted contracts"
+ }
+}

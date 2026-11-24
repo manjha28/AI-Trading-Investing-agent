@@ -92,4 +92,38 @@ def test_a_scanner_run_never_reaches_any_order_adapter(engine, monkeypatch):
         assert snap["paper_only"] is True and snap["signals_seen"] >= 1 and snap["symbols_ok"] == 2
         assert not hasattr(DeltaScanner, "execute_live")                                     # structurally paper only
         assert service.run_pass(db, T0 + timedelta(minutes=16)) == {"ran": 1}
+
+
+
+def test_funding_extreme_candidate_runs_on_hourly_bars_and_is_labelled_unproven(engine, monkeypatch):
+    import pandas as pd
+
+    from app.crypto_delta.candles import Candle
+    from app.crypto_delta.forward import Spec
+    from app.delta_lab import data
+    now = T0
+    rnd = random.Random(3)
+    n = 24 * 100
+    price, candles = D(100), []
+    for i in range(n):                                                                                 # TEST DATA: a drifting, noisy series
+        o = price
+        price = max(D(1), price + D(str(round(rnd.uniform(-0.6, 0.55), 3))))
+        candles.append(Candle(now - timedelta(hours=n - i), o, max(o, price) + D("0.2"), min(o, price) - D("0.2"), price, D(10)))
+    base = int((now - timedelta(days=100)).timestamp()) // 3600 * 3600
+    ft = [base + 3600 * k for k in range(24 * 100)]
+    block = {}
+    for t in ft:
+        block.setdefault(t // 28800, 0.01 if rnd.random() < 0.15 else 0.002 + 0.001 * rnd.random())          # one value per 8 h, as Delta publishes it (percent)
+    fund = pd.DataFrame({"time": ft, "open": 0.0, "high": 0.0, "low": 0.0, "close": [block[t // 28800] for t in ft], "volume": None})
+    monkeypatch.setattr(service, "sync_candles", lambda *a, **k: {})
+    monkeypatch.setattr(service, "load_candles", lambda *a, **k: candles)
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: fund)
+    spec = Spec("AAAUSD", D("0.1"), D("0.0005"), D("0.1"))
+    trades = service._funding_trades(None, "AAAUSD", spec, now - timedelta(days=60), now, None)
+    assert len(trades) >= 1 and set(trades[0]) >= {"entry_time", "exit_time", "entry_fill", "stop_initial", "net_pnl", "side"}
+    assert all(datetime.fromisoformat(t["entry_time"]) >= now - timedelta(days=60) for t in trades)    # nothing before the start counts
+    out = simulate({"AAAUSD": {"contract_value": spec.contract_value, "trades": trades}}, RiskRules())
+    assert out["paper_only"] is True and out["signals_seen"] == len(trades)
+
+
 from tests.test_crypto_delta import engine  # noqa: E402,F401
