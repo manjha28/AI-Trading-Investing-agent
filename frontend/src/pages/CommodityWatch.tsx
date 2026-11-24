@@ -18,6 +18,7 @@ const price = (value: string | null | undefined) => { const n = numeric(value); 
 const signed = (value: string | null | undefined, suffix = '') => { const n = numeric(value); return n === null ? '—' : `${n > 0 ? '+' : ''}${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${suffix}`; };
 const compact = (value: string | null | undefined) => { const n = numeric(value); return n === null ? '—' : new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 2 }).format(n); };
 const tone = (value: string | null | undefined) => { const n = numeric(value); return n === null || n === 0 ? '' : n > 0 ? 'positive' : 'negative'; };
+const stamp = (iso?: string | null) => iso ? new Date(iso).toLocaleString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' IST' : null;
 const clock = (ms: number) => new Date(ms).toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
 /** MCX trades Mon-Fri 09:00-23:30 IST, until 23:55 once US daylight saving has ended (display hint; exchange holidays are caught by the tick-recency check below). */
 function mcxCloseMinutes(at: Date): number {
@@ -61,7 +62,8 @@ const CommodityRow = memo(function CommodityRow({ contract, tick, selected, live
       <td className={`watch-num ${tone(tick?.change_pct)}`}>{signed(tick?.change_pct, '%')}</td>
       <td className="watch-range" aria-label="Day range"><DayRange low={tick?.low} high={tick?.high} last={tick?.ltp} /></td>
       <td className="watch-num">{compact(tick?.volume)}</td>
-      <td className="watch-num watch-age">{tick ? clock(tick.receivedAt) : '—'}</td>
+      <td className="watch-num" title="Open interest, last session">{compact(tick?.oi)}</td>
+      <td className="watch-num watch-age" title={tick?.last_close ? 'Time of the last stored tick, or the last session when no tick was stored' : undefined}>{tick?.last_close ? (stamp(tick.tick_time) ?? tick.session_date ?? '—') : tick ? clock(tick.receivedAt) : '—'}</td>
     </tr>
   );
 });
@@ -135,6 +137,7 @@ export function CommodityWatch() {
         <span className="negative">▼ <b>{stats.down}</b></span>
         <span className="watch-note">MCX · {data?.hours_ist ?? '09:00–23:30 IST'} · front-month futures · Dhan live feed · decision support, not investment advice</span>
       </div>
+      {status === 'market_closed' && <p className="watch-note" role="status">Market closed · last close {Object.values(ticks).map((t) => stamp(t.tick_time) ?? t.session_date).find(Boolean) ?? 'time unknown'}{Object.values(ticks).some((t) => t.session_date && !t.tick_time) ? ' (session date from Dhan daily data)' : ''}</p>}
       {(error || (message && status !== 'active')) && <p className="alerts-notice" role="alert">{error ?? message}{open && (status === 'no_data' || status === 'unavailable') && <> <button type="button" className="secondary-button" onClick={retry}>Retry</button></>}</p>}
       <div className="watch-split">
         <section className="data-section watch-table-panel" aria-label="Commodity watch">
@@ -149,6 +152,7 @@ export function CommodityWatch() {
                 <th className="watch-num"><button type="button" onClick={() => sortBy('change_pct')}>Chg %{arrow('change_pct')}</button></th>
                 <th>Day range</th>
                 <th className="watch-num"><button type="button" onClick={() => sortBy('volume')}>Volume{arrow('volume')}</button></th>
+                <th className="watch-num">OI</th>
                 <th className="watch-num">Updated (IST)</th>
               </tr></thead>
               <tbody>{ordered.map((c) => <CommodityRow key={c.key} contract={c} tick={ticks[c.key]} selected={c.key === selectedKey} live={status === 'active'} onSelect={setSelectedKey} />)}</tbody>
@@ -167,6 +171,7 @@ export function CommodityWatch() {
                 <div><dt>High</dt><dd>{price(tick?.high)}</dd></div>
                 <div><dt>Low</dt><dd>{price(tick?.low)}</dd></div>
                 <div><dt>Volume</dt><dd>{compact(tick?.volume)}</dd></div>
+                <div><dt>Open interest</dt><dd>{compact(tick?.oi)}</dd></div>
                 <div><dt>Lot size</dt><dd>{selected.lot_size ?? '—'}</dd></div>
                 <div><dt>Tick size (paise)</dt><dd>{selected.tick_size ?? '—'}</dd></div>
                 <div><dt>Expiry</dt><dd>{selected.expiry} ({selected.days_to_expiry}d)</dd></div>

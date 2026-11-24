@@ -15,7 +15,7 @@ import struct
 import threading
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import urlencode, urlsplit
@@ -1268,6 +1268,32 @@ class DhanAdapter(BrokerAdapter):
             {exchange_segment: security_ids},
         )
         return quotes.get(exchange_segment, {})
+
+    def get_last_session_bar(self, access_token: str, tokens: Mapping[str, str], security_id: str, today_ist: date) -> dict[str, Any] | None:
+        """The last COMPLETED daily bar of an MCX future (open, high, low, close, volume, open interest, session date) from Dhan's daily history.
+        Looks back 10 days to step over weekends and holidays; returns None when Dhan has no bar. Today's bar counts only once the day is done (the caller decides)."""
+        if not str(security_id).isdigit():
+            return None
+        _wait_for_dhan_market_data()
+        payload = _request(
+            "POST", f"{self.api_root}/v2/charts/historical", diagnostic_stage="historical_data_api_request",
+            headers={"access-token": access_token, "Accept": "application/json", "Content-Type": "application/json"},
+            json={"securityId": str(security_id), "exchangeSegment": "MCX_COMM", "instrument": "FUTCOM", "oi": True,
+                  "fromDate": (today_ist - timedelta(days=10)).strftime("%Y-%m-%d"), "toDate": (today_ist + timedelta(days=1)).strftime("%Y-%m-%d")},
+        )
+        self._check_market_data_payload(payload)
+        cols = {k: payload.get(k) for k in ("open", "high", "low", "close", "volume", "timestamp")}
+        if any(not isinstance(v, list) for v in cols.values()) or not cols["timestamp"] or len({len(v) for v in cols.values()}) != 1:
+            return None
+        i = len(cols["timestamp"]) - 1
+        oi = payload.get("open_interest")
+        stamp = datetime.fromtimestamp(float(cols["timestamp"][i]), timezone.utc)
+        return {
+            "open": Decimal(str(cols["open"][i])), "high": Decimal(str(cols["high"][i])), "low": Decimal(str(cols["low"][i])),
+            "close": Decimal(str(cols["close"][i])), "volume": Decimal(str(cols["volume"][i])),
+            "oi": Decimal(str(oi[i])) if isinstance(oi, list) and len(oi) == len(cols["timestamp"]) else None,
+            "session_date": stamp.astimezone(ZoneInfo("Asia/Kolkata")).date(),
+        }
 
     def get_last_close_quotes(self, access_token: str, tokens: Mapping[str, str], segment: str, security_ids: list[str]) -> dict[str, tuple[Decimal, Decimal | None]]:
         """Last price and previous close straight from Dhan's quote endpoint, for a market that is closed or has not traded yet (open/high/low are 0 then,

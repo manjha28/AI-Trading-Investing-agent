@@ -41,3 +41,46 @@ def test_last_close_quotes_use_the_price_dhan_reports_before_the_first_trade_and
     monkeypatch.setattr(ba.DhanAdapter, "price_tick_for", staticmethod(lambda seg, sid: Decimal("0.1")))
     got = adapter.get_last_close_quotes("t", {"client_id": "c"}, "MCX_COMM", ["578632", "578633"])
     assert got == {"578632": (Decimal("323.8"), Decimal("323.8"))}          # the unpriced contract is absent, not zero
+
+
+# ---- A3: last-session figures while MCX is closed (all values below are TEST DATA) ----
+def test_closed_states_weekend_and_after_close_in_both_dst_regimes_and_open_state():
+    from datetime import datetime, timezone
+
+    from app.services import mcx_calendar as cal
+    sat = datetime(2026, 11, 21, 8, 0, tzinfo=timezone.utc)                       # Saturday
+    assert cal.session_state(sat)["open"] is False and cal.session_state(sat)["reason"] == "weekend"
+    winter_after = datetime(2026, 11, 25, 18, 26, tzinfo=timezone.utc)              # 23:56 IST, US winter: closes 23:55
+    assert cal.session_state(winter_after)["open"] is False
+    winter_before = datetime(2026, 11, 25, 18, 20, tzinfo=timezone.utc)             # 23:50 IST still open
+    assert cal.session_state(winter_before)["open"] is True
+    summer_after = datetime(2026, 7, 7, 18, 1, tzinfo=timezone.utc)                 # 23:31 IST, US summer: closes 23:30
+    assert cal.session_state(summer_after)["open"] is False
+
+
+def test_closed_tick_recomputes_change_in_decimal_and_keeps_unknowns_unknown():
+    from app.services.mcx_last_session import closed_tick
+    t = closed_tick("mcx:1", "GOLD", {"ltp": "100.50", "previous_close": "100.00", "open": "99", "high": "101", "low": "98", "volume": "10", "oi": "5", "tick_time": None, "session_date": "2026-11-24"}, source="x")
+    assert t["change"] == "0.50" and t["change_pct"] == "0.50" and t["oi"] == "5" and t["last_close"] is True
+    u = closed_tick("mcx:2", "SILVER", {"ltp": "50", "previous_close": None}, source="x")
+    assert u["change"] is None and u["open"] is None and u["volume"] is None             # never zero
+
+
+def test_snapshot_is_stored_throttled_and_loaded_back():
+    from datetime import date
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.models import Base
+    from app.models.mcx_snapshot import McxLastSnapshot
+    from app.services import mcx_last_session as ls
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine, tables=[McxLastSnapshot.__table__])
+    ls._last_saved.clear()
+    with Session(engine) as db:
+        assert ls.save_snapshot(db, "99", "GOLD", {"ltp": "100"}, date(2026, 11, 24), now_monotonic=1000.0) is True
+        assert ls.save_snapshot(db, "99", "GOLD", {"ltp": "101"}, date(2026, 11, 24), now_monotonic=1010.0) is False   # inside the throttle window
+        assert ls.save_snapshot(db, "99", "GOLD", {"ltp": "102"}, date(2026, 11, 24), now_monotonic=1031.0) is True
+        assert ls.save_snapshot(db, "99", "GOLD", {"ltp": "103"}, date(2026, 11, 24), force=True, now_monotonic=1032.0) is True   # session end
+        assert ls.load_snapshots(db, ["99", "7"])["99"].payload["ltp"] == "103" and "7" not in ls.load_snapshots(db, ["99", "7"])

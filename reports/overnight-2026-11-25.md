@@ -9,7 +9,8 @@ _Decision support, not investment advice._ Updated after every item.
 | Live-state baseline | Done | see "Live baseline" below | – |
 | A1 Delta watch outage | Partly done (code + tests; Fly deploy pending) | `CryptoWatch.test.tsx` "Crypto watch outage" | – |
 | A2 Journal est vs actual | Partly done (causes found + fixed + tests; 23/24 Nov reconcile NOT verifiable) | `test_dhan_charge_estimate.py` (3 new), `test_dhan_reconciliation.py::..without_portfolio_id` | Run a backfill on Fly after deploy; see A2 |
-| A3 to A6, B, C, D | Not started yet | – | – |
+| A3 MCX closed-market columns | Partly done (code + 3 tests; needs Fly deploy and a look at the live page; no MCX-open check possible overnight) | `test_mcx_calendar.py` (3 new) | – |
+| A4 to A6, B, C, D | Not started yet | – | – |
 
 ## Live baseline (24 Nov ~18:30 UTC, read-only query of the Fly DB; nothing changed)
 - **Delta**: deployment flag `DELTA_LIVE_EXECUTION_ENABLED=true` on finbyte-nexus-api; per-user state ARMED (armed 17:59 UTC, caps $25/day loss, 6 trades/day, 2 open, $2000 notional). Live tests: ONE, `5 EMA BTCUSD 5m` (BTCUSD, 5m, 1 contract, `execute_live=true`). Wallet balance not queried (needs the Delta key; you said ~$3).
@@ -31,3 +32,7 @@ _Decision support, not investment advice._ Updated after every item.
 Estimates are never stored (computed on display copies at read time), so the backfill needs no recompute step; the Journal already refetches trades, analytics and breakdown after a backfill. Rule "actual replaces estimate everywhere" holds because rows, KPI, summaries and exports all read these same rows. "est." tooltip already says what is estimated.
 **Reconciliation 422.** Cause: `brokers.router` registers `/{slug}/reconciliation` (requires `portfolio_id`) before the Dhan-specific `/brokers/dhan/reconciliation`, so the generic route shadowed it. Sending `portfolio_id` would have returned the wrong payload (a differences list), so I fixed the route order in `main.py` instead (deviation from your instruction, on purpose). Test added.
 **23/24 Nov vs Dhan realised: NOT verified.** On Fly the build returns 0 matched trades and no Dhan snapshot for both days, and 24 Nov fills are not on Fly. After deploy, run Backfill + Dhan sync on Fly, open "Reconcile with Dhan" and read the gap.
+
+## A3. MCX watch when closed
+Closed-market ticks now carry last price (labelled close), change and % vs previous close, open, high, low, volume, open interest, time of the last stored tick, and a "Market closed · last close <date time IST>" stamp above the table. Source order per contract: (1) snapshot stored from live ticks (new table `mcx_last_snapshots`, migration 0077, throttled to one write per 30 s per contract, forced at session end); (2) Dhan quote endpoint + Dhan daily history (`/v2/charts/historical`, `oi: true`) for the last completed session; (3) unknown shown as "—", never zero. Yahoo is not used (Dhan had the data path). Contract roll: on a contract's expiry day, after the session closes, it is treated as expired and the next month is shown. Source is logged in the tick (`source`).
+Tests: weekend, after 23:30 (US summer) and 23:55 (US winter) closed, 23:50 winter still open; Decimal change recompute and unknown-stays-unknown; snapshot save/throttle/force/load. NOT tested: the websocket end to end and the expiry-day roll against a DB (no Postgres in this Codespace; `alembic check` could not be run here, the migration is a plain create_table and `alembic heads` shows a single head 0077).

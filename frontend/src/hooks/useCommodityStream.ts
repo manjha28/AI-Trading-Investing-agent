@@ -11,6 +11,11 @@ export type CommodityTick = {
   high: string | null;
   low: string | null;
   volume: string | null;
+  /** Open interest (last session's, from Dhan daily history) when known. */
+  oi?: string | null;
+  /** Time of the last live tick that was stored (ISO) and the session the figures belong to (YYYY-MM-DD). */
+  tick_time?: string | null;
+  session_date?: string | null;
   /** True when this price is the last close shown while the market is closed. */
   last_close?: boolean;
   /** Server clock at the moment the tick was relayed (the feed's own tick time is not relied on). */

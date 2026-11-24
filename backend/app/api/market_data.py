@@ -7489,9 +7489,16 @@ def _mcx_session_open(now: datetime) -> bool:
     return bool(mcx_calendar.session_state(now)["open"])
 
 
-def _mcx_front_contracts(db: Session, today: date) -> list[Any]:
-    """The nearest unexpired futures contract per MCX underlying, from the stored Dhan derivatives master."""
+def _mcx_front_contracts(db: Session, today: date, now: datetime | None = None) -> list[Any]:
+    """The nearest unexpired futures contract per MCX underlying, from the stored Dhan derivatives master.
+    On a contract's expiry day, once the session is over, it counts as expired and the next month is the front."""
     from app.models.derivatives import DerivativeContract
+    from app.services import mcx_calendar
+
+    if now is not None:
+        local = now.astimezone(ZoneInfo("Asia/Kolkata"))
+        if local.date() == today and local.time() >= mcx_calendar.close_time(now):
+            today = today + timedelta(days=1)
 
     rows = db.scalars(
         select(DerivativeContract)
@@ -7519,7 +7526,7 @@ def get_commodities(
     response.headers["Cache-Control"] = "no-store"
     now = datetime.now(timezone.utc)
     today = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
-    contracts = _mcx_front_contracts(db, today)
+    contracts = _mcx_front_contracts(db, today, now)
     return {
         "count": len(contracts),
         "exchange": "MCX",
@@ -7737,7 +7744,7 @@ async def dhan_commodity_quote_stream(
         return
 
     now = datetime.now(timezone.utc)
-    contracts = _mcx_front_contracts(db, now.astimezone(ZoneInfo("Asia/Kolkata")).date())
+    contracts = _mcx_front_contracts(db, now.astimezone(ZoneInfo("Asia/Kolkata")).date(), now)
     subscriptions = {f"mcx:{row.security_id}": ("MCX_COMM", str(row.security_id)) for row in contracts if str(row.security_id).isdigit()}
     symbols = {f"mcx:{row.security_id}": row.underlying_symbol for row in contracts}
     if not subscriptions:
@@ -7799,9 +7806,23 @@ async def dhan_commodity_quote_stream(
     last_sent: dict[str, float] = {}
     task = asyncio.current_task()
 
+    def _remember(key: str, bar: Any, previous: Decimal | None) -> None:
+        """Keep the latest live figures (throttled) so the watch can show them after the close."""
+        if not market["open"]:
+            return
+        try:
+            from app.services import mcx_last_session as last_session
+            sid = subscriptions[key][1]
+            last_session.save_snapshot(db, sid, symbols[key], {"ltp": bar.close, "previous_close": previous, "open": bar.open, "high": bar.high, "low": bar.low,
+                                                              "volume": bar.volume, "oi": None, "tick_time": datetime.now(timezone.utc).isoformat()},
+                                       datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Kolkata")).date())
+        except Exception:  # noqa: BLE001  a failed save never interrupts the feed
+            logger.warning("mcx_snapshot_save_failed")
+
     def tick_message(key: str, bar: Any) -> dict[str, Any]:
         previous = previous_closes.get(key)
         change = bar.close - previous if previous else None
+        _remember(key, bar, previous)
         return {
             "type": "tick", "key": key, "symbol": symbols[key], "ltp": str(bar.close),
             "previous_close": str(previous) if previous else None,
@@ -7831,20 +7852,37 @@ async def dhan_commodity_quote_stream(
                 logger.warning("mcx_last_close_unavailable")
             await websocket.send_json({"type": "status", "status": "market_closed", "reason": market["reason"],
                                        "next_open": market["next_open"], "message": f"Market closed · {market['reason']}. Showing the last close; the live feed opens with the session ({market['hours']})."})
-            for key, bar in snapshot.items():
-                message = tick_message(key, bar)
-                message["last_close"] = True
-                await websocket.send_json(message)
+            from app.services import mcx_last_session as last_session
+
+            today_ist = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
+            stored = await asyncio.to_thread(last_session.load_snapshots, db, [sid for _seg, sid in subscriptions.values()])
             for key, (sid_kind, sid) in subscriptions.items():
-                if key in snapshot or sid not in closes:
+                saved = stored.get(sid)
+                if saved is not None and saved.payload.get("ltp"):                      # 1: what the live ticks last stored
+                    await websocket.send_json(last_session.closed_tick(key, symbols[key], {**saved.payload, "session_date": saved.session_date.isoformat() if saved.session_date else None}, source="stored_snapshot"))
                     continue
-                last, prev = closes[sid]
-                change = last - prev if prev else None
-                await websocket.send_json({"type": "tick", "key": key, "symbol": symbols[key], "ltp": str(last), "previous_close": str(prev) if prev else None,
-                                           "change": str(change) if change is not None else None,
-                                           "change_pct": str((change / prev * Decimal("100")).quantize(Decimal("0.01"))) if change is not None and prev else None,
-                                           "open": None, "high": None, "low": None, "volume": None, "last_close": True,
-                                           "received_at": datetime.now(timezone.utc).isoformat()})
+                bar = snapshot.get(key)                                                  # 2: Dhan's quote, then its last completed daily bar for the rest
+                prices = closes.get(sid)
+                try:
+                    daily = await asyncio.to_thread(adapter.get_last_session_bar, tokens["access_token"], tokens, sid, today_ist)
+                except Exception:  # noqa: BLE001
+                    daily = None
+                    logger.warning("mcx_last_session_bar_unavailable security_id=%s", sid)
+                if bar is None and prices is None and daily is None:
+                    continue                                                             # unknown stays unknown
+                ltp = bar.close if bar is not None else prices[0] if prices else daily["close"] if daily else None
+                prev = previous_closes.get(key) or (prices[1] if prices else None)
+                payload = {"ltp": ltp, "previous_close": prev,
+                           "open": (bar.open if bar is not None and bar.open else None) or (daily["open"] if daily else None),
+                           "high": (bar.high if bar is not None and bar.high else None) or (daily["high"] if daily else None),
+                           "low": (bar.low if bar is not None and bar.low else None) or (daily["low"] if daily else None),
+                           "volume": (bar.volume if bar is not None and bar.volume else None) or (daily["volume"] if daily else None),
+                           "oi": daily["oi"] if daily else None, "tick_time": None,
+                           "session_date": daily["session_date"].isoformat() if daily else None}
+                message = last_session.closed_tick(key, symbols[key], payload, source="dhan_quote_and_daily_bar")
+                await websocket.send_json(message)
+                if message["ltp"] is not None:
+                    await asyncio.to_thread(last_session.save_snapshot, db, sid, symbols[key], {k: payload[k] for k in payload}, daily["session_date"] if daily else None, force=True)
             await monitor                                   # keep the socket for pings only; nothing is subscribed
             return
         await websocket.send_json({"type": "status", "status": "connecting", "message": "Market open, waiting for the first tick."})
