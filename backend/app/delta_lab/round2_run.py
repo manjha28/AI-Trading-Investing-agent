@@ -162,7 +162,10 @@ def main() -> None:
     quarters = quarters_between(lo, hi - 1)
     log(f"markets built in {time.time() - t0:.0f}s; walk-forward quarters {quarters[0]}..{quarters[-1]} ({len(quarters)}); holdout starts {datetime.fromtimestamp(hi, tz=timezone.utc):%Y-%m-%d}")
     results = {"families": {}}
-    fams = sys.argv[1:] or ["R1", "R2", "R3", "R4", "R5"]
+    existing = REPORTS / "round2_results.json"
+    if sys.argv[1:] and existing.exists():                 # a partial run (for example ticks only) keeps the families already computed
+        results = json.loads(existing.read_text())
+    fams = [a for a in sys.argv[1:] if a != "ticks"] or ["R1", "R2", "R3", "R4", "R5"]
     for fam in fams:
         results["families"][fam] = run_family(fam, markets, cuts, quarters, log)
         _save(results)

@@ -48,7 +48,6 @@ def r6_signals(m: Market, mm: Market, sig_k: int, mult: float, hold_min: int) ->
     avg_vol_min = pd.Series(mm.v).rolling(1440).mean().shift(1).to_numpy()
     sigma, avgv = sigma_min[m.minute_pos], avg_vol_min[m.minute_pos]
     cs = np.concatenate([[0.0], np.cumsum(m.v)])
-    vol60 = np.full(len(c), np.nan); vol60[60:] = cs[61:] - cs[1:-59] if len(c) > 60 else np.nan
     vol60 = np.full(len(c), np.nan); vol60[60:] = cs[60:len(c)] - cs[0:len(c) - 60]
     cond = (np.abs(ret60) > sig_k * sigma) & (vol60 > 5 * avgv) & np.isfinite(sigma) & np.isfinite(avgv)
     out, last = [], -10**9
