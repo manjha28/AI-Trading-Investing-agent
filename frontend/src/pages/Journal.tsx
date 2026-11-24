@@ -217,7 +217,18 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
       .catch(() => { if (!cancelled) setFilteredAnalytics(null); });
     return () => { cancelled = true; };
   }, [hasKpiFilter, kpiQuery, journalTrades]);
-  const kpiAnalytics = hasKpiFilter ? filteredAnalytics : journalAnalytics;
+  const serverKpi = hasKpiFilter ? filteredAnalytics : journalAnalytics;
+  // The search box narrows the table, so the headline numbers must follow it. The server has no search filter, so with text in the box the net, wins, losses and win rate are recomputed from the
+  // closed trades shown; the measures that need the full series (profit factor, expectancy, drawdown) are shown as unknown rather than left describing a different set of trades.
+  const kpiAnalytics = useMemo(() => {
+    if (!search.trim() || !serverKpi) return serverKpi;
+    const closed = filteredTrades.filter((trade) => trade.exit_time !== null && trade.net_pnl !== null);
+    const nets = closed.map((trade) => Number(trade.net_pnl));
+    const wins = nets.filter((n) => n > 0).length;
+    const total = nets.reduce((a, b) => a + b, 0);
+    return { ...serverKpi, net_pnl: closed.length ? total.toFixed(2) : null, wins, losses: nets.filter((n) => n <= 0).length, win_rate: closed.length ? Number(((wins / closed.length) * 100).toFixed(1)) : null,
+      profit_factor: null, expectancy: null, max_drawdown: null, trades_logged: closed.length } as typeof serverKpi;
+  }, [search, serverKpi, filteredTrades]);
 
   function uniqueOptions(values: string[]) {
     const options = new Map<string, string>();

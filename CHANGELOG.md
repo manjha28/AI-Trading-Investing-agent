@@ -235,3 +235,4 @@
 - App shell: Dhan session status row in the sidebar, 'backend is slow' banner after 8 s, six-box authenticator code input, password show/hide
 - Signals: two-level tabs and a Forward test capability chip; shared SearchBox, FilterBar, Select, Tooltip, Card, Sparkline, Meter, Toast
 - One execution state per venue (OFF / ARMED BUT BLOCKED / LIVE) read by every screen; blocked attempts are separate from the order ledger; arming has a confirmation step naming venue, strategy, quantity cap and leverage
+- Journal headline numbers follow the search box; alerts and watchlist stars update at once; Hold horizons open; research page clears the previous stock; daily close refresh, background Dhan snapshot refresh, bounded payloads
