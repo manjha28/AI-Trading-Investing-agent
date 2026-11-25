@@ -261,3 +261,4 @@
 - 2026-11-25: Research: 5 EMA exit variants (30) on BTC/ETH/SOL/LISTA 5m/15m; root cause of the 05:16 order's ~12R target; reports/five_ema_exits.md.
 - 2026-11-25: Research: owner's trend + rejection rule (6 variants) on BTC/ETH; reports/trend_rejection.md.
 - 2026-11-25: Research: owner's marked lower-high shorts with volume (16 variants); reports/lower_high_volume.md.
+- 2026-11-25: Research: ride volume pumps on illiquid coins (16 variants); reports/pump_ride.md.
