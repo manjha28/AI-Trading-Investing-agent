@@ -66,6 +66,7 @@ def build_context(db: Session, user_id: UUID, ft: CryptoForwardTest, spec: Spec,
         realized_pnl_today=Decimal(0),     # realised P&L is not derivable from the order reply alone; the daily loss cap is enforced through the risk-per-trade and trade-count caps
         contract_has_open_order=any(r.symbol == spec.symbol and r.status in OPEN for r in rows),
         duplicate_signal=db.scalar(select(func.count()).select_from(DeltaLiveOrder).where(DeltaLiveOrder.client_order_id == cid)) > 0,
+        signal_max_age_seconds=RESOLUTION_SECONDS.get(ft.resolution),
     )
 
 

@@ -610,8 +610,12 @@ def test_live_order_is_placed_only_when_every_layer_allows_and_is_idempotent(cli
     login(client, engine, "live@example.com")
     calls = []
 
+    reads = {"/v2/wallet/balances": [{"asset_symbol": "USD", "available_balance": "100", "balance": "100"}], "/v2/positions/margined": [], "/v2/orders": [], "/v2/wallet/transactions": []}
+
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.path)
+        if request.method == "GET":                                  # the gate's signed reads of Delta's own state (wallet, positions, open orders, today's P&L)
+            return httpx.Response(200, json={"success": True, "result": reads[request.url.path]})
+        calls.append(request.url.path)                               # only order-endpoint writes are recorded
         return httpx.Response(200, json={"success": True, "result": {"id": 555}})
     factory = lambda: dclient.DeltaOrderClient(transport=httpx.MockTransport(handler))  # noqa: E731
     now = datetime.now(timezone.utc)
@@ -621,7 +625,7 @@ def test_live_order_is_placed_only_when_every_layer_allows_and_is_idempotent(cli
     with Session(engine) as db:
         ft = db.get(CryptoForwardTest, ft_id)
         row = live_service.maybe_place(db, ft, spec, entries, candles, at, factory)
-        assert row.status == "blocked" and "armed" in row.block_reason and calls == []
+        assert row.status == "blocked" and row.block_reason.startswith("armed:") and calls == []
     # armed: leverage set, then one bracket order of one contract
     with Session(engine) as db:
         live_service.get_state(db, user_id).armed = True

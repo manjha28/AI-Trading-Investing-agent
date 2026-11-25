@@ -10,7 +10,6 @@ ALLOWED_STRATEGY_KEYS: frozenset[str] = frozenset({"five_ema_alert"})
 MAX_CONTRACTS = 1                       # one lot, whatever the lot size is
 LEVERAGE_CAP = 25                       # the lower of this and the contract's own maximum is used
 MARKETABLE_LIMIT_BUFFER = Decimal("0.003")   # entry is a limit 0.3% through the last price: fills like a market order, never runs away
-SIGNAL_MAX_AGE_SECONDS = 120            # an entry is only placed within two minutes of the trigger candle closing
 CONFIRMATION_PHRASE = "ENABLE DELTA LIVE ORDERS"
 BASE_URL = "https://api.india.delta.exchange"
 

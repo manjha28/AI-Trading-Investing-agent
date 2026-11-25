@@ -33,6 +33,7 @@ class LiveContext:
     wallet_balance_usd: Decimal | None = None       # total wallet balance read from Delta just before sending; None = unreadable, so the wallet-based checks are skipped
     realized_pnl_known: bool = True                 # False = today's real realised P&L could not be read from Delta, which fails the daily-loss check closed
     maintenance_margin_pct: Decimal | None = None   # percent, e.g. 0.25; None = unknown, which fails the liquidation-safety check closed
+    signal_max_age_seconds: int | None = None       # one candle of the strategy's timeframe (owner decision 2026-11-25); None = unknown timeframe, which fails the freshness check closed
 
 
 @dataclass(frozen=True)
@@ -73,8 +74,11 @@ def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
     allowed = min(policy.LEVERAGE_CAP, ctx.exchange_max_leverage) if ctx.exchange_max_leverage else None
     check("leverage_cap", allowed is not None and intent.leverage <= allowed,
           "the contract's margin data is unknown, so its maximum leverage cannot be confirmed" if allowed is None else f"leverage {intent.leverage}x exceeds min({policy.LEVERAGE_CAP}x, exchange max {ctx.exchange_max_leverage}x) = {allowed}x")
-    fresh = ctx.last_candle_close is not None and timedelta(0) <= now - ctx.last_candle_close.astimezone(timezone.utc) <= timedelta(seconds=policy.SIGNAL_MAX_AGE_SECONDS)
-    check("signal_fresh", fresh, "no completed candle closed in the last two minutes; the signal is missing or stale")
+    max_age = ctx.signal_max_age_seconds
+    fresh = (max_age is not None and max_age > 0 and ctx.last_candle_close is not None
+             and timedelta(0) <= now - ctx.last_candle_close.astimezone(timezone.utc) <= timedelta(seconds=max_age))
+    check("signal_fresh", fresh, "the strategy timeframe is unknown, so signal freshness cannot be confirmed" if not max_age or max_age <= 0
+          else f"no completed candle closed within one candle ({max_age // 60} min); the signal is missing or stale")
     price_ok = ctx.last_price is not None and ctx.last_price > 0
     check("price_known", price_ok, "no last price")
     if price_ok and ctx.contract_value is not None:

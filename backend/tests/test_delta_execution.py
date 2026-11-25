@@ -30,7 +30,7 @@ def intent(**over):
 
 def ctx(**over):
     base = dict(now=NOW, deployment_enabled=True, credentials_present=True, environment_block=None, armed=True, test_executes_live=True, max_daily_loss_usd=D("25"),
-                max_trades_per_day=6, max_open_positions=2, max_notional_usd=D("2000"), contract_value=D("0.001"), exchange_max_leverage=250, maintenance_margin_pct=D("0.25"), last_candle_close=CLOSE,
+                max_trades_per_day=6, max_open_positions=2, max_notional_usd=D("2000"), contract_value=D("0.001"), exchange_max_leverage=250, maintenance_margin_pct=D("0.25"), signal_max_age_seconds=300, last_candle_close=CLOSE,
                 last_price=D("100000"), orders_today=0, open_positions=0, realized_pnl_today=D(0), contract_has_open_order=False, duplicate_signal=False,
                 wallet_balance_usd=D(1000))
     return gr.LiveContext(**{**base, **over})
@@ -71,7 +71,9 @@ def test_a_clean_context_is_allowed_and_each_layer_blocks_on_its_own():
 
 def test_missing_or_stale_inputs_fail_closed():
     assert "signal_fresh" in failed(gr.evaluate(intent(), ctx(last_candle_close=None)))
-    assert "signal_fresh" in failed(gr.evaluate(intent(), ctx(now=NOW + timedelta(minutes=5))))
+    assert "signal_fresh" in failed(gr.evaluate(intent(), ctx(now=NOW + timedelta(minutes=6))))
+    assert "signal_fresh" not in failed(gr.evaluate(intent(), ctx(now=NOW + timedelta(minutes=4))))     # one 5m candle of freshness, not two minutes
+    assert "signal_fresh" in failed(gr.evaluate(intent(), ctx(signal_max_age_seconds=None)))           # unknown timeframe: refuse
     assert "price_known" in failed(gr.evaluate(intent(), ctx(last_price=None)))
     assert "leverage_cap" in failed(gr.evaluate(intent(), ctx(exchange_max_leverage=None)))          # unknown margin data: refuse
     assert "leverage_cap" in failed(gr.evaluate(intent(leverage=25), ctx(exchange_max_leverage=10)))  # the exchange allows less than 25x

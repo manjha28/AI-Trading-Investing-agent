@@ -73,6 +73,10 @@ build and maintain exactly this, and nothing wider:
 - Guard-rails fail closed (stale price, missing stop or target, daily loss cap, daily trade cap, open-position
   cap, notional cap, duplicate signal, one open order per contract, kill switch). The kill switch disarms
   instantly and cancels this app's unfilled orders.
+- Owner decisions, 2026-11-25: effective leverage cap (order value / wallet) is 25x, configurable
+  downward only; there is no pre-send balance gate (Delta rejects an order the wallet cannot cover, and
+  Delta's rejection reason is shown in the ledger); signal freshness is one candle of the strategy's
+  timeframe (5 minutes for 5m), and an unknown timeframe fails closed.
 - Tests, CI and development NEVER reach a Delta order endpoint (the client refuses under pytest/CI and is
   exercised only against a mocked transport). Agents must not place a real order.
 - Every intent, decision, order request, broker response and fill is written to the append-only audit trail

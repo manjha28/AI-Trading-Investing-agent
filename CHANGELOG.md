@@ -251,3 +251,4 @@
 - 2026-11-25 Multibagger: price filter (presets, min/max, URL + local storage), last close per stock (A5)
 - 2026-11-25 Daily report: uniform card heights, Why as overlay (B1); research_sections_v2 flag for Ready/Hold/Radar cards, default off (B2)
 - 2026-11-25: Journal: one real fill stored as trade-book + trade-history copies is collapsed (23 Nov P&L now known); login/baseline scripts.
+- 2026-11-25: Delta live gate: signal freshness is one candle of the strategy timeframe (5 min for 5m), was 2 min; owner decisions recorded in AGENTS.md.
