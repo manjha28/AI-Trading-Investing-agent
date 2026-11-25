@@ -38,3 +38,31 @@ Nothing from Steps 5 to 7 was applied.
 - Give me a logged-in session or 10 minutes at your keyboard so the speed baseline can be recorded, then I can do the Postgres move properly.
 - Confirm whether Dhan or Delta whitelists your egress IP.
 - Do not delete the Managed Postgres cluster until a self-run one has been live for 7 days.
+
+## Update, 25 Nov 05:50 UTC: follower removed, logged-in baseline recorded
+- **API now runs ONE machine:** `82dd029b77e668` (shared-cpu-4x, 4 GB), which holds the leader lock (confirmed in Postgres). The owner destroyed `e82dd02db14718` around 04:00 UTC. Deploys use `--ha=false`.
+- **Memory (snapshot, about 25 minutes after a deploy, with the live test, scanners and Delta collector running):** uvicorn RSS **1.72 GB** of 4 GB; MemAvailable 2.0 GB; load average 2.4 / 2.2 / 1.5 on 4 CPUs. The old 0.85 GB figure was taken right after a deploy and understated it. 2 GB would be tight; this is still a snapshot, not a peak.
+- **Dhan sync** (header button) took **69 s** end to end and slows other requests while it runs (the "Backend is slow" banner appears).
+- **Speed baseline** (20 calls each, from this Codespace, logged in, `scripts/nexus_baseline.py`):
+
+| endpoint | status | p50 ms | p95 ms | calls |
+|---|---|---|---|---|
+| /api/v1/healthz | 200 | 249 | 1769 | 20 |
+| /api/v1/auth/me | 200 | 322 | 880 | 20 |
+| /api/v1/brokers | 200 | 484 | 1884 | 20 |
+| /api/v1/brokers/portfolio-summary | 200 | 2167 | 5395 | 20 |
+| /api/v1/brokers/dhan/portfolio | 200 | 1216 | 5935 | 20 |
+| /api/v1/trades/analytics/journal | 200 | 1422 | 2763 | 20 |
+| /api/v1/trades/journal | 200 | 1592 | 4068 | 20 |
+| /api/v1/brokers/dhan/reconciliation?day=2026-11-23 | 200 | 2565 | 8397 | 20 |
+| /api/v1/research/multibagger | 200 | 2020 | 4058 | 20 |
+| /api/v1/market-data/watchlists | 200 | 481 | 699 | 20 |
+| /api/v1/market-data/rail-summary | 200 | 2911 | 5454 | 20 |
+| /api/v1/forward-tests | 200 | 662 | 3682 | 20 |
+| /api/v1/crypto-delta/forward-tests | 200 | 408 | 1273 | 20 |
+| /api/v1/delta-research/overview | 200 | 477 | 2528 | 20 |
+| /api/v1/delta-scanner | 200 | 403 | 628 | 20 |
+| /api/v1/signals-lab/strategies | 200 | 3277 | 10635 | 20 |
+| /api/v1/market-data/settings | 200 | 766 | 2474 | 20 |
+
+The slowest are signals-lab strategies (p50 3.3 s), rail summary (2.9 s), reconciliation (2.6 s), portfolio summary (2.2 s) and multibagger (2.0 s). The p95 spikes of 4-10 s line up with the scheduler work running on the same single worker. This table is the reference for the speed gate of the database move: after a move, p50 must not get worse by more than 20%.
