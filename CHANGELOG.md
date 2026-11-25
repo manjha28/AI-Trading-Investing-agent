@@ -258,3 +258,4 @@
 - 2026-11-25: Round 5: frozen R3 (eaea623c741f) on 20 more perpetuals with Delta costs; reports/round5_r3_breadth.md.
 - 2026-11-25: Delta scanner Live switch (off by default, allowlisted strategies only, 2FA to turn on), total-open-risk and cross-margin checks for several positions, scanner kill switch and Close all (migration 0080).
 - 2026-11-25: Fixes: live gate judges freshness at send time; outcome sync finds open bracket legs and labels rejected orders; Live report loading state and parallel Delta reads; Dhan realised kept per IST day (migration 0081); official close refresh skipped while NSE trades; Dhan sync timing per endpoint; Signals dashboard loading text.
+- 2026-11-25: Research: 5 EMA exit variants (30) on BTC/ETH/SOL/LISTA 5m/15m; root cause of the 05:16 order's ~12R target; reports/five_ema_exits.md.
