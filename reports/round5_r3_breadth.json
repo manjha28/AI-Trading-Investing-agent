@@ -1,0 +1,1917 @@
+{
+ "param_hash": "eaea623c741f",
+ "picked": {
+  "delta_top10": [
+   "BTCUSD",
+   "ETHUSD",
+   "SOLUSD",
+   "EVAAUSD",
+   "AIOTUSD",
+   "BLESSUSD",
+   "LISTAUSD",
+   "ARIAUSD",
+   "XRPUSD",
+   "AKEUSD"
+  ],
+  "binance_top20": [
+   "BTCUSDT",
+   "ETHUSDT",
+   "SOLUSDT",
+   "ZECUSDT",
+   "HYPEUSDT",
+   "XRPUSDT",
+   "EVAAUSDT",
+   "LISTAUSDT",
+   "NEARUSDT",
+   "BLESSUSDT",
+   "BNBUSDT",
+   "DOGEUSDT",
+   "1000PEPEUSDT",
+   "MMTUSDT",
+   "AIOTUSDT",
+   "ENAUSDT",
+   "ADAUSDT",
+   "GUAUSDT",
+   "SUIUSDT",
+   "UNIUSDT"
+  ]
+ },
+ "generated": "2026-11-25T04:23:01.138755+00:00",
+ "symbols": {
+  "SOLUSD": {
+   "trades": 199,
+   "net": 185.66143430374132,
+   "net_bps_per_trade": 48.721993576848426,
+   "gross_bps_per_trade": 62.4491268624639,
+   "profit_factor": 1.405303476286305,
+   "win_rate": 0.41708542713567837,
+   "max_drawdown_pct_of_start": 4.89898677995202,
+   "liquidations": 0,
+   "long": {
+    "trades": 114,
+    "net_bps_per_trade": 28.891488227578378,
+    "profit_factor": 1.230189877345699,
+    "net": 62.59195196141022
+   },
+   "short": {
+    "trades": 85,
+    "net_bps_per_trade": 75.31820075116356,
+    "profit_factor": 1.661075304308994,
+    "net": 123.06948234233109
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 5,
+     "net_bps_per_trade": -27.310334127279788
+    },
+    "2023-Q2": {
+     "trades": 20,
+     "net_bps_per_trade": -68.6182301297476
+    },
+    "2023-Q3": {
+     "trades": 21,
+     "net_bps_per_trade": 22.177721698896455
+    },
+    "2023-Q4": {
+     "trades": 2,
+     "net_bps_per_trade": 381.6296856286906
+    },
+    "2024-Q1": {
+     "trades": 9,
+     "net_bps_per_trade": 21.429121449045592
+    },
+    "2024-Q2": {
+     "trades": 13,
+     "net_bps_per_trade": 106.77790643411475
+    },
+    "2024-Q3": {
+     "trades": 16,
+     "net_bps_per_trade": 121.98295423842632
+    },
+    "2024-Q4": {
+     "trades": 4,
+     "net_bps_per_trade": 154.80591440155303
+    },
+    "2025-Q1": {
+     "trades": 10,
+     "net_bps_per_trade": 226.02775307539167
+    },
+    "2025-Q2": {
+     "trades": 13,
+     "net_bps_per_trade": 52.0895501824696
+    },
+    "2025-Q3": {
+     "trades": 10,
+     "net_bps_per_trade": 31.317287568765984
+    },
+    "2025-Q4": {
+     "trades": 14,
+     "net_bps_per_trade": 15.105997510929038
+    },
+    "2026-Q1": {
+     "trades": 16,
+     "net_bps_per_trade": 245.90639346456695
+    },
+    "2026-Q2": {
+     "trades": 20,
+     "net_bps_per_trade": -17.095354345315968
+    },
+    "2026-Q3": {
+     "trades": 18,
+     "net_bps_per_trade": -62.108818421931396
+    },
+    "2026-Q4": {
+     "trades": 8,
+     "net_bps_per_trade": -14.132416864328704
+    }
+   },
+   "quarters_positive": "11/16",
+   "sources": [
+    "delta_top10",
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "skipped_position_open": 2155,
+    "funding_window": 27,
+    "stop_too_close_to_liquidation": 2,
+    "unfilled_signal": 1574,
+    "size_below_one_lot": 70,
+    "stop_too_close_to_liquidation+size_below_one_lot": 19,
+    "funding_window+size_below_one_lot": 8,
+    "funding_window+stop_too_close_to_liquidation+size_below_one_lot": 1
+   }
+  },
+  "EVAAUSD": {
+   "trades": 17,
+   "net": 9.213069455291006,
+   "net_bps_per_trade": 39.30040226613376,
+   "gross_bps_per_trade": 54.887835197901175,
+   "profit_factor": 1.1757274944593863,
+   "win_rate": 0.4117647058823529,
+   "max_drawdown_pct_of_start": 1.584485567729996,
+   "liquidations": 0,
+   "long": {
+    "trades": 7,
+    "net_bps_per_trade": -211.34572100159352,
+    "profit_factor": 0.22763852019327785,
+    "net": -24.439467670169993
+   },
+   "short": {
+    "trades": 10,
+    "net_bps_per_trade": 214.75268855354284,
+    "profit_factor": 2.619028489204092,
+    "net": 33.652537125460995
+   },
+   "quarters": {
+    "2025-Q4": {
+     "trades": 1,
+     "net_bps_per_trade": -353.74954561383015
+    },
+    "2026-Q1": {
+     "trades": 8,
+     "net_bps_per_trade": 194.94480018154675
+    },
+    "2026-Q2": {
+     "trades": 1,
+     "net_bps_per_trade": -332.9066772295154
+    },
+    "2026-Q3": {
+     "trades": 4,
+     "net_bps_per_trade": -8.98051924884156
+    },
+    "2026-Q4": {
+     "trades": 3,
+     "net_bps_per_trade": -56.29108769646285
+    }
+   },
+   "quarters_positive": "1/5",
+   "sources": [
+    "delta_top10",
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 599848,
+   "from": "2025-10-03",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 918,
+    "stop_too_close_to_liquidation": 148,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 33,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 3,
+    "funding_window+stop_too_close_to_liquidation": 22,
+    "skipped_position_open": 243,
+    "funding_window": 2
+   }
+  },
+  "AIOTUSD": {
+   "trades": 15,
+   "net": 52.421646653319826,
+   "net_bps_per_trade": 202.61779560916963,
+   "gross_bps_per_trade": 221.6516904311418,
+   "profit_factor": 2.4418613789241177,
+   "win_rate": 0.4666666666666667,
+   "max_drawdown_pct_of_start": 2.040005474026009,
+   "liquidations": 0,
+   "long": {
+    "trades": 8,
+    "net_bps_per_trade": 112.04743578005909,
+    "profit_factor": 1.909106201000002,
+    "net": 19.214774101999954
+   },
+   "short": {
+    "trades": 7,
+    "net_bps_per_trade": 306.1267782710103,
+    "profit_factor": 3.181644325570635,
+    "net": 33.20687255131988
+   },
+   "quarters": {
+    "2025-Q4": {
+     "trades": 3,
+     "net_bps_per_trade": -126.22118680030145
+    },
+    "2026-Q1": {
+     "trades": 5,
+     "net_bps_per_trade": 389.3081778888658
+    },
+    "2026-Q3": {
+     "trades": 7,
+     "net_bps_per_trade": 210.19851501344561
+    }
+   },
+   "quarters_positive": "2/3",
+   "sources": [
+    "delta_top10",
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 824370,
+   "from": "2025-04-30",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1825,
+    "stop_too_close_to_liquidation": 206,
+    "funding_window+stop_too_close_to_liquidation": 28,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation+size_below_one_lot": 10,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 112,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 18,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation+size_below_one_lot": 1,
+    "skipped_position_open": 219,
+    "funding_window": 2
+   }
+  },
+  "BLESSUSD": {
+   "trades": 5,
+   "net": 13.948695083000052,
+   "net_bps_per_trade": 230.2307268398245,
+   "gross_bps_per_trade": 241.8581999687645,
+   "profit_factor": 1.8929711098660582,
+   "win_rate": 0.4,
+   "max_drawdown_pct_of_start": 1.0469588149999935,
+   "liquidations": 0,
+   "long": {
+    "trades": 1,
+    "net_bps_per_trade": 1074.7829091920446,
+    "profit_factor": null,
+    "net": 14.761939048999988
+   },
+   "short": {
+    "trades": 4,
+    "net_bps_per_trade": 19.092681251769474,
+    "profit_factor": 0.9479375409248212,
+    "net": -0.813243965999936
+   },
+   "quarters": {
+    "2026-Q1": {
+     "trades": 1,
+     "net_bps_per_trade": -374.6210113179986
+    },
+    "2026-Q4": {
+     "trades": 4,
+     "net_bps_per_trade": 381.4436613792803
+    }
+   },
+   "quarters_positive": "1/2",
+   "sources": [
+    "delta_top10",
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 614310,
+   "from": "2025-09-23",
+   "to": "2026-11-23",
+   "rejections": {
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 92,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 14,
+    "unfilled_signal": 1462,
+    "stop_too_close_to_liquidation": 184,
+    "funding_window+stop_too_close_to_liquidation": 31,
+    "skipped_position_open": 59,
+    "funding_window": 1
+   }
+  },
+  "LISTAUSD": {
+   "trades": 74,
+   "net": 21.761775427412232,
+   "net_bps_per_trade": 25.4481990991782,
+   "gross_bps_per_trade": 39.02806364437977,
+   "profit_factor": 1.1076466341560702,
+   "win_rate": 0.4594594594594595,
+   "max_drawdown_pct_of_start": 3.9892181304396903,
+   "liquidations": 0,
+   "long": {
+    "trades": 39,
+    "net_bps_per_trade": 15.194570890686686,
+    "profit_factor": 1.088771270702213,
+    "net": 9.636585313339207
+   },
+   "short": {
+    "trades": 35,
+    "net_bps_per_trade": 36.87367053149733,
+    "profit_factor": 1.129536897812297,
+    "net": 12.125190114073021
+   },
+   "quarters": {
+    "2024-Q3": {
+     "trades": 1,
+     "net_bps_per_trade": -369.67695973371025
+    },
+    "2024-Q4": {
+     "trades": 1,
+     "net_bps_per_trade": -384.25840598263846
+    },
+    "2025-Q1": {
+     "trades": 5,
+     "net_bps_per_trade": 26.833349795641105
+    },
+    "2025-Q2": {
+     "trades": 2,
+     "net_bps_per_trade": 342.3989938332882
+    },
+    "2025-Q3": {
+     "trades": 9,
+     "net_bps_per_trade": 10.371595948447123
+    },
+    "2025-Q4": {
+     "trades": 8,
+     "net_bps_per_trade": -123.77421323575516
+    },
+    "2026-Q1": {
+     "trades": 18,
+     "net_bps_per_trade": 124.11456998838531
+    },
+    "2026-Q2": {
+     "trades": 8,
+     "net_bps_per_trade": 80.063254618353
+    },
+    "2026-Q3": {
+     "trades": 12,
+     "net_bps_per_trade": 32.819786517522395
+    },
+    "2026-Q4": {
+     "trades": 10,
+     "net_bps_per_trade": -55.3419030187257
+    }
+   },
+   "quarters_positive": "6/10",
+   "sources": [
+    "delta_top10",
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 1276530,
+   "from": "2024-06-20",
+   "to": "2026-11-23",
+   "rejections": {
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 9,
+    "unfilled_signal": 2027,
+    "stop_too_close_to_liquidation": 351,
+    "funding_window+stop_too_close_to_liquidation": 52,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 1,
+    "skipped_position_open": 959,
+    "funding_window": 7
+   }
+  },
+  "ARIAUSD": {
+   "trades": 13,
+   "net": 36.80790653242809,
+   "net_bps_per_trade": 164.53515988545587,
+   "gross_bps_per_trade": 178.23150691990256,
+   "profit_factor": 2.1640090039088666,
+   "win_rate": 0.46153846153846156,
+   "max_drawdown_pct_of_start": 1.5606446157200025,
+   "liquidations": 0,
+   "long": {
+    "trades": 3,
+    "net_bps_per_trade": 383.8160704790438,
+    "profit_factor": 3.9958575288361424,
+    "net": 15.693390382735998
+   },
+   "short": {
+    "trades": 10,
+    "net_bps_per_trade": 98.75088670737952,
+    "profit_factor": 1.8002983810027584,
+    "net": 21.114516149692097
+   },
+   "quarters": {
+    "2025-Q4": {
+     "trades": 4,
+     "net_bps_per_trade": 251.09140719081492
+    },
+    "2026-Q1": {
+     "trades": 1,
+     "net_bps_per_trade": -331.7271266676214
+    },
+    "2026-Q2": {
+     "trades": 2,
+     "net_bps_per_trade": -332.88951888478493
+    },
+    "2026-Q3": {
+     "trades": 5,
+     "net_bps_per_trade": 278.41746992691833
+    },
+    "2026-Q4": {
+     "trades": 1,
+     "net_bps_per_trade": 740.0102645502669
+    }
+   },
+   "quarters_positive": "3/5",
+   "sources": [
+    "delta_top10"
+   ],
+   "spec": "delta_listed",
+   "bars": 643020,
+   "from": "2025-09-03",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1128,
+    "stop_too_close_to_liquidation": 154,
+    "funding_window+stop_too_close_to_liquidation": 28,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 5,
+    "skipped_position_open": 219,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 48,
+    "funding_window": 4
+   }
+  },
+  "XRPUSD": {
+   "trades": 236,
+   "net": 92.33592650668726,
+   "net_bps_per_trade": 29.990662882127612,
+   "gross_bps_per_trade": 44.168505119985426,
+   "profit_factor": 1.1333070188152639,
+   "win_rate": 0.3644067796610169,
+   "max_drawdown_pct_of_start": 10.582115762553997,
+   "liquidations": 0,
+   "long": {
+    "trades": 111,
+    "net_bps_per_trade": 24.146505818434832,
+    "profit_factor": 0.9853678799438097,
+    "net": -5.0538837945025925
+   },
+   "short": {
+    "trades": 125,
+    "net_bps_per_trade": 35.18027435468681,
+    "profit_factor": 1.280452463435352,
+    "net": 97.38981030118985
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 2,
+     "net_bps_per_trade": -185.67487028679153
+    },
+    "2023-Q2": {
+     "trades": 16,
+     "net_bps_per_trade": -72.34365618238098
+    },
+    "2023-Q3": {
+     "trades": 16,
+     "net_bps_per_trade": 7.488815267828851
+    },
+    "2023-Q4": {
+     "trades": 10,
+     "net_bps_per_trade": 0.32810280630411626
+    },
+    "2024-Q1": {
+     "trades": 13,
+     "net_bps_per_trade": -48.82297343446984
+    },
+    "2024-Q2": {
+     "trades": 23,
+     "net_bps_per_trade": 14.806276048031204
+    },
+    "2024-Q3": {
+     "trades": 13,
+     "net_bps_per_trade": -35.58629044091798
+    },
+    "2024-Q4": {
+     "trades": 8,
+     "net_bps_per_trade": -130.7566085683695
+    },
+    "2025-Q1": {
+     "trades": 16,
+     "net_bps_per_trade": 308.5880529414103
+    },
+    "2025-Q2": {
+     "trades": 20,
+     "net_bps_per_trade": 135.59413411673478
+    },
+    "2025-Q3": {
+     "trades": 12,
+     "net_bps_per_trade": 68.16288782385165
+    },
+    "2025-Q4": {
+     "trades": 22,
+     "net_bps_per_trade": 79.50273844971758
+    },
+    "2026-Q1": {
+     "trades": 15,
+     "net_bps_per_trade": -15.28650668299301
+    },
+    "2026-Q2": {
+     "trades": 20,
+     "net_bps_per_trade": 0.44724503295219903
+    },
+    "2026-Q3": {
+     "trades": 17,
+     "net_bps_per_trade": -38.58731713418429
+    },
+    "2026-Q4": {
+     "trades": 13,
+     "net_bps_per_trade": 72.80017067980683
+    }
+   },
+   "quarters_positive": "9/16",
+   "sources": [
+    "delta_top10",
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1276,
+    "skipped_position_open": 2392,
+    "funding_window": 31
+   }
+  },
+  "AKEUSD": {
+   "trades": 11,
+   "net": 3.6129651503899476,
+   "net_bps_per_trade": 26.15461104246665,
+   "gross_bps_per_trade": 45.6313673865728,
+   "profit_factor": 1.098949832345087,
+   "win_rate": 0.36363636363636365,
+   "max_drawdown_pct_of_start": 1.8537108833049956,
+   "liquidations": 0,
+   "long": {
+    "trades": 5,
+    "net_bps_per_trade": 209.01218413191447,
+    "profit_factor": 1.8169478702846453,
+    "net": 12.929133553439968
+   },
+   "short": {
+    "trades": 6,
+    "net_bps_per_trade": -126.22669986540649,
+    "profit_factor": 0.5496598105751715,
+    "net": -9.31616840305002
+   },
+   "quarters": {
+    "2025-Q4": {
+     "trades": 2,
+     "net_bps_per_trade": 104.18680790816086
+    },
+    "2026-Q1": {
+     "trades": 4,
+     "net_bps_per_trade": -242.39690934617107
+    },
+    "2026-Q2": {
+     "trades": 4,
+     "net_bps_per_trade": 343.59377031507745
+    },
+    "2026-Q3": {
+     "trades": 1,
+     "net_bps_per_trade": -325.46033822481405
+    }
+   },
+   "quarters_positive": "2/4",
+   "sources": [
+    "delta_top10"
+   ],
+   "spec": "delta_listed",
+   "bars": 609810,
+   "from": "2025-09-26",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 891,
+    "stop_too_close_to_liquidation": 97,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 44,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 12,
+    "skipped_position_open": 128,
+    "funding_window+stop_too_close_to_liquidation": 11,
+    "funding_window": 1,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation+size_below_one_lot": 32,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation+size_below_one_lot": 4
+   }
+  },
+  "ZECUSD": {
+   "trades": 157,
+   "net": 189.67129025448926,
+   "net_bps_per_trade": 69.73926108636209,
+   "gross_bps_per_trade": 86.96018238511363,
+   "profit_factor": 1.4614461319783183,
+   "win_rate": 0.43312101910828027,
+   "max_drawdown_pct_of_start": 5.3111901907230505,
+   "liquidations": 1,
+   "long": {
+    "trades": 82,
+    "net_bps_per_trade": 76.71975216110113,
+    "profit_factor": 1.3298439343699782,
+    "net": 76.84537471963364
+   },
+   "short": {
+    "trades": 75,
+    "net_bps_per_trade": 62.107257511314046,
+    "profit_factor": 1.6336336896703425,
+    "net": 112.82591553485562
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 5,
+     "net_bps_per_trade": 262.879188274824
+    },
+    "2023-Q2": {
+     "trades": 24,
+     "net_bps_per_trade": -29.41687005226771
+    },
+    "2023-Q3": {
+     "trades": 16,
+     "net_bps_per_trade": 26.80139536907815
+    },
+    "2023-Q4": {
+     "trades": 12,
+     "net_bps_per_trade": -0.5937087436904326
+    },
+    "2024-Q1": {
+     "trades": 11,
+     "net_bps_per_trade": 43.073635855648135
+    },
+    "2024-Q2": {
+     "trades": 18,
+     "net_bps_per_trade": -17.303968835959317
+    },
+    "2024-Q3": {
+     "trades": 11,
+     "net_bps_per_trade": 208.61439457020444
+    },
+    "2024-Q4": {
+     "trades": 3,
+     "net_bps_per_trade": 645.1128624867971
+    },
+    "2025-Q1": {
+     "trades": 10,
+     "net_bps_per_trade": 102.59182997471262
+    },
+    "2025-Q2": {
+     "trades": 13,
+     "net_bps_per_trade": 55.96977896508102
+    },
+    "2025-Q3": {
+     "trades": 11,
+     "net_bps_per_trade": 231.56603809676798
+    },
+    "2025-Q4": {
+     "trades": 1,
+     "net_bps_per_trade": 914.4634785296525
+    },
+    "2026-Q1": {
+     "trades": 7,
+     "net_bps_per_trade": 138.88236828036864
+    },
+    "2026-Q2": {
+     "trades": 4,
+     "net_bps_per_trade": -61.08682955520237
+    },
+    "2026-Q3": {
+     "trades": 10,
+     "net_bps_per_trade": -100.49700926615499
+    },
+    "2026-Q4": {
+     "trades": 1,
+     "net_bps_per_trade": 588.465135393184
+    }
+   },
+   "quarters_positive": "11/16",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1965,
+    "stop_too_close_to_liquidation": 224,
+    "skipped_position_open": 1822,
+    "funding_window+stop_too_close_to_liquidation": 38,
+    "funding_window": 25,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 9,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 1,
+    "stop_too_close_to_liquidation+size_below_one_lot": 9,
+    "funding_window+stop_too_close_to_liquidation+size_below_one_lot": 1
+   }
+  },
+  "HYPEUSD": {
+   "trades": 57,
+   "net": -8.427323780918078,
+   "net_bps_per_trade": -6.677951592260238,
+   "gross_bps_per_trade": 6.6077901080968395,
+   "profit_factor": 0.9467964044837057,
+   "win_rate": 0.3684210526315789,
+   "max_drawdown_pct_of_start": 4.580567039778861,
+   "liquidations": 0,
+   "long": {
+    "trades": 29,
+    "net_bps_per_trade": -70.24048088404685,
+    "profit_factor": 0.6704619093443778,
+    "net": -29.5120492684054
+   },
+   "short": {
+    "trades": 28,
+    "net_bps_per_trade": 59.1546680313759,
+    "profit_factor": 1.3062778154246724,
+    "net": 21.08472548748732
+   },
+   "quarters": {
+    "2025-Q3": {
+     "trades": 6,
+     "net_bps_per_trade": 93.09055634550639
+    },
+    "2025-Q4": {
+     "trades": 4,
+     "net_bps_per_trade": -332.4399321229286
+    },
+    "2026-Q1": {
+     "trades": 8,
+     "net_bps_per_trade": 304.6701462690508
+    },
+    "2026-Q2": {
+     "trades": 10,
+     "net_bps_per_trade": -116.52173243143072
+    },
+    "2026-Q3": {
+     "trades": 18,
+     "net_bps_per_trade": -11.343348403414005
+    },
+    "2026-Q4": {
+     "trades": 11,
+     "net_bps_per_trade": -61.580947719709506
+    }
+   },
+   "quarters_positive": "2/6",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 781290,
+   "from": "2025-05-30",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 694,
+    "stop_too_close_to_liquidation": 72,
+    "funding_window": 8,
+    "skipped_position_open": 603,
+    "funding_window+stop_too_close_to_liquidation": 17,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 2,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 1
+   }
+  },
+  "NEARUSD": {
+   "trades": 155,
+   "net": -115.94094081248429,
+   "net_bps_per_trade": -49.59431551663943,
+   "gross_bps_per_trade": -35.675082606654755,
+   "profit_factor": 0.7580302832914705,
+   "win_rate": 0.3419354838709677,
+   "max_drawdown_pct_of_start": 14.651600606539999,
+   "liquidations": 0,
+   "long": {
+    "trades": 80,
+    "net_bps_per_trade": -57.335027020258096,
+    "profit_factor": 0.687084798128817,
+    "net": -82.17633662159596
+   },
+   "short": {
+    "trades": 75,
+    "net_bps_per_trade": -41.33755657944617,
+    "profit_factor": 0.844071777344166,
+    "net": -33.764604190888285
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 3,
+     "net_bps_per_trade": -88.83587862015496
+    },
+    "2023-Q2": {
+     "trades": 27,
+     "net_bps_per_trade": -148.58974294265997
+    },
+    "2023-Q3": {
+     "trades": 18,
+     "net_bps_per_trade": 15.80357049424595
+    },
+    "2023-Q4": {
+     "trades": 6,
+     "net_bps_per_trade": -10.758834044050653
+    },
+    "2024-Q1": {
+     "trades": 2,
+     "net_bps_per_trade": 454.8566983392783
+    },
+    "2024-Q2": {
+     "trades": 10,
+     "net_bps_per_trade": -71.74729841914058
+    },
+    "2024-Q3": {
+     "trades": 8,
+     "net_bps_per_trade": -153.72289314388286
+    },
+    "2024-Q4": {
+     "trades": 5,
+     "net_bps_per_trade": -155.0864102710697
+    },
+    "2025-Q1": {
+     "trades": 8,
+     "net_bps_per_trade": -199.90589069109927
+    },
+    "2025-Q2": {
+     "trades": 5,
+     "net_bps_per_trade": 223.72556615845642
+    },
+    "2025-Q3": {
+     "trades": 14,
+     "net_bps_per_trade": -123.66871647407177
+    },
+    "2025-Q4": {
+     "trades": 10,
+     "net_bps_per_trade": -36.2638470524208
+    },
+    "2026-Q1": {
+     "trades": 18,
+     "net_bps_per_trade": 17.01038972248204
+    },
+    "2026-Q2": {
+     "trades": 10,
+     "net_bps_per_trade": -5.581550392590131
+    },
+    "2026-Q3": {
+     "trades": 10,
+     "net_bps_per_trade": 39.981251552303725
+    },
+    "2026-Q4": {
+     "trades": 1,
+     "net_bps_per_trade": 108.81107891622203
+    }
+   },
+   "quarters_positive": "6/16",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1918,
+    "stop_too_close_to_liquidation": 316,
+    "funding_window": 26,
+    "skipped_position_open": 2106,
+    "funding_window+stop_too_close_to_liquidation": 41,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 1,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 1
+   }
+  },
+  "BNBUSD": {
+   "trades": 216,
+   "net": 135.51826720540154,
+   "net_bps_per_trade": 20.36553297072817,
+   "gross_bps_per_trade": 34.4785885165484,
+   "profit_factor": 1.2571833439024622,
+   "win_rate": 0.4027777777777778,
+   "max_drawdown_pct_of_start": 7.799617836370885,
+   "liquidations": 0,
+   "long": {
+    "trades": 118,
+    "net_bps_per_trade": 2.864622230344276,
+    "profit_factor": 1.1531692082639695,
+    "net": 41.88006929247676
+   },
+   "short": {
+    "trades": 98,
+    "net_bps_per_trade": 41.43805814792509,
+    "profit_factor": 1.3693683889508346,
+    "net": 93.63819791292477
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 5,
+     "net_bps_per_trade": 42.99151783857151
+    },
+    "2023-Q2": {
+     "trades": 16,
+     "net_bps_per_trade": 68.3184921933235
+    },
+    "2023-Q3": {
+     "trades": 22,
+     "net_bps_per_trade": 8.867284648812962
+    },
+    "2023-Q4": {
+     "trades": 3,
+     "net_bps_per_trade": 133.50514371525767
+    },
+    "2024-Q1": {
+     "trades": 9,
+     "net_bps_per_trade": 75.52393635036952
+    },
+    "2024-Q2": {
+     "trades": 18,
+     "net_bps_per_trade": 5.476418737642934
+    },
+    "2024-Q3": {
+     "trades": 16,
+     "net_bps_per_trade": 63.93004536779675
+    },
+    "2024-Q4": {
+     "trades": 8,
+     "net_bps_per_trade": 9.297276751890365
+    },
+    "2025-Q1": {
+     "trades": 18,
+     "net_bps_per_trade": -62.52731710536222
+    },
+    "2025-Q2": {
+     "trades": 21,
+     "net_bps_per_trade": -21.66691768247273
+    },
+    "2025-Q3": {
+     "trades": 8,
+     "net_bps_per_trade": 29.617236135518066
+    },
+    "2025-Q4": {
+     "trades": 14,
+     "net_bps_per_trade": -4.185736613916164
+    },
+    "2026-Q1": {
+     "trades": 18,
+     "net_bps_per_trade": 83.16457386355255
+    },
+    "2026-Q2": {
+     "trades": 15,
+     "net_bps_per_trade": 41.99753671381513
+    },
+    "2026-Q3": {
+     "trades": 17,
+     "net_bps_per_trade": -45.174002019683556
+    },
+    "2026-Q4": {
+     "trades": 8,
+     "net_bps_per_trade": 82.86851455792501
+    }
+   },
+   "quarters_positive": "12/16",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1165,
+    "skipped_position_open": 2595,
+    "funding_window": 31
+   }
+  },
+  "DOGEUSD": {
+   "trades": 266,
+   "net": 163.94685474851562,
+   "net_bps_per_trade": 39.976002833932014,
+   "gross_bps_per_trade": 53.49788446231192,
+   "profit_factor": 1.2266958827121157,
+   "win_rate": 0.40977443609022557,
+   "max_drawdown_pct_of_start": 10.335826297603921,
+   "liquidations": 0,
+   "long": {
+    "trades": 124,
+    "net_bps_per_trade": 22.061558003758222,
+    "profit_factor": 1.0884235997340004,
+    "net": 30.833959755503024
+   },
+   "short": {
+    "trades": 142,
+    "net_bps_per_trade": 55.619602544787995,
+    "profit_factor": 1.3554469820637043,
+    "net": 133.11289499301262
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 7,
+     "net_bps_per_trade": 410.9724221046003
+    },
+    "2023-Q2": {
+     "trades": 23,
+     "net_bps_per_trade": -46.8021666715818
+    },
+    "2023-Q3": {
+     "trades": 19,
+     "net_bps_per_trade": -64.65813531548774
+    },
+    "2023-Q4": {
+     "trades": 7,
+     "net_bps_per_trade": -79.93670707162116
+    },
+    "2024-Q1": {
+     "trades": 16,
+     "net_bps_per_trade": -62.062842241661926
+    },
+    "2024-Q2": {
+     "trades": 27,
+     "net_bps_per_trade": -60.46368100296738
+    },
+    "2024-Q3": {
+     "trades": 21,
+     "net_bps_per_trade": 188.92070092911086
+    },
+    "2024-Q4": {
+     "trades": 4,
+     "net_bps_per_trade": -130.95529263725064
+    },
+    "2025-Q1": {
+     "trades": 18,
+     "net_bps_per_trade": 227.92325253012365
+    },
+    "2025-Q2": {
+     "trades": 16,
+     "net_bps_per_trade": -4.218388101899436
+    },
+    "2025-Q3": {
+     "trades": 11,
+     "net_bps_per_trade": 134.29256538329074
+    },
+    "2025-Q4": {
+     "trades": 28,
+     "net_bps_per_trade": 113.5633440156275
+    },
+    "2026-Q1": {
+     "trades": 15,
+     "net_bps_per_trade": 4.477728076527577
+    },
+    "2026-Q2": {
+     "trades": 20,
+     "net_bps_per_trade": 14.128691320596548
+    },
+    "2026-Q3": {
+     "trades": 23,
+     "net_bps_per_trade": 1.0667752360185851
+    },
+    "2026-Q4": {
+     "trades": 11,
+     "net_bps_per_trade": 66.9946092242018
+    }
+   },
+   "quarters_positive": "9/16",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1577,
+    "skipped_position_open": 2804,
+    "funding_window": 31,
+    "stop_too_close_to_liquidation": 27,
+    "funding_window+stop_too_close_to_liquidation": 2
+   }
+  },
+  "1000PEPEUSD": {
+   "trades": 123,
+   "net": 88.50738533340876,
+   "net_bps_per_trade": 33.25161148056822,
+   "gross_bps_per_trade": 47.44066121595216,
+   "profit_factor": 1.2635650032948307,
+   "win_rate": 0.4146341463414634,
+   "max_drawdown_pct_of_start": 5.795213406413905,
+   "liquidations": 0,
+   "long": {
+    "trades": 63,
+    "net_bps_per_trade": 36.57841740902585,
+    "profit_factor": 1.3342842921172098,
+    "net": 56.56918267788536
+   },
+   "short": {
+    "trades": 60,
+    "net_bps_per_trade": 29.758465255687707,
+    "profit_factor": 1.1917245488256831,
+    "net": 31.938202655523405
+   },
+   "quarters": {
+    "2023-Q3": {
+     "trades": 13,
+     "net_bps_per_trade": 210.5299335877542
+    },
+    "2023-Q4": {
+     "trades": 7,
+     "net_bps_per_trade": 290.8169096841703
+    },
+    "2024-Q1": {
+     "trades": 7,
+     "net_bps_per_trade": -30.14127914871142
+    },
+    "2024-Q3": {
+     "trades": 7,
+     "net_bps_per_trade": 15.301109492504562
+    },
+    "2024-Q4": {
+     "trades": 2,
+     "net_bps_per_trade": -357.70581249704367
+    },
+    "2025-Q1": {
+     "trades": 3,
+     "net_bps_per_trade": -320.46530414251043
+    },
+    "2025-Q2": {
+     "trades": 6,
+     "net_bps_per_trade": 76.54651255970599
+    },
+    "2025-Q3": {
+     "trades": 16,
+     "net_bps_per_trade": 87.11604668564098
+    },
+    "2025-Q4": {
+     "trades": 12,
+     "net_bps_per_trade": -31.721002404149072
+    },
+    "2026-Q1": {
+     "trades": 11,
+     "net_bps_per_trade": -20.12026263748733
+    },
+    "2026-Q2": {
+     "trades": 20,
+     "net_bps_per_trade": -52.71611708901604
+    },
+    "2026-Q3": {
+     "trades": 16,
+     "net_bps_per_trade": 63.24431956910016
+    },
+    "2026-Q4": {
+     "trades": 3,
+     "net_bps_per_trade": -36.90608103222038
+    }
+   },
+   "quarters_positive": "6/13",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 1869570,
+   "from": "2023-05-05",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 2305,
+    "stop_too_close_to_liquidation": 310,
+    "funding_window+stop_too_close_to_liquidation": 36,
+    "skipped_position_open": 1264,
+    "funding_window": 15,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 13,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 1
+   }
+  },
+  "MMTUSD": {
+   "trades": 33,
+   "net": 53.10278700693042,
+   "net_bps_per_trade": 85.31196360044032,
+   "gross_bps_per_trade": 109.05163852167678,
+   "profit_factor": 1.608006915695121,
+   "win_rate": 0.45454545454545453,
+   "max_drawdown_pct_of_start": 2.1004965487259937,
+   "liquidations": 0,
+   "long": {
+    "trades": 14,
+    "net_bps_per_trade": -31.232336738507424,
+    "profit_factor": 1.0151893193341457,
+    "net": 0.6826784289101431
+   },
+   "short": {
+    "trades": 19,
+    "net_bps_per_trade": 171.1867112186123,
+    "profit_factor": 2.2364842699855827,
+    "net": 52.420108578020276
+   },
+   "quarters": {
+    "2026-Q1": {
+     "trades": 10,
+     "net_bps_per_trade": -17.35883075355289
+    },
+    "2026-Q2": {
+     "trades": 9,
+     "net_bps_per_trade": 105.25962291919559
+    },
+    "2026-Q3": {
+     "trades": 9,
+     "net_bps_per_trade": 89.38982603540214
+    },
+    "2026-Q4": {
+     "trades": 5,
+     "net_bps_per_trade": 247.40761315173594
+    }
+   },
+   "quarters_positive": "3/4",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 553680,
+   "from": "2025-11-04",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 777,
+    "skipped_position_open": 377,
+    "stop_too_close_to_liquidation": 116,
+    "funding_window+stop_too_close_to_liquidation": 24,
+    "funding_window": 4,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 6,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 1
+   }
+  },
+  "ENAUSD": {
+   "trades": 42,
+   "net": 93.44230423711191,
+   "net_bps_per_trade": 136.2172485597057,
+   "gross_bps_per_trade": 149.52782030906542,
+   "profit_factor": 1.841041801782202,
+   "win_rate": 0.47619047619047616,
+   "max_drawdown_pct_of_start": 7.218790805583171,
+   "liquidations": 0,
+   "long": {
+    "trades": 17,
+    "net_bps_per_trade": 40.20898193473424,
+    "profit_factor": 1.140338179340403,
+    "net": 7.308767653114522
+   },
+   "short": {
+    "trades": 25,
+    "net_bps_per_trade": 201.50286986468635,
+    "profit_factor": 2.4593125968599114,
+    "net": 86.13353658399738
+   },
+   "quarters": {
+    "2024-Q2": {
+     "trades": 2,
+     "net_bps_per_trade": 1012.5744490226609
+    },
+    "2024-Q3": {
+     "trades": 1,
+     "net_bps_per_trade": -386.45883204906045
+    },
+    "2025-Q1": {
+     "trades": 1,
+     "net_bps_per_trade": 889.4994768520921
+    },
+    "2025-Q2": {
+     "trades": 2,
+     "net_bps_per_trade": -375.1662841450211
+    },
+    "2025-Q3": {
+     "trades": 4,
+     "net_bps_per_trade": 488.7006031528392
+    },
+    "2025-Q4": {
+     "trades": 6,
+     "net_bps_per_trade": 235.69492469393276
+    },
+    "2026-Q1": {
+     "trades": 8,
+     "net_bps_per_trade": 594.2145107803594
+    },
+    "2026-Q2": {
+     "trades": 8,
+     "net_bps_per_trade": -250.59156673910954
+    },
+    "2026-Q3": {
+     "trades": 10,
+     "net_bps_per_trade": -217.46880481556224
+    }
+   },
+   "quarters_positive": "5/9",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 1390290,
+   "from": "2024-04-02",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 2644,
+    "stop_too_close_to_liquidation": 468,
+    "skipped_position_open": 506,
+    "funding_window+stop_too_close_to_liquidation": 56,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 15,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 114,
+    "funding_window": 7
+   }
+  },
+  "ADAUSD": {
+   "trades": 250,
+   "net": -118.49969821010087,
+   "net_bps_per_trade": -16.233082710169707,
+   "gross_bps_per_trade": -2.04681547813672,
+   "profit_factor": 0.8412512337741299,
+   "win_rate": 0.368,
+   "max_drawdown_pct_of_start": 17.315529311729506,
+   "liquidations": 0,
+   "long": {
+    "trades": 126,
+    "net_bps_per_trade": -30.48256504322734,
+    "profit_factor": 0.7343947716103993,
+    "net": -102.96580982781781
+   },
+   "short": {
+    "trades": 124,
+    "net_bps_per_trade": -1.7537700169014576,
+    "profit_factor": 0.9567054836046156,
+    "net": -15.533888382283015
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 5,
+     "net_bps_per_trade": 308.57361289699224
+    },
+    "2023-Q2": {
+     "trades": 21,
+     "net_bps_per_trade": -7.000677115588774
+    },
+    "2023-Q3": {
+     "trades": 20,
+     "net_bps_per_trade": -85.5537590131313
+    },
+    "2023-Q4": {
+     "trades": 3,
+     "net_bps_per_trade": 8.253487590064518
+    },
+    "2024-Q1": {
+     "trades": 11,
+     "net_bps_per_trade": -1.1304550512754732
+    },
+    "2024-Q2": {
+     "trades": 28,
+     "net_bps_per_trade": -74.18003234206819
+    },
+    "2024-Q3": {
+     "trades": 20,
+     "net_bps_per_trade": 42.6223307115427
+    },
+    "2024-Q4": {
+     "trades": 7,
+     "net_bps_per_trade": -181.73791084617375
+    },
+    "2025-Q1": {
+     "trades": 19,
+     "net_bps_per_trade": -7.4453757544785795
+    },
+    "2025-Q2": {
+     "trades": 16,
+     "net_bps_per_trade": -64.036547462404
+    },
+    "2025-Q3": {
+     "trades": 12,
+     "net_bps_per_trade": 25.757724371642457
+    },
+    "2025-Q4": {
+     "trades": 21,
+     "net_bps_per_trade": -11.562835720695624
+    },
+    "2026-Q1": {
+     "trades": 20,
+     "net_bps_per_trade": 96.56524688101229
+    },
+    "2026-Q2": {
+     "trades": 22,
+     "net_bps_per_trade": -91.28924848047217
+    },
+    "2026-Q3": {
+     "trades": 13,
+     "net_bps_per_trade": 71.97115968776181
+    },
+    "2026-Q4": {
+     "trades": 12,
+     "net_bps_per_trade": -84.78399357129958
+    }
+   },
+   "quarters_positive": "6/16",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1480,
+    "skipped_position_open": 2694,
+    "funding_window": 30,
+    "stop_too_close_to_liquidation": 12
+   }
+  },
+  "GUAUSD": {
+   "trades": 34,
+   "net": -44.62387037383962,
+   "net_bps_per_trade": -105.94090325839326,
+   "gross_bps_per_trade": -89.82310019692497,
+   "profit_factor": 0.6070226442632427,
+   "win_rate": 0.29411764705882354,
+   "max_drawdown_pct_of_start": 5.330698676840098,
+   "liquidations": 2,
+   "long": {
+    "trades": 15,
+    "net_bps_per_trade": -194.7272815393396,
+    "profit_factor": 0.3404456381043695,
+    "net": -38.40489813927637
+   },
+   "short": {
+    "trades": 19,
+    "net_bps_per_trade": -35.84639408922504,
+    "profit_factor": 0.8875914594757921,
+    "net": -6.218972234563268
+   },
+   "quarters": {
+    "2026-Q1": {
+     "trades": 2,
+     "net_bps_per_trade": -230.5726438845998
+    },
+    "2026-Q2": {
+     "trades": 1,
+     "net_bps_per_trade": 1357.0212941781706
+    },
+    "2026-Q3": {
+     "trades": 18,
+     "net_bps_per_trade": -223.9705325063546
+    },
+    "2026-Q4": {
+     "trades": 13,
+     "net_bps_per_trade": -35.8767024676891
+    }
+   },
+   "quarters_positive": "1/4",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_cost_proxy",
+   "bars": 486105,
+   "from": "2025-12-21",
+   "to": "2026-11-23",
+   "rejections": {
+    "skipped_position_open": 381,
+    "unfilled_signal": 724,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 40,
+    "funding_window+stop_beyond_liquidation+stop_too_close_to_liquidation": 7,
+    "stop_too_close_to_liquidation": 57,
+    "funding_window+stop_too_close_to_liquidation": 12,
+    "funding_window": 6
+   }
+  },
+  "SUIUSD": {
+   "trades": 148,
+   "net": -20.699977986670355,
+   "net_bps_per_trade": -9.414155936897085,
+   "gross_bps_per_trade": 4.876711232545043,
+   "profit_factor": 0.9542470674388402,
+   "win_rate": 0.3581081081081081,
+   "max_drawdown_pct_of_start": 8.449914871780424,
+   "liquidations": 0,
+   "long": {
+    "trades": 74,
+    "net_bps_per_trade": -16.809424322459673,
+    "profit_factor": 0.8562990431724636,
+    "net": -32.692627941523654
+   },
+   "short": {
+    "trades": 74,
+    "net_bps_per_trade": -2.0188875513344864,
+    "profit_factor": 1.0533184535191285,
+    "net": 11.992649954853293
+   },
+   "quarters": {
+    "2023-Q3": {
+     "trades": 22,
+     "net_bps_per_trade": -94.7796276503379
+    },
+    "2023-Q4": {
+     "trades": 5,
+     "net_bps_per_trade": 19.674759741915835
+    },
+    "2024-Q1": {
+     "trades": 2,
+     "net_bps_per_trade": -279.7320567408063
+    },
+    "2024-Q2": {
+     "trades": 9,
+     "net_bps_per_trade": -168.12649824546716
+    },
+    "2024-Q3": {
+     "trades": 4,
+     "net_bps_per_trade": 45.32101559897636
+    },
+    "2024-Q4": {
+     "trades": 2,
+     "net_bps_per_trade": -290.07569212775024
+    },
+    "2025-Q1": {
+     "trades": 6,
+     "net_bps_per_trade": 238.84736159122042
+    },
+    "2025-Q2": {
+     "trades": 8,
+     "net_bps_per_trade": 20.354154487920482
+    },
+    "2025-Q3": {
+     "trades": 15,
+     "net_bps_per_trade": -52.24001002991581
+    },
+    "2025-Q4": {
+     "trades": 15,
+     "net_bps_per_trade": 35.128885675034994
+    },
+    "2026-Q1": {
+     "trades": 15,
+     "net_bps_per_trade": 237.5799110571673
+    },
+    "2026-Q2": {
+     "trades": 17,
+     "net_bps_per_trade": -121.32292430868772
+    },
+    "2026-Q3": {
+     "trades": 21,
+     "net_bps_per_trade": 57.50934748875676
+    },
+    "2026-Q4": {
+     "trades": 7,
+     "net_bps_per_trade": -140.45756278766925
+    }
+   },
+   "quarters_positive": "7/14",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 1872480,
+   "from": "2023-05-03",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1901,
+    "stop_too_close_to_liquidation": 235,
+    "skipped_position_open": 1859,
+    "funding_window+stop_too_close_to_liquidation": 26,
+    "funding_window": 16,
+    "stop_beyond_liquidation+stop_too_close_to_liquidation": 5
+   }
+  },
+  "UNIUSD": {
+   "trades": 242,
+   "net": 11.664685999615202,
+   "net_bps_per_trade": -0.7271374254084008,
+   "gross_bps_per_trade": 13.350203961006008,
+   "profit_factor": 1.0179775909009263,
+   "win_rate": 0.4090909090909091,
+   "max_drawdown_pct_of_start": 9.297335631727991,
+   "liquidations": 1,
+   "long": {
+    "trades": 122,
+    "net_bps_per_trade": -14.5968017284464,
+    "profit_factor": 0.9209979579848717,
+    "net": -24.79088393217775
+   },
+   "short": {
+    "trades": 120,
+    "net_bps_per_trade": 13.373687949346888,
+    "profit_factor": 1.1088078685820237,
+    "net": 36.45556993179295
+   },
+   "quarters": {
+    "2023-Q1": {
+     "trades": 8,
+     "net_bps_per_trade": 250.11374266570522
+    },
+    "2023-Q2": {
+     "trades": 24,
+     "net_bps_per_trade": -66.48986779956822
+    },
+    "2023-Q3": {
+     "trades": 19,
+     "net_bps_per_trade": -41.18651955474019
+    },
+    "2023-Q4": {
+     "trades": 9,
+     "net_bps_per_trade": 90.12902037636644
+    },
+    "2024-Q1": {
+     "trades": 10,
+     "net_bps_per_trade": 161.78494026638822
+    },
+    "2024-Q2": {
+     "trades": 17,
+     "net_bps_per_trade": -51.748349681179434
+    },
+    "2024-Q3": {
+     "trades": 21,
+     "net_bps_per_trade": -176.8752224510729
+    },
+    "2024-Q4": {
+     "trades": 4,
+     "net_bps_per_trade": 261.0326491874397
+    },
+    "2025-Q1": {
+     "trades": 22,
+     "net_bps_per_trade": 115.01777431505867
+    },
+    "2025-Q2": {
+     "trades": 8,
+     "net_bps_per_trade": 309.8356348684696
+    },
+    "2025-Q3": {
+     "trades": 23,
+     "net_bps_per_trade": 26.494139070091503
+    },
+    "2025-Q4": {
+     "trades": 16,
+     "net_bps_per_trade": -85.74678827965377
+    },
+    "2026-Q1": {
+     "trades": 28,
+     "net_bps_per_trade": -13.488023839064855
+    },
+    "2026-Q2": {
+     "trades": 14,
+     "net_bps_per_trade": -90.47500116829721
+    },
+    "2026-Q3": {
+     "trades": 8,
+     "net_bps_per_trade": 52.69277553374802
+    },
+    "2026-Q4": {
+     "trades": 11,
+     "net_bps_per_trade": -154.6669351572574
+    }
+   },
+   "quarters_positive": "8/16",
+   "sources": [
+    "binance_top20"
+   ],
+   "spec": "delta_listed",
+   "bars": 2049120,
+   "from": "2023-01-01",
+   "to": "2026-11-23",
+   "rejections": {
+    "unfilled_signal": 1554,
+    "skipped_position_open": 2770,
+    "funding_window": 38,
+    "stop_too_close_to_liquidation": 27,
+    "funding_window+stop_too_close_to_liquidation": 3
+   }
+  }
+ },
+ "skipped": {},
+ "pooled": {
+  "trades": 2293,
+  "net": 843.4251827337296,
+  "net_bps_per_trade": 20.607301591309156,
+  "gross_bps_per_trade": 35.02127727918373,
+  "profit_factor": 1.1334597010576888,
+  "win_rate": 0.39555167902311383,
+  "max_drawdown_pct_of_start": 31.98106253575763,
+  "liquidations": 4,
+  "long": {
+   "trades": 1152,
+   "net_bps_per_trade": 4.131904844353097,
+   "profit_factor": 1.0027333325087275,
+   "net": 8.911849693979292
+  },
+  "short": {
+   "trades": 1141,
+   "net_bps_per_trade": 37.241532136877424,
+   "profit_factor": 1.2727822497648849,
+   "net": 834.5133330397503
+  },
+  "quarters": {
+   "2023-Q1": {
+    "trades": 40,
+    "net_bps_per_trade": 179.3882361009834
+   },
+   "2023-Q2": {
+    "trades": 171,
+    "net_bps_per_trade": -52.479041211634495
+   },
+   "2023-Q3": {
+    "trades": 186,
+    "net_bps_per_trade": -8.475624932397508
+   },
+   "2023-Q4": {
+    "trades": 64,
+    "net_bps_per_trade": 54.778674756758136
+   },
+   "2024-Q1": {
+    "trades": 90,
+    "net_bps_per_trade": 16.25953455942202
+   },
+   "2024-Q2": {
+    "trades": 165,
+    "net_bps_per_trade": -19.87262773705971
+   },
+   "2024-Q3": {
+    "trades": 139,
+    "net_bps_per_trade": 30.321000808770798
+   },
+   "2024-Q4": {
+    "trades": 48,
+    "net_bps_per_trade": -33.837954703651356
+   },
+   "2025-Q1": {
+    "trades": 136,
+    "net_bps_per_trade": 99.16005711931474
+   },
+   "2025-Q2": {
+    "trades": 130,
+    "net_bps_per_trade": 51.71892585592495
+   },
+   "2025-Q3": {
+    "trades": 151,
+    "net_bps_per_trade": 51.63279886169152
+   },
+   "2025-Q4": {
+    "trades": 181,
+    "net_bps_per_trade": 20.660761795095784
+   },
+   "2026-Q1": {
+    "trades": 228,
+    "net_bps_per_trade": 96.77316676415245
+   },
+   "2026-Q2": {
+    "trades": 205,
+    "net_bps_per_trade": -29.08200109169557
+   },
+   "2026-Q3": {
+    "trades": 237,
+    "net_bps_per_trade": -9.517500868498994
+   },
+   "2026-Q4": {
+    "trades": 122,
+    "net_bps_per_trade": 6.18512827474404
+   }
+  },
+  "quarters_positive": "10/16",
+  "bootstrap_90_net_bps": [
+   7.188585200457956,
+   34.418247689063335
+  ],
+  "long_bootstrap_90": [
+   -14.753482995261168,
+   23.064318496489832
+  ],
+  "short_bootstrap_90": [
+   17.914944588360154,
+   56.941077022108445
+  ]
+ },
+ "btc_eth_holdout": {
+  "BTCUSD": {
+   "trades": 101,
+   "net": 145.9854284291588,
+   "net_bps_per_trade": 38.943297839073374,
+   "gross_bps_per_trade": 52.06315461199407,
+   "profit_factor": 1.5407873405749566,
+   "win_rate": 0.42574257425742573,
+   "max_drawdown_pct_of_start": 4.06791115834667,
+   "liquidations": 0,
+   "long": {
+    "trades": 60,
+    "net_bps_per_trade": 37.60213671575812,
+    "profit_factor": 1.6646018300263075,
+    "net": 97.59328886505847
+   },
+   "short": {
+    "trades": 41,
+    "net_bps_per_trade": 40.90597265368106,
+    "profit_factor": 1.3930963311732711,
+    "net": 48.39213956410039
+   },
+   "quarters": {
+    "2025-Q1": {
+     "trades": 5,
+     "net_bps_per_trade": 43.31982996251061
+    },
+    "2025-Q2": {
+     "trades": 14,
+     "net_bps_per_trade": 13.909721902473123
+    },
+    "2025-Q3": {
+     "trades": 19,
+     "net_bps_per_trade": 12.679359228040575
+    },
+    "2025-Q4": {
+     "trades": 13,
+     "net_bps_per_trade": 20.238329937053624
+    },
+    "2026-Q1": {
+     "trades": 14,
+     "net_bps_per_trade": 194.04409084182095
+    },
+    "2026-Q2": {
+     "trades": 13,
+     "net_bps_per_trade": 57.18037551003202
+    },
+    "2026-Q3": {
+     "trades": 17,
+     "net_bps_per_trade": -26.810262003272108
+    },
+    "2026-Q4": {
+     "trades": 6,
+     "net_bps_per_trade": 2.290668570747011
+    }
+   },
+   "quarters_positive": "7/8",
+   "rejections": {
+    "unfilled_signal": 712,
+    "skipped_position_open": 952,
+    "funding_window": 18
+   },
+   "from": "2025-03-03"
+  },
+  "ETHUSD": {
+   "trades": 94,
+   "net": 107.23479402348698,
+   "net_bps_per_trade": 51.713047407478676,
+   "gross_bps_per_trade": 65.41237144771505,
+   "profit_factor": 1.4524370180933637,
+   "win_rate": 0.46808510638297873,
+   "max_drawdown_pct_of_start": 4.644359420304136,
+   "liquidations": 0,
+   "long": {
+    "trades": 61,
+    "net_bps_per_trade": 32.837319671231675,
+    "profit_factor": 1.30081472047082,
+    "net": 44.92638762470927
+   },
+   "short": {
+    "trades": 33,
+    "net_bps_per_trade": 86.60454413205646,
+    "profit_factor": 1.7107401708448409,
+    "net": 62.30840639877771
+   },
+   "quarters": {
+    "2025-Q1": {
+     "trades": 7,
+     "net_bps_per_trade": -16.48048110310942
+    },
+    "2025-Q2": {
+     "trades": 8,
+     "net_bps_per_trade": -5.774310827234245
+    },
+    "2025-Q3": {
+     "trades": 11,
+     "net_bps_per_trade": 125.43548294522002
+    },
+    "2025-Q4": {
+     "trades": 17,
+     "net_bps_per_trade": 168.80937561039056
+    },
+    "2026-Q1": {
+     "trades": 11,
+     "net_bps_per_trade": 120.76640252249058
+    },
+    "2026-Q2": {
+     "trades": 22,
+     "net_bps_per_trade": -58.15734012898095
+    },
+    "2026-Q3": {
+     "trades": 12,
+     "net_bps_per_trade": 28.84215461481035
+    },
+    "2026-Q4": {
+     "trades": 6,
+     "net_bps_per_trade": 62.993302096839436
+    }
+   },
+   "quarters_positive": "5/8",
+   "rejections": {
+    "unfilled_signal": 798,
+    "funding_window": 21,
+    "skipped_position_open": 1031
+   },
+   "from": "2025-03-03"
+  }
+ }
+}
