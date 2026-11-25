@@ -56,7 +56,7 @@ def run(W: np.ndarray, C: np.ndarray, F: np.ndarray, bpd: int, cost: float = COS
             "turn": day(np.abs(Wp - Wpp).sum(1)), "gross_exposure": float(np.abs(Wp).sum(1).mean())}
 
 
-def pstats(ep: pd.DataFrame, net_daily: np.ndarray, lo: int, hi: int, bpd: int) -> dict:
+def pstats(ep: pd.DataFrame, net_daily: np.ndarray, lo: int, hi: int, bpd: int, ann: int = 365) -> dict:
     """Metrics for one period [lo, hi) given in BARS; episodes by entry bar; daily series cut in days."""
     e = ep[(ep.t >= lo) & (ep.t < hi)]
     b = e.bps.to_numpy()
@@ -67,15 +67,15 @@ def pstats(ep: pd.DataFrame, net_daily: np.ndarray, lo: int, hi: int, bpd: int) 
         out |= {"net_bps": round(float(b.mean()), 1), "win": round(float((b > 0).mean()), 3), "pf": round(float(w.sum() / -l.sum()), 2) if l.sum() < 0 else None}
     if len(d) > 5:
         eq = np.cumsum(d)
-        out |= {"max_dd_pct": round(float((np.maximum.accumulate(eq) - eq).max() * 100), 1), "sharpe": round(float(d.mean() / d.std() * np.sqrt(365)), 2) if d.std() > 0 else 0.0,
-                "ann_ret_pct": round(float(d.mean() * 365 * 100), 1), "trades_per_month": round(len(b) / (len(d) / 30.4), 1)}
+        out |= {"max_dd_pct": round(float((np.maximum.accumulate(eq) - eq).max() * 100), 1), "sharpe": round(float(d.mean() / d.std() * np.sqrt(ann)), 2) if d.std() > 0 else 0.0,
+                "ann_ret_pct": round(float(d.mean() * ann * 100), 1), "trades_per_month": round(len(b) / (len(d) / (ann / 12)), 1)}
     return out
 
 
-def evaluate(res: dict, cuts: tuple[int, int, int, int], bpd: int) -> dict:
+def evaluate(res: dict, cuts: tuple[int, int, int, int], bpd: int, ann: int = 365) -> dict:
     a, b, c, d = cuts
     ep, nd = res["ep"], res["net"]
-    o = {"train": pstats(ep, nd, a, b, bpd), "validation": pstats(ep, nd, b, c, bpd), "holdout": pstats(ep, nd, c, d, bpd)}
+    o = {"train": pstats(ep, nd, a, b, bpd, ann), "validation": pstats(ep, nd, b, c, bpd, ann), "holdout": pstats(ep, nd, c, d, bpd, ann)}
     h = ep[(ep.t >= c) & (ep.t < d)]
     o["holdout_long"] = {"trades": int((h.side > 0).sum()), "net_bps": round(float(h[h.side > 0].bps.mean()), 1) if (h.side > 0).any() else None}
     o["holdout_short"] = {"trades": int((h.side < 0).sum()), "net_bps": round(float(h[h.side < 0].bps.mean()), 1) if (h.side < 0).any() else None}

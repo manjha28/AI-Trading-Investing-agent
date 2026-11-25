@@ -1,0 +1,4365 @@
+{
+ "n_variants": 54,
+ "n_total": 1757,
+ "var_sr_daily": 0.0035955191532258063,
+ "n_jumps": 1,
+ "rows": [
+  {
+   "family": "momentum",
+   "name": "12-1 month momentum | top 10 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "12-1 month momentum",
+    "n": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 76,
+     "net_bps": 2357.3,
+     "win": 0.632,
+     "pf": 5.74,
+     "max_dd_pct": 24.3,
+     "sharpe": 2.72,
+     "ann_ret_pct": 69.1,
+     "trades_per_month": 2.7
+    },
+    "validation": {
+     "trades": 38,
+     "net_bps": 12.0,
+     "win": 0.368,
+     "pf": 1.02,
+     "max_dd_pct": 44.2,
+     "sharpe": 0.62,
+     "ann_ret_pct": 17.8,
+     "trades_per_month": 2.7
+    },
+    "holdout": {
+     "trades": 67,
+     "net_bps": -51.6,
+     "win": 0.522,
+     "pf": 0.92,
+     "max_dd_pct": 29.7,
+     "sharpe": -0.28,
+     "ann_ret_pct": -6.9,
+     "trades_per_month": 4.7
+    },
+    "holdout_long": {
+     "trades": 67,
+     "net_bps": -51.6
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 0
+  },
+  {
+   "family": "momentum",
+   "name": "12-1 month momentum | top 20 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "12-1 month momentum",
+    "n": 20
+   },
+   "eval": {
+    "train": {
+     "trades": 157,
+     "net_bps": 1544.0,
+     "win": 0.631,
+     "pf": 3.93,
+     "max_dd_pct": 27.3,
+     "sharpe": 2.24,
+     "ann_ret_pct": 51.8,
+     "trades_per_month": 5.5
+    },
+    "validation": {
+     "trades": 68,
+     "net_bps": -185.3,
+     "win": 0.441,
+     "pf": 0.8,
+     "max_dd_pct": 41.8,
+     "sharpe": -0.18,
+     "ann_ret_pct": -4.6,
+     "trades_per_month": 4.8
+    },
+    "holdout": {
+     "trades": 96,
+     "net_bps": -47.0,
+     "win": 0.479,
+     "pf": 0.93,
+     "max_dd_pct": 25.1,
+     "sharpe": -0.16,
+     "ann_ret_pct": -3.7,
+     "trades_per_month": 6.7
+    },
+    "holdout_long": {
+     "trades": 96,
+     "net_bps": -47.0
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 1
+  },
+  {
+   "family": "momentum",
+   "name": "12-1 month momentum | top 30 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "12-1 month momentum",
+    "n": 30
+   },
+   "eval": {
+    "train": {
+     "trades": 231,
+     "net_bps": 1390.1,
+     "win": 0.606,
+     "pf": 3.93,
+     "max_dd_pct": 27.4,
+     "sharpe": 2.07,
+     "ann_ret_pct": 46.8,
+     "trades_per_month": 8.1
+    },
+    "validation": {
+     "trades": 98,
+     "net_bps": 52.6,
+     "win": 0.459,
+     "pf": 1.07,
+     "max_dd_pct": 36.8,
+     "sharpe": -0.02,
+     "ann_ret_pct": -0.5,
+     "trades_per_month": 6.9
+    },
+    "holdout": {
+     "trades": 106,
+     "net_bps": 26.0,
+     "win": 0.481,
+     "pf": 1.03,
+     "max_dd_pct": 22.4,
+     "sharpe": -0.01,
+     "ann_ret_pct": -0.3,
+     "trades_per_month": 7.5
+    },
+    "holdout_long": {
+     "trades": 106,
+     "net_bps": 26.0
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 2,
+   "boot_holdout": [
+    -301.0,
+    379.5
+   ]
+  },
+  {
+   "family": "momentum",
+   "name": "52-week-high proximity | top 10 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "52-week-high proximity",
+    "n": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 213,
+     "net_bps": 373.9,
+     "win": 0.559,
+     "pf": 2.17,
+     "max_dd_pct": 15.6,
+     "sharpe": 1.8,
+     "ann_ret_pct": 32.8,
+     "trades_per_month": 7.5
+    },
+    "validation": {
+     "trades": 94,
+     "net_bps": -202.4,
+     "win": 0.426,
+     "pf": 0.66,
+     "max_dd_pct": 37.0,
+     "sharpe": -0.67,
+     "ann_ret_pct": -13.0,
+     "trades_per_month": 6.6
+    },
+    "holdout": {
+     "trades": 104,
+     "net_bps": 11.8,
+     "win": 0.462,
+     "pf": 1.03,
+     "max_dd_pct": 19.0,
+     "sharpe": -0.02,
+     "ann_ret_pct": -0.3,
+     "trades_per_month": 7.3
+    },
+    "holdout_long": {
+     "trades": 104,
+     "net_bps": 11.8
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 3
+  },
+  {
+   "family": "momentum",
+   "name": "52-week-high proximity | top 20 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "52-week-high proximity",
+    "n": 20
+   },
+   "eval": {
+    "train": {
+     "trades": 328,
+     "net_bps": 464.4,
+     "win": 0.558,
+     "pf": 2.41,
+     "max_dd_pct": 14.1,
+     "sharpe": 1.81,
+     "ann_ret_pct": 31.5,
+     "trades_per_month": 11.6
+    },
+    "validation": {
+     "trades": 139,
+     "net_bps": -81.3,
+     "win": 0.432,
+     "pf": 0.86,
+     "max_dd_pct": 26.6,
+     "sharpe": -0.12,
+     "ann_ret_pct": -2.0,
+     "trades_per_month": 9.8
+    },
+    "holdout": {
+     "trades": 147,
+     "net_bps": 95.2,
+     "win": 0.442,
+     "pf": 1.2,
+     "max_dd_pct": 17.4,
+     "sharpe": 0.26,
+     "ann_ret_pct": 4.6,
+     "trades_per_month": 10.3
+    },
+    "holdout_long": {
+     "trades": 147,
+     "net_bps": 95.2
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 4
+  },
+  {
+   "family": "momentum",
+   "name": "52-week-high proximity | top 30 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "52-week-high proximity",
+    "n": 30
+   },
+   "eval": {
+    "train": {
+     "trades": 396,
+     "net_bps": 627.7,
+     "win": 0.553,
+     "pf": 2.75,
+     "max_dd_pct": 16.6,
+     "sharpe": 2.03,
+     "ann_ret_pct": 34.9,
+     "trades_per_month": 14.0
+    },
+    "validation": {
+     "trades": 170,
+     "net_bps": -132.5,
+     "win": 0.365,
+     "pf": 0.81,
+     "max_dd_pct": 29.8,
+     "sharpe": -0.25,
+     "ann_ret_pct": -4.3,
+     "trades_per_month": 12.0
+    },
+    "holdout": {
+     "trades": 181,
+     "net_bps": 100.6,
+     "win": 0.486,
+     "pf": 1.2,
+     "max_dd_pct": 16.1,
+     "sharpe": 0.19,
+     "ann_ret_pct": 3.4,
+     "trades_per_month": 12.7
+    },
+    "holdout_long": {
+     "trades": 181,
+     "net_bps": 100.6
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 5
+  },
+  {
+   "family": "momentum",
+   "name": "relative strength 6m vs Nifty | top 10 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "relative strength 6m vs Nifty",
+    "n": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 114,
+     "net_bps": 900.0,
+     "win": 0.544,
+     "pf": 2.37,
+     "max_dd_pct": 32.8,
+     "sharpe": 1.68,
+     "ann_ret_pct": 44.9,
+     "trades_per_month": 4.0
+    },
+    "validation": {
+     "trades": 68,
+     "net_bps": -303.7,
+     "win": 0.456,
+     "pf": 0.63,
+     "max_dd_pct": 50.1,
+     "sharpe": -0.58,
+     "ann_ret_pct": -15.7,
+     "trades_per_month": 4.8
+    },
+    "holdout": {
+     "trades": 70,
+     "net_bps": -166.0,
+     "win": 0.457,
+     "pf": 0.75,
+     "max_dd_pct": 31.3,
+     "sharpe": -0.59,
+     "ann_ret_pct": -14.6,
+     "trades_per_month": 4.9
+    },
+    "holdout_long": {
+     "trades": 70,
+     "net_bps": -166.0
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 6
+  },
+  {
+   "family": "momentum",
+   "name": "relative strength 6m vs Nifty | top 20 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "relative strength 6m vs Nifty",
+    "n": 20
+   },
+   "eval": {
+    "train": {
+     "trades": 186,
+     "net_bps": 1289.6,
+     "win": 0.532,
+     "pf": 3.45,
+     "max_dd_pct": 25.3,
+     "sharpe": 2.08,
+     "ann_ret_pct": 51.4,
+     "trades_per_month": 6.6
+    },
+    "validation": {
+     "trades": 103,
+     "net_bps": -209.1,
+     "win": 0.456,
+     "pf": 0.72,
+     "max_dd_pct": 40.7,
+     "sharpe": -0.22,
+     "ann_ret_pct": -5.5,
+     "trades_per_month": 7.3
+    },
+    "holdout": {
+     "trades": 99,
+     "net_bps": 178.2,
+     "win": 0.525,
+     "pf": 1.3,
+     "max_dd_pct": 21.0,
+     "sharpe": 0.11,
+     "ann_ret_pct": 2.5,
+     "trades_per_month": 7.0
+    },
+    "holdout_long": {
+     "trades": 99,
+     "net_bps": 178.2
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 7
+  },
+  {
+   "family": "momentum",
+   "name": "relative strength 6m vs Nifty | top 30 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "relative strength 6m vs Nifty",
+    "n": 30
+   },
+   "eval": {
+    "train": {
+     "trades": 269,
+     "net_bps": 1255.4,
+     "win": 0.565,
+     "pf": 3.77,
+     "max_dd_pct": 28.7,
+     "sharpe": 1.96,
+     "ann_ret_pct": 46.3,
+     "trades_per_month": 9.5
+    },
+    "validation": {
+     "trades": 135,
+     "net_bps": -184.0,
+     "win": 0.393,
+     "pf": 0.74,
+     "max_dd_pct": 34.7,
+     "sharpe": -0.04,
+     "ann_ret_pct": -0.9,
+     "trades_per_month": 9.5
+    },
+    "holdout": {
+     "trades": 133,
+     "net_bps": 143.7,
+     "win": 0.459,
+     "pf": 1.22,
+     "max_dd_pct": 23.0,
+     "sharpe": 0.09,
+     "ann_ret_pct": 2.0,
+     "trades_per_month": 9.3
+    },
+    "holdout_long": {
+     "trades": 133,
+     "net_bps": 143.7
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 8
+  },
+  {
+   "family": "momentum",
+   "name": "relative strength 12m vs Nifty | top 10 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "relative strength 12m vs Nifty",
+    "n": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 77,
+     "net_bps": 1941.5,
+     "win": 0.571,
+     "pf": 3.63,
+     "max_dd_pct": 24.6,
+     "sharpe": 2.31,
+     "ann_ret_pct": 58.8,
+     "trades_per_month": 2.7
+    },
+    "validation": {
+     "trades": 35,
+     "net_bps": 48.4,
+     "win": 0.4,
+     "pf": 1.08,
+     "max_dd_pct": 40.8,
+     "sharpe": 0.63,
+     "ann_ret_pct": 17.1,
+     "trades_per_month": 2.5
+    },
+    "holdout": {
+     "trades": 55,
+     "net_bps": -296.6,
+     "win": 0.364,
+     "pf": 0.64,
+     "max_dd_pct": 33.5,
+     "sharpe": -0.79,
+     "ann_ret_pct": -20.5,
+     "trades_per_month": 3.9
+    },
+    "holdout_long": {
+     "trades": 55,
+     "net_bps": -296.6
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 9
+  },
+  {
+   "family": "momentum",
+   "name": "relative strength 12m vs Nifty | top 20 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "relative strength 12m vs Nifty",
+    "n": 20
+   },
+   "eval": {
+    "train": {
+     "trades": 156,
+     "net_bps": 1308.5,
+     "win": 0.494,
+     "pf": 3.15,
+     "max_dd_pct": 28.0,
+     "sharpe": 1.88,
+     "ann_ret_pct": 44.3,
+     "trades_per_month": 5.5
+    },
+    "validation": {
+     "trades": 70,
+     "net_bps": -144.1,
+     "win": 0.329,
+     "pf": 0.84,
+     "max_dd_pct": 43.2,
+     "sharpe": -0.13,
+     "ann_ret_pct": -3.2,
+     "trades_per_month": 4.9
+    },
+    "holdout": {
+     "trades": 88,
+     "net_bps": -209.7,
+     "win": 0.42,
+     "pf": 0.72,
+     "max_dd_pct": 27.6,
+     "sharpe": -0.48,
+     "ann_ret_pct": -10.9,
+     "trades_per_month": 6.2
+    },
+    "holdout_long": {
+     "trades": 88,
+     "net_bps": -209.7
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 10
+  },
+  {
+   "family": "momentum",
+   "name": "relative strength 12m vs Nifty | top 30 of the turnover-ranked top 200, monthly",
+   "params": {
+    "score": "relative strength 12m vs Nifty",
+    "n": 30
+   },
+   "eval": {
+    "train": {
+     "trades": 222,
+     "net_bps": 1251.2,
+     "win": 0.514,
+     "pf": 3.31,
+     "max_dd_pct": 24.6,
+     "sharpe": 1.86,
+     "ann_ret_pct": 42.3,
+     "trades_per_month": 7.8
+    },
+    "validation": {
+     "trades": 90,
+     "net_bps": 249.5,
+     "win": 0.422,
+     "pf": 1.34,
+     "max_dd_pct": 37.4,
+     "sharpe": 0.03,
+     "ann_ret_pct": 0.6,
+     "trades_per_month": 6.3
+    },
+    "holdout": {
+     "trades": 99,
+     "net_bps": -78.7,
+     "win": 0.475,
+     "pf": 0.89,
+     "max_dd_pct": 22.4,
+     "sharpe": -0.13,
+     "ann_ret_pct": -2.7,
+     "trades_per_month": 7.0
+    },
+    "holdout_long": {
+     "trades": 99,
+     "net_bps": -78.7
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 11
+  },
+  {
+   "family": "trend",
+   "name": "Close above the 200-day average",
+   "params": {
+    "volume_filter": false
+   },
+   "eval": {
+    "train": {
+     "trades": 1860,
+     "net_bps": 489.1,
+     "win": 0.203,
+     "pf": 2.8,
+     "max_dd_pct": 26.8,
+     "sharpe": 1.81,
+     "ann_ret_pct": 33.6,
+     "trades_per_month": 65.6
+    },
+    "validation": {
+     "trades": 958,
+     "net_bps": -114.6,
+     "win": 0.124,
+     "pf": 0.66,
+     "max_dd_pct": 38.6,
+     "sharpe": -0.98,
+     "ann_ret_pct": -18.5,
+     "trades_per_month": 67.6
+    },
+    "holdout": {
+     "trades": 1046,
+     "net_bps": -6.9,
+     "win": 0.14,
+     "pf": 0.98,
+     "max_dd_pct": 24.0,
+     "sharpe": -0.29,
+     "ann_ret_pct": -5.0,
+     "trades_per_month": 73.5
+    },
+    "holdout_long": {
+     "trades": 1046,
+     "net_bps": -6.9
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 12
+  },
+  {
+   "family": "trend",
+   "name": "50/200 golden cross",
+   "params": {
+    "volume_filter": false
+   },
+   "eval": {
+    "train": {
+     "trades": 353,
+     "net_bps": 2737.9,
+     "win": 0.578,
+     "pf": 5.86,
+     "max_dd_pct": 24.8,
+     "sharpe": 2.07,
+     "ann_ret_pct": 39.0,
+     "trades_per_month": 12.4
+    },
+    "validation": {
+     "trades": 179,
+     "net_bps": -424.4,
+     "win": 0.274,
+     "pf": 0.65,
+     "max_dd_pct": 31.0,
+     "sharpe": -0.11,
+     "ann_ret_pct": -2.2,
+     "trades_per_month": 12.6
+    },
+    "holdout": {
+     "trades": 186,
+     "net_bps": 213.1,
+     "win": 0.398,
+     "pf": 1.25,
+     "max_dd_pct": 18.7,
+     "sharpe": 0.16,
+     "ann_ret_pct": 2.9,
+     "trades_per_month": 13.1
+    },
+    "holdout_long": {
+     "trades": 186,
+     "net_bps": 213.1
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 13
+  },
+  {
+   "family": "trend",
+   "name": "Donchian 55/20 (Turtle)",
+   "params": {
+    "volume_filter": false
+   },
+   "eval": {
+    "train": {
+     "trades": 825,
+     "net_bps": 830.2,
+     "win": 0.501,
+     "pf": 2.69,
+     "max_dd_pct": 18.2,
+     "sharpe": 2.07,
+     "ann_ret_pct": 37.8,
+     "trades_per_month": 29.1
+    },
+    "validation": {
+     "trades": 330,
+     "net_bps": -243.8,
+     "win": 0.333,
+     "pf": 0.65,
+     "max_dd_pct": 34.9,
+     "sharpe": -0.86,
+     "ann_ret_pct": -15.4,
+     "trades_per_month": 23.3
+    },
+    "holdout": {
+     "trades": 355,
+     "net_bps": -80.4,
+     "win": 0.344,
+     "pf": 0.87,
+     "max_dd_pct": 23.6,
+     "sharpe": -0.47,
+     "ann_ret_pct": -8.0,
+     "trades_per_month": 25.0
+    },
+    "holdout_long": {
+     "trades": 355,
+     "net_bps": -80.4
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 14
+  },
+  {
+   "family": "trend",
+   "name": "Close above the 200-day average + volume > 1.5x its 20-day average at entry",
+   "params": {
+    "volume_filter": true
+   },
+   "eval": {
+    "train": {
+     "trades": 1252,
+     "net_bps": 737.9,
+     "win": 0.257,
+     "pf": 2.91,
+     "max_dd_pct": 25.2,
+     "sharpe": 1.94,
+     "ann_ret_pct": 36.0,
+     "trades_per_month": 44.2
+    },
+    "validation": {
+     "trades": 588,
+     "net_bps": -169.1,
+     "win": 0.136,
+     "pf": 0.65,
+     "max_dd_pct": 38.7,
+     "sharpe": -0.96,
+     "ann_ret_pct": -18.1,
+     "trades_per_month": 41.5
+    },
+    "holdout": {
+     "trades": 637,
+     "net_bps": 26.4,
+     "win": 0.179,
+     "pf": 1.07,
+     "max_dd_pct": 21.8,
+     "sharpe": -0.05,
+     "ann_ret_pct": -1.0,
+     "trades_per_month": 44.8
+    },
+    "holdout_long": {
+     "trades": 637,
+     "net_bps": 26.4
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 15
+  },
+  {
+   "family": "trend",
+   "name": "50/200 golden cross + volume > 1.5x its 20-day average at entry",
+   "params": {
+    "volume_filter": true
+   },
+   "eval": {
+    "train": {
+     "trades": 423,
+     "net_bps": 2342.3,
+     "win": 0.553,
+     "pf": 4.84,
+     "max_dd_pct": 25.2,
+     "sharpe": 2.04,
+     "ann_ret_pct": 38.5,
+     "trades_per_month": 14.9
+    },
+    "validation": {
+     "trades": 172,
+     "net_bps": -421.0,
+     "win": 0.285,
+     "pf": 0.65,
+     "max_dd_pct": 31.2,
+     "sharpe": -0.11,
+     "ann_ret_pct": -2.3,
+     "trades_per_month": 12.1
+    },
+    "holdout": {
+     "trades": 176,
+     "net_bps": 152.7,
+     "win": 0.398,
+     "pf": 1.19,
+     "max_dd_pct": 18.3,
+     "sharpe": 0.13,
+     "ann_ret_pct": 2.4,
+     "trades_per_month": 12.4
+    },
+    "holdout_long": {
+     "trades": 176,
+     "net_bps": 152.7
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 16
+  },
+  {
+   "family": "trend",
+   "name": "Donchian 55/20 (Turtle) + volume > 1.5x its 20-day average at entry",
+   "params": {
+    "volume_filter": true
+   },
+   "eval": {
+    "train": {
+     "trades": 783,
+     "net_bps": 820.8,
+     "win": 0.485,
+     "pf": 2.6,
+     "max_dd_pct": 20.2,
+     "sharpe": 1.99,
+     "ann_ret_pct": 36.6,
+     "trades_per_month": 27.6
+    },
+    "validation": {
+     "trades": 313,
+     "net_bps": -275.9,
+     "win": 0.319,
+     "pf": 0.62,
+     "max_dd_pct": 32.7,
+     "sharpe": -0.82,
+     "ann_ret_pct": -14.6,
+     "trades_per_month": 22.1
+    },
+    "holdout": {
+     "trades": 310,
+     "net_bps": -71.3,
+     "win": 0.361,
+     "pf": 0.89,
+     "max_dd_pct": 21.7,
+     "sharpe": -0.4,
+     "ann_ret_pct": -6.8,
+     "trades_per_month": 21.8
+    },
+    "holdout_long": {
+     "trades": 310,
+     "net_bps": -71.3
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 17
+  },
+  {
+   "family": "mean_reversion",
+   "name": "RSI(2) below 10 in an uptrend (above 200-day) | hold 2d",
+   "params": {
+    "hold": 2
+   },
+   "eval": {
+    "train": {
+     "trades": 3468,
+     "net_bps": -16.6,
+     "win": 0.497,
+     "pf": 0.9,
+     "max_dd_pct": 22.0,
+     "sharpe": 0.13,
+     "ann_ret_pct": 2.1,
+     "trades_per_month": 122.3
+    },
+    "validation": {
+     "trades": 1587,
+     "net_bps": -80.9,
+     "win": 0.448,
+     "pf": 0.58,
+     "max_dd_pct": 46.1,
+     "sharpe": -2.48,
+     "ann_ret_pct": -36.4,
+     "trades_per_month": 111.9
+    },
+    "holdout": {
+     "trades": 1373,
+     "net_bps": -52.1,
+     "win": 0.465,
+     "pf": 0.66,
+     "max_dd_pct": 31.5,
+     "sharpe": -1.97,
+     "ann_ret_pct": -25.5,
+     "trades_per_month": 96.5
+    },
+    "holdout_long": {
+     "trades": 1373,
+     "net_bps": -52.1
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 18
+  },
+  {
+   "family": "mean_reversion",
+   "name": "IBS below 0.2, in an uptrend | hold 2d",
+   "params": {
+    "hold": 2,
+    "uptrend": true
+   },
+   "eval": {
+    "train": {
+     "trades": 9636,
+     "net_bps": -27.0,
+     "win": 0.459,
+     "pf": 0.84,
+     "max_dd_pct": 58.7,
+     "sharpe": -0.83,
+     "ann_ret_pct": -15.9,
+     "trades_per_month": 339.8
+    },
+    "validation": {
+     "trades": 3872,
+     "net_bps": -82.2,
+     "win": 0.394,
+     "pf": 0.58,
+     "max_dd_pct": 70.7,
+     "sharpe": -3.12,
+     "ann_ret_pct": -57.0,
+     "trades_per_month": 273.1
+    },
+    "holdout": {
+     "trades": 3562,
+     "net_bps": -50.8,
+     "win": 0.421,
+     "pf": 0.69,
+     "max_dd_pct": 52.6,
+     "sharpe": -2.41,
+     "ann_ret_pct": -42.7,
+     "trades_per_month": 250.4
+    },
+    "holdout_long": {
+     "trades": 3562,
+     "net_bps": -50.8
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 19
+  },
+  {
+   "family": "mean_reversion",
+   "name": "Buy after 3 down days, in an uptrend | hold 2d",
+   "params": {
+    "hold": 2,
+    "uptrend": true
+   },
+   "eval": {
+    "train": {
+     "trades": 4021,
+     "net_bps": -17.9,
+     "win": 0.477,
+     "pf": 0.89,
+     "max_dd_pct": 28.8,
+     "sharpe": -0.16,
+     "ann_ret_pct": -2.6,
+     "trades_per_month": 141.8
+    },
+    "validation": {
+     "trades": 1681,
+     "net_bps": -86.3,
+     "win": 0.419,
+     "pf": 0.55,
+     "max_dd_pct": 54.6,
+     "sharpe": -3.01,
+     "ann_ret_pct": -43.2,
+     "trades_per_month": 118.6
+    },
+    "holdout": {
+     "trades": 1530,
+     "net_bps": -32.8,
+     "win": 0.461,
+     "pf": 0.77,
+     "max_dd_pct": 23.8,
+     "sharpe": -1.32,
+     "ann_ret_pct": -17.1,
+     "trades_per_month": 107.6
+    },
+    "holdout_long": {
+     "trades": 1530,
+     "net_bps": -32.8
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 20
+  },
+  {
+   "family": "mean_reversion",
+   "name": "IBS below 0.2, no trend filter | hold 2d",
+   "params": {
+    "hold": 2,
+    "uptrend": false
+   },
+   "eval": {
+    "train": {
+     "trades": 15818,
+     "net_bps": -25.8,
+     "win": 0.452,
+     "pf": 0.84,
+     "max_dd_pct": 49.8,
+     "sharpe": -0.37,
+     "ann_ret_pct": -7.1,
+     "trades_per_month": 557.9
+    },
+    "validation": {
+     "trades": 8170,
+     "net_bps": -76.1,
+     "win": 0.408,
+     "pf": 0.61,
+     "max_dd_pct": 57.0,
+     "sharpe": -2.03,
+     "ann_ret_pct": -44.0,
+     "trades_per_month": 576.3
+    },
+    "holdout": {
+     "trades": 8117,
+     "net_bps": -54.7,
+     "win": 0.415,
+     "pf": 0.68,
+     "max_dd_pct": 51.2,
+     "sharpe": -1.97,
+     "ann_ret_pct": -39.5,
+     "trades_per_month": 570.6
+    },
+    "holdout_long": {
+     "trades": 8117,
+     "net_bps": -54.7
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 21
+  },
+  {
+   "family": "mean_reversion",
+   "name": "Buy after 3 down days, no trend filter | hold 2d",
+   "params": {
+    "hold": 2,
+    "uptrend": false
+   },
+   "eval": {
+    "train": {
+     "trades": 7260,
+     "net_bps": -26.2,
+     "win": 0.47,
+     "pf": 0.84,
+     "max_dd_pct": 36.2,
+     "sharpe": -0.02,
+     "ann_ret_pct": -0.4,
+     "trades_per_month": 256.0
+    },
+    "validation": {
+     "trades": 3934,
+     "net_bps": -89.4,
+     "win": 0.426,
+     "pf": 0.57,
+     "max_dd_pct": 64.0,
+     "sharpe": -2.54,
+     "ann_ret_pct": -49.6,
+     "trades_per_month": 277.5
+    },
+    "holdout": {
+     "trades": 3905,
+     "net_bps": -61.2,
+     "win": 0.437,
+     "pf": 0.64,
+     "max_dd_pct": 47.0,
+     "sharpe": -2.13,
+     "ann_ret_pct": -37.0,
+     "trades_per_month": 274.5
+    },
+    "holdout_long": {
+     "trades": 3905,
+     "net_bps": -61.2
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 22
+  },
+  {
+   "family": "mean_reversion",
+   "name": "RSI(2) below 10 in an uptrend (above 200-day) | hold 5d",
+   "params": {
+    "hold": 5
+   },
+   "eval": {
+    "train": {
+     "trades": 3055,
+     "net_bps": 9.2,
+     "win": 0.489,
+     "pf": 1.04,
+     "max_dd_pct": 21.8,
+     "sharpe": 1.21,
+     "ann_ret_pct": 22.3,
+     "trades_per_month": 107.7
+    },
+    "validation": {
+     "trades": 1378,
+     "net_bps": -109.0,
+     "win": 0.424,
+     "pf": 0.61,
+     "max_dd_pct": 41.8,
+     "sharpe": -1.67,
+     "ann_ret_pct": -29.0,
+     "trades_per_month": 97.2
+    },
+    "holdout": {
+     "trades": 1188,
+     "net_bps": -69.8,
+     "win": 0.42,
+     "pf": 0.71,
+     "max_dd_pct": 29.2,
+     "sharpe": -1.53,
+     "ann_ret_pct": -24.4,
+     "trades_per_month": 83.5
+    },
+    "holdout_long": {
+     "trades": 1188,
+     "net_bps": -69.8
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 23
+  },
+  {
+   "family": "mean_reversion",
+   "name": "IBS below 0.2, in an uptrend | hold 5d",
+   "params": {
+    "hold": 5,
+    "uptrend": true
+   },
+   "eval": {
+    "train": {
+     "trades": 6313,
+     "net_bps": 38.4,
+     "win": 0.496,
+     "pf": 1.17,
+     "max_dd_pct": 31.7,
+     "sharpe": 0.95,
+     "ann_ret_pct": 18.5,
+     "trades_per_month": 222.6
+    },
+    "validation": {
+     "trades": 2525,
+     "net_bps": -98.6,
+     "win": 0.415,
+     "pf": 0.66,
+     "max_dd_pct": 47.1,
+     "sharpe": -1.8,
+     "ann_ret_pct": -34.7,
+     "trades_per_month": 178.1
+    },
+    "holdout": {
+     "trades": 2401,
+     "net_bps": -50.9,
+     "win": 0.426,
+     "pf": 0.79,
+     "max_dd_pct": 29.5,
+     "sharpe": -0.96,
+     "ann_ret_pct": -17.8,
+     "trades_per_month": 168.8
+    },
+    "holdout_long": {
+     "trades": 2401,
+     "net_bps": -50.9
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 24
+  },
+  {
+   "family": "mean_reversion",
+   "name": "Buy after 3 down days, in an uptrend | hold 5d",
+   "params": {
+    "hold": 5,
+    "uptrend": true
+   },
+   "eval": {
+    "train": {
+     "trades": 3567,
+     "net_bps": 19.4,
+     "win": 0.488,
+     "pf": 1.09,
+     "max_dd_pct": 26.2,
+     "sharpe": 1.3,
+     "ann_ret_pct": 24.9,
+     "trades_per_month": 125.8
+    },
+    "validation": {
+     "trades": 1480,
+     "net_bps": -118.6,
+     "win": 0.403,
+     "pf": 0.59,
+     "max_dd_pct": 48.3,
+     "sharpe": -2.16,
+     "ann_ret_pct": -36.3,
+     "trades_per_month": 104.4
+    },
+    "holdout": {
+     "trades": 1352,
+     "net_bps": -62.0,
+     "win": 0.429,
+     "pf": 0.74,
+     "max_dd_pct": 26.1,
+     "sharpe": -1.26,
+     "ann_ret_pct": -21.0,
+     "trades_per_month": 95.0
+    },
+    "holdout_long": {
+     "trades": 1352,
+     "net_bps": -62.0
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 25
+  },
+  {
+   "family": "mean_reversion",
+   "name": "IBS below 0.2, no trend filter | hold 5d",
+   "params": {
+    "hold": 5,
+    "uptrend": false
+   },
+   "eval": {
+    "train": {
+     "trades": 10061,
+     "net_bps": 34.4,
+     "win": 0.494,
+     "pf": 1.16,
+     "max_dd_pct": 26.8,
+     "sharpe": 1.02,
+     "ann_ret_pct": 19.0,
+     "trades_per_month": 354.8
+    },
+    "validation": {
+     "trades": 5117,
+     "net_bps": -81.5,
+     "win": 0.431,
+     "pf": 0.72,
+     "max_dd_pct": 39.0,
+     "sharpe": -1.05,
+     "ann_ret_pct": -21.8,
+     "trades_per_month": 360.9
+    },
+    "holdout": {
+     "trades": 5121,
+     "net_bps": -52.3,
+     "win": 0.423,
+     "pf": 0.79,
+     "max_dd_pct": 32.7,
+     "sharpe": -0.76,
+     "ann_ret_pct": -14.7,
+     "trades_per_month": 360.0
+    },
+    "holdout_long": {
+     "trades": 5121,
+     "net_bps": -52.3
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 26
+  },
+  {
+   "family": "mean_reversion",
+   "name": "Buy after 3 down days, no trend filter | hold 5d",
+   "params": {
+    "hold": 5,
+    "uptrend": false
+   },
+   "eval": {
+    "train": {
+     "trades": 6279,
+     "net_bps": 2.7,
+     "win": 0.482,
+     "pf": 1.01,
+     "max_dd_pct": 28.1,
+     "sharpe": 0.95,
+     "ann_ret_pct": 18.0,
+     "trades_per_month": 221.4
+    },
+    "validation": {
+     "trades": 3374,
+     "net_bps": -104.9,
+     "win": 0.411,
+     "pf": 0.64,
+     "max_dd_pct": 41.7,
+     "sharpe": -1.4,
+     "ann_ret_pct": -29.3,
+     "trades_per_month": 238.0
+    },
+    "holdout": {
+     "trades": 3359,
+     "net_bps": -105.7,
+     "win": 0.392,
+     "pf": 0.6,
+     "max_dd_pct": 36.0,
+     "sharpe": -1.5,
+     "ann_ret_pct": -28.4,
+     "trades_per_month": 236.1
+    },
+    "holdout_long": {
+     "trades": 3359,
+     "net_bps": -105.7
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 27
+  },
+  {
+   "family": "gap",
+   "name": "Gap up >= 2% on volume >= 3x average, enter at the close | hold 5d",
+   "params": {
+    "gap": 0.02,
+    "hold": 5
+   },
+   "eval": {
+    "train": {
+     "trades": 825,
+     "net_bps": 35.0,
+     "win": 0.481,
+     "pf": 1.12,
+     "max_dd_pct": 13.6,
+     "sharpe": 0.51,
+     "ann_ret_pct": 6.2,
+     "trades_per_month": 29.1
+    },
+    "validation": {
+     "trades": 349,
+     "net_bps": -84.3,
+     "win": 0.401,
+     "pf": 0.75,
+     "max_dd_pct": 20.2,
+     "sharpe": -1.61,
+     "ann_ret_pct": -13.9,
+     "trades_per_month": 24.6
+    },
+    "holdout": {
+     "trades": 353,
+     "net_bps": -72.5,
+     "win": 0.422,
+     "pf": 0.76,
+     "max_dd_pct": 16.1,
+     "sharpe": -1.0,
+     "ann_ret_pct": -9.6,
+     "trades_per_month": 24.8
+    },
+    "holdout_long": {
+     "trades": 353,
+     "net_bps": -72.5
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 28
+  },
+  {
+   "family": "gap",
+   "name": "Gap up >= 2% on volume >= 3x average, enter at the close | hold 10d",
+   "params": {
+    "gap": 0.02,
+    "hold": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 784,
+     "net_bps": 134.5,
+     "win": 0.494,
+     "pf": 1.41,
+     "max_dd_pct": 16.5,
+     "sharpe": 1.34,
+     "ann_ret_pct": 22.1,
+     "trades_per_month": 27.6
+    },
+    "validation": {
+     "trades": 341,
+     "net_bps": -83.8,
+     "win": 0.428,
+     "pf": 0.8,
+     "max_dd_pct": 25.5,
+     "sharpe": -1.11,
+     "ann_ret_pct": -15.4,
+     "trades_per_month": 24.1
+    },
+    "holdout": {
+     "trades": 344,
+     "net_bps": -42.2,
+     "win": 0.453,
+     "pf": 0.89,
+     "max_dd_pct": 20.4,
+     "sharpe": -0.36,
+     "ann_ret_pct": -5.3,
+     "trades_per_month": 24.2
+    },
+    "holdout_long": {
+     "trades": 344,
+     "net_bps": -42.2
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 29
+  },
+  {
+   "family": "gap",
+   "name": "Gap up >= 4% on volume >= 3x average, enter at the close | hold 5d",
+   "params": {
+    "gap": 0.04,
+    "hold": 5
+   },
+   "eval": {
+    "train": {
+     "trades": 341,
+     "net_bps": -22.1,
+     "win": 0.452,
+     "pf": 0.94,
+     "max_dd_pct": 11.8,
+     "sharpe": -0.23,
+     "ann_ret_pct": -1.6,
+     "trades_per_month": 12.0
+    },
+    "validation": {
+     "trades": 157,
+     "net_bps": -83.5,
+     "win": 0.408,
+     "pf": 0.79,
+     "max_dd_pct": 13.1,
+     "sharpe": -1.13,
+     "ann_ret_pct": -6.6,
+     "trades_per_month": 11.1
+    },
+    "holdout": {
+     "trades": 167,
+     "net_bps": -23.8,
+     "win": 0.467,
+     "pf": 0.92,
+     "max_dd_pct": 5.3,
+     "sharpe": -0.12,
+     "ann_ret_pct": -0.8,
+     "trades_per_month": 11.7
+    },
+    "holdout_long": {
+     "trades": 167,
+     "net_bps": -23.8
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 30
+  },
+  {
+   "family": "gap",
+   "name": "Gap up >= 4% on volume >= 3x average, enter at the close | hold 10d",
+   "params": {
+    "gap": 0.04,
+    "hold": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 332,
+     "net_bps": 69.3,
+     "win": 0.479,
+     "pf": 1.17,
+     "max_dd_pct": 14.4,
+     "sharpe": 0.5,
+     "ann_ret_pct": 5.3,
+     "trades_per_month": 11.7
+    },
+    "validation": {
+     "trades": 156,
+     "net_bps": -101.8,
+     "win": 0.417,
+     "pf": 0.79,
+     "max_dd_pct": 14.5,
+     "sharpe": -0.88,
+     "ann_ret_pct": -7.3,
+     "trades_per_month": 11.0
+    },
+    "holdout": {
+     "trades": 164,
+     "net_bps": -27.6,
+     "win": 0.445,
+     "pf": 0.93,
+     "max_dd_pct": 7.7,
+     "sharpe": -0.16,
+     "ann_ret_pct": -1.4,
+     "trades_per_month": 11.5
+    },
+    "holdout_long": {
+     "trades": 164,
+     "net_bps": -27.6
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 31
+  },
+  {
+   "family": "vol_contraction",
+   "name": "NR7 then close above the setup high (stop: close below the setup low) | hold 5d",
+   "params": {
+    "setup": "NR7 then close above the setup high",
+    "hold": 5
+   },
+   "eval": {
+    "train": {
+     "trades": 4090,
+     "net_bps": 21.3,
+     "win": 0.439,
+     "pf": 1.1,
+     "max_dd_pct": 28.2,
+     "sharpe": 0.32,
+     "ann_ret_pct": 4.8,
+     "trades_per_month": 144.2
+    },
+    "validation": {
+     "trades": 2057,
+     "net_bps": -27.8,
+     "win": 0.416,
+     "pf": 0.89,
+     "max_dd_pct": 45.9,
+     "sharpe": -1.78,
+     "ann_ret_pct": -30.3,
+     "trades_per_month": 145.1
+    },
+    "holdout": {
+     "trades": 1915,
+     "net_bps": -56.8,
+     "win": 0.368,
+     "pf": 0.76,
+     "max_dd_pct": 50.0,
+     "sharpe": -2.49,
+     "ann_ret_pct": -39.9,
+     "trades_per_month": 134.6
+    },
+    "holdout_long": {
+     "trades": 1915,
+     "net_bps": -56.8
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 32
+  },
+  {
+   "family": "vol_contraction",
+   "name": "NR7 then close above the setup high (stop: close below the setup low) | hold 10d",
+   "params": {
+    "setup": "NR7 then close above the setup high",
+    "hold": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 3678,
+     "net_bps": 50.5,
+     "win": 0.419,
+     "pf": 1.19,
+     "max_dd_pct": 26.9,
+     "sharpe": 0.69,
+     "ann_ret_pct": 11.1,
+     "trades_per_month": 129.7
+    },
+    "validation": {
+     "trades": 1900,
+     "net_bps": -53.7,
+     "win": 0.358,
+     "pf": 0.83,
+     "max_dd_pct": 47.8,
+     "sharpe": -1.81,
+     "ann_ret_pct": -32.8,
+     "trades_per_month": 134.0
+    },
+    "holdout": {
+     "trades": 1766,
+     "net_bps": -44.0,
+     "win": 0.332,
+     "pf": 0.85,
+     "max_dd_pct": 41.4,
+     "sharpe": -1.86,
+     "ann_ret_pct": -31.9,
+     "trades_per_month": 124.1
+    },
+    "holdout_long": {
+     "trades": 1766,
+     "net_bps": -44.0
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 33
+  },
+  {
+   "family": "vol_contraction",
+   "name": "Inside bar then close above the setup high (stop: close below the setup low) | hold 5d",
+   "params": {
+    "setup": "Inside bar then close above the setup high",
+    "hold": 5
+   },
+   "eval": {
+    "train": {
+     "trades": 3523,
+     "net_bps": 10.8,
+     "win": 0.448,
+     "pf": 1.05,
+     "max_dd_pct": 35.2,
+     "sharpe": -0.38,
+     "ann_ret_pct": -5.7,
+     "trades_per_month": 124.2
+    },
+    "validation": {
+     "trades": 1757,
+     "net_bps": -57.9,
+     "win": 0.394,
+     "pf": 0.77,
+     "max_dd_pct": 50.6,
+     "sharpe": -2.4,
+     "ann_ret_pct": -39.8,
+     "trades_per_month": 123.9
+    },
+    "holdout": {
+     "trades": 1693,
+     "net_bps": -72.4,
+     "win": 0.356,
+     "pf": 0.71,
+     "max_dd_pct": 50.6,
+     "sharpe": -2.35,
+     "ann_ret_pct": -39.9,
+     "trades_per_month": 119.0
+    },
+    "holdout_long": {
+     "trades": 1693,
+     "net_bps": -72.4
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 34
+  },
+  {
+   "family": "vol_contraction",
+   "name": "Inside bar then close above the setup high (stop: close below the setup low) | hold 10d",
+   "params": {
+    "setup": "Inside bar then close above the setup high",
+    "hold": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 3178,
+     "net_bps": 73.8,
+     "win": 0.447,
+     "pf": 1.29,
+     "max_dd_pct": 22.9,
+     "sharpe": 0.82,
+     "ann_ret_pct": 13.6,
+     "trades_per_month": 112.1
+    },
+    "validation": {
+     "trades": 1595,
+     "net_bps": -80.9,
+     "win": 0.35,
+     "pf": 0.76,
+     "max_dd_pct": 45.3,
+     "sharpe": -1.54,
+     "ann_ret_pct": -29.2,
+     "trades_per_month": 112.5
+    },
+    "holdout": {
+     "trades": 1558,
+     "net_bps": -72.9,
+     "win": 0.322,
+     "pf": 0.77,
+     "max_dd_pct": 46.3,
+     "sharpe": -1.8,
+     "ann_ret_pct": -32.5,
+     "trades_per_month": 109.5
+    },
+    "holdout_long": {
+     "trades": 1558,
+     "net_bps": -72.9
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 35
+  },
+  {
+   "family": "vol_contraction",
+   "name": "Bollinger squeeze (width in bottom 10% of 6 months) then close above the upper band | hold 5d",
+   "params": {
+    "hold": 5
+   },
+   "eval": {
+    "train": {
+     "trades": 1017,
+     "net_bps": 16.1,
+     "win": 0.455,
+     "pf": 1.07,
+     "max_dd_pct": 9.6,
+     "sharpe": 0.33,
+     "ann_ret_pct": 3.1,
+     "trades_per_month": 35.9
+    },
+    "validation": {
+     "trades": 444,
+     "net_bps": -18.7,
+     "win": 0.414,
+     "pf": 0.92,
+     "max_dd_pct": 10.9,
+     "sharpe": -0.4,
+     "ann_ret_pct": -3.7,
+     "trades_per_month": 31.3
+    },
+    "holdout": {
+     "trades": 392,
+     "net_bps": -83.3,
+     "win": 0.39,
+     "pf": 0.66,
+     "max_dd_pct": 14.6,
+     "sharpe": -1.64,
+     "ann_ret_pct": -11.5,
+     "trades_per_month": 27.6
+    },
+    "holdout_long": {
+     "trades": 392,
+     "net_bps": -83.3
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 36
+  },
+  {
+   "family": "vol_contraction",
+   "name": "20-day high on rising volume (>1.5x average and above yesterday) | hold 5d",
+   "params": {
+    "hold": 5
+   },
+   "eval": {
+    "train": {
+     "trades": 2544,
+     "net_bps": 33.4,
+     "win": 0.457,
+     "pf": 1.14,
+     "max_dd_pct": 19.3,
+     "sharpe": 0.63,
+     "ann_ret_pct": 10.3,
+     "trades_per_month": 89.7
+    },
+    "validation": {
+     "trades": 953,
+     "net_bps": -65.8,
+     "win": 0.412,
+     "pf": 0.77,
+     "max_dd_pct": 34.9,
+     "sharpe": -1.85,
+     "ann_ret_pct": -25.5,
+     "trades_per_month": 67.2
+    },
+    "holdout": {
+     "trades": 986,
+     "net_bps": -57.6,
+     "win": 0.426,
+     "pf": 0.78,
+     "max_dd_pct": 24.4,
+     "sharpe": -1.43,
+     "ann_ret_pct": -20.0,
+     "trades_per_month": 69.3
+    },
+    "holdout_long": {
+     "trades": 986,
+     "net_bps": -57.6
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 37
+  },
+  {
+   "family": "vol_contraction",
+   "name": "Bollinger squeeze (width in bottom 10% of 6 months) then close above the upper band | hold 10d",
+   "params": {
+    "hold": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 975,
+     "net_bps": 81.2,
+     "win": 0.507,
+     "pf": 1.3,
+     "max_dd_pct": 14.5,
+     "sharpe": 0.81,
+     "ann_ret_pct": 11.2,
+     "trades_per_month": 34.4
+    },
+    "validation": {
+     "trades": 426,
+     "net_bps": -35.4,
+     "win": 0.413,
+     "pf": 0.89,
+     "max_dd_pct": 14.0,
+     "sharpe": -0.39,
+     "ann_ret_pct": -5.2,
+     "trades_per_month": 30.0
+    },
+    "holdout": {
+     "trades": 380,
+     "net_bps": -92.6,
+     "win": 0.411,
+     "pf": 0.72,
+     "max_dd_pct": 20.6,
+     "sharpe": -1.3,
+     "ann_ret_pct": -12.8,
+     "trades_per_month": 26.7
+    },
+    "holdout_long": {
+     "trades": 380,
+     "net_bps": -92.6
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 38
+  },
+  {
+   "family": "vol_contraction",
+   "name": "20-day high on rising volume (>1.5x average and above yesterday) | hold 10d",
+   "params": {
+    "hold": 10
+   },
+   "eval": {
+    "train": {
+     "trades": 2196,
+     "net_bps": 117.8,
+     "win": 0.492,
+     "pf": 1.4,
+     "max_dd_pct": 21.9,
+     "sharpe": 1.05,
+     "ann_ret_pct": 19.2,
+     "trades_per_month": 77.4
+    },
+    "validation": {
+     "trades": 856,
+     "net_bps": -95.3,
+     "win": 0.417,
+     "pf": 0.76,
+     "max_dd_pct": 37.8,
+     "sharpe": -1.37,
+     "ann_ret_pct": -23.9,
+     "trades_per_month": 60.4
+    },
+    "holdout": {
+     "trades": 881,
+     "net_bps": -53.9,
+     "win": 0.437,
+     "pf": 0.85,
+     "max_dd_pct": 29.9,
+     "sharpe": -1.07,
+     "ann_ret_pct": -18.8,
+     "trades_per_month": 61.9
+    },
+    "holdout_long": {
+     "trades": 881,
+     "net_bps": -53.9
+    },
+    "holdout_short": {
+     "trades": 0,
+     "net_bps": null
+    }
+   },
+   "key": 39
+  }
+ ],
+ "best": {
+  "momentum": [
+   {
+    "name": "relative strength 12m vs Nifty | top 10 of the turnover-ranked top 200, monthly",
+    "eval": {
+     "train": {
+      "trades": 77,
+      "net_bps": 1941.5,
+      "win": 0.571,
+      "pf": 3.63,
+      "max_dd_pct": 24.6,
+      "sharpe": 2.31,
+      "ann_ret_pct": 58.8,
+      "trades_per_month": 2.7
+     },
+     "validation": {
+      "trades": 35,
+      "net_bps": 48.4,
+      "win": 0.4,
+      "pf": 1.08,
+      "max_dd_pct": 40.8,
+      "sharpe": 0.63,
+      "ann_ret_pct": 17.1,
+      "trades_per_month": 2.5
+     },
+     "holdout": {
+      "trades": 55,
+      "net_bps": -296.6,
+      "win": 0.364,
+      "pf": 0.64,
+      "max_dd_pct": 33.5,
+      "sharpe": -0.79,
+      "ann_ret_pct": -20.5,
+      "trades_per_month": 3.9
+     },
+     "holdout_long": {
+      "trades": 55,
+      "net_bps": -296.6
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -697.7,
+      140.8
+     ],
+     "per_coin": {
+      "MANINDS": {
+       "trades": 3,
+       "net_bps": -1349.5
+      },
+      "MBAPL": {
+       "trades": 3,
+       "net_bps": 1146.6
+      },
+      "APARINDS": {
+       "trades": 2,
+       "net_bps": 1018.0
+      },
+      "CNL": {
+       "trades": 2,
+       "net_bps": 325.7
+      },
+      "HINDALCO": {
+       "trades": 2,
+       "net_bps": -583.3
+      },
+      "LTF": {
+       "trades": 2,
+       "net_bps": 736.5
+      },
+      "ORICONENT": {
+       "trades": 2,
+       "net_bps": 793.8
+      },
+      "RELIABLE": {
+       "trades": 2,
+       "net_bps": 212.1
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -258.4,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 5.701953914361013e-06,
+     "per_year": {
+      "2022": {
+       "trades": 35,
+       "net_bps": 472.9
+      },
+      "2023": {
+       "trades": 29,
+       "net_bps": 3811.0
+      },
+      "2024": {
+       "trades": 29,
+       "net_bps": 676.8
+      },
+      "2025": {
+       "trades": 32,
+       "net_bps": -161.2
+      },
+      "2026": {
+       "trades": 42,
+       "net_bps": -158.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 13,
+       "net_bps": -393.4
+      },
+      "mid (51-200)": {
+       "trades": 42,
+       "net_bps": -266.6
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 27,
+       "net_bps": -40.6
+      },
+      "mid (51-200)": {
+       "trades": 140,
+       "net_bps": 971.3
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -52.3
+     }
+    }
+   },
+   {
+    "name": "12-1 month momentum | top 10 of the turnover-ranked top 200, monthly",
+    "eval": {
+     "train": {
+      "trades": 76,
+      "net_bps": 2357.3,
+      "win": 0.632,
+      "pf": 5.74,
+      "max_dd_pct": 24.3,
+      "sharpe": 2.72,
+      "ann_ret_pct": 69.1,
+      "trades_per_month": 2.7
+     },
+     "validation": {
+      "trades": 38,
+      "net_bps": 12.0,
+      "win": 0.368,
+      "pf": 1.02,
+      "max_dd_pct": 44.2,
+      "sharpe": 0.62,
+      "ann_ret_pct": 17.8,
+      "trades_per_month": 2.7
+     },
+     "holdout": {
+      "trades": 67,
+      "net_bps": -51.6,
+      "win": 0.522,
+      "pf": 0.92,
+      "max_dd_pct": 29.7,
+      "sharpe": -0.28,
+      "ann_ret_pct": -6.9,
+      "trades_per_month": 4.7
+     },
+     "holdout_long": {
+      "trades": 67,
+      "net_bps": -51.6
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -374.3,
+      263.8
+     ],
+     "per_coin": {
+      "APARINDS": {
+       "trades": 3,
+       "net_bps": 802.5
+      },
+      "DREDGECORP": {
+       "trades": 3,
+       "net_bps": -1159.2
+      },
+      "GMBREW": {
+       "trades": 3,
+       "net_bps": 555.9
+      },
+      "SIRCA": {
+       "trades": 3,
+       "net_bps": -476.0
+      },
+      "BHARATFORG": {
+       "trades": 2,
+       "net_bps": -450.8
+      },
+      "GABRIEL": {
+       "trades": 2,
+       "net_bps": 1147.6
+      },
+      "JINDALPHOT": {
+       "trades": 2,
+       "net_bps": -123.8
+      },
+      "LTF": {
+       "trades": 2,
+       "net_bps": 736.5
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -12.8,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 6.871092860061268e-05,
+     "per_year": {
+      "2022": {
+       "trades": 33,
+       "net_bps": 1348.6
+      },
+      "2023": {
+       "trades": 30,
+       "net_bps": 3554.7
+      },
+      "2024": {
+       "trades": 30,
+       "net_bps": 758.9
+      },
+      "2025": {
+       "trades": 40,
+       "net_bps": 98.6
+      },
+      "2026": {
+       "trades": 48,
+       "net_bps": -35.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 13,
+       "net_bps": -316.8
+      },
+      "mid (51-200)": {
+       "trades": 54,
+       "net_bps": 12.2
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 26,
+       "net_bps": 122.6
+      },
+      "mid (51-200)": {
+       "trades": 155,
+       "net_bps": 1115.9
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -48.5
+     }
+    }
+   },
+   {
+    "name": "relative strength 12m vs Nifty | top 30 of the turnover-ranked top 200, monthly",
+    "eval": {
+     "train": {
+      "trades": 222,
+      "net_bps": 1251.2,
+      "win": 0.514,
+      "pf": 3.31,
+      "max_dd_pct": 24.6,
+      "sharpe": 1.86,
+      "ann_ret_pct": 42.3,
+      "trades_per_month": 7.8
+     },
+     "validation": {
+      "trades": 90,
+      "net_bps": 249.5,
+      "win": 0.422,
+      "pf": 1.34,
+      "max_dd_pct": 37.4,
+      "sharpe": 0.03,
+      "ann_ret_pct": 0.6,
+      "trades_per_month": 6.3
+     },
+     "holdout": {
+      "trades": 99,
+      "net_bps": -78.7,
+      "win": 0.475,
+      "pf": 0.89,
+      "max_dd_pct": 22.4,
+      "sharpe": -0.13,
+      "ann_ret_pct": -2.7,
+      "trades_per_month": 7.0
+     },
+     "holdout_long": {
+      "trades": 99,
+      "net_bps": -78.7
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -373.8,
+      217.4
+     ],
+     "per_coin": {
+      "ADANIENSOL": {
+       "trades": 4,
+       "net_bps": -210.6
+      },
+      "MANINDS": {
+       "trades": 4,
+       "net_bps": -932.4
+      },
+      "PARAS": {
+       "trades": 3,
+       "net_bps": 416.4
+      },
+      "SHREEPUSHK": {
+       "trades": 3,
+       "net_bps": -830.1
+      },
+      "APCOTEXIND": {
+       "trades": 2,
+       "net_bps": -884.8
+      },
+      "GMBREW": {
+       "trades": 2,
+       "net_bps": -1024.0
+      },
+      "HINDZINC": {
+       "trades": 2,
+       "net_bps": -793.8
+      },
+      "HONASA": {
+       "trades": 2,
+       "net_bps": 2959.0
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -42.9,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 0.00013463025863413858,
+     "per_year": {
+      "2022": {
+       "trades": 101,
+       "net_bps": 931.2
+      },
+      "2023": {
+       "trades": 78,
+       "net_bps": 2500.4
+      },
+      "2024": {
+       "trades": 76,
+       "net_bps": -311.0
+      },
+      "2025": {
+       "trades": 91,
+       "net_bps": 290.4
+      },
+      "2026": {
+       "trades": 65,
+       "net_bps": 8.4
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 31,
+       "net_bps": 85.6
+      },
+      "mid (51-200)": {
+       "trades": 68,
+       "net_bps": -153.7
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 100,
+       "net_bps": 275.7
+      },
+      "mid (51-200)": {
+       "trades": 311,
+       "net_bps": 851.6
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -49.7
+     }
+    }
+   }
+  ],
+  "trend": [
+   {
+    "name": "50/200 golden cross",
+    "eval": {
+     "train": {
+      "trades": 353,
+      "net_bps": 2737.9,
+      "win": 0.578,
+      "pf": 5.86,
+      "max_dd_pct": 24.8,
+      "sharpe": 2.07,
+      "ann_ret_pct": 39.0,
+      "trades_per_month": 12.4
+     },
+     "validation": {
+      "trades": 179,
+      "net_bps": -424.4,
+      "win": 0.274,
+      "pf": 0.65,
+      "max_dd_pct": 31.0,
+      "sharpe": -0.11,
+      "ann_ret_pct": -2.2,
+      "trades_per_month": 12.6
+     },
+     "holdout": {
+      "trades": 186,
+      "net_bps": 213.1,
+      "win": 0.398,
+      "pf": 1.25,
+      "max_dd_pct": 18.7,
+      "sharpe": 0.16,
+      "ann_ret_pct": 2.9,
+      "trades_per_month": 13.1
+     },
+     "holdout_long": {
+      "trades": 186,
+      "net_bps": 213.1
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -95.6,
+      528.0
+     ],
+     "per_coin": {
+      "BBL": {
+       "trades": 3,
+       "net_bps": -1181.8
+      },
+      "ARE&M": {
+       "trades": 2,
+       "net_bps": -1710.0
+      },
+      "ASAL": {
+       "trades": 2,
+       "net_bps": -1098.9
+      },
+      "AURUM": {
+       "trades": 2,
+       "net_bps": 812.8
+      },
+      "AUTOIND": {
+       "trades": 2,
+       "net_bps": -568.9
+      },
+      "BHARTIHEXA": {
+       "trades": 2,
+       "net_bps": -783.8
+      },
+      "CNL": {
+       "trades": 2,
+       "net_bps": 2431.7
+      },
+      "DIVISLAB": {
+       "trades": 2,
+       "net_bps": 1885.0
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": 268.6,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 0.0004418925885440461,
+     "per_year": {
+      "2022": {
+       "trades": 260,
+       "net_bps": 1923.3
+      },
+      "2023": {
+       "trades": 155,
+       "net_bps": 3675.2
+      },
+      "2024": {
+       "trades": 105,
+       "net_bps": -754.6
+      },
+      "2025": {
+       "trades": 176,
+       "net_bps": 10.3
+      },
+      "2026": {
+       "trades": 139,
+       "net_bps": 406.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 42,
+       "net_bps": 317.0
+      },
+      "mid (51-200)": {
+       "trades": 144,
+       "net_bps": 182.9
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 188,
+       "net_bps": 1194.3
+      },
+      "mid (51-200)": {
+       "trades": 647,
+       "net_bps": 1274.0
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -46.0
+     }
+    }
+   },
+   {
+    "name": "50/200 golden cross + volume > 1.5x its 20-day average at entry",
+    "eval": {
+     "train": {
+      "trades": 423,
+      "net_bps": 2342.3,
+      "win": 0.553,
+      "pf": 4.84,
+      "max_dd_pct": 25.2,
+      "sharpe": 2.04,
+      "ann_ret_pct": 38.5,
+      "trades_per_month": 14.9
+     },
+     "validation": {
+      "trades": 172,
+      "net_bps": -421.0,
+      "win": 0.285,
+      "pf": 0.65,
+      "max_dd_pct": 31.2,
+      "sharpe": -0.11,
+      "ann_ret_pct": -2.3,
+      "trades_per_month": 12.1
+     },
+     "holdout": {
+      "trades": 176,
+      "net_bps": 152.7,
+      "win": 0.398,
+      "pf": 1.19,
+      "max_dd_pct": 18.3,
+      "sharpe": 0.13,
+      "ann_ret_pct": 2.4,
+      "trades_per_month": 12.4
+     },
+     "holdout_long": {
+      "trades": 176,
+      "net_bps": 152.7
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -137.2,
+      460.6
+     ],
+     "per_coin": {
+      "BBL": {
+       "trades": 3,
+       "net_bps": -827.8
+      },
+      "ARE&M": {
+       "trades": 2,
+       "net_bps": -1528.3
+      },
+      "ASAL": {
+       "trades": 2,
+       "net_bps": -1469.1
+      },
+      "AURUM": {
+       "trades": 2,
+       "net_bps": 189.4
+      },
+      "AUTOIND": {
+       "trades": 2,
+       "net_bps": -863.5
+      },
+      "BHARTIHEXA": {
+       "trades": 2,
+       "net_bps": -788.8
+      },
+      "CNL": {
+       "trades": 2,
+       "net_bps": 2223.5
+      },
+      "DIVISLAB": {
+       "trades": 2,
+       "net_bps": 1567.8
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": 207.9,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 0.00040002386226645203,
+     "per_year": {
+      "2022": {
+       "trades": 242,
+       "net_bps": 2037.7
+      },
+      "2023": {
+       "trades": 155,
+       "net_bps": 3475.2
+      },
+      "2024": {
+       "trades": 100,
+       "net_bps": -833.6
+      },
+      "2025": {
+       "trades": 166,
+       "net_bps": 99.4
+      },
+      "2026": {
+       "trades": 134,
+       "net_bps": 253.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 40,
+       "net_bps": 382.7
+      },
+      "mid (51-200)": {
+       "trades": 136,
+       "net_bps": 85.0
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 185,
+       "net_bps": 1291.6
+      },
+      "mid (51-200)": {
+       "trades": 612,
+       "net_bps": 1241.7
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -47.0
+     }
+    }
+   },
+   {
+    "name": "Donchian 55/20 (Turtle) + volume > 1.5x its 20-day average at entry",
+    "eval": {
+     "train": {
+      "trades": 783,
+      "net_bps": 820.8,
+      "win": 0.485,
+      "pf": 2.6,
+      "max_dd_pct": 20.2,
+      "sharpe": 1.99,
+      "ann_ret_pct": 36.6,
+      "trades_per_month": 27.6
+     },
+     "validation": {
+      "trades": 313,
+      "net_bps": -275.9,
+      "win": 0.319,
+      "pf": 0.62,
+      "max_dd_pct": 32.7,
+      "sharpe": -0.82,
+      "ann_ret_pct": -14.6,
+      "trades_per_month": 22.1
+     },
+     "holdout": {
+      "trades": 310,
+      "net_bps": -71.3,
+      "win": 0.361,
+      "pf": 0.89,
+      "max_dd_pct": 21.7,
+      "sharpe": -0.4,
+      "ann_ret_pct": -6.8,
+      "trades_per_month": 21.8
+     },
+     "holdout_long": {
+      "trades": 310,
+      "net_bps": -71.3
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -230.6,
+      94.9
+     ],
+     "per_coin": {
+      "HINDOILEXP": {
+       "trades": 5,
+       "net_bps": -1343.1
+      },
+      "CNL": {
+       "trades": 4,
+       "net_bps": 380.1
+      },
+      "FEDERALBNK": {
+       "trades": 4,
+       "net_bps": 443.1
+      },
+      "FIEMIND": {
+       "trades": 4,
+       "net_bps": -1199.1
+      },
+      "MAHABANK": {
+       "trades": 4,
+       "net_bps": 149.3
+      },
+      "PNB": {
+       "trades": 4,
+       "net_bps": 61.0
+      },
+      "PNBHOUSING": {
+       "trades": 4,
+       "net_bps": -329.6
+      },
+      "SATIN": {
+       "trades": 4,
+       "net_bps": 435.9
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -1.1,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 3.60155416336827e-05,
+     "per_year": {
+      "2022": {
+       "trades": 255,
+       "net_bps": 301.0
+      },
+      "2023": {
+       "trades": 330,
+       "net_bps": 1422.3
+      },
+      "2024": {
+       "trades": 311,
+       "net_bps": 82.7
+      },
+      "2025": {
+       "trades": 277,
+       "net_bps": -182.8
+      },
+      "2026": {
+       "trades": 235,
+       "net_bps": 49.8
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 92,
+       "net_bps": -11.5
+      },
+      "mid (51-200)": {
+       "trades": 218,
+       "net_bps": -96.5
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 376,
+       "net_bps": 232.0
+      },
+      "mid (51-200)": {
+       "trades": 1032,
+       "net_bps": 431.9
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -42.0
+     }
+    }
+   }
+  ],
+  "mean_reversion": [
+   {
+    "name": "IBS below 0.2, no trend filter | hold 5d",
+    "eval": {
+     "train": {
+      "trades": 10061,
+      "net_bps": 34.4,
+      "win": 0.494,
+      "pf": 1.16,
+      "max_dd_pct": 26.8,
+      "sharpe": 1.02,
+      "ann_ret_pct": 19.0,
+      "trades_per_month": 354.8
+     },
+     "validation": {
+      "trades": 5117,
+      "net_bps": -81.5,
+      "win": 0.431,
+      "pf": 0.72,
+      "max_dd_pct": 39.0,
+      "sharpe": -1.05,
+      "ann_ret_pct": -21.8,
+      "trades_per_month": 360.9
+     },
+     "holdout": {
+      "trades": 5121,
+      "net_bps": -52.3,
+      "win": 0.423,
+      "pf": 0.79,
+      "max_dd_pct": 32.7,
+      "sharpe": -0.76,
+      "ann_ret_pct": -14.7,
+      "trades_per_month": 360.0
+     },
+     "holdout_long": {
+      "trades": 5121,
+      "net_bps": -52.3
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -67.2,
+      -38.6
+     ],
+     "per_coin": {
+      "SYNGENE": {
+       "trades": 34,
+       "net_bps": 9.3
+      },
+      "INDIGO": {
+       "trades": 32,
+       "net_bps": 45.5
+      },
+      "TARIL": {
+       "trades": 32,
+       "net_bps": -136.1
+      },
+      "BDL": {
+       "trades": 31,
+       "net_bps": -131.3
+      },
+      "DYCL": {
+       "trades": 31,
+       "net_bps": -0.6
+      },
+      "FACT": {
+       "trades": 31,
+       "net_bps": -205.7
+      },
+      "ICIL": {
+       "trades": 31,
+       "net_bps": 163.2
+      },
+      "LTF": {
+       "trades": 31,
+       "net_bps": 102.0
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": 3.3,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 8.048419615325209e-06,
+     "per_year": {
+      "2022": {
+       "trades": 3722,
+       "net_bps": -1.8
+      },
+      "2023": {
+       "trades": 4134,
+       "net_bps": 64.5
+      },
+      "2024": {
+       "trades": 4391,
+       "net_bps": -20.2
+      },
+      "2025": {
+       "trades": 4188,
+       "net_bps": -81.3
+      },
+      "2026": {
+       "trades": 3888,
+       "net_bps": -42.4
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 1310,
+       "net_bps": -30.1
+      },
+      "mid (51-200)": {
+       "trades": 3811,
+       "net_bps": -60.0
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 5184,
+       "net_bps": -15.3
+      },
+      "mid (51-200)": {
+       "trades": 15139,
+       "net_bps": -16.8
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -43.5
+     }
+    }
+   },
+   {
+    "name": "Buy after 3 down days, no trend filter | hold 5d",
+    "eval": {
+     "train": {
+      "trades": 6279,
+      "net_bps": 2.7,
+      "win": 0.482,
+      "pf": 1.01,
+      "max_dd_pct": 28.1,
+      "sharpe": 0.95,
+      "ann_ret_pct": 18.0,
+      "trades_per_month": 221.4
+     },
+     "validation": {
+      "trades": 3374,
+      "net_bps": -104.9,
+      "win": 0.411,
+      "pf": 0.64,
+      "max_dd_pct": 41.7,
+      "sharpe": -1.4,
+      "ann_ret_pct": -29.3,
+      "trades_per_month": 238.0
+     },
+     "holdout": {
+      "trades": 3359,
+      "net_bps": -105.7,
+      "win": 0.392,
+      "pf": 0.6,
+      "max_dd_pct": 36.0,
+      "sharpe": -1.5,
+      "ann_ret_pct": -28.4,
+      "trades_per_month": 236.1
+     },
+     "holdout_long": {
+      "trades": 3359,
+      "net_bps": -105.7
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -122.4,
+      -88.2
+     ],
+     "per_coin": {
+      "DREDGECORP": {
+       "trades": 24,
+       "net_bps": 152.2
+      },
+      "INDOTECH": {
+       "trades": 24,
+       "net_bps": 111.9
+      },
+      "WEBELSOLAR": {
+       "trades": 24,
+       "net_bps": -87.3
+      },
+      "ASAL": {
+       "trades": 23,
+       "net_bps": -88.1
+      },
+      "NAVKARCORP": {
+       "trades": 23,
+       "net_bps": -201.8
+      },
+      "NEWGEN": {
+       "trades": 23,
+       "net_bps": -134.0
+      },
+      "NITCO": {
+       "trades": 23,
+       "net_bps": -101.7
+      },
+      "NUCLEUS": {
+       "trades": 23,
+       "net_bps": -214.9
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -45.6,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 1.469575017787328e-07,
+     "per_year": {
+      "2022": {
+       "trades": 2308,
+       "net_bps": -10.8
+      },
+      "2023": {
+       "trades": 2543,
+       "net_bps": 23.7
+      },
+      "2024": {
+       "trades": 2850,
+       "net_bps": -58.1
+      },
+      "2025": {
+       "trades": 2849,
+       "net_bps": -97.3
+      },
+      "2026": {
+       "trades": 2470,
+       "net_bps": -114.2
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 731,
+       "net_bps": -90.3
+      },
+      "mid (51-200)": {
+       "trades": 2628,
+       "net_bps": -110.0
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 2973,
+       "net_bps": -48.8
+      },
+      "mid (51-200)": {
+       "trades": 10047,
+       "net_bps": -54.2
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -48.4
+     }
+    }
+   },
+   {
+    "name": "RSI(2) below 10 in an uptrend (above 200-day) | hold 5d",
+    "eval": {
+     "train": {
+      "trades": 3055,
+      "net_bps": 9.2,
+      "win": 0.489,
+      "pf": 1.04,
+      "max_dd_pct": 21.8,
+      "sharpe": 1.21,
+      "ann_ret_pct": 22.3,
+      "trades_per_month": 107.7
+     },
+     "validation": {
+      "trades": 1378,
+      "net_bps": -109.0,
+      "win": 0.424,
+      "pf": 0.61,
+      "max_dd_pct": 41.8,
+      "sharpe": -1.67,
+      "ann_ret_pct": -29.0,
+      "trades_per_month": 97.2
+     },
+     "holdout": {
+      "trades": 1188,
+      "net_bps": -69.8,
+      "win": 0.42,
+      "pf": 0.71,
+      "max_dd_pct": 29.2,
+      "sharpe": -1.53,
+      "ann_ret_pct": -24.4,
+      "trades_per_month": 83.5
+     },
+     "holdout_long": {
+      "trades": 1188,
+      "net_bps": -69.8
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -97.1,
+      -42.7
+     ],
+     "per_coin": {
+      "APARINDS": {
+       "trades": 15,
+       "net_bps": 21.1
+      },
+      "DREDGECORP": {
+       "trades": 15,
+       "net_bps": 411.3
+      },
+      "IPCALAB": {
+       "trades": 15,
+       "net_bps": 24.6
+      },
+      "LTF": {
+       "trades": 15,
+       "net_bps": 164.4
+      },
+      "DIVGIITTS": {
+       "trades": 13,
+       "net_bps": -113.6
+      },
+      "JAMNAAUTO": {
+       "trades": 13,
+       "net_bps": -96.2
+      },
+      "KPIL": {
+       "trades": 13,
+       "net_bps": -63.2
+      },
+      "ORICONENT": {
+       "trades": 13,
+       "net_bps": 248.5
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -14.5,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 6.032405053257861e-08,
+     "per_year": {
+      "2022": {
+       "trades": 838,
+       "net_bps": -17.5
+      },
+      "2023": {
+       "trades": 1312,
+       "net_bps": 38.9
+      },
+      "2024": {
+       "trades": 1739,
+       "net_bps": -56.4
+      },
+      "2025": {
+       "trades": 888,
+       "net_bps": -85.0
+      },
+      "2026": {
+       "trades": 849,
+       "net_bps": -73.7
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 323,
+       "net_bps": -77.4
+      },
+      "mid (51-200)": {
+       "trades": 865,
+       "net_bps": -67.0
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 1567,
+       "net_bps": -51.0
+      },
+      "mid (51-200)": {
+       "trades": 4059,
+       "net_bps": -29.5
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -41.0
+     }
+    }
+   }
+  ],
+  "gap": [
+   {
+    "name": "Gap up >= 4% on volume >= 3x average, enter at the close | hold 10d",
+    "eval": {
+     "train": {
+      "trades": 332,
+      "net_bps": 69.3,
+      "win": 0.479,
+      "pf": 1.17,
+      "max_dd_pct": 14.4,
+      "sharpe": 0.5,
+      "ann_ret_pct": 5.3,
+      "trades_per_month": 11.7
+     },
+     "validation": {
+      "trades": 156,
+      "net_bps": -101.8,
+      "win": 0.417,
+      "pf": 0.79,
+      "max_dd_pct": 14.5,
+      "sharpe": -0.88,
+      "ann_ret_pct": -7.3,
+      "trades_per_month": 11.0
+     },
+     "holdout": {
+      "trades": 164,
+      "net_bps": -27.6,
+      "win": 0.445,
+      "pf": 0.93,
+      "max_dd_pct": 7.7,
+      "sharpe": -0.16,
+      "ann_ret_pct": -1.4,
+      "trades_per_month": 11.5
+     },
+     "holdout_long": {
+      "trades": 164,
+      "net_bps": -27.6
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -154.4,
+      101.1
+     ],
+     "per_coin": {
+      "JPPOWER": {
+       "trades": 5,
+       "net_bps": -621.7
+      },
+      "ARVSMART": {
+       "trades": 4,
+       "net_bps": -174.8
+      },
+      "ASHIANA": {
+       "trades": 4,
+       "net_bps": 199.4
+      },
+      "BHAGERIA": {
+       "trades": 4,
+       "net_bps": 889.9
+      },
+      "BHARATSE": {
+       "trades": 3,
+       "net_bps": -309.3
+      },
+      "CNL": {
+       "trades": 3,
+       "net_bps": 98.5
+      },
+      "DIVGIITTS": {
+       "trades": 3,
+       "net_bps": -217.2
+      },
+      "GARFIBRES": {
+       "trades": 3,
+       "net_bps": -513.8
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": 13.7,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 0.00013200637214205724,
+     "per_year": {
+      "2022": {
+       "trades": 138,
+       "net_bps": -65.5
+      },
+      "2023": {
+       "trades": 103,
+       "net_bps": 343.2
+      },
+      "2024": {
+       "trades": 165,
+       "net_bps": -93.5
+      },
+      "2025": {
+       "trades": 108,
+       "net_bps": -70.0
+      },
+      "2026": {
+       "trades": 139,
+       "net_bps": 5.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 15,
+       "net_bps": 52.2
+      },
+      "mid (51-200)": {
+       "trades": 149,
+       "net_bps": -35.6
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 67,
+       "net_bps": -59.6
+      },
+      "mid (51-200)": {
+       "trades": 586,
+       "net_bps": 13.8
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -13.1
+     }
+    }
+   },
+   {
+    "name": "Gap up >= 2% on volume >= 3x average, enter at the close | hold 10d",
+    "eval": {
+     "train": {
+      "trades": 784,
+      "net_bps": 134.5,
+      "win": 0.494,
+      "pf": 1.41,
+      "max_dd_pct": 16.5,
+      "sharpe": 1.34,
+      "ann_ret_pct": 22.1,
+      "trades_per_month": 27.6
+     },
+     "validation": {
+      "trades": 341,
+      "net_bps": -83.8,
+      "win": 0.428,
+      "pf": 0.8,
+      "max_dd_pct": 25.5,
+      "sharpe": -1.11,
+      "ann_ret_pct": -15.4,
+      "trades_per_month": 24.1
+     },
+     "holdout": {
+      "trades": 344,
+      "net_bps": -42.2,
+      "win": 0.453,
+      "pf": 0.89,
+      "max_dd_pct": 20.4,
+      "sharpe": -0.36,
+      "ann_ret_pct": -5.3,
+      "trades_per_month": 24.2
+     },
+     "holdout_long": {
+      "trades": 344,
+      "net_bps": -42.2
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -123.4,
+      43.3
+     ],
+     "per_coin": {
+      "BHAGERIA": {
+       "trades": 7,
+       "net_bps": 723.5
+      },
+      "ARVSMART": {
+       "trades": 6,
+       "net_bps": -288.9
+      },
+      "DIVGIITTS": {
+       "trades": 6,
+       "net_bps": 215.4
+      },
+      "HONASA": {
+       "trades": 6,
+       "net_bps": 268.6
+      },
+      "CNL": {
+       "trades": 5,
+       "net_bps": 618.8
+      },
+      "JPPOWER": {
+       "trades": 5,
+       "net_bps": -629.0
+      },
+      "MVGJL": {
+       "trades": 5,
+       "net_bps": -1100.0
+      },
+      "PCJEWELLER": {
+       "trades": 5,
+       "net_bps": -424.0
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": 2.2,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 5.3113552629546756e-05,
+     "per_year": {
+      "2022": {
+       "trades": 316,
+       "net_bps": 93.1
+      },
+      "2023": {
+       "trades": 274,
+       "net_bps": 190.7
+      },
+      "2024": {
+       "trades": 335,
+       "net_bps": 44.5
+      },
+      "2025": {
+       "trades": 262,
+       "net_bps": -126.3
+      },
+      "2026": {
+       "trades": 284,
+       "net_bps": 5.9
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 46,
+       "net_bps": 48.6
+      },
+      "mid (51-200)": {
+       "trades": 298,
+       "net_bps": -56.3
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 193,
+       "net_bps": 39.4
+      },
+      "mid (51-200)": {
+       "trades": 1278,
+       "net_bps": 45.0
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -24.9
+     }
+    }
+   },
+   {
+    "name": "Gap up >= 4% on volume >= 3x average, enter at the close | hold 5d",
+    "eval": {
+     "train": {
+      "trades": 341,
+      "net_bps": -22.1,
+      "win": 0.452,
+      "pf": 0.94,
+      "max_dd_pct": 11.8,
+      "sharpe": -0.23,
+      "ann_ret_pct": -1.6,
+      "trades_per_month": 12.0
+     },
+     "validation": {
+      "trades": 157,
+      "net_bps": -83.5,
+      "win": 0.408,
+      "pf": 0.79,
+      "max_dd_pct": 13.1,
+      "sharpe": -1.13,
+      "ann_ret_pct": -6.6,
+      "trades_per_month": 11.1
+     },
+     "holdout": {
+      "trades": 167,
+      "net_bps": -23.8,
+      "win": 0.467,
+      "pf": 0.92,
+      "max_dd_pct": 5.3,
+      "sharpe": -0.12,
+      "ann_ret_pct": -0.8,
+      "trades_per_month": 11.7
+     },
+     "holdout_long": {
+      "trades": 167,
+      "net_bps": -23.8
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -122.5,
+      76.2
+     ],
+     "per_coin": {
+      "JPPOWER": {
+       "trades": 5,
+       "net_bps": -739.1
+      },
+      "ARVSMART": {
+       "trades": 4,
+       "net_bps": -65.7
+      },
+      "ASHIANA": {
+       "trades": 4,
+       "net_bps": 202.2
+      },
+      "BHAGERIA": {
+       "trades": 4,
+       "net_bps": 536.2
+      },
+      "INDOTECH": {
+       "trades": 4,
+       "net_bps": 1081.2
+      },
+      "BHARATSE": {
+       "trades": 3,
+       "net_bps": -81.0
+      },
+      "CNL": {
+       "trades": 3,
+       "net_bps": -207.6
+      },
+      "DIVGIITTS": {
+       "trades": 3,
+       "net_bps": 378.3
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": 17.8,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 0.000154619998859018,
+     "per_year": {
+      "2022": {
+       "trades": 142,
+       "net_bps": -122.7
+      },
+      "2023": {
+       "trades": 107,
+       "net_bps": 124.5
+      },
+      "2024": {
+       "trades": 167,
+       "net_bps": -89.4
+      },
+      "2025": {
+       "trades": 108,
+       "net_bps": -38.3
+      },
+      "2026": {
+       "trades": 142,
+       "net_bps": -14.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 15,
+       "net_bps": -71.6
+      },
+      "mid (51-200)": {
+       "trades": 152,
+       "net_bps": -19.1
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 68,
+       "net_bps": -124.4
+      },
+      "mid (51-200)": {
+       "trades": 598,
+       "net_bps": -28.0
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -11.7
+     }
+    }
+   }
+  ],
+  "vol_contraction": [
+   {
+    "name": "Bollinger squeeze (width in bottom 10% of 6 months) then close above the upper band | hold 10d",
+    "eval": {
+     "train": {
+      "trades": 975,
+      "net_bps": 81.2,
+      "win": 0.507,
+      "pf": 1.3,
+      "max_dd_pct": 14.5,
+      "sharpe": 0.81,
+      "ann_ret_pct": 11.2,
+      "trades_per_month": 34.4
+     },
+     "validation": {
+      "trades": 426,
+      "net_bps": -35.4,
+      "win": 0.413,
+      "pf": 0.89,
+      "max_dd_pct": 14.0,
+      "sharpe": -0.39,
+      "ann_ret_pct": -5.2,
+      "trades_per_month": 30.0
+     },
+     "holdout": {
+      "trades": 380,
+      "net_bps": -92.6,
+      "win": 0.411,
+      "pf": 0.72,
+      "max_dd_pct": 20.6,
+      "sharpe": -1.3,
+      "ann_ret_pct": -12.8,
+      "trades_per_month": 26.7
+     },
+     "holdout_long": {
+      "trades": 380,
+      "net_bps": -92.6
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -159.2,
+      -26.3
+     ],
+     "per_coin": {
+      "AURUM": {
+       "trades": 5,
+       "net_bps": -87.5
+      },
+      "APARINDS": {
+       "trades": 4,
+       "net_bps": 379.4
+      },
+      "BHARATFORG": {
+       "trades": 4,
+       "net_bps": 177.6
+      },
+      "CANBK": {
+       "trades": 4,
+       "net_bps": -156.7
+      },
+      "CNL": {
+       "trades": 4,
+       "net_bps": 36.3
+      },
+      "DALBHARAT": {
+       "trades": 4,
+       "net_bps": -315.8
+      },
+      "FIEMIND": {
+       "trades": 4,
+       "net_bps": -176.3
+      },
+      "ICIL": {
+       "trades": 4,
+       "net_bps": 41.5
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -40.9,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 3.4764604012194056e-07,
+     "per_year": {
+      "2022": {
+       "trades": 415,
+       "net_bps": 58.5
+      },
+      "2023": {
+       "trades": 400,
+       "net_bps": 139.3
+      },
+      "2024": {
+       "trades": 299,
+       "net_bps": 28.4
+      },
+      "2025": {
+       "trades": 431,
+       "net_bps": -113.5
+      },
+      "2026": {
+       "trades": 238,
+       "net_bps": -44.1
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 104,
+       "net_bps": -58.5
+      },
+      "mid (51-200)": {
+       "trades": 276,
+       "net_bps": -105.5
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 494,
+       "net_bps": 4.1
+      },
+      "mid (51-200)": {
+       "trades": 1289,
+       "net_bps": 21.0
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -20.0
+     }
+    }
+   },
+   {
+    "name": "Bollinger squeeze (width in bottom 10% of 6 months) then close above the upper band | hold 5d",
+    "eval": {
+     "train": {
+      "trades": 1017,
+      "net_bps": 16.1,
+      "win": 0.455,
+      "pf": 1.07,
+      "max_dd_pct": 9.6,
+      "sharpe": 0.33,
+      "ann_ret_pct": 3.1,
+      "trades_per_month": 35.9
+     },
+     "validation": {
+      "trades": 444,
+      "net_bps": -18.7,
+      "win": 0.414,
+      "pf": 0.92,
+      "max_dd_pct": 10.9,
+      "sharpe": -0.4,
+      "ann_ret_pct": -3.7,
+      "trades_per_month": 31.3
+     },
+     "holdout": {
+      "trades": 392,
+      "net_bps": -83.3,
+      "win": 0.39,
+      "pf": 0.66,
+      "max_dd_pct": 14.6,
+      "sharpe": -1.64,
+      "ann_ret_pct": -11.5,
+      "trades_per_month": 27.6
+     },
+     "holdout_long": {
+      "trades": 392,
+      "net_bps": -83.3
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -128.8,
+      -39.4
+     ],
+     "per_coin": {
+      "ICIL": {
+       "trades": 6,
+       "net_bps": -531.0
+      },
+      "AURUM": {
+       "trades": 5,
+       "net_bps": -216.8
+      },
+      "PCBL": {
+       "trades": 5,
+       "net_bps": -525.3
+      },
+      "APARINDS": {
+       "trades": 4,
+       "net_bps": 78.8
+      },
+      "BHARATFORG": {
+       "trades": 4,
+       "net_bps": 34.6
+      },
+      "CANBK": {
+       "trades": 4,
+       "net_bps": 24.6
+      },
+      "CNL": {
+       "trades": 4,
+       "net_bps": -262.7
+      },
+      "DALBHARAT": {
+       "trades": 4,
+       "net_bps": -352.8
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": -38.3,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 2.7502092603270967e-08,
+     "per_year": {
+      "2022": {
+       "trades": 438,
+       "net_bps": 1.0
+      },
+      "2023": {
+       "trades": 418,
+       "net_bps": 36.9
+      },
+      "2024": {
+       "trades": 307,
+       "net_bps": 29.4
+      },
+      "2025": {
+       "trades": 445,
+       "net_bps": -81.7
+      },
+      "2026": {
+       "trades": 247,
+       "net_bps": -50.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 107,
+       "net_bps": -46.6
+      },
+      "mid (51-200)": {
+       "trades": 285,
+       "net_bps": -97.1
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 511,
+       "net_bps": -9.9
+      },
+      "mid (51-200)": {
+       "trades": 1344,
+       "net_bps": -14.0
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -12.3
+     }
+    }
+   },
+   {
+    "name": "20-day high on rising volume (>1.5x average and above yesterday) | hold 10d",
+    "eval": {
+     "train": {
+      "trades": 2196,
+      "net_bps": 117.8,
+      "win": 0.492,
+      "pf": 1.4,
+      "max_dd_pct": 21.9,
+      "sharpe": 1.05,
+      "ann_ret_pct": 19.2,
+      "trades_per_month": 77.4
+     },
+     "validation": {
+      "trades": 856,
+      "net_bps": -95.3,
+      "win": 0.417,
+      "pf": 0.76,
+      "max_dd_pct": 37.8,
+      "sharpe": -1.37,
+      "ann_ret_pct": -23.9,
+      "trades_per_month": 60.4
+     },
+     "holdout": {
+      "trades": 881,
+      "net_bps": -53.9,
+      "win": 0.437,
+      "pf": 0.85,
+      "max_dd_pct": 29.9,
+      "sharpe": -1.07,
+      "ann_ret_pct": -18.8,
+      "trades_per_month": 61.9
+     },
+     "holdout_long": {
+      "trades": 881,
+      "net_bps": -53.9
+     },
+     "holdout_short": {
+      "trades": 0,
+      "net_bps": null
+     }
+    },
+    "extras": {
+     "boot90": [
+      -104.4,
+      -2.1
+     ],
+     "per_coin": {
+      "PNB": {
+       "trades": 10,
+       "net_bps": -55.0
+      },
+      "JAMNAAUTO": {
+       "trades": 9,
+       "net_bps": -250.4
+      },
+      "MAHABANK": {
+       "trades": 9,
+       "net_bps": 267.6
+      },
+      "RRKABEL": {
+       "trades": 9,
+       "net_bps": 108.1
+      },
+      "TMB": {
+       "trades": 9,
+       "net_bps": -4.9
+      },
+      "WSTCSTPAPR": {
+       "trades": 9,
+       "net_bps": 49.4
+      },
+      "CNL": {
+       "trades": 8,
+       "net_bps": -152.3
+      },
+      "DREDGECORP": {
+       "trades": 8,
+       "net_bps": -234.8
+      }
+     },
+     "decomp": {
+      "gross_bps_per_trade": 3.2,
+      "funding_bps_per_trade": 0.0
+     },
+     "dsr": 1.1661391535744414e-06,
+     "per_year": {
+      "2022": {
+       "trades": 712,
+       "net_bps": 49.6
+      },
+      "2023": {
+       "trades": 946,
+       "net_bps": 167.9
+      },
+      "2024": {
+       "trades": 889,
+       "net_bps": 31.4
+      },
+      "2025": {
+       "trades": 713,
+       "net_bps": -95.4
+      },
+      "2026": {
+       "trades": 676,
+       "net_bps": -37.5
+      }
+     },
+     "by_size": {
+      "large (top 50)": {
+       "trades": 234,
+       "net_bps": 6.9
+      },
+      "mid (51-200)": {
+       "trades": 647,
+       "net_bps": -75.9
+      }
+     },
+     "by_size_all": {
+      "large (top 50)": {
+       "trades": 1025,
+       "net_bps": 25.4
+      },
+      "mid (51-200)": {
+       "trades": 2911,
+       "net_bps": 35.3
+      }
+     },
+     "nifty_down5_days": {
+      "days": 93,
+      "sum_pct": -37.3
+     }
+    }
+   }
+  ]
+ },
+ "seasonality": [
+  {
+   "effect": "Monday",
+   "direction": "long",
+   "train": {
+    "trades": 289,
+    "net_bps": -14.9,
+    "win": 0.526,
+    "pf": 0.71,
+    "t": -1.8
+   },
+   "validation": {
+    "trades": 150,
+    "net_bps": -2.1,
+    "win": 0.567,
+    "pf": 0.95,
+    "t": -0.2
+   },
+   "holdout": {
+    "trades": 146,
+    "net_bps": 1.0,
+    "win": 0.507,
+    "pf": 1.03,
+    "t": 0.1
+   }
+  },
+  {
+   "effect": "Monday",
+   "direction": "short",
+   "train": {
+    "trades": 289,
+    "net_bps": 4.9,
+    "win": 0.45,
+    "pf": 1.12,
+    "t": 0.6
+   },
+   "validation": {
+    "trades": 150,
+    "net_bps": -7.9,
+    "win": 0.373,
+    "pf": 0.83,
+    "t": -0.9
+   },
+   "holdout": {
+    "trades": 146,
+    "net_bps": -11.0,
+    "win": 0.432,
+    "pf": 0.73,
+    "t": -1.4
+   }
+  },
+  {
+   "effect": "Tuesday",
+   "direction": "long",
+   "train": {
+    "trades": 293,
+    "net_bps": 3.3,
+    "win": 0.491,
+    "pf": 1.1,
+    "t": 0.5
+   },
+   "validation": {
+    "trades": 144,
+    "net_bps": 23.8,
+    "win": 0.576,
+    "pf": 2.26,
+    "t": 3.6
+   },
+   "holdout": {
+    "trades": 150,
+    "net_bps": -10.3,
+    "win": 0.407,
+    "pf": 0.69,
+    "t": -1.5
+   }
+  },
+  {
+   "effect": "Tuesday",
+   "direction": "short",
+   "train": {
+    "trades": 293,
+    "net_bps": -13.3,
+    "win": 0.44,
+    "pf": 0.68,
+    "t": -2.2
+   },
+   "validation": {
+    "trades": 144,
+    "net_bps": -33.8,
+    "win": 0.354,
+    "pf": 0.31,
+    "t": -5.1
+   },
+   "holdout": {
+    "trades": 150,
+    "net_bps": 0.3,
+    "win": 0.487,
+    "pf": 1.01,
+    "t": 0.0
+   }
+  },
+  {
+   "effect": "Wednesday",
+   "direction": "long",
+   "train": {
+    "trades": 300,
+    "net_bps": 2.5,
+    "win": 0.483,
+    "pf": 1.08,
+    "t": 0.4
+   },
+   "validation": {
+    "trades": 148,
+    "net_bps": -1.0,
+    "win": 0.466,
+    "pf": 0.97,
+    "t": -0.2
+   },
+   "holdout": {
+    "trades": 145,
+    "net_bps": 7.9,
+    "win": 0.538,
+    "pf": 1.33,
+    "t": 1.2
+   }
+  },
+  {
+   "effect": "Wednesday",
+   "direction": "short",
+   "train": {
+    "trades": 300,
+    "net_bps": -12.5,
+    "win": 0.44,
+    "pf": 0.69,
+    "t": -2.2
+   },
+   "validation": {
+    "trades": 148,
+    "net_bps": -9.0,
+    "win": 0.48,
+    "pf": 0.75,
+    "t": -1.4
+   },
+   "holdout": {
+    "trades": 145,
+    "net_bps": -17.9,
+    "win": 0.414,
+    "pf": 0.52,
+    "t": -2.7
+   }
+  },
+  {
+   "effect": "Thursday",
+   "direction": "long",
+   "train": {
+    "trades": 296,
+    "net_bps": -2.1,
+    "win": 0.49,
+    "pf": 0.94,
+    "t": -0.3
+   },
+   "validation": {
+    "trades": 148,
+    "net_bps": -7.5,
+    "win": 0.493,
+    "pf": 0.79,
+    "t": -1.0
+   },
+   "holdout": {
+    "trades": 146,
+    "net_bps": -1.6,
+    "win": 0.514,
+    "pf": 0.95,
+    "t": -0.2
+   }
+  },
+  {
+   "effect": "Thursday",
+   "direction": "short",
+   "train": {
+    "trades": 296,
+    "net_bps": -7.9,
+    "win": 0.456,
+    "pf": 0.81,
+    "t": -1.3
+   },
+   "validation": {
+    "trades": 148,
+    "net_bps": -2.5,
+    "win": 0.459,
+    "pf": 0.93,
+    "t": -0.3
+   },
+   "holdout": {
+    "trades": 146,
+    "net_bps": -8.4,
+    "win": 0.404,
+    "pf": 0.76,
+    "t": -1.3
+   }
+  },
+  {
+   "effect": "Friday",
+   "direction": "long",
+   "train": {
+    "trades": 290,
+    "net_bps": 6.4,
+    "win": 0.538,
+    "pf": 1.2,
+    "t": 1.1
+   },
+   "validation": {
+    "trades": 145,
+    "net_bps": -8.4,
+    "win": 0.462,
+    "pf": 0.79,
+    "t": -1.0
+   },
+   "holdout": {
+    "trades": 144,
+    "net_bps": -1.8,
+    "win": 0.486,
+    "pf": 0.95,
+    "t": -0.3
+   }
+  },
+  {
+   "effect": "Friday",
+   "direction": "short",
+   "train": {
+    "trades": 290,
+    "net_bps": -16.4,
+    "win": 0.39,
+    "pf": 0.63,
+    "t": -2.7
+   },
+   "validation": {
+    "trades": 145,
+    "net_bps": -1.6,
+    "win": 0.49,
+    "pf": 0.96,
+    "t": -0.2
+   },
+   "holdout": {
+    "trades": 144,
+    "net_bps": -8.2,
+    "win": 0.465,
+    "pf": 0.78,
+    "t": -1.1
+   }
+  },
+  {
+   "effect": "Turn of month (last trading day + first 3 of the next month)",
+   "direction": "long",
+   "train": {
+    "trades": 72,
+    "net_bps": 12.0,
+    "win": 0.472,
+    "pf": 1.15,
+    "t": 0.5
+   },
+   "validation": {
+    "trades": 36,
+    "net_bps": 109.3,
+    "win": 0.75,
+    "pf": 4.25,
+    "t": 3.4
+   },
+   "holdout": {
+    "trades": 36,
+    "net_bps": 5.7,
+    "win": 0.583,
+    "pf": 1.08,
+    "t": 0.2
+   }
+  },
+  {
+   "effect": "Turn of month (last trading day + first 3 of the next month)",
+   "direction": "short",
+   "train": {
+    "trades": 72,
+    "net_bps": -22.0,
+    "win": 0.486,
+    "pf": 0.77,
+    "t": -0.9
+   },
+   "validation": {
+    "trades": 36,
+    "net_bps": -119.3,
+    "win": 0.25,
+    "pf": 0.21,
+    "t": -3.7
+   },
+   "holdout": {
+    "trades": 36,
+    "net_bps": -15.7,
+    "win": 0.417,
+    "pf": 0.8,
+    "t": -0.5
+   }
+  },
+  {
+   "effect": "Expiry week (Monday to expiry day)",
+   "direction": "long",
+   "train": {
+    "trades": 71,
+    "net_bps": 1.1,
+    "win": 0.521,
+    "pf": 1.01,
+    "t": 0.0
+   },
+   "validation": {
+    "trades": 36,
+    "net_bps": -31.0,
+    "win": 0.5,
+    "pf": 0.67,
+    "t": -0.9
+   },
+   "holdout": {
+    "trades": 36,
+    "net_bps": 18.6,
+    "win": 0.556,
+    "pf": 1.49,
+    "t": 1.0
+   }
+  },
+  {
+   "effect": "Expiry week (Monday to expiry day)",
+   "direction": "short",
+   "train": {
+    "trades": 71,
+    "net_bps": -11.1,
+    "win": 0.437,
+    "pf": 0.87,
+    "t": -0.4
+   },
+   "validation": {
+    "trades": 36,
+    "net_bps": 21.0,
+    "win": 0.5,
+    "pf": 1.31,
+    "t": 0.6
+   },
+   "holdout": {
+    "trades": 36,
+    "net_bps": -28.6,
+    "win": 0.417,
+    "pf": 0.54,
+    "t": -1.6
+   }
+  },
+  {
+   "span": "2015-01-01 to 2026-11-20",
+   "cuts": [
+    "2015-01-01",
+    "2020-12-14",
+    "2023-12-04"
+   ]
+  }
+ ],
+ "bench": {
+  "train": {
+   "ann_ret_pct": 18.0,
+   "sharpe": 1.5,
+   "max_dd_pct": 15.3
+  },
+  "validation": {
+   "ann_ret_pct": 4.1,
+   "sharpe": 0.34,
+   "max_dd_pct": 16.2
+  },
+  "holdout": {
+   "ann_ret_pct": 2.2,
+   "sharpe": 0.17,
+   "max_dd_pct": 15.7
+  }
+ },
+ "cuts": [
+  "2022-03-02",
+  "2024-07-12",
+  "2025-09-16",
+  "2026-11-23"
+ ]
+}
