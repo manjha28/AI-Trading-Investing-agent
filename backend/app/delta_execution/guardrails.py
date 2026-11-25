@@ -30,6 +30,8 @@ class LiveContext:
     realized_pnl_today: Decimal
     contract_has_open_order: bool
     duplicate_signal: bool
+    available_balance_usd: Decimal | None = None    # read from Delta just before sending; None = unreadable, which fails closed
+    wallet_balance_usd: Decimal | None = None       # total wallet balance read from Delta; None fails closed
     maintenance_margin_pct: Decimal | None = None   # percent, e.g. 0.25; None = unknown, which fails the liquidation-safety check closed
 
 
@@ -86,6 +88,24 @@ def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
         check("risk_per_trade", risk <= ctx.max_daily_loss_usd / 2, f"risk at the stop {risk:.2f} USD exceeds half the daily loss cap")
     else:
         check("notional_cap", False, "contract value or price unknown")
+    # balance-based checks: sized from what Delta says is available right now, never from a stored or assumed number
+    balances_known = ctx.available_balance_usd is not None and ctx.wallet_balance_usd is not None and ctx.wallet_balance_usd > 0
+    check("balance_known", balances_known, "the available balance could not be read from Delta, so the order is not sent")
+    if balances_known and price_ok and ctx.contract_value is not None:
+        notional = ctx.last_price * ctx.contract_value * intent.contracts
+        margin = notional / Decimal(intent.leverage)
+        fees = notional * policy.TAKER_FEE * 2 * (1 + policy.GST)
+        check("margin_covered", margin + fees <= ctx.available_balance_usd,
+              f"margin {margin:.2f} + round-trip fees and GST {fees:.2f} = {margin + fees:.2f} USD is more than the available balance {ctx.available_balance_usd:.2f} USD")
+        check("effective_leverage_cap", notional <= policy.EFFECTIVE_LEVERAGE_CAP * ctx.wallet_balance_usd,
+              f"order value {notional:.2f} USD is {notional / ctx.wallet_balance_usd:.1f}x the wallet {ctx.wallet_balance_usd:.2f} USD; the cap is {policy.EFFECTIVE_LEVERAGE_CAP}x")
+        if ctx.maintenance_margin_pct is not None and ctx.maintenance_margin_pct >= 0:
+            # cross margin: the whole wallet backs the position, so liquidation is (wallet - maintenance margin) / quantity away from entry
+            quantity = ctx.contract_value * intent.contracts
+            room = (ctx.wallet_balance_usd - notional * ctx.maintenance_margin_pct / 100) / quantity
+            gap = abs(intent.reference_price - intent.stop_price)
+            check("liquidation_safety_cross", room > 0 and gap <= Decimal("0.5") * room,
+                  f"under cross margin the position is liquidated about {max(room, Decimal(0)):.0f} away from entry; the stop is {gap:.0f} away and must be within half of that")
     # the shared liquidation rule (app.delta_lab.risk): the stop must sit before liquidation and within half of the entry-to-liquidation distance
     from app.delta_lab.risk import liquidation_price
     if ctx.maintenance_margin_pct is not None and ctx.maintenance_margin_pct >= 0 and intent.leverage > 0 and intent.reference_price > 0:

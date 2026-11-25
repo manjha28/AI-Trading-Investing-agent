@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -78,6 +79,8 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
         return existing
     correlation = uuid4()
     ctx = build_context(db, user_id, ft, spec, cid, now=now, last_close=last_close, last_price=last_price)
+    available, wallet = read_balances(client_factory)                    # live read just before sending; None fails the order closed
+    ctx = replace(ctx, available_balance_usd=available, wallet_balance_usd=wallet)
     decision: Decision = evaluate(intent, ctx)
     audit(db, user_id, "intent", correlation, cid, intent.symbol, intent.canonical(), now)
     audit(db, user_id, "decision", correlation, cid, intent.symbol, decision.as_dict(), now)
@@ -109,6 +112,22 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
     row.updated_at = now
     db.commit()
     return row
+
+
+def read_balances(client_factory: ClientFactory = DeltaOrderClient) -> tuple[Decimal | None, Decimal | None]:
+    """(available, total wallet) in USD from Delta's wallet endpoint, or (None, None) when it cannot be read (the order is then refused)."""
+    try:
+        reply = client_factory().balances()
+    except (ExecutionBlocked, ValueError):
+        return None, None
+    rows = reply.body.get("result") if reply.ok else None
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and str(row.get("asset_symbol", "")).upper() in ("USD", "USDT"):
+            try:
+                return Decimal(str(row["available_balance"])), Decimal(str(row["balance"]))
+            except (KeyError, ArithmeticError):
+                return None, None
+    return None, None
 
 
 def maybe_place(db: Session, ft: CryptoForwardTest, spec: Spec, entries: list[dict[str, Any]], candles: list[Candle], now: datetime,

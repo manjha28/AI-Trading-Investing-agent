@@ -31,7 +31,8 @@ def intent(**over):
 def ctx(**over):
     base = dict(now=NOW, deployment_enabled=True, credentials_present=True, environment_block=None, armed=True, test_executes_live=True, max_daily_loss_usd=D("25"),
                 max_trades_per_day=6, max_open_positions=2, max_notional_usd=D("2000"), contract_value=D("0.001"), exchange_max_leverage=250, maintenance_margin_pct=D("0.25"), last_candle_close=CLOSE,
-                last_price=D("100000"), orders_today=0, open_positions=0, realized_pnl_today=D(0), contract_has_open_order=False, duplicate_signal=False)
+                last_price=D("100000"), orders_today=0, open_positions=0, realized_pnl_today=D(0), contract_has_open_order=False, duplicate_signal=False,
+                available_balance_usd=D(1000), wallet_balance_usd=D(1000))
     return gr.LiveContext(**{**base, **over})
 
 
@@ -203,3 +204,40 @@ def test_liquidation_safety_blocks_a_stop_too_close_to_liquidation_and_unknown_m
     far = intent(leverage=25, stop_price=D("103000"), target_price=D("98800"))      # a short whose stop is 3% away: past half the distance to liquidation
     assert "liquidation_safety" in failed(gr.evaluate(far, ctx()))
     assert "liquidation_safety" in failed(gr.evaluate(wide, ctx(maintenance_margin_pct=None)))
+
+
+# ---- balance-based gate (added 25 Nov 2026 after both live orders went out at 25x on a ~$3 wallet) ----
+def test_order_is_refused_when_the_available_balance_cannot_be_read():
+    d = gr.evaluate(intent(), ctx(available_balance_usd=None, wallet_balance_usd=None))
+    assert not d.allowed and "balance_known" in failed(d)
+
+
+def test_order_is_refused_when_margin_plus_fees_and_gst_exceed_the_available_balance():
+    # 1 contract at 100000 = 100 USD; margin at 25x = 4 USD; round-trip taker fees + GST = 0.118 USD
+    assert gr.evaluate(intent(), ctx(available_balance_usd=D("4.2"), wallet_balance_usd=D(500))).allowed is True
+    d = gr.evaluate(intent(), ctx(available_balance_usd=D("4.05"), wallet_balance_usd=D(500)))
+    assert not d.allowed and failed(d) == {"margin_covered"}
+
+
+def test_effective_leverage_above_5x_the_wallet_is_refused_even_at_the_exchange_leverage_setting():
+    d = gr.evaluate(intent(), ctx(available_balance_usd=D(3), wallet_balance_usd=D(3)))      # 100 USD order on a 3 USD wallet = 33x
+    assert not d.allowed and "effective_leverage_cap" in failed(d)
+    assert gr.evaluate(intent(), ctx(available_balance_usd=D(25), wallet_balance_usd=D(25))).allowed        # 4x passes
+
+
+def test_cross_margin_liquidation_distance_uses_the_real_wallet():
+    # 20 USD wallet, 100 USD order (5x): liquidation about 19,750 USD/BTC away; a 400 stop is well inside half of it
+    assert gr.evaluate(intent(), ctx(available_balance_usd=D(20), wallet_balance_usd=D(20))).allowed
+    # a 12 USD wallet: room is about 11,750 away, half is 5,875; a stop 6,000 away is outside it
+    wide = intent(stop_price=D("106000"), target_price=D("80000"))
+    d = gr.evaluate(wide, ctx(available_balance_usd=D(12), wallet_balance_usd=D(12)))
+    assert "liquidation_safety_cross" in failed(d)
+
+
+def test_read_balances_parses_delta_reply_and_fails_closed(creds):
+    def handler(request):
+        return httpx.Response(200, json={"success": True, "result": [{"asset_symbol": "USD", "balance": "3.10", "available_balance": "2.95"}]})
+    mocked = lambda: dclient.DeltaOrderClient(transport=httpx.MockTransport(handler))     # noqa: E731
+    assert service.read_balances(mocked) == (D("2.95"), D("3.10"))
+    bad = lambda: dclient.DeltaOrderClient(transport=httpx.MockTransport(lambda r: httpx.Response(500, json={})))       # noqa: E731
+    assert service.read_balances(bad) == (None, None)
