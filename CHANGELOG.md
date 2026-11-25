@@ -266,3 +266,4 @@
 - 2026-11-25: Research: pump ride on Delta coins (15m/30m bars) and the BTW absorption-then-breakout rule (48 variants); reports/delta_pumps_intraday.md.
 - 2026-11-25: Research: which pumps dump on Delta coins, and a short-after-failure rule (6 variants); reports/dump_study.md.
 - 2026-11-25: Research: 5 EMA pullback entry vs close entry (24 variants), pre-pump signals (5 rules), fresh-data test of the dump short (running); reports/five_ema_pullback.md, pre_pump.json.
+- 2026-11-25: Research: AlgoTest 5 EMA script replicated, and two-order entry; reports/five_ema_algotest.md.
