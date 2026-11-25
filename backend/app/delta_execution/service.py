@@ -1,6 +1,7 @@
 """Live-order orchestration: guard-rail context, audit, place / block, kill switch, reconcile. Every decision is written to the audit trail."""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
 from collections.abc import Callable
@@ -79,8 +80,9 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
         return existing
     correlation = uuid4()
     ctx = build_context(db, user_id, ft, spec, cid, now=now, last_close=last_close, last_price=last_price)
-    available, wallet = read_balances(client_factory)                    # live read just before sending; None fails the order closed
-    ctx = replace(ctx, available_balance_usd=available, wallet_balance_usd=wallet)
+    _available, wallet = read_balances(client_factory)                   # live read just before sending; used for leverage and liquidation sizing, not as a gate
+    realized = read_realized_today(client_factory, now)
+    ctx = replace(ctx, wallet_balance_usd=wallet, realized_pnl_today=realized or Decimal(0), realized_pnl_known=realized is not None)
     decision: Decision = evaluate(intent, ctx)
     audit(db, user_id, "intent", correlation, cid, intent.symbol, intent.canonical(), now)
     audit(db, user_id, "decision", correlation, cid, intent.symbol, decision.as_dict(), now)
@@ -94,7 +96,7 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
             client = client_factory()
             lev = client.set_leverage(intent.product_id, intent.leverage)
             if not lev.ok:
-                row.status, row.block_reason = "rejected", f"leverage could not be set to {intent.leverage}x: {lev.error or 'refused'}"[:300]
+                row.status, row.block_reason = "rejected", rejection_reason(lev, f"leverage change to {intent.leverage}x")[:300]
                 row.response = {"leverage": {"http_status": lev.status_code, "body": lev.body, "error": lev.error}}
             else:
                 reply = client.place_bracket(intent, cid, spec.tick_size)
@@ -103,7 +105,7 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
                 row.response = {"http_status": reply.status_code, "body": reply.body, "error": reply.error}
                 row.delta_order_id = reply.order_id
                 row.status = "placed" if reply.ok and reply.order_id else "rejected"
-                row.block_reason = None if row.status == "placed" else (reply.error or "Delta did not accept the order")[:300]
+                row.block_reason = None if row.status == "placed" else rejection_reason(reply)[:300]
         except ExecutionBlocked as error:
             row.status, row.block_reason = "blocked", str(error)[:300]
         except Exception as error:  # noqa: BLE001 - recorded, never raised into the scheduler
@@ -128,6 +130,40 @@ def read_balances(client_factory: ClientFactory = DeltaOrderClient) -> tuple[Dec
             except (KeyError, ArithmeticError):
                 return None, None
     return None, None
+
+
+REALIZED_TYPES = ("cashflow", "commission", "funding", "liquidation_fee")
+
+
+def read_realized_today(client_factory: ClientFactory, now: datetime) -> Decimal | None:
+    """Today's (UTC) realised P&L in USD from Delta's own wallet transactions: closed-trade cashflow, commissions (incl. GST), funding and liquidation fees. None if unreadable."""
+    try:
+        reply = client_factory()._request("GET", "/v2/wallet/transactions", query="?page_size=200")
+    except (ExecutionBlocked, ValueError):
+        return None
+    rows = reply.body.get("result") if reply.ok else None
+    if not isinstance(rows, list):
+        return None
+    start, total = day_start_utc(now), Decimal(0)
+    for row in rows:
+        try:
+            when = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+            if when >= start and row.get("transaction_type") in REALIZED_TYPES and str(row.get("asset_symbol", "USD")).upper() == "USD":
+                total += Decimal(str(row["amount"]))
+        except (KeyError, ValueError, ArithmeticError):
+            return None
+    return total
+
+
+def rejection_reason(reply: BrokerReply, what: str = "order") -> str:
+    """Delta's own reason for refusing a request, as it answered (code, message and context), so the ledger shows exactly why."""
+    err = reply.body.get("error") if isinstance(reply.body.get("error"), dict) else {}
+    parts = [str(err.get("code") or reply.error or "refused")]
+    if err.get("message"):
+        parts.append(str(err["message"]))
+    if err.get("context"):
+        parts.append(json.dumps(err["context"], separators=(",", ":"), default=str))
+    return f"Delta rejected the {what} (HTTP {reply.status_code}): " + " · ".join(parts)
 
 
 def maybe_place(db: Session, ft: CryptoForwardTest, spec: Spec, entries: list[dict[str, Any]], candles: list[Candle], now: datetime,

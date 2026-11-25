@@ -11,11 +11,13 @@ MAX_CONTRACTS = 1                       # one lot, whatever the lot size is
 LEVERAGE_CAP = 25                       # the lower of this and the contract's own maximum is used
 MARKETABLE_LIMIT_BUFFER = Decimal("0.003")   # entry is a limit 0.3% through the last price: fills like a market order, never runs away
 SIGNAL_MAX_AGE_SECONDS = 120            # an entry is only placed within two minutes of the trigger candle closing
-EFFECTIVE_LEVERAGE_CAP = Decimal(5)     # order value / wallet balance: the leverage actually carried, whatever the exchange leverage setting is
-TAKER_FEE = Decimal("0.0005")           # used only to check the margin plus round-trip fees plus GST are covered before an order is sent
-GST = Decimal("0.18")
 CONFIRMATION_PHRASE = "ENABLE DELTA LIVE ORDERS"
 BASE_URL = "https://api.india.delta.exchange"
+
+
+def effective_leverage_cap() -> Decimal:
+    """Order value / wallet: the leverage actually carried. Default 25x, configurable DOWNWARD only; it can never exceed LEVERAGE_CAP."""
+    return Decimal(max(1, min(LEVERAGE_CAP, int(settings.delta_effective_leverage_cap))))
 
 
 def environment_block() -> str | None:

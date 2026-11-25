@@ -30,8 +30,8 @@ class LiveContext:
     realized_pnl_today: Decimal
     contract_has_open_order: bool
     duplicate_signal: bool
-    available_balance_usd: Decimal | None = None    # read from Delta just before sending; None = unreadable, which fails closed
-    wallet_balance_usd: Decimal | None = None       # total wallet balance read from Delta; None fails closed
+    wallet_balance_usd: Decimal | None = None       # total wallet balance read from Delta just before sending; None = unreadable, so the wallet-based checks are skipped
+    realized_pnl_known: bool = True                 # False = today's real realised P&L could not be read from Delta, which fails the daily-loss check closed
     maintenance_margin_pct: Decimal | None = None   # percent, e.g. 0.25; None = unknown, which fails the liquidation-safety check closed
 
 
@@ -88,17 +88,13 @@ def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
         check("risk_per_trade", risk <= ctx.max_daily_loss_usd / 2, f"risk at the stop {risk:.2f} USD exceeds half the daily loss cap")
     else:
         check("notional_cap", False, "contract value or price unknown")
-    # balance-based checks: sized from what Delta says is available right now, never from a stored or assumed number
-    balances_known = ctx.available_balance_usd is not None and ctx.wallet_balance_usd is not None and ctx.wallet_balance_usd > 0
-    check("balance_known", balances_known, "the available balance could not be read from Delta, so the order is not sent")
-    if balances_known and price_ok and ctx.contract_value is not None:
+    # wallet-based checks. The balance is NOT a gate: if it cannot cover the order Delta rejects it and the reason is shown in the ledger.
+    # The wallet is only used to size the effective leverage and the cross-margin liquidation distance, and when it cannot be read those two are not checked.
+    if ctx.wallet_balance_usd is not None and ctx.wallet_balance_usd > 0 and price_ok and ctx.contract_value is not None:
         notional = ctx.last_price * ctx.contract_value * intent.contracts
-        margin = notional / Decimal(intent.leverage)
-        fees = notional * policy.TAKER_FEE * 2 * (1 + policy.GST)
-        check("margin_covered", margin + fees <= ctx.available_balance_usd,
-              f"margin {margin:.2f} + round-trip fees and GST {fees:.2f} = {margin + fees:.2f} USD is more than the available balance {ctx.available_balance_usd:.2f} USD")
-        check("effective_leverage_cap", notional <= policy.EFFECTIVE_LEVERAGE_CAP * ctx.wallet_balance_usd,
-              f"order value {notional:.2f} USD is {notional / ctx.wallet_balance_usd:.1f}x the wallet {ctx.wallet_balance_usd:.2f} USD; the cap is {policy.EFFECTIVE_LEVERAGE_CAP}x")
+        cap = policy.effective_leverage_cap()
+        check("effective_leverage_cap", notional <= cap * ctx.wallet_balance_usd,
+              f"order value {notional:.2f} USD is {notional / ctx.wallet_balance_usd:.1f}x the wallet {ctx.wallet_balance_usd:.2f} USD; the cap is {cap}x")
         if ctx.maintenance_margin_pct is not None and ctx.maintenance_margin_pct >= 0:
             # cross margin: the whole wallet backs the position, so liquidation is (wallet - maintenance margin) / quantity away from entry
             quantity = ctx.contract_value * intent.contracts
@@ -116,6 +112,7 @@ def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
         check("liquidation_safety", before and half, f"the stop {intent.stop_price} is not safely before the estimated liquidation price {liq:.2f} (it must be before it and within half the distance)")
     else:
         check("liquidation_safety", False, "maintenance margin unknown, so the liquidation price cannot be estimated")
+    check("daily_loss_known", ctx.realized_pnl_known, "today's realised P&L could not be read from Delta")
     check("daily_loss_cap", ctx.realized_pnl_today > -ctx.max_daily_loss_usd, f"realised loss today {ctx.realized_pnl_today} reached the cap {ctx.max_daily_loss_usd}")
     check("daily_trade_cap", ctx.orders_today < ctx.max_trades_per_day, f"{ctx.orders_today} orders already today (cap {ctx.max_trades_per_day})")
     check("open_position_cap", ctx.open_positions < ctx.max_open_positions, f"{ctx.open_positions} positions already open (cap {ctx.max_open_positions})")
