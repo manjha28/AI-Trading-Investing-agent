@@ -273,3 +273,4 @@
 - 2026-11-25: Research: dynamic entries (confirmation, volume, RSI, trend) and exits (ratchet, EMA9 flip, RSI flip, volume reversal) on 7 crypto strategy runs (252 variants); reports/dynamic_entries_exits.md.
 - 2026-11-25: Research: [Smith] VWAP Deviation+ script replicated and traded on Delta BTC/ETH/SOL/XRP (27 variants); reports/smith_vwap.md.
 - 2026-11-25: Research: battery of 11 published strategy families (40 variants) on Delta data; reports/strategy_battery.md.
+- 2026-11-26: Research: literature round (Delta low-turnover strategies, 603 variants; NSE equity swing strategies); no live change; reports/2026-11-26-literature-delta.md, 2026-11-26-literature-equity.md.
