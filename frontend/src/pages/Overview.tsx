@@ -443,13 +443,12 @@ function MetricCard({
   signed?: boolean;
 }) {
   return (
-    <article className="metric">
+    <article className="metric" title={basis || undefined}>
       <span className="portfolio-metric-label">{label}</span>
       <strong className={signed ? tone(value) : undefined}>
         {value === null ? (loading ? <Skeleton /> : <UnavailableValue reason={reason} />) : signed ? signedMoney(value) : money(value)}
       </strong>
       {value !== null && subline && <small className="portfolio-metric-basis">{subline}</small>}
-      {value !== null && basis && <small className="portfolio-metric-basis">{basis}</small>}
     </article>
   );
 }
@@ -582,12 +581,6 @@ function buildInsights(
       Math.abs(Number(holding.live_valuation.day_change)) > Math.abs(Number(best.live_valuation.day_change)) ? holding : best);
     insights.push(`${largest.symbol} · ${signedMoney(largest.live_valuation.day_change as string)}`);
   }
-  if (portfolio.holdings.length > 0) {
-    insights.push(`Valued prices · ${valued.length}/${portfolio.holdings.length}`);
-  }
-  if (portfolio.market_session) {
-    insights.push(`Session · ${portfolio.market_session.venue} ${portfolio.market_session.state}`);
-  }
   return insights;
 }
 
@@ -661,7 +654,7 @@ function RailSectors({ data }: { data: RailSummary }) {
           {sector !== '' && rows[0].sector_source && <small className="rail-note">Source: {rows[0].sector_source}</small>}
         </section>
       ))}
-      <p className="rail-note">{data.scope} Decision support, not investment advice.</p>
+      <p className="rail-note">{data.scope}</p>
     </div>
   );
 }
@@ -1063,7 +1056,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
     <div className="table-scroll"><table>
       <thead><tr>
         <th>Instrument</th><th>Quantity (broker)</th><th>Avg cost (broker)</th><th>LTP</th>
-        <th>Market value</th><th>Unrealized P&amp;L</th><th>Day change</th><th>Basis</th>
+        <th>Market value</th><th>Unrealized P&amp;L</th><th>Day change</th>
       </tr></thead>
       <tbody>{rows.map((holding) => {
         const valued = holding.live_valuation;
@@ -1073,11 +1066,10 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
             <td className="instrument-cell">{holding.symbol}<small className="trade-subtext">{holding.exchange}{holding.exchange_resolution_reason ? ` · ${holding.exchange_resolution_reason}` : ''}</small></td>
             <td>{quantityCell(holding)}</td>
             <td>{holding.average_price !== null ? money(holding.average_price) : <UnavailableValue reason="The broker did not supply an average cost." />}</td>
-            <td>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} />}{hasPrice && valued.as_of && <small className="trade-subtext">{istStamp(valued.as_of)}{valued.source ? ` · ${valued.source}` : ''}</small>}</td>
+            <td title={hasPrice && valued.as_of ? `${istStamp(valued.as_of)}${valued.source ? ` · ${valued.source}` : ''}` : undefined}>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} />}</td>
             <td>{valued.market_value !== null ? money(valued.market_value) : '—'}</td>
             <td className={tone(valued.unrealized_profit)}>{valued.unrealized_profit !== null ? signedMoney(valued.unrealized_profit) : '—'}</td>
             <td className={tone(valued.day_change)}>{valued.day_change !== null ? signedMoney(valued.day_change) : '—'}{valued.day_change === null && <small className="trade-subtext">{valued.day_change_reason ?? 'No prior close.'}</small>}</td>
-            <td>{basisCell(valued)}</td>
           </tr>
         );
       })}</tbody>
@@ -1088,7 +1080,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
     <div className="table-scroll"><table>
       <thead><tr>
         <th>Instrument</th><th>Net qty (broker)</th><th>Cost (broker)</th><th>Realized P&amp;L (broker)</th>
-        <th>LTP</th><th>Market value</th><th>Unrealized P&amp;L</th><th>Basis</th>
+        <th>LTP</th><th>Market value</th><th>Unrealized P&amp;L</th>
       </tr></thead>
       <tbody>{rows.map((position) => {
         const valued = position.live_valuation;
@@ -1102,7 +1094,6 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
             <td>{hasPrice ? money(valued.price as string) : <UnavailableValue reason={valued.stale_reason ?? 'No valued price.'} inline />}</td>
             <td>{valued.market_value !== null ? money(valued.market_value) : '—'}</td>
             <td className={tone(valued.unrealized_profit)}>{valued.unrealized_profit !== null ? signedMoney(valued.unrealized_profit) : '—'}</td>
-            <td>{basisCell(valued)}</td>
           </tr>
         );
       })}</tbody>
@@ -1154,7 +1145,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
     <div className="overview-page">
       <div className="overview-heading">
         <h1 className="page-title">Overview</h1>
-        <p className="muted">Decision support, not investment advice. <LiveSwitch venue={executionStates?.dhan} /> <LiveSwitch venue={executionStates?.delta} /></p>
+        <p className="muted"><LiveSwitch venue={executionStates?.dhan} /> <LiveSwitch venue={executionStates?.delta} /></p>
       </div>
       {dhanError && <p className="broker-sync-time" role="alert">{dhanError}</p>}
       {!brokerAccessAllowed && <p className="broker-sync-time" role="status">Verify this session with your authenticator code to load broker account data.</p>}
@@ -1220,8 +1211,8 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
 
       <div className="overview-grid">
         <div className="overview-main">
-          <section className="data-section" aria-label="Broker sync health">
-            <div className="section-heading"><div><p className="eyebrow">READ-ONLY BROKER DATA · INR</p><h2>Broker sync health</h2></div></div>
+          <details className="data-section" aria-label="Broker sync health">
+            <summary className="section-heading"><div><p className="eyebrow">READ-ONLY BROKER DATA · INR</p><h2>Broker sync health</h2></div></summary>
             {dhanLoading ? <Skeleton width="16rem" /> : !dhanPortfolio ? <div className="table-empty">Dhan data is unavailable.</div> : (
               <dl className="sync-health">
                 <div><dt>Last synced</dt><dd>{dhanPortfolio.synced_at ? formatIST(dhanPortfolio.synced_at) : 'Never'}</dd></div>
@@ -1248,14 +1239,14 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
                 </ul>
               </details>
             )}
-          </section>
+          </details>
 
           <section className="data-section" aria-label="Holdings">
             <div className="section-heading"><div><h2>Holdings</h2><small className="trade-subtext">Quantity and average cost are broker-sourced. Price, value, P&amp;L and day change come from the valuation service.</small></div><span className="section-count">{dhanPortfolio ? `${dhanPortfolio.holdings.length} records` : ''}</span></div>
             {dhanLoading ? <Skeleton width="100%" /> : !dhanPortfolio?.holdings.length ? <div className="table-empty">No Dhan holdings have been synced.</div> : holdingsTable(dhanPortfolio.holdings)}
           </section>
 
-          <section className="data-section" aria-label="Open positions">
+          {(dhanLoading || !!dhanPortfolio?.positions.length || !!dhanPortfolio?.closed_positions.length || !!dhanPortfolio?.delivery_sales.length) && <section className="data-section" aria-label="Open positions">
             <div className="section-heading"><div><h2>Open positions</h2></div><span className="section-count">{dhanPortfolio ? `${dhanPortfolio.positions.length} records` : ''}</span></div>
             {dhanLoading ? <Skeleton width="100%" /> : !dhanPortfolio?.positions.length ? <div className="table-empty">No Dhan open positions have been synced.</div> : positionsTable(dhanPortfolio.positions)}
             {!!dhanPortfolio?.closed_positions.length && <details className="closed-positions-details">
@@ -1266,10 +1257,10 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
               <summary>CNC sales from delivery holdings · {dhanPortfolio.delivery_sales.length} records</summary>
               <div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Net quantity sold</th><th>Average price</th></tr></thead><tbody>{dhanPortfolio.delivery_sales.map((sale, index) => <tr key={`${sale.security_id}-${sale.exchange}-${index}`}><td className="instrument-cell">{sale.symbol}</td><td>{formatQuantity(sale.quantity)}</td><td>{sale.average_price !== null ? money(sale.average_price) : '—'}</td></tr>)}</tbody></table></div>
             </details>}
-          </section>
+          </section>}
 
-          <section className="data-section" aria-label="Alerts">
-            <div className="section-heading"><div><h2>Alerts</h2><small className="trade-subtext">Decision support, not investment advice.</small></div><button className="text-button" type="button" onClick={() => setActiveView('alerts')}>Open alerts</button></div>
+          {(alerts === null || !!alertsError || (alerts?.length ?? 0) > 0) && <section className="data-section" aria-label="Alerts">
+            <div className="section-heading"><div><h2>Alerts</h2></div><button className="text-button" type="button" onClick={() => setActiveView('alerts')}>Open alerts</button></div>
             {alerts === null && !alertsError ? <Skeleton width="12rem" /> : alertsError ? <ErrorState title="Alerts unavailable" message={alertsError} onRetry={() => void refreshAlerts()} /> : alerts?.length === 0 ? <div className="table-empty">No new alerts.</div> : alerts && (
               <ul className="overview-alerts">
                 {alerts.map((event) => (
@@ -1277,14 +1268,14 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
                 ))}
               </ul>
             )}
-          </section>
+          </section>}
 
-          <section className="data-section" aria-label="Key insights">
-            <div className="section-heading"><div><h2>Key insights</h2><small className="trade-subtext">Fixed templates over computed values. Decision support, not investment advice.</small></div></div>
+          {(dhanLoading || insights.length > 0) && <section className="data-section" aria-label="Key insights">
+            <div className="section-heading"><div><h2>Key insights</h2><small className="trade-subtext">Fixed templates over computed values.</small></div></div>
             {dhanLoading ? <Skeleton width="20rem" /> : insights.length === 0 ? <div className="table-empty">No computed insights are available yet.</div> : (
               <ul className="insights">{insights.map((line) => <li key={line}>{line}</li>)}</ul>
             )}
-          </section>
+          </section>}
 
           <section className="data-section history-panel" aria-label="Holdings value history">
             <div className="section-heading">
@@ -1292,7 +1283,6 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
                 <h2>Holdings value history</h2>
                 <small className="trade-subtext">
                   {historyUsesPortfolio ? 'Selected portfolio' : 'Owner-wide · all broker holdings'}
-                  {' · decision support, not investment advice'}
                 </small>
               </div>
               {historyRows.length > 0 && (

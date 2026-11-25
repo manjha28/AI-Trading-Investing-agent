@@ -19,10 +19,11 @@ beforeEach(() => {
   window.localStorage.clear();
   apiRequest.mockImplementation((path: string) => Promise.resolve(path.includes('/delta-research/markets') ? markets : path.includes('/crypto-delta/feed') ? { available: true, wanted: true, state: 'connected', connected: true, last_event_at: null } : { symbol: 'AAAUSD', count: 0, candles: [], gaps: 0 }));
 });
-afterEach(() => { cleanup(); apiRequest.mockReset(); });
+afterEach(() => { cleanup(); apiRequest.mockReset(); window.localStorage.removeItem('crypto.watch.cols'); });
 
 describe('Crypto watch table', () => {
   it('shows only live contracts with the ticker columns, a sign and arrow on the change, and a dash for unknown values', async () => {
+    window.localStorage.setItem('crypto.watch.cols', JSON.stringify(['range', 'oi', 'bidask']));      // the extra columns are opt-in through the Columns menu
     render(<CryptoMarkets {...props} />);
     const table = await screen.findByRole('table');
     await within(table).findByText('BBBUSD');

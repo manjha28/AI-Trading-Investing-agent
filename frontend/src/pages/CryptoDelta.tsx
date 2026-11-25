@@ -1,21 +1,17 @@
 import { useEffect, useState } from 'react';
 import { CryptoExecution } from '../crypto/CryptoExecution';
-import { ExecutionStateChip } from '../components/ExecutionStateChip';
-import { useExecutionState } from '../hooks/useExecutionState';
 import { CryptoForward } from '../crypto/CryptoForward';
 import { CryptoLiveReport } from '../crypto/CryptoLiveReport';
 import { CryptoLab } from '../crypto/CryptoLab';
 import { CryptoMarkets } from '../crypto/CryptoMarkets';
 import { DeltaResearchPage } from './DeltaResearch';
 
-type Tab = 'markets' | 'lab' | 'forward' | 'feed' | 'execution' | 'live';
+type Tab = 'markets' | 'strategies' | 'live' | 'system';
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'markets', label: 'Markets & charts' },
-  { id: 'lab', label: 'Strategy lab' },
-  { id: 'forward', label: 'Forward test' },
-  { id: 'feed', label: 'Live feed' },
-  { id: 'execution', label: 'Execution' },
-  { id: 'live', label: 'Live report' },
+  { id: 'markets', label: 'Markets' },
+  { id: 'strategies', label: 'Strategies' },
+  { id: 'live', label: 'Live trading' },
+  { id: 'system', label: 'System' },
 ];
 
 function remembered<T extends string>(key: string, fallback: T, allowed?: readonly string[]): T {
@@ -31,39 +27,50 @@ function remembered<T extends string>(key: string, fallback: T, allowed?: readon
  * system (own candles, strategies, backtests). Whether it can send real orders is the backend's effective execution state, shown on the page.
  */
 export function CryptoDeltaPage() {
-  const states = useExecutionState();
   const [tab, setTab] = useState<Tab>(() => remembered<Tab>('crypto.tab', 'markets', TABS.map((t) => t.id)));
+  const [view, setView] = useState<'tests' | 'backtests'>(() => remembered<'tests' | 'backtests'>('crypto.strategies', 'tests', ['tests', 'backtests']));
   const [symbol, setSymbol] = useState<string>(() => remembered<string>('crypto.symbol', 'BTCUSD'));
   const [resolution, setResolution] = useState<string>(() => remembered<string>('crypto.resolution', '15m', ['1m', '5m', '15m', '1h', '4h', '1d']));
 
   useEffect(() => {
     try {
       window.localStorage.setItem('crypto.tab', tab);
+      window.localStorage.setItem('crypto.strategies', view);
       window.localStorage.setItem('crypto.symbol', symbol);
       window.localStorage.setItem('crypto.resolution', resolution);
     } catch { /* per-viewer convenience only */ }
-  }, [tab, symbol, resolution]);
+  }, [tab, view, symbol, resolution]);
 
   return (
     <main className="crypto-page">
-      <div className="crypto-intro">
-        <div>
-          <p className="eyebrow">DELTA EXCHANGE INDIA · CRYPTO PERPETUALS</p>
-          <h2>Perpetuals workspace</h2>
-          <p className="crypto-sub">Watch, chart and backtest perpetual contracts. Separate from the Indian-equity system. Decision support, not investment advice. <ExecutionStateChip venue={states?.delta} /></p>
-        </div>
-      </div>
+      <div className="crypto-intro"><h2>Crypto · Delta</h2></div>
       <nav className="crypto-tabs" role="tablist" aria-label="Crypto workspace">
         {TABS.map((item) => (
-          <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}</button>
+          <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} className={`${tab === item.id ? 'active' : ''}${item.id === 'system' ? ' crypto-tab-secondary' : ''}`} onClick={() => setTab(item.id)}>{item.label}</button>
         ))}
       </nav>
       {tab === 'markets' && <CryptoMarkets symbol={symbol} setSymbol={setSymbol} resolution={resolution} setResolution={setResolution} />}
-      {tab === 'lab' && <CryptoLab symbol={symbol} setSymbol={setSymbol} resolution={resolution} setResolution={setResolution} />}
-      {tab === 'forward' && <CryptoForward symbol={symbol} resolution={resolution} />}
-      {tab === 'feed' && <DeltaResearchPage />}
-      {tab === 'execution' && <CryptoExecution />}
-      {tab === 'live' && <CryptoLiveReport />}
+      {tab === 'strategies' && (
+        <>
+          <div className="crypto-subtabs" role="tablist" aria-label="Strategies">
+            <button type="button" role="tab" aria-selected={view === 'tests'} className={view === 'tests' ? 'active' : ''} onClick={() => setView('tests')}>Paper tests &amp; scanners</button>
+            <button type="button" role="tab" aria-selected={view === 'backtests'} className={view === 'backtests' ? 'active' : ''} onClick={() => setView('backtests')}>Backtests</button>
+          </div>
+          {view === 'backtests' ? <CryptoLab symbol={symbol} setSymbol={setSymbol} resolution={resolution} setResolution={setResolution} /> : <CryptoForward symbol={symbol} resolution={resolution} part="tests" />}
+        </>
+      )}
+      {tab === 'live' && (
+        <>
+          <CryptoForward symbol={symbol} resolution={resolution} part="live" />
+          <CryptoLiveReport />
+        </>
+      )}
+      {tab === 'system' && (
+        <>
+          <details className="crypto-details" open><summary>Feed collection</summary><DeltaResearchPage /></details>
+          <details className="crypto-details"><summary>Execution details and developer tools (readiness, risk-check sandbox, audit trail)</summary><CryptoExecution /></details>
+        </>
+      )}
     </main>
   );
 }

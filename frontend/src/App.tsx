@@ -2,13 +2,13 @@ import { Activity, ArrowDownLeft, Bitcoin, TrendingUp, BookOpen, CircleAlert, La
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { apiRequest } from './api';
 import { marketStatusLabel } from './lib/priceStates';
-import { footerWording, sidebarWording } from './lib/executionState';
 import { useExecutionState } from './hooks/useExecutionState';
 import { useWorkspace } from './components/useWorkspace';
 import { AlertsBell } from './components/AlertsBell';
 import { MobileNav } from './components/MobileNav';
 import { CodeInput } from './components/ui/kit';
 import { DhanStatusRow } from './components/DhanStatusRow';
+import { StatusPill } from './components/StatusPill';
 import { SlowBackendBanner } from './components/SlowBackendBanner';
 import { TopLoadingBar } from './components/TopLoadingBar';
 import { BrandLockup } from './components/BrandLockup';
@@ -233,7 +233,6 @@ export default function App() {
           <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={17} /><span>Signals</span></button>
           <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={17} /><span>Crypto · Delta</span></button>
         </nav>
-        <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span title={executionStates ? [executionStates.dhan, executionStates.delta].map((v) => `${v.label}: ${v.effective.reasons.join('; ') || 'orders can be sent now'}`).join('\n') : undefined}>{sidebarWording(executionStates)}</span><span>Market data: {marketStatusLabel(marketDataStatus)}</span></div>
         <DhanStatusRow allowed={sessionVerified} onOpen={() => setActiveView('brokers')} />
         <p className="sidebar-user">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</p>
         <button className="signout-button" onClick={signOut}><LogOut size={16} /><span>Sign out</span></button>
@@ -252,9 +251,7 @@ export default function App() {
             <AlertsBell refreshKey={bellKey} onOpenStock={(id) => openStock(id)} onOpenResearch={(id) => { setResearchFocus((cur) => ({ instrumentId: id, nonce: (cur?.nonce ?? 0) + 1 })); setActiveView('research'); }} />
             <div className={headerMenuOpen ? "header-menu open" : "header-menu"}>
             {portfolios.length > 0 && <label className="portfolio-picker"><span>Portfolio</span><select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></label>}
-            <button className="secondary-button" type="button" disabled={!hasConnectedBroker || headerSyncing} onClick={() => void syncBroker()}>{headerSyncing ? 'Syncing Dhan…' : 'Sync Dhan account'}</button>
-            <span className={`market-status market-status-${marketDataStatus}`} role="status">Market data: {marketStatusLabel(marketDataStatus)}</span>
-            <button className="text-button" type="button" onClick={() => setActiveView('brokers')} title="Connect or reconnect your Dhan account">Dhan connection</button>
+            <StatusPill states={executionStates} marketLabel={marketStatusLabel(marketDataStatus)} marketStatus={marketDataStatus} canSync={hasConnectedBroker} syncing={headerSyncing} onSync={() => void syncBroker()} onOpenBrokers={() => setActiveView('brokers')} />
             </div>
           </div>
         </header>
@@ -353,7 +350,7 @@ export default function App() {
         ) : activeView === 'overview' ? (
           <OverviewPage brokerAccessAllowed={!!twoFactorStatus?.session_verified} workspace={{addInstrumentToWatchlist: workspace.addInstrumentToWatchlist, cancelEditingTransaction: workspace.cancelEditingTransaction, coverage: workspace.coverage, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist, riskMetrics: workspace.riskMetrics, setActiveView: workspace.setActiveView, setOpenMarketInstrumentId: workspace.setOpenMarketInstrumentId, setCoverageVersion: workspace.setCoverageVersion, setThesisSymbol: workspace.setThesisSymbol, setTransactionType: workspace.setTransactionType, submitTransaction: workspace.submitTransaction, summary: workspace.summary, thesisSymbol: workspace.thesisSymbol, transactionType: workspace.transactionType, valuation: workspace.valuation, valuationBySymbol: workspace.valuationBySymbol, watchlist: workspace.watchlist, watchlistLoadState: workspace.watchlistLoadState, watchlistLoadError: workspace.watchlistLoadError, refreshWatchlist: workspace.refreshWatchlist, setBrokerPriceRows: workspace.setBrokerPriceRows, brokerRefreshKey: workspace.brokerRefreshKey}} />
         ) : null}
-        <footer className="workspace-footer"><span><ArrowDownLeft size={14} /> {footerWording(executionStates)}</span><span>Data entered by you · {portfolios.length} portfolio{portfolios.length === 1 ? '' : 's'}</span></footer>
+        <footer className="workspace-footer"><span><ArrowDownLeft size={14} /> Decision support, not investment advice.</span><span>Data entered by you · {portfolios.length} portfolio{portfolios.length === 1 ? '' : 's'}</span></footer>
         </Suspense>
       </main>
       <MobileNav activeView={activeView} setActiveView={setActiveView} onSignOut={signOut} />

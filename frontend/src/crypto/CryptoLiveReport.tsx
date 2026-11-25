@@ -46,7 +46,7 @@ export function CryptoLiveReport() {
           <div><dt>Realised all-time</dt><dd>{usd(report?.realized_pnl?.all_time)}</dd></div>
         </dl>
       )}
-      {report && <p className="crypto-sub">Last synced {when(report.synced_at)}; refreshes every few seconds while this page is open. {report.realized_pnl?.all_time_note}</p>}
+      {report && <p className="crypto-sub"><span title={`Refreshes every few seconds while this page is open. ${report.realized_pnl?.all_time_note ?? ''}`}>Last synced {when(report.synced_at)}</span></p>}
       {report && <>
       <h4>Open positions</h4>
       {report?.positions?.length ? (
@@ -63,14 +63,14 @@ export function CryptoLiveReport() {
       ) : <p className="crypto-sub">No open orders.</p>}
       <h4>Every live order and what became of it</h4>
       {report?.orders?.length ? (
-        <table className="crypto-table"><thead><tr><th>Placed</th><th>Order</th><th>Entry</th><th>Stop / target</th><th>Outcome</th><th>Exit</th><th>Realised</th><th>Fees incl. GST</th><th>Funding</th><th>Net</th></tr></thead>
+        <div className="crypto-table-wrap"><table className="crypto-table"><thead><tr><th>Placed</th><th>Order</th><th>Entry</th><th>Stop / target</th><th>Outcome</th><th>Exit</th><th>Net</th></tr></thead>
           <tbody>{report.orders.map((o) => (
             <tr key={o.id}><td>{when(o.time)}</td><td>{o.side} {o.contracts} {o.symbol} · {o.leverage}x</td><td>{num(o.entry_price)}</td><td>{num(o.stop_price)} / {num(o.target_price)}</td>
               <td>{o.status === 'rejected' || o.status === 'error' ? `Rejected: ${o.block_reason ?? '—'}` : o.outcome_label}</td><td>{o.exit_price ? `${num(o.exit_price)} · ${when(o.exit_at)}` : '—'}</td>
-              <td>{usd(o.realized_pnl)}</td><td>{usd(o.fees)}</td><td>{usd(o.funding)}</td><td>{usd(o.net_pnl)}</td></tr>))}</tbody></table>
+              <td title={`Realised ${usd(o.realized_pnl)} · fees incl. GST ${usd(o.fees)} · funding ${usd(o.funding)}`}>{usd(o.net_pnl)}</td></tr>))}</tbody></table></div>
       ) : <p className="crypto-sub">No live orders yet.</p>}
       </>}
-      <p className="crypto-sub">Figures are Delta&apos;s own records. {report?.disclaimer ?? 'Decision support, not investment advice.'}</p>
+      <p className="crypto-sub">Figures are Delta&apos;s own records.</p>
     </section>
   );
 }

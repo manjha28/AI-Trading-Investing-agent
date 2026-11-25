@@ -89,8 +89,6 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
 
   return (
     <div className="crypto-stack">
-      <CryptoWatch symbol={symbol} setSymbol={setSymbol} />
-
       <section className="data-section crypto-chart-panel" aria-label="Chart">
         <div className="section-heading">
           <div><p className="eyebrow">CHART · COMPLETED CANDLES</p><h3>{symbol}{selected?.mark_price ? <span className="crypto-mark"> mark {atTick(selected.mark_price, contract?.tick_size)}</span> : null}</h3></div>
@@ -111,6 +109,7 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
         </div>
         {syncNote && <p className="alerts-notice" role="status">{syncNote}</p>}
         {contract && (
+          <details className="crypto-contract-details"><summary>Contract details</summary>
           <div className="crypto-contract" aria-label="Contract terms">
             <div><span>Contract value</span><strong>{contract.contract_value}</strong></div>
             <div><span>Tick size</span><strong>{contract.tick_size ?? '—'}</strong></div>
@@ -118,8 +117,10 @@ export function CryptoMarkets({ symbol, setSymbol, resolution, setResolution }: 
             <div><span>Maker fee</span><strong>{(Number(contract.maker_fee_rate) * 100).toFixed(3)}%</strong></div>
             <div><span>Quote</span><strong>{contract.quote_currency}</strong></div>
           </div>
+          </details>
         )}
       </section>
+      <CryptoWatch symbol={symbol} setSymbol={setSymbol} />
     </div>
   );
 }

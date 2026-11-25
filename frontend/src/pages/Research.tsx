@@ -504,7 +504,7 @@ export function Research({ watchlist, addInstrumentToWatchlist, removeInstrument
 
   return (
     <div className="rt-root research-pipeline-page">
-      <p className="rt-disclaimer-top">Decision support, not investment advice. Scores are calculated by the backend from stored data and are a provisional, unvalidated model.</p>
+      <p className="rt-disclaimer-top">Scores are calculated by the backend from stored data and are a provisional, unvalidated model.</p>
       {error && <p className="rt-alert rt-alert-error" role="alert">{error}</p>}
       {notice && <p className="rt-alert" role="status">{notice}</p>}
 

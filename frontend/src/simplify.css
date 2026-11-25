@@ -1,0 +1,45 @@
+/* UI simplification (26 Nov 2026): Crypto · Delta, Research cards, shared helpers. */
+.crypto-tabs .crypto-tab-secondary { margin-left: auto; opacity: 0.75; }
+.crypto-subtabs { display: flex; gap: 6px; margin: 4px 0 10px; }
+.crypto-subtabs button { padding: 5px 12px; border: 1px solid #d0d5dd; border-radius: 999px; background: #fff; cursor: pointer; }
+.crypto-subtabs button.active { background: #101828; color: #fff; border-color: #101828; }
+.crypto-details { margin: 10px 0; }
+.crypto-details > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.crypto-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.crypto-live-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.info-tip { cursor: help; color: #667085; font-size: 0.9rem; }
+.crypto-test-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin: 10px 0; }
+.crypto-test-card { display: grid; gap: 4px; text-align: left; padding: 10px 12px; border: 1px solid #d0d5dd; border-radius: 10px; background: #fff; cursor: pointer; min-width: 0; }
+.crypto-test-card.selected { border-color: #101828; }
+.crypto-test-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crypto-test-meta { color: #475467; font-size: 0.85rem; }
+.crypto-test-net { font-weight: 600; }
+.crypto-test-net.neg { color: #b42318; }
+.crypto-pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+.crypto-pill.paper { background: #f2f4f7; color: #475467; }
+.crypto-pill.live { background: #fef3f2; color: #b42318; }
+.crypto-table-wrap { max-width: 100%; overflow-x: auto; }
+.crypto-drawer { border: 1px solid #d0d5dd; border-radius: 10px; padding: 12px; margin: 10px 0; max-width: 100%; overflow-wrap: anywhere; }
+.crypto-dialog-backdrop { position: fixed; inset: 0; background: rgba(16, 24, 40, 0.4); display: grid; place-items: center; z-index: 50; }
+.crypto-dialog { background: #fff; padding: 16px; border-radius: 12px; width: min(420px, 92vw); display: grid; gap: 10px; }
+.crypto-dialog-actions { display: flex; gap: 8px; }
+.watch-columns { position: relative; }
+.watch-columns > summary { cursor: pointer; padding: 4px 10px; border: 1px solid #d0d5dd; border-radius: 8px; list-style: none; }
+.watch-columns-menu { position: absolute; z-index: 20; background: #fff; border: 1px solid #d0d5dd; border-radius: 8px; padding: 8px; display: grid; gap: 4px; min-width: 160px; box-shadow: 0 6px 18px rgba(16, 24, 40, 0.12); }
+.watch-table td, .watch-table th { padding-top: 4px; padding-bottom: 4px; }
+.crypto-contract-details > summary { cursor: pointer; color: #475467; font-size: 0.85rem; }
+.crypto-page, .crypto-forward, .crypto-stack { max-width: 100%; min-width: 0; }
+.crypto-forward table { max-width: 100%; }
+@media (max-width: 700px) { .crypto-tabs .crypto-tab-secondary { margin-left: 0; } }
+
+/* Research daily report */
+.dr-pill-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-more > summary { cursor: pointer; font-size: 0.85rem; color: #475467; }
+.dr-subhead { margin: 10px 0 4px; font-size: 0.9rem; color: #475467; font-weight: 600; }
+.dr-show-all { margin: 10px 0; }
+.dr-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: #f2f4f7; color: #475467; font-size: 0.78rem; }
+.rt-buy .rt-ladder-keys { display: none; }
+.rt-buy .rt-slot-ladder { height: 96px; }
+.rt-buy .rt-slot-status { height: 28px; }
+.rt-buy .rt-levelline { margin-top: 4px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rt-buy .rt-slot-more { min-height: 22px; }
