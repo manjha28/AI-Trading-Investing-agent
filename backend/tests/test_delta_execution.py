@@ -264,3 +264,16 @@ def test_rejection_reason_shows_deltas_own_words():
     reply = dclient.BrokerReply(False, 400, {"error": {"code": "insufficient_margin", "message": "not enough margin", "context": {"available_balance": "3.87", "required_additional_balance": "0.4"}}}, "insufficient_margin")
     text = service.rejection_reason(reply)
     assert "insufficient_margin" in text and "not enough margin" in text and "required_additional_balance" in text and "HTTP 400" in text
+
+
+def test_open_state_comes_from_delta_not_from_a_stale_ledger_row(creds):
+    def handler(request):
+        return httpx.Response(200, json={"success": True, "result": []})              # Delta: no position, no open order
+    assert service.read_open_state(_mock(handler), 27) == (0, False)
+
+    def held(request):
+        if "positions" in str(request.url):
+            return httpx.Response(200, json={"success": True, "result": [{"product_id": 27, "size": -1}]})
+        return httpx.Response(200, json={"success": True, "result": [{"product_id": 27, "reduce_only": True}]})       # only a bracket leg is open
+    assert service.read_open_state(_mock(held), 27) == (1, True)
+    assert service.read_open_state(_mock(lambda r: httpx.Response(500, json={})), 27) == (None, None)               # unreadable: the caller keeps the ledger view

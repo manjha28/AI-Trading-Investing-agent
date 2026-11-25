@@ -82,6 +82,9 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
     ctx = build_context(db, user_id, ft, spec, cid, now=now, last_close=last_close, last_price=last_price)
     _available, wallet = read_balances(client_factory)                   # live read just before sending; used for leverage and liquidation sizing, not as a gate
     realized = read_realized_today(client_factory, now)
+    open_positions, product_busy = read_open_state(client_factory, intent.product_id)
+    if open_positions is not None:                                       # Delta's own state wins over our ledger, whose rows can lag behind (a closed order still marked placed)
+        ctx = replace(ctx, open_positions=open_positions, contract_has_open_order=bool(product_busy))
     ctx = replace(ctx, wallet_balance_usd=wallet, realized_pnl_today=realized or Decimal(0), realized_pnl_known=realized is not None)
     decision: Decision = evaluate(intent, ctx)
     audit(db, user_id, "intent", correlation, cid, intent.symbol, intent.canonical(), now)
@@ -130,6 +133,22 @@ def read_balances(client_factory: ClientFactory = DeltaOrderClient) -> tuple[Dec
             except (KeyError, ArithmeticError):
                 return None, None
     return None, None
+
+
+def read_open_state(client_factory: ClientFactory, product_id: int) -> tuple[int | None, bool | None]:
+    """(open positions in total, whether THIS contract has an open position or a live entry order) read from Delta right now; (None, None) if unreadable, when the ledger is used instead."""
+    try:
+        client = client_factory()
+        positions = client._request("GET", "/v2/positions/margined")
+        orders = client._request("GET", "/v2/orders", query="?state=open&page_size=50")
+    except (ExecutionBlocked, ValueError):
+        return None, None
+    pos, opn = positions.body.get("result") if positions.ok else None, orders.body.get("result") if orders.ok else None
+    if not isinstance(pos, list) or not isinstance(opn, list):
+        return None, None
+    held = [p for p in pos if Decimal(str(p.get("size") or 0)) != 0]
+    busy = any(p.get("product_id") == product_id for p in held) or any(o.get("product_id") == product_id and not o.get("reduce_only") for o in opn)
+    return len(held), busy
 
 
 REALIZED_TYPES = ("cashflow", "commission", "funding", "liquidation_fee")
