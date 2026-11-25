@@ -29,6 +29,7 @@ export function LiveSwitch({ venue }: { venue: VenueState | null | undefined }) 
         onClick={() => (on ? void run('disarm') : setConfirming(true))}>
         {name} {live ? 'LIVE' : on ? 'on · waiting' : 'not live'}
       </button>
+      {on && <button type="button" className="live-switch-unarm" disabled={busy} onClick={() => void run('disarm')} aria-label={`Unarm ${name} live orders`}>Unarm</button>}
       {error && <span role="alert" className="live-switch-error"> {error}</span>}
       <ArmConfirm open={confirming} venue={name} strategies={venue.strategies.map((s) => s.key)} quantityCap={venue.venue === 'dhan' ? '1 share per order' : '1 contract per order'}
         leverage={venue.venue === 'delta' ? 'the lower of 25× and the exchange maximum' : undefined} tradingWindow={venue.window.text} busy={busy} onConfirm={() => void run('arm')} onCancel={() => setConfirming(false)} />
