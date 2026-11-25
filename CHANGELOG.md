@@ -267,3 +267,4 @@
 - 2026-11-25: Research: which pumps dump on Delta coins, and a short-after-failure rule (6 variants); reports/dump_study.md.
 - 2026-11-25: Research: 5 EMA pullback entry vs close entry (24 variants), pre-pump signals (5 rules), fresh-data test of the dump short (running); reports/five_ema_pullback.md, pre_pump.json.
 - 2026-11-25: Research: AlgoTest 5 EMA script replicated, and two-order entry; reports/five_ema_algotest.md.
+- 2026-11-26: Research (Delta data only): trend filter on the 5 EMA, entry/exit grid, VWAP band tests (446 variants); no live change; reports/2026-11-26-trend-5ema-vwap.md.
