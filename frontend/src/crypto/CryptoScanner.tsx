@@ -3,8 +3,14 @@ import { apiRequest } from '../api';
 import { messageOf } from './cryptoApi';
 
 type Top = { symbol: string; turnover_usd: string; spread_bps: string; funding_rate: string | null };
-type Scanner = { id: string; name: string; resolution: string; symbols: string[]; status: string; label: string; wallet_usd: string; total_net_pnl: string | null; per_symbol: Record<string, { trades: number; net_pnl: string }> | null;
+type Scanner = { id: string; name: string; strategy_key?: string; resolution: string; symbols: string[]; status: string; label: string; wallet_usd: string; total_net_pnl: string | null; per_symbol: Record<string, { trades: number; net_pnl: string }> | null;
   signals_seen: number | null; signals_taken: number | null; last_run_at: string | null; last_error: string | null; signal_log?: { symbol: string; side: string; entry_time: string; taken: boolean; reason: string }[]; live_note?: string };
+const STRATEGY_OPTIONS = [
+  { key: 'five_ema_alert', label: '5 EMA alert candle (paper)', note: 'Short/long on the alert candle breaking its own extreme; any resolution.' },
+  { key: 'funding_extreme', label: 'Funding extremes (Unproven, frozen parameters)', note: 'Fades extreme funding on 1-hour bars; parameters are frozen and the result is unproven.' },
+] as const;
+const RESOLUTION_OPTIONS = ['5m', '15m', '1h'] as const;
+const strategyLabel = (key?: string) => STRATEGY_OPTIONS.find((o) => o.key === key)?.label ?? key ?? '—';
 const usd = (v: string | null | undefined) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v) < 0 ? '-' : ''}$${Math.abs(Number(v)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
 /** Multi-perpetual scanner: paper only. Several contracts feed one signal queue, sized by 0.5% wallet risk per trade, 5x leverage cap and a 2% total open-risk cap. */
@@ -12,6 +18,8 @@ export function CryptoScanner() {
   const [items, setItems] = useState<Scanner[]>([]);
   const [open, setOpen] = useState<Scanner | null>(null);
   const [text, setText] = useState('');
+  const [strategy, setStrategy] = useState<string>('five_ema_alert');
+  const [resolution, setResolution] = useState<string>('5m');
   const [top, setTop] = useState<Top[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,14 +27,19 @@ export function CryptoScanner() {
   useEffect(() => { void load(); }, [load]);
   const act = async (fn: () => Promise<unknown>) => { setBusy(true); setError(null); try { await fn(); await load(); } catch (e) { setError(messageOf(e)); } finally { setBusy(false); } };
   const loadTop = () => act(async () => { setTop((await apiRequest<{ symbols: Top[] }>('/delta-scanner/universe/top?n=10')).symbols); });
-  const create = (topN: number) => act(async () => { await apiRequest('/delta-scanner', { method: 'POST', body: JSON.stringify({ symbols: text, top_liquid: topN }) }); setText(''); });
+  const create = (topN: number) => act(async () => { await apiRequest('/delta-scanner', { method: 'POST', body: JSON.stringify({ symbols: text, top_liquid: topN, strategy_key: strategy, resolution: strategy === 'funding_extreme' ? '1h' : resolution }) }); setText(''); });
   const show = (id: string) => act(async () => { setOpen(await apiRequest<Scanner>(`/delta-scanner/${id}`)); });
   return (
     <section className="crypto-scanner" aria-label="Multi-perpetual scanner">
       <h3>Multi-perpetual scanner <span className="chip">Paper only</span></h3>
-      <p className="crypto-sub">Runs the 5 EMA alert-candle strategy on many perpetuals at once; every signal goes into one queue and is sized by 0.5% wallet risk per trade, a 5x effective leverage cap and a 2% total open-risk cap. Hypothetical: no order is ever sent, and it is kept apart from real P&amp;L. Live mode would still be limited by the &quot;balance in use means paper&quot; rule (one position at a time).</p>
+      <p className="crypto-sub">Runs the strategy you pick below on many perpetuals at once; every signal goes into one queue and is sized by 0.5% wallet risk per trade, a 5x effective leverage cap and a 2% total open-risk cap. Hypothetical: no order is ever sent, and it is kept apart from real P&amp;L. Live mode would still be limited by the &quot;balance in use means paper&quot; rule (one position at a time).</p>
       {error && <p role="alert" className="crypto-error">{error}</p>}
       <div className="crypto-form">
+        <label>Strategy <select value={strategy} onChange={(e) => setStrategy(e.target.value)} aria-label="Scanner strategy">
+          {STRATEGY_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}</select></label>
+        <label>Resolution <select value={strategy === 'funding_extreme' ? '1h' : resolution} disabled={strategy === 'funding_extreme'} onChange={(e) => setResolution(e.target.value)} aria-label="Scanner resolution">
+          {RESOLUTION_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}</select></label>
+        <small className="crypto-sub">{STRATEGY_OPTIONS.find((o) => o.key === strategy)?.note}</small>
         <label>Add symbols (comma separated) <input value={text} onChange={(e) => setText(e.target.value)} placeholder="BTCUSD, ETHUSD, SOLUSD" aria-label="Symbols" /></label>
         <button type="button" className="secondary-button" disabled={busy || !text.trim()} onClick={() => void create(0)}>Start scanner on these</button>
         <button type="button" className="secondary-button" disabled={busy} onClick={() => void loadTop()}>Show top 10 most liquid</button>
@@ -38,8 +51,8 @@ export function CryptoScanner() {
           <tbody>{top.map((t) => <tr key={t.symbol}><td>{t.symbol}</td><td>{Number(t.turnover_usd).toLocaleString('en-US')}</td><td>{t.spread_bps}</td><td>{t.funding_rate ?? '—'}</td></tr>)}</tbody></table>
       )}
       {items.length === 0 ? <p className="crypto-sub">No scanner yet.</p> : (
-        <table className="crypto-table"><thead><tr><th>Scanner</th><th>Symbols</th><th>Status</th><th>Taken / seen</th><th>Net P&amp;L (paper, USD)</th><th /></tr></thead>
-          <tbody>{items.map((s) => <tr key={s.id}><td><button type="button" className="link-button" onClick={() => void show(s.id)}>{s.name}</button> <small>{s.label === 'unproven' ? 'Unproven' : 'Paper'}</small></td><td>{s.symbols.length}</td><td>{s.status}{s.last_error ? ' · some data missing' : ''}</td>
+        <table className="crypto-table"><thead><tr><th>Scanner</th><th>Strategy</th><th>Symbols</th><th>Status</th><th>Taken / seen</th><th>Net P&amp;L (paper, USD)</th><th /></tr></thead>
+          <tbody>{items.map((s) => <tr key={s.id}><td><button type="button" className="link-button" onClick={() => void show(s.id)}>{s.name}</button> <small>{s.label === 'unproven' ? 'Unproven' : 'Paper'}</small></td><td>{strategyLabel(s.strategy_key)} · {s.resolution}</td><td>{s.symbols.length}</td><td>{s.status}{s.last_error ? ' · some data missing' : ''}</td>
             <td>{s.signals_taken ?? '—'} / {s.signals_seen ?? '—'}</td><td>{usd(s.total_net_pnl)}</td>
             <td><button type="button" className="secondary-button" disabled={busy} onClick={() => void act(async () => { await apiRequest(`/delta-scanner/${s.id}/refresh`, { method: 'POST', body: '{}' }); })}>Refresh</button>{' '}
               <button type="button" className="secondary-button" disabled={busy} onClick={() => void act(async () => { await apiRequest(`/delta-scanner/${s.id}/status?status=${s.status === 'active' ? 'paused' : 'active'}`, { method: 'PUT', body: '{}' }); })}>{s.status === 'active' ? 'Pause' : 'Resume'}</button>{' '}
