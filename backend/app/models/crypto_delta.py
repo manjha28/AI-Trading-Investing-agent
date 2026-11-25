@@ -121,6 +121,27 @@ class DeltaLiveOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class DeltaLiveOutcome(Base):
+    """What became of one live Delta order, read from Delta's own orders, fills and wallet transactions (never inferred from our request). One row per order."""
+    __tablename__ = "delta_live_outcomes"
+    __table_args__ = (UniqueConstraint("order_id", name="uq_delta_live_outcomes_order"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    order_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("delta_live_orders.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False)   # target_hit | stop_hit | closed_manually | liquidated | still_open | cancelled | unknown
+    entry_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    entry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    exit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    fees: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))      # commission actually charged by Delta, GST included
+    funding: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))   # received positive, paid negative
+    net_pnl: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    detail: Mapped[dict | None] = mapped_column(JSON_DOCUMENT)         # the Delta order ids and fill ids behind the figures
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AppFlag(Base):
     """A tiny owner-set runtime switch that must survive restarts (for example pausing the Delta public feed to save hosting cost)."""
     __tablename__ = "app_flags"

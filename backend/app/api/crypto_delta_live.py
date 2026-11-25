@@ -133,3 +133,11 @@ def live_orders(limit: int = Query(default=50, ge=1, le=200), active_session: Us
                         "target_price": str(r.target_price) if r.target_price else None, "entry_price": str(r.entry_price) if r.entry_price else None,
                         "delta_order_id": r.delta_order_id, "broker_response": r.response} for r in rows],
             "note": "Outcomes and P&L are on Delta; this list records what the app sent and what Delta answered.", "disclaimer": DISCLAIMER}
+
+
+@router.get("/report")
+def live_report(force: bool = Query(default=False), active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Live wallet, positions, open orders, realised P&L and the outcome of every live order, read from Delta. Stale (with the reason) if Delta cannot be read. Read only."""
+    from app.delta_execution import report as live_report_module
+    data = live_report_module.report(db, active_session.user_id, force=force)
+    return {**{k: v for k, v in data.items() if k != "user_id"}, "disclaimer": DISCLAIMER}

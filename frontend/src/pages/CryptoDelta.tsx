@@ -3,17 +3,19 @@ import { CryptoExecution } from '../crypto/CryptoExecution';
 import { ExecutionStateChip } from '../components/ExecutionStateChip';
 import { useExecutionState } from '../hooks/useExecutionState';
 import { CryptoForward } from '../crypto/CryptoForward';
+import { CryptoLiveReport } from '../crypto/CryptoLiveReport';
 import { CryptoLab } from '../crypto/CryptoLab';
 import { CryptoMarkets } from '../crypto/CryptoMarkets';
 import { DeltaResearchPage } from './DeltaResearch';
 
-type Tab = 'markets' | 'lab' | 'forward' | 'feed' | 'execution';
+type Tab = 'markets' | 'lab' | 'forward' | 'feed' | 'execution' | 'live';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'markets', label: 'Markets & charts' },
   { id: 'lab', label: 'Strategy lab' },
   { id: 'forward', label: 'Forward test' },
   { id: 'feed', label: 'Live feed' },
   { id: 'execution', label: 'Execution' },
+  { id: 'live', label: 'Live report' },
 ];
 
 function remembered<T extends string>(key: string, fallback: T, allowed?: readonly string[]): T {
@@ -61,6 +63,7 @@ export function CryptoDeltaPage() {
       {tab === 'forward' && <CryptoForward symbol={symbol} resolution={resolution} />}
       {tab === 'feed' && <DeltaResearchPage />}
       {tab === 'execution' && <CryptoExecution />}
+      {tab === 'live' && <CryptoLiveReport />}
     </main>
   );
 }

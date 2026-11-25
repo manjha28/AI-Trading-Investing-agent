@@ -1208,7 +1208,7 @@ class PortfolioValuationSnapshot(Base):
 
 from app.models.alerts import AlertEvent, AlertRule  # noqa: F401
 from app.models.execution import ExecutionAuditEvent  # noqa: F401
-from app.models.crypto_delta import AppFlag, SentimentAggregateCache, CryptoBacktestRun, CryptoCandle, CryptoForwardTest, DeltaLiveOrder, DeltaLiveState  # noqa: F401
+from app.models.crypto_delta import AppFlag, SentimentAggregateCache, CryptoBacktestRun, CryptoCandle, CryptoForwardTest, DeltaLiveOrder, DeltaLiveOutcome, DeltaLiveState  # noqa: F401
 from app.models.mcx_snapshot import McxLastSnapshot  # noqa: F401,E402
 from app.models.delta_scanner import DeltaScanner  # noqa: F401,E402
 from app.models.market_watch import MarketWatchExtra  # noqa: F401
