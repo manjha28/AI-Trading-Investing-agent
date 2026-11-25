@@ -270,3 +270,4 @@
 - 2026-11-26: Research (Delta data only): trend filter on the 5 EMA, entry/exit grid, VWAP band tests (446 variants); no live change; reports/2026-11-26-trend-5ema-vwap.md.
 - 2026-11-25: After the NSE close, provisional daily closes (Dhan quotes) are captured for the whole Market watch list, not only watchlist/holdings, until Dhan publishes the candle next morning.
 - 2026-11-25: Research: all crypto strategies re-run on Delta's own data (R3 + 17 variations, trend rejection, lower-high volume, absorption with fixed trail); reports/delta_all_strategies.md.
+- 2026-11-25: Research: dynamic entries (confirmation, volume, RSI, trend) and exits (ratchet, EMA9 flip, RSI flip, volume reversal) on 7 crypto strategy runs (252 variants); reports/dynamic_entries_exits.md.
