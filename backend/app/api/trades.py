@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
 import re
 from typing import Any, Literal
@@ -172,6 +172,44 @@ def _response(trade: JournalTrade) -> dict:
     return {**{key: getattr(trade, key) for key in TradeResponse.model_fields if key != "net_pnl"}, "net_pnl": net_pnl(trade)}
 
 
+_COPY_WINDOW = timedelta(seconds=60)
+
+
+def _is_history_form(row: DhanTradeMirror) -> bool:
+    """Dhan's trade-history endpoint reports exchange trade id 0 and carries the charges."""
+    return (row.provider_trade_id in (None, "", "0")) and row.charges is not None
+
+
+def _is_book_form(row: DhanTradeMirror) -> bool:
+    """Dhan's current-day trade book carries the real exchange trade id and no charges."""
+    return row.provider_trade_id not in (None, "", "0") and row.charges is None
+
+
+def _collapse_history_and_book_copies(rows: list[DhanTradeMirror]) -> list[DhanTradeMirror]:
+    """One real fill can be stored twice: from the trade book (real trade id, no charges, trading-symbol text, one row per partial fill) and from
+    trade history (trade id 0, charges, a different symbol text, partial fills of an order summed into one row). Their hashed trade ids differ,
+    so id-based de-duplication keeps both and every fill is counted twice. Match each history row to the book rows of the same order, contract,
+    side and price, within a few seconds, whose quantities add up to the history quantity, and keep the history copy (it has the real charges).
+    A history row that matches no complete set of book rows is kept alongside them: nothing is dropped on a guess."""
+    groups: dict[tuple[Any, ...], list[DhanTradeMirror]] = {}
+    for row in rows:
+        if _is_history_form(row) or _is_book_form(row):
+            groups.setdefault((row.order_id, row.exchange_order_id, row.security_id, row.side), []).append(row)
+    drop: set[int] = set()
+    for members in groups.values():
+        histories = sorted((r for r in members if _is_history_form(r)), key=lambda r: r.trade_at)
+        books = sorted((r for r in members if _is_book_form(r)), key=lambda r: r.trade_at)
+        for history in histories:
+            near = [b for b in books if id(b) not in drop and abs(b.trade_at - history.trade_at) <= _COPY_WINDOW]
+            total = sum((b.quantity for b in near), Decimal(0))
+            if not near or total != history.quantity:
+                continue
+            vwap = sum((b.quantity * b.price for b in near), Decimal(0)) / total      # history reports one average price for the whole order
+            if abs(vwap - history.price) <= Decimal("0.01"):
+                drop.update(id(b) for b in near)
+    return [row for row in rows if id(row) not in drop]
+
+
 def _dhan_trade_rows(db: Session, user_id: UUID) -> list[DhanTradeMirror]:
     rows = list(
         db.scalars(
@@ -191,7 +229,7 @@ def _dhan_trade_rows(db: Session, user_id: UUID) -> list[DhanTradeMirror]:
             (row.charges is None) == (current.charges is None) and row.source == "dhan" and current.source == "dhan_csv"
         ):
             selected[row.trade_id] = row
-    ordered = sorted(selected.values(), key=lambda row: (row.trade_at, row.trade_id))
+    ordered = sorted(_collapse_history_and_book_copies(list(selected.values())), key=lambda row: (row.trade_at, row.trade_id))
     # Charges Dhan has not supplied yet are ESTIMATED on display copies (never stored, always flagged); a row with real charges is untouched.
     return estimate_missing_charges(ordered, lambda r: _classify_segment(r.exchange_segment, r.symbol) == "option")
 

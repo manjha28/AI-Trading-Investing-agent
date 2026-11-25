@@ -939,7 +939,13 @@ def _merge_trade_book(reader: Any, history_rows: list[dict[str, Any]]) -> tuple[
     except Exception as exc:  # noqa: BLE001
         return history_rows, f"Dhan's current-day trade book could not be read ({getattr(exc, 'code', type(exc).__name__)}); only trade history was used."
     seen = {(str(r.get("exchangeTradeId")), str(r.get("securityId"))) for r in history_rows}
-    extra = [r for r in book if (str(r.get("exchangeTradeId")), str(r.get("securityId"))) not in seen]
+
+    def _fill(r: dict[str, Any]) -> tuple[str, ...]:
+        # History reports exchange trade id 0, so the id alone never matches the same fill in the trade book: also match on order, contract, side, size and price.
+        return tuple(str(r.get(k)) for k in ("orderId", "exchangeOrderId", "securityId", "transactionType", "tradedQuantity", "tradedPrice"))
+
+    seen_fills = {_fill(r) for r in history_rows if r.get("orderId") is not None}
+    extra = [r for r in book if (str(r.get("exchangeTradeId")), str(r.get("securityId"))) not in seen and _fill(r) not in seen_fills]
     return history_rows + extra, (f"{len(extra)} fill(s) came from Dhan's current-day trade book." if extra else None)
 
 
