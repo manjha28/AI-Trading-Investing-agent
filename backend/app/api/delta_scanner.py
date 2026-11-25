@@ -1,4 +1,5 @@
-"""Delta multi-perpetual scanner (paper only). Authenticated, email-verified, CSRF on mutations, every query owner-scoped. Nothing here can place an order."""
+"""Delta multi-perpetual scanner. Authenticated, email-verified, CSRF on mutations, every query owner-scoped. Results are paper; the per-scanner Live switch (off by default,
+allowlisted strategies only, 2FA to turn on) hands new signals to the Delta live gate, which still needs the deployment flag and the owner's arming."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -48,12 +49,17 @@ class Batch(BaseModel):
 def _json(sc: DeltaScanner, *, full: bool) -> dict[str, Any]:
     snap = sc.snapshot or {}
     out = {"id": str(sc.id), "name": sc.name, "strategy_key": sc.strategy_key, "resolution": sc.resolution, "symbols": sc.symbols, "status": sc.status, "label": sc.label,
-           "paper_only": True, "wallet_usd": str(sc.wallet_usd), "risk_pct": str(sc.risk_pct), "total_risk_cap_pct": str(sc.total_risk_cap_pct), "leverage_cap": str(sc.leverage_cap),
+           "paper_only": not sc.execute_live, "execute_live": bool(sc.execute_live), "live_block": _live_block(sc), "wallet_usd": str(sc.wallet_usd), "risk_pct": str(sc.risk_pct), "total_risk_cap_pct": str(sc.total_risk_cap_pct), "leverage_cap": str(sc.leverage_cap),
            "start_time": sc.start_time.isoformat(), "last_run_at": sc.last_run_at.isoformat() if sc.last_run_at else None, "last_error": sc.last_error,
            "total_net_pnl": snap.get("total_net_pnl"), "per_symbol": snap.get("per_symbol"), "signals_seen": snap.get("signals_seen"), "signals_taken": snap.get("signals_taken"), "label_text": LABEL}
     if full:
         out.update(trades=(snap.get("trades") or [])[-100:], signal_log=snap.get("signal_log"), errors=snap.get("errors"), open_signals=snap.get("open_signals"), live_note=snap.get("live_note"))
     return out
+
+
+def _live_block(sc: DeltaScanner) -> str | None:
+    from app.delta_execution import service as live
+    return live.scanner_live_block(sc)
 
 
 def _owned(db: Session, user_id: Any, sid: UUID) -> DeltaScanner:
@@ -149,3 +155,44 @@ def delete_scanner(sid: UUID, active_session: UserSession = Depends(require_veri
     return {"status": "deleted"}
 
 
+
+
+class LiveFlag(BaseModel):
+    enabled: bool
+
+
+@router.put("/{sid}/live")
+def set_scanner_live(sid: UUID, body: LiveFlag, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf),
+                     db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Per-scanner Live switch. Turning it ON needs a 2FA-verified session and an allowlisted strategy; turning it OFF never needs anything. Audited."""
+    from uuid import uuid4
+
+    from app.delta_execution import policy, service as live
+    sc = _owned(db, active_session.user_id, sid)
+    if body.enabled:
+        if not active_session.user.two_factor_enabled or not active_session.two_factor_verified:
+            raise HTTPException(status_code=403, detail={"code": "two_factor_required", "message": "Turning a scanner live needs a two-factor-verified session."})
+        block = live.scanner_live_block(sc)
+        if block:
+            raise HTTPException(status_code=409, detail=block)
+        if not policy.deployment_enabled():
+            raise HTTPException(status_code=409, detail="DELTA_LIVE_EXECUTION_ENABLED is not set on this deployment.")
+    now = datetime.now(timezone.utc)
+    sc.execute_live, sc.updated_at = body.enabled, now
+    live.audit(db, active_session.user_id, "decision", uuid4(), "scanner-live", "-", {"event": "per-scanner execute_live", "enabled": body.enabled, "scanner": str(sc.id)}, now)
+    db.commit()
+    return {"id": str(sc.id), "execute_live": sc.execute_live, "live_block": live.scanner_live_block(sc)}
+
+
+@router.post("/{sid}/live/kill")
+def scanner_kill(sid: UUID, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Kill switch for this scanner: Live off at once, then its unfilled orders are cancelled. Never needs 2FA."""
+    from app.delta_execution import service as live
+    return live.scanner_kill(db, _owned(db, active_session.user_id, sid))
+
+
+@router.post("/{sid}/live/close-all")
+def scanner_close_all(sid: UUID, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Close every open position on a contract this scanner traded (reduce-only market orders). Live is turned off first."""
+    from app.delta_execution import service as live
+    return live.scanner_close_all(db, _owned(db, active_session.user_id, sid))

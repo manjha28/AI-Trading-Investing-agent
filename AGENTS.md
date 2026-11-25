@@ -77,6 +77,18 @@ build and maintain exactly this, and nothing wider:
   downward only; there is no pre-send balance gate (Delta rejects an order the wallet cannot cover, and
   Delta's rejection reason is shown in the ledger); signal freshness is one candle of the strategy's
   timeframe (5 minutes for 5m), and an unknown timeframe fails closed.
+- Owner approval, 2026-11-25 (scanner live; the owner wrote "I approve the Delta scanner Live switch, multi-position rules
+  and Close all as described"): a Delta scanner has its own `execute_live` switch (off by default; turning it on needs a
+  2FA-verified session and is audited; turning it off never needs anything). It only works for a scanner whose strategy is
+  on the code allowlist, run as the live test runs it (5 EMA, 5m or 15m); any other scanner stays inert and the UI says
+  why. The allowlist is unchanged. Scanner orders go through the same gate (deployment flag, owner arming, 1 contract,
+  bracket with stop and target, 25x cap, stop before liquidation, real daily-loss cap, Delta's open state).
+  Several positions at once: only while total open risk at the stops stays within the scanner's cap (default 2% of the
+  live wallet; 2% for the live test) and one position per coin; under cross margin every open position's stop must still
+  sit within half of its liquidation distance with the new position added, else the order is refused; an open position
+  this app did not open, or with no known stop, fails closed. Scanner kill switch: Live off first, then that scanner's
+  unfilled orders are cancelled. "Close all": reduce-only market orders, only for positions on contracts that scanner
+  traded, at most 1 contract each.
 - Tests, CI and development NEVER reach a Delta order endpoint (the client refuses under pytest/CI and is
   exercised only against a mocked transport). Agents must not place a real order.
 - Every intent, decision, order request, broker response and fill is written to the append-only audit trail

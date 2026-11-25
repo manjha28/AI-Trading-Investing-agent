@@ -100,6 +100,7 @@ class DeltaLiveOrder(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     forward_test_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("crypto_forward_tests.id", ondelete="SET NULL"))
+    scanner_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("delta_scanners.id", ondelete="SET NULL", name="fk_delta_live_orders_scanner_id"))
     strategy_key: Mapped[str] = mapped_column(String(64), nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     product_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -128,7 +129,7 @@ class DeltaLiveOutcome(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     order_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("delta_live_orders.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     outcome: Mapped[str] = mapped_column(String(24), nullable=False)   # target_hit | stop_hit | closed_manually | liquidated | still_open | cancelled | unknown
     entry_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     entry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

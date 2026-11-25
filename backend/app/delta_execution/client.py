@@ -110,6 +110,12 @@ class DeltaOrderClient:
             raise ExecutionBlocked("intent violates the hard live-execution limits")
         return self._request("POST", "/v2/orders", self.build_entry(intent, client_order_id, tick))
 
+    def close_position(self, product_id: int, size: int) -> BrokerReply:
+        """Reduce-only market order that flattens a position of `size` (positive long, negative short). It can never open or add to a position."""
+        if size == 0 or abs(size) > policy.MAX_CONTRACTS:
+            raise ExecutionBlocked(f"refusing to close {size} contracts: the app only ever opens {policy.MAX_CONTRACTS}")
+        return self._request("POST", "/v2/orders", {"product_id": product_id, "size": abs(size), "side": "sell" if size > 0 else "buy", "order_type": "market_order", "reduce_only": True})
+
     def get_order(self, order_id: str) -> BrokerReply:
         return self._request("GET", f"/v2/orders/{order_id}")
 

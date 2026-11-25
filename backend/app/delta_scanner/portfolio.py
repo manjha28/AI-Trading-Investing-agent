@@ -1,7 +1,7 @@
 """Multi-perpetual scanner, paper only: signals from many contracts go into ONE queue and are sized by the owner's risk rules.
 
 Per trade: risk 0.5% of the wallet, effective leverage capped at 5x, several positions may be open at once but the total open risk is capped (default 2% of wallet).
-Everything is HYPOTHETICAL and never mixed with real P&L. There is no order path here and no `execute_live` field anywhere in the scanner's data model.
+Everything is HYPOTHETICAL and never mixed with real P&L. There is no order path in this module; live orders (allowlisted scanners with their Live switch on) go through app.delta_execution.
 Money is Decimal. The wallet is a fixed paper balance (no compounding).
 
 Conflict to decide later: in LIVE mode the owner's rule "balance in use means paper" limits trading to one position at a time per wallet, which is stricter than this

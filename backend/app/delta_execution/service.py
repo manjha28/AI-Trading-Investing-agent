@@ -18,13 +18,15 @@ from app.crypto_delta.candles import RESOLUTION_SECONDS, Candle
 from app.crypto_delta.forward import Spec
 from app.delta_execution import policy
 from app.delta_execution.client import BrokerReply, DeltaOrderClient, ExecutionBlocked
-from app.delta_execution.guardrails import Decision, LiveContext, evaluate
+from app.delta_execution.guardrails import Decision, LiveContext, OpenPosition, evaluate
 from app.delta_execution.intent import DeltaOrderIntent, client_order_id
 from app.models.crypto_delta import CryptoForwardTest, DeltaLiveOrder, DeltaLiveState
+from app.models.delta_scanner import DeltaScanner
 from app.models.execution import ExecutionAuditEvent
 
 logger = logging.getLogger("delta_execution")
 ClientFactory = Callable[[], DeltaOrderClient]
+Source = CryptoForwardTest | DeltaScanner          # what produced the signal: the live forward test, or a scanner with its own Live switch
 OPEN = ("placed", "filled")
 VENUE = "delta_exchange_india"
 STRATEGY_KEY = "five_ema_alert"
@@ -53,7 +55,7 @@ def day_start_utc(now: datetime) -> datetime:
     return now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def build_context(db: Session, user_id: UUID, ft: CryptoForwardTest, spec: Spec, cid: str, *, now: datetime, last_close: datetime | None, last_price: Decimal | None) -> LiveContext:
+def build_context(db: Session, user_id: UUID, ft: Source, spec: Spec, cid: str, *, now: datetime, last_close: datetime | None, last_price: Decimal | None) -> LiveContext:
     state = get_state(db, user_id)
     rows = list(db.scalars(select(DeltaLiveOrder).where(DeltaLiveOrder.user_id == user_id, DeltaLiveOrder.created_at >= day_start_utc(now),
                                                          DeltaLiveOrder.status.in_(("placed", "filled", "closed")))))
@@ -70,7 +72,7 @@ def build_context(db: Session, user_id: UUID, ft: CryptoForwardTest, spec: Spec,
     )
 
 
-def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaOrderIntent, *, now: datetime, last_close: datetime | None, last_price: Decimal | None,
+def attempt_order(db: Session, ft: Source, spec: Spec, intent: DeltaOrderIntent, *, now: datetime, last_close: datetime | None, last_price: Decimal | None,
                   client_factory: ClientFactory = DeltaOrderClient) -> DeltaLiveOrder | None:
     """Run the guard-rails on one intent and, only if EVERY check passes, set the leverage and place it. Idempotent per signal."""
     db.refresh(ft)                                  # the Live switch is read from the database at the moment of sending, never from a copy loaded earlier in the pass
@@ -86,11 +88,15 @@ def attempt_order(db: Session, ft: CryptoForwardTest, spec: Spec, intent: DeltaO
     open_positions, product_busy = read_open_state(client_factory, intent.product_id)
     if open_positions is not None:                                       # Delta's own state wins over our ledger, whose rows can lag behind (a closed order still marked placed)
         ctx = replace(ctx, open_positions=open_positions, contract_has_open_order=bool(product_busy))
+    if ctx.open_positions > 0:                                           # several positions at once: the portfolio checks need each open position's size and our stop
+        ctx = replace(ctx, other_positions=read_other_positions(db, user_id, client_factory, intent.product_id))
+    if isinstance(ft, DeltaScanner):
+        ctx = replace(ctx, total_risk_cap_pct=Decimal(ft.total_risk_cap_pct))
     ctx = replace(ctx, wallet_balance_usd=wallet, realized_pnl_today=realized or Decimal(0), realized_pnl_known=realized is not None)
     decision: Decision = evaluate(intent, ctx)
     audit(db, user_id, "intent", correlation, cid, intent.symbol, intent.canonical(), now)
     audit(db, user_id, "decision", correlation, cid, intent.symbol, decision.as_dict(), now)
-    row = DeltaLiveOrder(user_id=user_id, forward_test_id=ft.id, strategy_key=intent.strategy_key, symbol=intent.symbol, product_id=intent.product_id, side=intent.side,
+    row = DeltaLiveOrder(user_id=user_id, forward_test_id=ft.id if isinstance(ft, CryptoForwardTest) else None, scanner_id=ft.id if isinstance(ft, DeltaScanner) else None, strategy_key=intent.strategy_key, symbol=intent.symbol, product_id=intent.product_id, side=intent.side,
                          contracts=intent.contracts, leverage=intent.leverage, signal_time=intent.signal_time, reference_price=intent.reference_price,
                          stop_price=intent.stop_price, target_price=intent.target_price, client_order_id=cid, status="blocked",
                          block_reason=(decision.reason or "")[:300] or None, created_at=now, updated_at=now)
@@ -150,6 +156,42 @@ def read_open_state(client_factory: ClientFactory, product_id: int) -> tuple[int
     held = [p for p in pos if Decimal(str(p.get("size") or 0)) != 0]
     busy = any(p.get("product_id") == product_id for p in held) or any(o.get("product_id") == product_id and not o.get("reduce_only") for o in opn)
     return len(held), busy
+
+
+def read_other_positions(db: Session, user_id: UUID, client_factory: ClientFactory, exclude_product: int,
+                         spec_lookup: Callable[[str], Spec] | None = None) -> tuple[OpenPosition, ...] | None:
+    """Every position open on Delta (other than this contract) with the stop this app attached to it. None if Delta cannot be read, or if any open position
+    was not opened by this app or has no known stop: its risk is then unknown and the portfolio checks fail closed."""
+    if spec_lookup is None:
+        from app.crypto_delta.forward import fetch_spec as spec_lookup  # noqa: N813
+    try:
+        reply = client_factory()._request("GET", "/v2/positions/margined")
+    except (ExecutionBlocked, ValueError):
+        return None
+    rows = reply.body.get("result") if reply.ok else None
+    if not isinstance(rows, list):
+        return None
+    out = []
+    for p in rows:
+        try:
+            size = Decimal(str(p.get("size") or 0))
+        except ArithmeticError:
+            return None
+        if size == 0 or p.get("product_id") == exclude_product:
+            continue
+        mine = db.scalar(select(DeltaLiveOrder).where(DeltaLiveOrder.user_id == user_id, DeltaLiveOrder.product_id == p.get("product_id"), DeltaLiveOrder.status.in_(("placed", "filled", "closed")),
+                                                      DeltaLiveOrder.stop_price.is_not(None)).order_by(DeltaLiveOrder.created_at.desc()))
+        if mine is None:
+            return None
+        try:
+            spec = spec_lookup(mine.symbol)
+            entry = Decimal(str(p.get("entry_price") or mine.entry_price or mine.reference_price))
+        except Exception:  # noqa: BLE001 - unknown contract data: fail closed
+            return None
+        if spec.maintenance_margin_pct is None:
+            return None
+        out.append(OpenPosition(mine.symbol, abs(size) * spec.contract_value, entry, Decimal(mine.stop_price), spec.maintenance_margin_pct))
+    return tuple(out)
 
 
 REALIZED_TYPES = ("cashflow", "commission", "funding", "liquidation_fee")
@@ -213,6 +255,107 @@ def maybe_place(db: Session, ft: CryptoForwardTest, spec: Spec, entries: list[di
         db.commit()
         return None
     return attempt_order(db, ft, spec, intent, now=now, last_close=close_time, last_price=ref, client_factory=client_factory)
+
+
+def scanner_live_block(sc: DeltaScanner) -> str | None:
+    """Why this scanner can NOT execute live, or None. Only the allowlisted strategy, as the live forward test runs it (5 EMA, 5m or 15m), qualifies."""
+    if sc.strategy_key not in policy.ALLOWED_STRATEGY_KEYS:
+        return f"'{sc.strategy_key}' is not on the live allowlist ({', '.join(sorted(policy.ALLOWED_STRATEGY_KEYS))}); this scanner stays paper only"
+    if sc.resolution not in ("5m", "15m") or int((sc.params or {}).get("ema", 5)) != 5:
+        return "only the 5 EMA alert-candle strategy on 5m or 15m candles can execute live"
+    return None
+
+
+def maybe_place_scanner(db: Session, sc: DeltaScanner, spec: Spec, entries: list[dict[str, Any]], candles: list[Candle], now: datetime,
+                        client_factory: ClientFactory = DeltaOrderClient) -> DeltaLiveOrder | None:
+    """A scanner's newest-candle entry on one contract -> a live intent, only if the scanner's Live switch is on AND its strategy is on the code allowlist.
+    Any other scanner is inert: nothing is built, nothing is read from Delta, nothing is sent."""
+    db.refresh(sc)
+    if not sc.execute_live or sc.status != "active" or scanner_live_block(sc) is not None or not candles:
+        return None
+    last = candles[-1]
+    entry = next((e for e in reversed(entries) if e["entry_time"] == last.open_time and not e["closed_same_bar"]), None)
+    if entry is None:
+        return None
+    rr = Decimal(str((sc.params or {}).get("rr", 3)))
+    ref, stop, side = last.close, entry["stop"], entry["side"]
+    close_time = last.open_time + timedelta(seconds=RESOLUTION_SECONDS[sc.resolution])
+    try:
+        if spec.product_id is None:
+            raise ValueError("the contract's product id is unknown")
+        target = ref - rr * (stop - ref) if side == "sell" else ref + rr * (ref - stop)
+        lev = policy.effective_leverage(spec.initial_margin_pct) or 1
+        intent = DeltaOrderIntent(symbol=spec.symbol, product_id=spec.product_id, side=side, contracts=1, leverage=lev, strategy_key=sc.strategy_key,
+                                  signal_id=f"scanner:{sc.id}:{spec.symbol}:{entry['signal_time'].isoformat()}:{side}", signal_time=entry["signal_time"], reference_price=ref,
+                                  stop_price=stop, target_price=target)
+    except (ValidationError, ValueError) as error:
+        audit(db, sc.user_id, "decision", uuid4(), "no-intent", spec.symbol, {"allowed": False, "scanner": str(sc.id), "reason": f"no valid live intent: {str(error)[:200]}"}, now)
+        db.commit()
+        return None
+    return attempt_order(db, sc, spec, intent, now=now, last_close=close_time, last_price=ref, client_factory=client_factory)
+
+
+def scanner_kill(db: Session, sc: DeltaScanner, client_factory: ClientFactory = DeltaOrderClient, *, now: datetime | None = None) -> dict[str, Any]:
+    """Scanner kill switch: its Live switch goes OFF first (no new orders), then this scanner's unfilled orders are cancelled. Positions are left alone (see close_all)."""
+    now = now or _now()
+    sc.execute_live, sc.updated_at = False, now
+    audit(db, sc.user_id, "decision", uuid4(), "scanner-kill", "-", {"event": "scanner live switch off (kill)", "scanner": str(sc.id)}, now)
+    db.commit()
+    cancelled, failed = 0, []
+    for row in db.scalars(select(DeltaLiveOrder).where(DeltaLiveOrder.user_id == sc.user_id, DeltaLiveOrder.scanner_id == sc.id, DeltaLiveOrder.status == "placed")):
+        try:
+            reply = client_factory().cancel_order(row.delta_order_id or "0", row.product_id)
+        except (ExecutionBlocked, ValueError) as error:
+            failed.append({"symbol": row.symbol, "error": str(error)})
+            continue
+        if reply.ok:
+            row.status, row.updated_at, cancelled = "cancelled", now, cancelled + 1
+        else:
+            failed.append({"symbol": row.symbol, "error": reply.error or "cancel refused"})
+        audit(db, sc.user_id, "broker_reply", uuid4(), row.client_order_id, row.symbol, {"event": "cancel", "scanner": str(sc.id), "ok": reply.ok, "response": reply.body}, now)
+    db.commit()
+    return {"execute_live": False, "cancelled": cancelled, "cancel_failed": failed}
+
+
+def scanner_close_all(db: Session, sc: DeltaScanner, client_factory: ClientFactory = DeltaOrderClient, *, now: datetime | None = None) -> dict[str, Any]:
+    """Close every open position on a contract THIS scanner has traded, with a reduce-only market order (it can only shrink a position, never open one).
+    The scanner's Live switch is turned off first. Positions on other contracts are never touched."""
+    now = now or _now()
+    if sc.execute_live:
+        sc.execute_live, sc.updated_at = False, now
+        db.commit()
+    products = {r.product_id: r.symbol for r in db.scalars(select(DeltaLiveOrder).where(DeltaLiveOrder.user_id == sc.user_id, DeltaLiveOrder.scanner_id == sc.id,
+                                                                                          DeltaLiveOrder.status.in_(("placed", "filled", "closed"))))}
+    closed, failed = [], []
+    if not products:
+        return {"closed": closed, "failed": failed, "note": "This scanner has no live orders, so there is nothing to close."}
+    try:
+        client = client_factory()
+        reply = client._request("GET", "/v2/positions/margined")
+    except (ExecutionBlocked, ValueError) as error:
+        return {"closed": closed, "failed": [{"symbol": "-", "error": str(error)}]}
+    rows = reply.body.get("result") if reply.ok else None
+    if not isinstance(rows, list):
+        return {"closed": closed, "failed": [{"symbol": "-", "error": "Delta positions could not be read; nothing was sent."}]}
+    for p in rows:
+        pid = p.get("product_id")
+        try:
+            size = int(Decimal(str(p.get("size") or 0)))
+        except (ArithmeticError, ValueError):
+            continue
+        if size == 0 or pid not in products:
+            continue
+        symbol = products[pid]
+        try:
+            res = client.close_position(int(pid), size)
+        except (ExecutionBlocked, ValueError) as error:
+            failed.append({"symbol": symbol, "error": str(error)})
+            continue
+        (closed if res.ok else failed).append({"symbol": symbol, "size": size, **({} if res.ok else {"error": rejection_reason(res, "close")})})
+        audit(db, sc.user_id, "broker_reply", uuid4(), f"close-{pid}", symbol, {"event": "close position (reduce-only market)", "scanner": str(sc.id), "size": size, "ok": res.ok,
+                                                                              "http_status": res.status_code, "response": res.body}, now)
+    db.commit()
+    return {"closed": closed, "failed": failed}
 
 
 def reconcile(db: Session, user_id: UUID, client_factory: ClientFactory = DeltaOrderClient) -> dict[str, int]:

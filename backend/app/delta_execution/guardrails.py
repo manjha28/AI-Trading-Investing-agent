@@ -33,7 +33,19 @@ class LiveContext:
     wallet_balance_usd: Decimal | None = None       # total wallet balance read from Delta just before sending; None = unreadable, so the wallet-based checks are skipped
     realized_pnl_known: bool = True                 # False = today's real realised P&L could not be read from Delta, which fails the daily-loss check closed
     maintenance_margin_pct: Decimal | None = None   # percent, e.g. 0.25; None = unknown, which fails the liquidation-safety check closed
+    other_positions: tuple["OpenPosition", ...] | None = ()   # positions already open on Delta (with our stop); None = they exist but their risk is unknown, which fails closed
+    total_risk_cap_pct: Decimal = Decimal("0.02")             # total open risk across positions, as a fraction of the wallet (owner decision 2026-11-25)
     signal_max_age_seconds: int | None = None       # one candle of the strategy's timeframe (owner decision 2026-11-25); None = unknown timeframe, which fails the freshness check closed
+
+
+@dataclass(frozen=True)
+class OpenPosition:
+    """One position already open on Delta, with the stop this app attached. Units = contracts x contract value."""
+    symbol: str
+    units: Decimal
+    entry: Decimal
+    stop: Decimal
+    maintenance_margin_pct: Decimal         # percent, e.g. 0.5
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,7 @@ def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
         check("liquidation_safety", before and half, f"the stop {intent.stop_price} is not safely before the estimated liquidation price {liq:.2f} (it must be before it and within half the distance)")
     else:
         check("liquidation_safety", False, "maintenance margin unknown, so the liquidation price cannot be estimated")
+    _portfolio_checks(intent, ctx, check)
     check("daily_loss_known", ctx.realized_pnl_known, "today's realised P&L could not be read from Delta")
     check("daily_loss_cap", ctx.realized_pnl_today > -ctx.max_daily_loss_usd, f"realised loss today {ctx.realized_pnl_today} reached the cap {ctx.max_daily_loss_usd}")
     check("daily_trade_cap", ctx.orders_today < ctx.max_trades_per_day, f"{ctx.orders_today} orders already today (cap {ctx.max_trades_per_day})")
@@ -123,3 +136,26 @@ def evaluate(intent: DeltaOrderIntent, ctx: LiveContext) -> Decision:
     check("one_order_per_contract", not ctx.contract_has_open_order, "an order for this contract is already open")
     check("not_a_duplicate", not ctx.duplicate_signal, "this signal was already acted on")
     return Decision(all(c.passed for c in checks), tuple(checks))
+
+
+def _portfolio_checks(intent: DeltaOrderIntent, ctx: LiveContext, check) -> None:
+    """Several positions at once (owner decision 2026-11-25). Only when another position is already open: the total risk at the stops must stay within
+    `total_risk_cap_pct` of the wallet, and under cross margin every position's stop (the new one included) must still sit within half of its liquidation distance
+    once the new position adds its maintenance margin. Unknown inputs fail closed. A single position is governed by the per-order checks above."""
+    if ctx.open_positions <= 0 and not ctx.other_positions:
+        return
+    if ctx.other_positions is None or len(ctx.other_positions) < ctx.open_positions:
+        check("total_risk_cap", False, "another position is open but its stop or size is unknown, so the total open risk cannot be confirmed")
+        return
+    wallet, price, cv = ctx.wallet_balance_usd, ctx.last_price, ctx.contract_value
+    if wallet is None or wallet <= 0 or price is None or cv is None or ctx.maintenance_margin_pct is None:
+        check("total_risk_cap", False, "the wallet, price or margin data is unknown, so several open positions cannot be checked")
+        return
+    new = OpenPosition(intent.symbol, cv * intent.contracts, intent.reference_price, intent.stop_price, ctx.maintenance_margin_pct)
+    book = (*ctx.other_positions, new)
+    total_risk = sum((abs(p.entry - p.stop) * p.units for p in book), Decimal(0))
+    cap = ctx.total_risk_cap_pct * wallet
+    check("total_risk_cap", total_risk <= cap, f"total risk at the stops {total_risk:.4f} USD would exceed {ctx.total_risk_cap_pct * 100:.2f}% of the wallet ({cap:.4f} USD)")
+    total_mm = sum((p.entry * p.units * p.maintenance_margin_pct / 100 for p in book), Decimal(0))
+    unsafe = [p.symbol for p in book if p.units <= 0 or (wallet - total_mm) <= 0 or abs(p.entry - p.stop) > Decimal("0.5") * (wallet - total_mm) / p.units]
+    check("liquidation_safety_all_positions", not unsafe, f"under cross margin the stop of {', '.join(unsafe)} would no longer sit within half of its liquidation distance")

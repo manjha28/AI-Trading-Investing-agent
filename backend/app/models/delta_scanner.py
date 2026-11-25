@@ -1,11 +1,11 @@
-"""Delta multi-perpetual paper scanner. Structurally paper only: there is NO execute_live column."""
+"""Delta multi-perpetual scanner. Paper by default; `execute_live` (off) is the per-scanner live switch, effective only for allowlisted strategies (AGENTS.md, 2026-11-25)."""
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Uuid
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import JSON_DOCUMENT, Base
@@ -28,6 +28,7 @@ class DeltaScanner(Base):
     label: Mapped[str] = mapped_column(String(40), nullable=False, default="paper")  # paper | unproven (Part D candidates)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(12), nullable=False, default="active")
+    execute_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")   # layer 3 of 3 for scanner live orders
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

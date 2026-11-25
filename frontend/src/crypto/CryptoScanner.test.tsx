@@ -21,3 +21,22 @@ describe('CryptoScanner strategy picker', () => {
     expect(body).toMatchObject({ strategy_key: 'funding_extreme', resolution: '1h', symbols: 'BTCUSD' });
   });
 });
+
+describe('CryptoScanner live switch', () => {
+  beforeEach(() => { apiRequest.mockReset(); });
+
+  it('is off by default, inert with a reason for other strategies, and the kill switch posts', async () => {
+    apiRequest.mockImplementation(async (path: string) => (path === '/delta-scanner' ? { items: [
+      { id: 'a', name: 'EMA scan', strategy_key: 'five_ema_alert', resolution: '5m', symbols: ['BTCUSD'], status: 'active', label: 'paper', wallet_usd: '1000', total_net_pnl: null, per_symbol: null, signals_seen: 0, signals_taken: 0, last_run_at: null, last_error: null, execute_live: false, live_block: null },
+      { id: 'b', name: 'Funding scan', strategy_key: 'funding_extreme', resolution: '1h', symbols: ['BTCUSD'], status: 'active', label: 'unproven', wallet_usd: '1000', total_net_pnl: null, per_symbol: null, signals_seen: 0, signals_taken: 0, last_run_at: null, last_error: null, execute_live: false, live_block: "'funding_extreme' is not on the live allowlist" },
+    ] } : {}));
+    render(<CryptoScanner />);
+    const sw = await screen.findByRole('button', { name: 'EMA scan live switch' });
+    expect(sw.textContent).toBe('Live off');
+    expect(screen.queryByRole('button', { name: 'Funding scan live switch' })).toBeNull();
+    expect(screen.getByText(/not on the live allowlist/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Kill switch for EMA scan' }));
+    await waitFor(() => expect(apiRequest).toHaveBeenCalledWith('/delta-scanner/a/live/kill', expect.objectContaining({ method: 'POST' })));
+    expect(apiRequest).not.toHaveBeenCalledWith('/delta-scanner/a/live', expect.anything());
+  });
+});

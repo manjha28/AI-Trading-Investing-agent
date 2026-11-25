@@ -90,7 +90,7 @@ def test_a_scanner_run_never_reaches_any_order_adapter(engine, monkeypatch):
         db.add(sc); db.commit()
         snap = service.run_once(db, sc, T0)
         assert snap["paper_only"] is True and snap["signals_seen"] >= 1 and snap["symbols_ok"] == 2
-        assert not hasattr(DeltaScanner, "execute_live")                                     # structurally paper only
+        assert sc.execute_live is False                                                     # the Live switch is off by default
         assert service.run_pass(db, T0 + timedelta(minutes=16)) == {"ran": 1}
 
 

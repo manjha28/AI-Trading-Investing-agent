@@ -256,3 +256,4 @@
 - 2026-11-25: Unarm button uses tokens only (outlined in the negative colour) so lint:tokens passes for ui.css.
 - 2026-11-25: Pump anatomy study (illiquid coins +100-200% in 3-4 days), descriptive; reports/pump_anatomy.md.
 - 2026-11-25: Round 5: frozen R3 (eaea623c741f) on 20 more perpetuals with Delta costs; reports/round5_r3_breadth.md.
+- 2026-11-25: Delta scanner Live switch (off by default, allowlisted strategies only, 2FA to turn on), total-open-risk and cross-margin checks for several positions, scanner kill switch and Close all (migration 0080).

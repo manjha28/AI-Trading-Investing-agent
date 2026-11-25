@@ -1,5 +1,6 @@
 """Run a scanner: replay the strategy on every symbol's completed candles, merge the signals into one queue, size them with the risk rules, store the snapshot.
-PAPER ONLY. This module imports nothing from app.delta_execution and never builds an order client."""
+The snapshot is PAPER (hypothetical). Live orders happen only through app.delta_execution.service.maybe_place_scanner, and only when the scanner's Live switch
+is on AND its strategy is on the code allowlist (AGENTS.md, 2026-11-25); that module still needs the deployment flag and the owner's arming."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -62,6 +63,7 @@ def run_once(db: Session, sc: DeltaScanner, now: datetime | None = None, *, tran
     per_symbol: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
     open_now: list[dict[str, Any]] = []
+    live_queue: list[tuple[Any, list[dict[str, Any]], list[Any]]] = []
     for symbol in sc.symbols:
         try:
             spec = fetch_spec(symbol, transport=transport)
@@ -75,6 +77,8 @@ def run_once(db: Session, sc: DeltaScanner, now: datetime | None = None, *, tran
             result = replay(candles, symbol, params, spec, 1, Decimal(str(p.get("slippage_bps", 5))), start)
             per_symbol[symbol] = {"contract_value": spec.contract_value, "trades": result["trades"]}
             open_now += [{"symbol": symbol, **o} for o in result["open_positions"]]
+            if sc.execute_live:
+                live_queue.append((spec, result["entries"], candles))
         except (CandleDataError, httpx.HTTPError) as error:
             errors[symbol] = str(error)[:200] or "Delta data unavailable."
     rules = RiskRules(Decimal(sc.wallet_usd), Decimal(sc.risk_pct), Decimal(sc.leverage_cap), Decimal(sc.total_risk_cap_pct))
@@ -84,6 +88,13 @@ def run_once(db: Session, sc: DeltaScanner, now: datetime | None = None, *, tran
     sc.snapshot, sc.last_run_at, sc.updated_at = snap, now, now
     sc.last_error = (f"{len(errors)} of {len(sc.symbols)} symbols had no data" if errors else None)
     db.commit()
+    if live_queue:                                   # layer 3 of 3 (the scanner's Live switch); the service re-reads it and checks the allowlist, flag and arming
+        from app.delta_execution import service as live
+        for spec, entries, candles in live_queue:
+            try:
+                live.maybe_place_scanner(db, sc, spec, entries, candles, now)
+            except Exception:  # noqa: BLE001 - recorded in the audit trail by the service; never raised into the scheduler
+                db.rollback()
     return snap
 
 
