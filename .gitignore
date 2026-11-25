@@ -49,7 +49,9 @@ eggs/
 lib60/
 parts/
 sdist/
-var/
+# runtime data only; app/services/var is source and must stay tracked (25 Nov 2026 outage)
+/var/
+backend/var/
 wheels/
 share/python-wheels/
 *.egg-info/

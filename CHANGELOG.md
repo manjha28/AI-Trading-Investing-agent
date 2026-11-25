@@ -252,3 +252,4 @@
 - 2026-11-25 Daily report: uniform card heights, Why as overlay (B1); research_sections_v2 flag for Ready/Hold/Radar cards, default off (B2)
 - 2026-11-25: Journal: one real fill stored as trade-book + trade-history copies is collapsed (23 Nov P&L now known); login/baseline scripts.
 - 2026-11-25: Delta live gate: signal freshness is one candle of the strategy timeframe (5 min for 5m), was 2 min; owner decisions recorded in AGENTS.md.
+- 2026-11-25: app/services/var is now tracked (was caught by a generic var/ ignore and missing from clean deploys); backend image build imports app.main so a missing module fails the build; test_source_tracked guards it.
