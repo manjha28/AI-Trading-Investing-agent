@@ -94,9 +94,14 @@ def trades(db, key: str, symbol: str, spec, start: datetime, now: datetime, tran
     t, o, h, lo, c, atr = _arrays(candles)
     cv, fee = spec.contract_value, spec.taker_fee * GST
     closed, open_ = [], []
+    first = next((k for k, x in enumerate(t) if x >= start), None)
     for a, side, b, stop in positions(key, o, h, lo, c, atr):
         if t[a] < start:
-            continue
+            # a position already running when the test started is joined at the first bar after the start (a forward test never back-dates an entry)
+            if first is None or (b is not None and b <= first):
+                continue
+            a = first
+            stop = o[a] - side * 3 * atr[a - 1]
         entry = Decimal(str(o[a]))
         row = {"symbol": symbol, "side": "buy" if side > 0 else "sell", "signal_time": (t[a] - step).isoformat(), "entry_time": t[a].isoformat(),
                "entry_fill": str(entry), "stop_initial": str(Decimal(str(round(stop, 8))))}
