@@ -264,3 +264,4 @@
 - 2026-11-25: Research: ride volume pumps on illiquid coins (16 variants); reports/pump_ride.md.
 - 2026-11-25: R3 paper test visible in the app: the lab serves a read-only status JSON on Fly's private network, the API reads it (/crypto-delta/r3-paper), card under Crypto > Forward test.
 - 2026-11-25: Research: pump ride on Delta coins (15m/30m bars) and the BTW absorption-then-breakout rule (48 variants); reports/delta_pumps_intraday.md.
+- 2026-11-25: Research: which pumps dump on Delta coins, and a short-after-failure rule (6 variants); reports/dump_study.md.
