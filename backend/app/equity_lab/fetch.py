@@ -22,11 +22,12 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def main(out: str, since: str) -> None:
-    from app.api.market_data import _fresh_dhan_tokens_worker
+    from app.api.brokers import decrypt_tokens
     dest = Path(out)
     dest.mkdir(parents=True, exist_ok=True)
     with Session(engine) as db:
-        uid = db.scalar(select(BrokerCredential.user_id).where(BrokerCredential.broker == "dhan"))
+        cred = db.scalar(select(BrokerCredential).where(BrokerCredential.broker == "dhan"))
+        tokens = decrypt_tokens(cred.encrypted_tokens)            # the stored read token as is: a refresh is the app's job, never this script's
         rows = db.execute(select(Instrument.symbol, InstrumentProviderIdentifier.provider_instrument_id).join(
             InstrumentProviderIdentifier, InstrumentProviderIdentifier.instrument_id == Instrument.id).where(
             InstrumentProviderIdentifier.provider == "dhan", InstrumentProviderIdentifier.is_verified.is_(True), Instrument.country == "IN",
@@ -41,7 +42,6 @@ def main(out: str, since: str) -> None:
         f = dest / f"{symbol.replace('/', '_')}.npz"
         if f.exists() or seg != "NSE_EQ" or not sec.isdigit():
             continue
-        tokens = _fresh_dhan_tokens_worker(uid, adapter)
         frames, s = [], start0
         while s < end0:
             e = min(end0, s + timedelta(days=85))
