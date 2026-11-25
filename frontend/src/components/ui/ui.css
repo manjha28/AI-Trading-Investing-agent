@@ -135,4 +135,4 @@
 .live-switch-btn { background: transparent; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 2px var(--space-2); font: inherit; font-size: var(--fs-2); cursor: pointer; color: var(--text); }
 .live-switch-btn.is-on { border-color: var(--negative); color: var(--negative); }
 .live-switch-error { color: var(--negative); font-size: var(--fs-2); }
-.live-switch-unarm { margin-left: var(--space-1); background: var(--negative); color: #fff; border: 0; border-radius: var(--radius-md); padding: 2px var(--space-2); font: inherit; font-size: var(--fs-2); cursor: pointer; }
+.live-switch-unarm { margin-left: var(--space-1); background: transparent; color: var(--negative); border: 1px solid var(--negative); border-radius: var(--radius-md); padding: 2px var(--space-2); font: inherit; font-size: var(--fs-2); font-weight: 600; cursor: pointer; }

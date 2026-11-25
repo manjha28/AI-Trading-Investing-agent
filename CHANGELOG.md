@@ -253,3 +253,4 @@
 - 2026-11-25: Journal: one real fill stored as trade-book + trade-history copies is collapsed (23 Nov P&L now known); login/baseline scripts.
 - 2026-11-25: Delta live gate: signal freshness is one candle of the strategy timeframe (5 min for 5m), was 2 min; owner decisions recorded in AGENTS.md.
 - 2026-11-25: app/services/var is now tracked (was caught by a generic var/ ignore and missing from clean deploys); backend image build imports app.main so a missing module fails the build; test_source_tracked guards it.
+- 2026-11-25: Unarm button uses tokens only (outlined in the negative colour) so lint:tokens passes for ui.css.
