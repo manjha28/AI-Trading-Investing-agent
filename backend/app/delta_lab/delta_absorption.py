@@ -93,7 +93,7 @@ def run_symbol(sym: str, D: float, A: float, trail: str, H: int) -> list[dict]:
                 break
             best = max(best, c[k])
             if trail == "1d_low":
-                stop = max(stop, float(np.min(lo[max(e, k - 23):k + 1])))
+                stop = max(stop, float(np.min(lo[max(0, k - 23):k + 1])))     # the last 24 hours, entry hours included or not (fixed 25 Nov: it was a 1-hour stop)
             else:
                 j = int(np.searchsorted(atr_t, t[k] + 3600, "right")) - 1
                 if j >= 0:

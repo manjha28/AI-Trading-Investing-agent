@@ -1,0 +1,357 @@
+{
+ "variants_added": 16,
+ "cuts": [
+  1761573900,
+  1781118000
+ ],
+ "splits": {
+  "volsetup=off|volhold=off|adverse=off|longs=off": {
+   "train": {
+    "trades": 3647,
+    "net_bps": -11.904167299131025,
+    "pf": 0.6672998396512776,
+    "win_rate": 0.3295859610638881,
+    "max_dd_bps": 44639.38847340977
+   },
+   "validation": {
+    "trades": 1857,
+    "net_bps": -22.733369821771078,
+    "pf": 0.5692637301343652,
+    "win_rate": 0.30586968228325256,
+    "max_dd_bps": 42237.30763295968
+   }
+  },
+  "volsetup=off|volhold=off|adverse=off|longs=on": {
+   "train": {
+    "trades": 6983,
+    "net_bps": -9.669427805665416,
+    "pf": 0.7246493491445969,
+    "win_rate": 0.3406845195474724,
+    "max_dd_bps": 76221.06096401626
+   },
+   "validation": {
+    "trades": 3430,
+    "net_bps": -21.794838191159993,
+    "pf": 0.5959442916152048,
+    "win_rate": 0.3040816326530612,
+    "max_dd_bps": 75136.83671016835
+   }
+  },
+  "volsetup=off|volhold=off|adverse=on|longs=off": {
+   "train": {
+    "trades": 3665,
+    "net_bps": -12.002810766367366,
+    "pf": 0.6530610702534776,
+    "win_rate": 0.3154160982264666,
+    "max_dd_bps": 45322.57220892743
+   },
+   "validation": {
+    "trades": 1878,
+    "net_bps": -22.104215434683084,
+    "pf": 0.5534545420419889,
+    "win_rate": 0.2870074547390841,
+    "max_dd_bps": 41558.757846726294
+   }
+  },
+  "volsetup=off|volhold=off|adverse=on|longs=on": {
+   "train": {
+    "trades": 7057,
+    "net_bps": -9.958672115983193,
+    "pf": 0.7059406480698002,
+    "win_rate": 0.3256341221482216,
+    "max_dd_bps": 77460.4017355127
+   },
+   "validation": {
+    "trades": 3482,
+    "net_bps": -21.764572402119153,
+    "pf": 0.5730648407994978,
+    "win_rate": 0.2857553130384836,
+    "max_dd_bps": 76139.18143220774
+   }
+  },
+  "volsetup=off|volhold=on|adverse=off|longs=off": {
+   "train": {
+    "trades": 3630,
+    "net_bps": -10.76123451649468,
+    "pf": 0.7000313483394743,
+    "win_rate": 0.318732782369146,
+    "max_dd_bps": 40151.21511027751
+   },
+   "validation": {
+    "trades": 1854,
+    "net_bps": -23.807050611548625,
+    "pf": 0.5538951424611567,
+    "win_rate": 0.2853290183387271,
+    "max_dd_bps": 44970.91941929714
+   }
+  },
+  "volsetup=off|volhold=on|adverse=off|longs=on": {
+   "train": {
+    "trades": 6951,
+    "net_bps": -7.860040469536205,
+    "pf": 0.7768351794885175,
+    "win_rate": 0.3280103582218386,
+    "max_dd_bps": 65555.33549799693
+   },
+   "validation": {
+    "trades": 3415,
+    "net_bps": -20.709616234312612,
+    "pf": 0.6189602617827521,
+    "win_rate": 0.28579795021961935,
+    "max_dd_bps": 73608.40642514158
+   }
+  },
+  "volsetup=off|volhold=on|adverse=on|longs=off": {
+   "train": {
+    "trades": 3650,
+    "net_bps": -10.92446345858893,
+    "pf": 0.6852668126060569,
+    "win_rate": 0.3046575342465753,
+    "max_dd_bps": 41069.60585596355
+   },
+   "validation": {
+    "trades": 1875,
+    "net_bps": -22.76270488007688,
+    "pf": 0.5451739196410724,
+    "win_rate": 0.2677333333333333,
+    "max_dd_bps": 43199.320426950115
+   }
+  },
+  "volsetup=off|volhold=on|adverse=on|longs=on": {
+   "train": {
+    "trades": 7025,
+    "net_bps": -8.588528133334512,
+    "pf": 0.7473044351595722,
+    "win_rate": 0.31316725978647686,
+    "max_dd_bps": 68173.2097142139
+   },
+   "validation": {
+    "trades": 3468,
+    "net_bps": -20.38511145636583,
+    "pf": 0.602899036025019,
+    "win_rate": 0.2684544405997693,
+    "max_dd_bps": 73020.2976573153
+   }
+  },
+  "volsetup=on|volhold=off|adverse=off|longs=off": {
+   "train": {
+    "trades": 690,
+    "net_bps": -15.374099657158729,
+    "pf": 0.6099339007103927,
+    "win_rate": 0.32608695652173914,
+    "max_dd_bps": 11249.94887612234
+   },
+   "validation": {
+    "trades": 344,
+    "net_bps": -17.804119944043016,
+    "pf": 0.6465986383944338,
+    "win_rate": 0.3633720930232558,
+    "max_dd_bps": 7820.93242861466
+   }
+  },
+  "volsetup=on|volhold=off|adverse=off|longs=on": {
+   "train": {
+    "trades": 1386,
+    "net_bps": -12.153090637807225,
+    "pf": 0.6838190373900903,
+    "win_rate": 0.3383838383838384,
+    "max_dd_bps": 20806.124463400298
+   },
+   "validation": {
+    "trades": 706,
+    "net_bps": -19.277235788116833,
+    "pf": 0.6594540815840477,
+    "win_rate": 0.3555240793201133,
+    "max_dd_bps": 13642.955910575558
+   }
+  },
+  "volsetup=on|volhold=off|adverse=on|longs=off": {
+   "train": {
+    "trades": 691,
+    "net_bps": -15.03340696292198,
+    "pf": 0.5914474956036735,
+    "win_rate": 0.30101302460202606,
+    "max_dd_bps": 11029.90432406191
+   },
+   "validation": {
+    "trades": 347,
+    "net_bps": -13.91407874539072,
+    "pf": 0.6913332364288607,
+    "win_rate": 0.345821325648415,
+    "max_dd_bps": 6581.05544150159
+   }
+  },
+  "volsetup=on|volhold=off|adverse=on|longs=on": {
+   "train": {
+    "trades": 1396,
+    "net_bps": -12.088693438814495,
+    "pf": 0.6612379713607701,
+    "win_rate": 0.3123209169054441,
+    "max_dd_bps": 20041.42513117884
+   },
+   "validation": {
+    "trades": 714,
+    "net_bps": -16.71209224952386,
+    "pf": 0.6646235560096522,
+    "win_rate": 0.32633053221288516,
+    "max_dd_bps": 11972.861281352203
+   }
+  },
+  "volsetup=on|volhold=on|adverse=off|longs=off": {
+   "train": {
+    "trades": 690,
+    "net_bps": -14.673811411228355,
+    "pf": 0.6288679714046522,
+    "win_rate": 0.3159420289855073,
+    "max_dd_bps": 10546.251982642778
+   },
+   "validation": {
+    "trades": 344,
+    "net_bps": -18.270971053408438,
+    "pf": 0.6398569430524053,
+    "win_rate": 0.34593023255813954,
+    "max_dd_bps": 7958.008040835316
+   }
+  },
+  "volsetup=on|volhold=on|adverse=off|longs=on": {
+   "train": {
+    "trades": 1385,
+    "net_bps": -6.968594507391464,
+    "pf": 0.8190601603811087,
+    "win_rate": 0.3285198555956679,
+    "max_dd_bps": 16832.72201630045
+   },
+   "validation": {
+    "trades": 706,
+    "net_bps": -14.127425162102641,
+    "pf": 0.752044374293122,
+    "win_rate": 0.3371104815864023,
+    "max_dd_bps": 12970.01085497828
+   }
+  },
+  "volsetup=on|volhold=on|adverse=on|longs=off": {
+   "train": {
+    "trades": 691,
+    "net_bps": -14.371645245671905,
+    "pf": 0.6107404649909778,
+    "win_rate": 0.29088277858176553,
+    "max_dd_bps": 10352.128973654499
+   },
+   "validation": {
+    "trades": 347,
+    "net_bps": -14.341865562458427,
+    "pf": 0.6842460806006854,
+    "win_rate": 0.3314121037463977,
+    "max_dd_bps": 6705.976297623039
+   }
+  },
+  "volsetup=on|volhold=on|adverse=on|longs=on": {
+   "train": {
+    "trades": 1395,
+    "net_bps": -8.450779609547366,
+    "pf": 0.7636712810998345,
+    "win_rate": 0.3025089605734767,
+    "max_dd_bps": 16525.098798970575
+   },
+   "validation": {
+    "trades": 714,
+    "net_bps": -11.286242413880824,
+    "pf": 0.7751386328841859,
+    "win_rate": 0.30952380952380953,
+    "max_dd_bps": 11009.32339856953
+   }
+  }
+ },
+ "chosen": "volsetup=on|volhold=on|adverse=on|longs=on",
+ "holdout": {
+  "trades": 770,
+  "net_bps": -17.835275764204013,
+  "pf": 0.7579865239398875,
+  "win_rate": 0.2909090909090909,
+  "max_dd_bps": 16857.18591818482,
+  "boot90": [
+   -32.230489723436484,
+   -2.253480388009979
+  ],
+  "per_symbol": {
+   "AIOTUSD": {
+    "trades": 60,
+    "net_bps": -81.42945228632429,
+    "pf": 0.3293509458054425,
+    "win_rate": 0.18333333333333332,
+    "max_dd_bps": 5283.016891803648
+   },
+   "AKEUSD": {
+    "trades": 129,
+    "net_bps": 3.6657931300902815,
+    "pf": 1.0318721587078976,
+    "win_rate": 0.3178294573643411,
+    "max_dd_bps": 2897.0790920567088
+   },
+   "ARIAUSD": {
+    "trades": 64,
+    "net_bps": -56.097234092971235,
+    "pf": 0.5340477519324883,
+    "win_rate": 0.28125,
+    "max_dd_bps": 3590.222981950159
+   },
+   "BLESSUSD": {
+    "trades": 85,
+    "net_bps": -33.179003226724966,
+    "pf": 0.5983595929401674,
+    "win_rate": 0.23529411764705882,
+    "max_dd_bps": 2820.215274271622
+   },
+   "BTCUSD": {
+    "trades": 55,
+    "net_bps": -10.439796505543137,
+    "pf": 0.6094109931238334,
+    "win_rate": 0.2909090909090909,
+    "max_dd_bps": 741.445867832448
+   },
+   "ETHUSD": {
+    "trades": 89,
+    "net_bps": -9.26770682947084,
+    "pf": 0.6659068876819731,
+    "win_rate": 0.3707865168539326,
+    "max_dd_bps": 1026.1013097624489
+   },
+   "EVAAUSD": {
+    "trades": 92,
+    "net_bps": 14.839023138692854,
+    "pf": 1.141540108880866,
+    "win_rate": 0.32608695652173914,
+    "max_dd_bps": 4544.913089488933
+   },
+   "LISTAUSD": {
+    "trades": 9,
+    "net_bps": 64.07091555758011,
+    "pf": 2.187495728881477,
+    "win_rate": 0.4444444444444444,
+    "max_dd_bps": 318.9948510123017
+   },
+   "SOLUSD": {
+    "trades": 87,
+    "net_bps": -19.252750216371854,
+    "pf": 0.3810024484854477,
+    "win_rate": 0.27586206896551724,
+    "max_dd_bps": 1739.1310552418608
+   },
+   "XRPUSD": {
+    "trades": 100,
+    "net_bps": -17.776686431433365,
+    "pf": 0.4303644449268549,
+    "win_rate": 0.27,
+    "max_dd_bps": 1926.7804701752748
+   }
+  },
+  "exits": {
+   "stop": 439,
+   "target": 189,
+   "adverse_volume": 96,
+   "trail": 46
+  },
+  "avg_r": -0.07093946993089098,
+  "median_R_bps": 48.80013363197702
+ }
+}
