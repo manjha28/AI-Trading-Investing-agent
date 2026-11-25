@@ -525,3 +525,27 @@ def feed_switch(body: FeedSwitch, response: Response, _: UserSession = Depends(r
     response.headers["Cache-Control"] = "no-store"
     set_feed_wanted(body.enabled)
     return _feed_view() | {"note": "Applies within about ten seconds."}
+
+
+_lab_cache: dict[str, Any] = {"at": None, "data": None}
+
+
+@router.get("/r3-paper")
+def r3_paper_status(active_session: UserSession = Depends(require_verified_session)) -> dict[str, Any]:
+    """The frozen R3 paper test that runs on the separate lab machine. Read over Fly's private network; if the lab can't be reached the last copy
+    is returned marked stale, with the reason. Paper only: hypothetical trades, never real P&L."""
+    import httpx
+    now = datetime.now(timezone.utc)
+    try:
+        with httpx.Client(timeout=4.0) as client:
+            reply = client.get(settings.delta_lab_status_url)
+        reply.raise_for_status()
+        data = reply.json()
+        _lab_cache.update(at=now, data=data)
+        return {**data, "stale": False, "error": None, "fetched_at": now.isoformat()}
+    except (httpx.HTTPError, ValueError) as error:
+        last = _lab_cache["data"]
+        reason = f"the lab machine could not be reached ({type(error).__name__})"
+        if last is None:
+            return {"stale": True, "error": reason, "fetched_at": None}
+        return {**last, "stale": True, "error": reason, "fetched_at": _lab_cache["at"].isoformat()}

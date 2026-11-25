@@ -166,3 +166,23 @@ def write_all(now: float | None = None) -> None:
 if __name__ == "__main__":
     write_all()
     print((REPORT_DIR / "round3_status.md").read_text()[:1500])
+
+
+def status_json(now: float | None = None) -> dict:
+    """The same facts as the markdown status, as data for the app's R3 card (read over Fly's private network). Paper only; no order is ever sent."""
+    now = now or time.time()
+    state = json.loads((OUT / "state.json").read_text()) if (OUT / "state.json").exists() else {}
+    start_f = OUT / "start.txt"
+    started = int(start_f.read_text()) if start_f.exists() else None
+    trades = _read_csv(OUT / "paper_trades.csv")
+    cp = checkpoints(trades, {**state, "start": started}, now)
+    gng = go_no_go(trades, None, 0, 0)
+    hb = paper_heartbeat(now)
+    return {"as_of": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(), "param_hash": PARAM_HASH, "frozen": FROZEN.get("R3"),
+            "started": datetime.fromtimestamp(started, tz=timezone.utc).isoformat() if started else None,
+            "paper_heartbeat_age_s": None if hb is None else round(hb, 1), "recorder": recorder_health(now),
+            "symbols": {s: {"open": v.get("open"), "closed": v.get("closed"), "last_bar": datetime.fromtimestamp(v["last_bar"], tz=timezone.utc).isoformat() if v.get("last_bar") else None,
+                            "rejections": v.get("rejections") or {}} for s, v in (state.get("symbols") or {}).items()},
+            "trades": trades[-30:], "closed_trades": len(trades), "net_usd_total": str(round(sum(float(t["net_usd"]) for t in trades), 4)) if trades else "0",
+            "checkpoints": {"trade30": cp.get("trade30"), "week4_due": cp["week4"]["due"], "holdout_reference_net_bps": cp["holdout_reference_net_bps"]},
+            "go_no_go": gng, "label": "Paper only: hypothetical trades on Delta's live data, never real money. Decision support, not investment advice."}

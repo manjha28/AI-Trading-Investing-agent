@@ -4,6 +4,7 @@ import { messageOf } from './cryptoApi';
 import { ExecutionStateChip } from '../components/ExecutionStateChip';
 import { ArmConfirm } from '../components/ArmConfirm';
 import { refreshExecutionState } from '../hooks/useExecutionState';
+import { R3PaperCard } from './R3PaperCard';
 import { CryptoScanner } from './CryptoScanner';
 import { accountLine, testModeLine, todayLine, type VenueState } from '../lib/executionState';
 
@@ -152,6 +153,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
           )}
         </div>
       )}
+      <R3PaperCard />
       <CryptoScanner />
     </section>
   );

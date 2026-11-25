@@ -262,3 +262,4 @@
 - 2026-11-25: Research: owner's trend + rejection rule (6 variants) on BTC/ETH; reports/trend_rejection.md.
 - 2026-11-25: Research: owner's marked lower-high shorts with volume (16 variants); reports/lower_high_volume.md.
 - 2026-11-25: Research: ride volume pumps on illiquid coins (16 variants); reports/pump_ride.md.
+- 2026-11-25: R3 paper test visible in the app: the lab serves a read-only status JSON on Fly's private network, the API reads it (/crypto-delta/r3-paper), card under Crypto > Forward test.
