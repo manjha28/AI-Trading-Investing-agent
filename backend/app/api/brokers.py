@@ -1353,6 +1353,17 @@ def broker_callback(
     return response
 
 
+def _http_timing(diagnostics: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Dhan calls of one sync grouped by endpoint (digits and dates replaced), with count and total milliseconds: shows where a slow sync spends its time."""
+    out: dict[str, dict[str, float]] = {}
+    for entry in diagnostics:
+        path = re.sub(r"\d", "#", urlsplit(str(entry.get("url") or "")).path)
+        slot = out.setdefault(path, {"calls": 0, "ms": 0.0})
+        slot["calls"] += 1
+        slot["ms"] = round(slot["ms"] + float(entry.get("elapsed_ms") or 0), 1)
+    return out
+
+
 @router.post("/{slug}/sync")
 def sync_broker(
     slug: str,
@@ -1365,6 +1376,7 @@ def sync_broker(
     db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store"
+    sync_started = time.monotonic()
     if snapshot_only and slug != "dhan":
         raise HTTPException(status_code=422, detail="Snapshot-only sync is supported for Dhan.")
     adapter = _adapter(slug)
@@ -1772,6 +1784,11 @@ def sync_broker(
             for existing_row in existing_rows:
                 if (existing_row.symbol, existing_row.exchange, existing_row.product) not in seen_keys:
                     db.delete(existing_row)
+            if slug == "dhan" and kind == "position":
+                # keep Dhan's realised figure for today: the mirror above drops these rows once Dhan stops listing the day
+                from app.services import dhan_daily_realised
+                with db.begin_nested():
+                    dhan_daily_realised.record(db, _user_id(active_session), rows, completed_at)
         if account_snapshot is not None:
             try:
                 with db.begin_nested():
@@ -1833,7 +1850,11 @@ def sync_broker(
             raise
         db.rollback()
         raise HTTPException(status_code=500, detail="Broker account sync could not be saved") from error
-    if slug == "dhan" and not snapshot_only:
+    from app.services.report_prices import market_open as _nse_open
+    if slug == "dhan" and not snapshot_only and _nse_open(_now()):
+        # while NSE is trading there is no official close for today yet, so a refresh can only "fail"; it is skipped (saves a quote round trip too)
+        endpoint_results["official_close_refresh"] = {"status": "skipped", "reason": "market_open_official_close_published_after_15_30_ist"}
+    elif slug == "dhan" and not snapshot_only:
         try:
             portfolio_rows = [
                 row for row in _mirror_rows(db, _user_id(active_session), "dhan")
@@ -1902,8 +1923,12 @@ def sync_broker(
         except (BrokerAdapterError, KeyError, ValueError) as error:
             db.rollback()
             endpoint_results["official_close_refresh"] = {"status": "failed", "reason": "provider_unavailable_previous_close_retained"}
+    http_timing = _http_timing(dhan_reader.last_http_diagnostics if dhan_reader is not None else [])
+    total_ms = round((time.monotonic() - sync_started) * 1000)
+    logger.info("broker_sync_timing slug=%s total_ms=%s http=%s", slug, total_ms, http_timing)   # paths are templated: no ids, dates or tokens
     return {
         "broker": slug,
+        "timing": {"total_ms": total_ms, "http": http_timing},
         "synthetic": adapter.is_synthetic,
         "synced_at": completed_at,
         "sync_status": (

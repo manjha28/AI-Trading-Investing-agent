@@ -1998,6 +1998,24 @@ def test_dhan_sync_accepts_empty_holdings_without_disconnecting(
     results = response.json()["endpoint_results"]       # the sync now also reports funds, trades and ledger, plus HTTP status and the reason for an empty holdings answer
     assert results["holdings"]["status"] == "succeeded" and results["holdings"]["reason"] == "no_holdings_available"
     assert results["positions"]["status"] == "succeeded"
+    from app.models import DhanDailyRealised                  # an empty positions answer still records today's Dhan figure: nothing closed, realised 0
+    with Session(test_engine) as db:
+        day = db.scalar(select(DhanDailyRealised))
+        assert day is not None and day.realised == 0 and day.positions_count == 0
+
+
+def test_dhan_sync_skips_the_official_close_refresh_while_nse_is_trading(
+    clients, test_engine, encryption_key, monkeypatch
+) -> None:
+    from app.services import report_prices
+    first, _ = clients
+    prepare_dhan_sync(first, test_engine, encryption_key, monkeypatch)
+    patch_dhan_account_http(monkeypatch, lambda method, url, **kwargs: httpx.Response(
+        200, json={"availabelBalance": "1000.00"} if httpx.URL(url).path == "/v2/fundlimit" else [], request=httpx.Request(method, url)))
+    monkeypatch.setattr(report_prices, "market_open", lambda now: True)
+    body = first.post("/api/v1/brokers/dhan/sync", headers=csrf(first), json={}).json()
+    assert body["endpoint_results"]["official_close_refresh"] == {"status": "skipped", "reason": "market_open_official_close_published_after_15_30_ist"}
+    assert body["sync_status"] == "successful"
 
 
 def test_dhan_holdings_only_normalizes_the_documented_empty_case(monkeypatch) -> None:

@@ -1229,3 +1229,4 @@ from app.models.report_snapshot import DailyReportSnapshot  # noqa: F401
 from app.models.stock_verdict import StockVerdict  # noqa: F401
 from app.models.forward_record import ForwardRecordReport  # noqa: F401
 from app.models.delivery import DeliveryPercentage  # noqa: F401
+from app.models.dhan_daily_realised import DhanDailyRealised  # noqa: F401,E402

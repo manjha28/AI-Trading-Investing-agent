@@ -12,7 +12,7 @@ from typing import Any
 BRACKET_WINDOW = timedelta(seconds=10)
 OUTCOMES = ("target_hit", "stop_hit", "closed_manually", "liquidated", "still_open", "cancelled", "unknown")
 LABELS = {"target_hit": "Target hit", "stop_hit": "Stop hit", "closed_manually": "Closed manually", "liquidated": "Liquidated", "still_open": "Still open",
-          "cancelled": "Cancelled", "unknown": "Unknown"}
+          "cancelled": "Cancelled", "rejected": "Rejected by Delta (never filled)", "unknown": "Unknown"}
 
 
 def _ts(value: Any) -> datetime | None:

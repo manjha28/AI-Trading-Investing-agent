@@ -47,3 +47,11 @@ describe('Dashboard slow loading', () => {
     }
   });
 });
+
+describe('Dashboard between the workspace and the health answer', () => {
+  it('says "Loading data health…" (not "No data.") once the workspace has loaded but health has not answered yet', () => {
+    render(<Dashboard health={null} loading={false} error={null} goto={() => undefined} />);
+    expect(screen.getByText('Loading data health…')).toBeTruthy();
+    expect(screen.queryByText('No data.')).toBeNull();
+  });
+});

@@ -75,3 +75,19 @@ def test_report_marks_data_stale_with_the_reason_when_delta_cannot_be_read(monke
     monkeypatch.setitem(report._cache, "at", -1e9)
     out = report.report(None, uid, lambda: Down(), now=datetime(2026, 11, 25, 4, tzinfo=timezone.utc))
     assert out["stale"] is True and out["error"] and out["wallet"]["total"] == "3.87"        # last good copy kept, flagged stale
+
+
+def test_a_rejected_order_reads_rejected_not_unknown_and_open_legs_are_found():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from app.delta_execution import report
+    row = SimpleNamespace(id="x", created_at=datetime(2026, 11, 24, 2, 16, tzinfo=timezone.utc), symbol="BTCUSD", side="buy", contracts=1, leverage=25, status="rejected",
+                          entry_price=None, stop_price=D("59000"), target_price=D("60000"), block_reason="Delta rejected the order (HTTP 400): insufficient_margin")
+    view = report._order_view(row, None)
+    assert view["outcome"] == "rejected" and view["outcome_label"].startswith("Rejected")
+    # the 25 Nov 05:20 short: entry filled, its stop and target are still OPEN orders (Delta's history only lists finished ones)
+    entry = _order(1713524209, "2026-11-25T05:20:52.575Z", "sell", "limit_order", "closed", "59211.5", cid="CID3")
+    legs = [_order(1713524211, "2026-11-25T05:20:52.712Z", "buy", "market_order", "open", None, stop_type="stop_loss_order", stop="59253.5", bracket=True, reduce=True),
+            _order(1713524212, "2026-11-25T05:20:52.713Z", "buy", "market_order", "open", None, stop_type="take_profit_order", stop="58715.5", bracket=True, reduce=True)]
+    got = lifecycle.classify("CID3", [entry, *legs], [_fill(1713524209, "2026-11-25T05:20:52Z", "sell", "1", "59211.5", "0.035")], [], True)
+    assert got["outcome"] == "still_open" and sorted(got["bracket_leg_ids"]) == [1713524211, 1713524212]

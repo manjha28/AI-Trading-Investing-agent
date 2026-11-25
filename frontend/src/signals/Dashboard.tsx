@@ -8,9 +8,10 @@ import type { Health } from './types';
 const REFUSE_PCT = 5;
 
 export function Dashboard({ health, loading, error, goto, reload }: { health: Health | null; loading: boolean; error: string | null; goto: (tab: string) => void; reload?: () => void }) {
-  const slow = useSlow(loading && !health);
+  const slow = useSlow(!health && !error);
   if (error) return <Notice tone="bad">{error}</Notice>;
-  if (!health) return <p className="sl-muted" role="status">{loading ? (slow ? 'Still loading (slow backend). This can take up to a minute…' : 'Loading dashboard…') : 'No data.'}</p>;
+  // health is fetched after the workspace itself, so "no health yet" always means "still loading" (a failed fetch shows its error above), never "no data"
+  if (!health) return <p className="sl-muted" role="status" aria-busy="true">{slow ? 'Still loading (slow backend). This can take up to a minute…' : loading ? 'Loading dashboard…' : 'Loading data health…'}</p>;
   const bad = health.data_health.filter((h) => h.status !== 'ok');
   const windowDays = health.data_health.find((h) => h.window_days != null)?.window_days ?? 5;
   return (

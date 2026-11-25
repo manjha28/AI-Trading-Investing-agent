@@ -60,17 +60,21 @@ def build(db: Session, user_id: Any, day: date) -> dict[str, Any]:
         else:
             fees_real += m["fees"]
         net += m["net_pnl"]
-    # Dhan: the realised profit of the latest synced positions snapshot
+    # Dhan: its realised profit FOR THIS DAY, captured while Dhan still listed the day (positions are current-day only at Dhan)
+    from app.services import dhan_daily_realised
+    captured = dhan_daily_realised.for_day(db, user_id, day)
+    dhan_realised: Decimal | None = captured.realised if captured else None
+    snapshot_at = captured.synced_at if captured else None
+    if captured is not None:
+        for c in captured.by_contract or []:
+            sec = per_security.setdefault(str(c.get("security_id") or c.get("symbol")), {"symbol": c.get("symbol"), "journal_gross": ZERO, "dhan_realised": None})
+            if c.get("realised") is not None:
+                sec["dhan_realised"] = (sec["dhan_realised"] or ZERO) + Decimal(str(c["realised"]))
+    # open quantities: only the live mirror knows them, and only when its snapshot belongs to this same day
     latest = db.scalar(select(func.max(BrokerMirror.synced_at)).where(BrokerMirror.user_id == user_id, BrokerMirror.broker == "dhan", BrokerMirror.kind == "position"))
-    dhan_realised: Decimal | None = None
     positions = []
-    if latest is not None:
+    if latest is not None and latest.astimezone(IST).date() == day:
         positions = list(db.scalars(select(BrokerMirror).where(BrokerMirror.user_id == user_id, BrokerMirror.broker == "dhan", BrokerMirror.kind == "position", BrokerMirror.synced_at == latest)))
-        known = [p.realized_profit for p in positions if p.realized_profit is not None]
-        dhan_realised = sum(known, ZERO) if known else None
-        for p in positions:
-            sec = per_security.setdefault(str(p.security_id or p.symbol), {"symbol": p.symbol, "journal_gross": ZERO, "dhan_realised": None})
-            sec["dhan_realised"] = (sec["dhan_realised"] or ZERO) + p.realized_profit if p.realized_profit is not None else sec["dhan_realised"]
     unexplained = None if dhan_realised is None else dhan_realised - gross
     # net quantity per contract: the journal's fills against Dhan's position, to explain open-lot differences
     fill_net: dict[str, Decimal] = {}
@@ -93,7 +97,8 @@ def build(db: Session, user_id: Any, day: date) -> dict[str, Any]:
                             "reason": "not in the stored Dhan master: the contract expired and expired contracts drop out of Dhan's master file" + (f" (expiry {m.group('day')} {m.group('month').title()})" if m else "")})
     return {
         "day": day.isoformat(), "currency": "INR", "trades_matched_that_day": trades,
-        "dhan": {"realised": _q(dhan_realised), "basis": "gross: before brokerage, STT, exchange charges, GST and stamp duty", "snapshot_at": latest.isoformat() if latest else None},
+        "dhan": {"realised": _q(dhan_realised), "basis": "gross: before brokerage, STT, exchange charges, GST and stamp duty", "snapshot_at": snapshot_at.isoformat() if snapshot_at else None,
+                 "note": None if captured else "Dhan lists positions for the current day only, and no sync captured Dhan's figure for this day, so it is unknown."},
         "journal": {"gross": _q(gross), "fees_and_taxes_real": _q(fees_real), "fees_and_taxes_estimated": _q(fees_est), "net": _q(net), "trades_with_estimated_charges": est_trades, "trades_with_unknown_charges": unknown_fee},
         "unexplained": _q(unexplained), "reconciles_within_1_rupee": None if unexplained is None else abs(unexplained) <= 1,
         "by_contract": [{"symbol": v["symbol"], "journal_gross": _q(v["journal_gross"]), "dhan_realised": _q(v["dhan_realised"]), "difference": _q(None if v["dhan_realised"] is None else v["dhan_realised"] - v["journal_gross"])} for v in sorted(per_security.values(), key=lambda v: v["symbol"] or "")],

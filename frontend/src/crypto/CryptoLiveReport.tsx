@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api';
 import { messageOf } from './cryptoApi';
 
@@ -9,7 +9,7 @@ type OpenOrder = { id: number; symbol: string; side: string; size: string; type:
 type Report = { wallet?: { total: string; available: string; margin_in_use: string; unrealised_pnl: string | null }; positions?: Position[]; open_orders?: OpenOrder[];
   realized_pnl?: { today: string; all_time: string; all_time_note: string }; orders?: Order[]; synced_at: string | null; stale: boolean; error: string | null; disclaimer: string };
 
-const REFRESH_MS = 5_000;
+const REFRESH_MS = 15_000;     // never overlaps: a refresh only starts once the previous one has answered
 const usd = (v: string | null | undefined, digits = 4) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v) < 0 ? '-' : ''}$${Math.abs(Number(v)).toFixed(digits)}`);
 const num = (v: string | null | undefined) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }));
 const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 19) + ' UTC' : '—');
@@ -18,8 +18,11 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 19) +
 export function CryptoLiveReport() {
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
   const load = useCallback(async () => {
-    try { setReport(await apiRequest<Report>('/crypto-delta/live/report')); setError(null); } catch (e) { setError(messageOf(e)); }
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try { setReport(await apiRequest<Report>('/crypto-delta/live/report')); setError(null); } catch (e) { setError(messageOf(e)); } finally { inFlight.current = false; }
   }, []);
   useEffect(() => {
     void load();
@@ -32,7 +35,7 @@ export function CryptoLiveReport() {
     <section className="crypto-live-report" aria-label="Live execution report">
       <h3>Live execution report <span className="chip">Real money · read only</span></h3>
       {stale && <p role="alert" className="crypto-error">Stale: {error ?? report?.error ?? 'Delta could not be read'}. Showing the last copy from {when(report?.synced_at ?? null)}.</p>}
-      {!report && !error && <p className="crypto-sub">Loading from Delta…</p>}
+      {!report && !error && <p className="crypto-sub" role="status" aria-busy="true">Loading from Delta… (positions, orders and outcomes appear once Delta has answered)</p>}
       {w && (
         <dl className="crypto-kpis" aria-label="Wallet">
           <div><dt>Total balance</dt><dd>{usd(w.total)}</dd></div>
@@ -44,6 +47,7 @@ export function CryptoLiveReport() {
         </dl>
       )}
       {report && <p className="crypto-sub">Last synced {when(report.synced_at)}; refreshes every few seconds while this page is open. {report.realized_pnl?.all_time_note}</p>}
+      {report && <>
       <h4>Open positions</h4>
       {report?.positions?.length ? (
         <table className="crypto-table"><thead><tr><th>Symbol</th><th>Size</th><th>Entry</th><th>Mark</th><th>Liquidation</th><th>Stop</th><th>Target</th><th>Unrealised P&amp;L</th></tr></thead>
@@ -65,6 +69,7 @@ export function CryptoLiveReport() {
               <td>{o.status === 'rejected' || o.status === 'error' ? `Rejected: ${o.block_reason ?? '—'}` : o.outcome_label}</td><td>{o.exit_price ? `${num(o.exit_price)} · ${when(o.exit_at)}` : '—'}</td>
               <td>{usd(o.realized_pnl)}</td><td>{usd(o.fees)}</td><td>{usd(o.funding)}</td><td>{usd(o.net_pnl)}</td></tr>))}</tbody></table>
       ) : <p className="crypto-sub">No live orders yet.</p>}
+      </>}
       <p className="crypto-sub">Figures are Delta&apos;s own records. {report?.disclaimer ?? 'Decision support, not investment advice.'}</p>
     </section>
   );

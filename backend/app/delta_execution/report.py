@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -15,7 +16,7 @@ from app.delta_execution.client import DeltaOrderClient, ExecutionBlocked
 from app.delta_execution.service import REALIZED_TYPES, day_start_utc
 from app.models.crypto_delta import DeltaLiveOrder, DeltaLiveOutcome
 
-CACHE_SECONDS = 3.0
+CACHE_SECONDS = 10.0
 _cache: dict[str, Any] = {"at": 0.0, "data": None}
 
 
@@ -40,6 +41,13 @@ def _pages(client: DeltaOrderClient, path: str, query: str, pages: int = 5) -> l
     return out
 
 
+def _parallel(**calls):
+    """Run independent read-only Delta GETs at once (each opens its own connection), so the report waits for the slowest call, not the sum of all."""
+    with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+        futures = {k: pool.submit(fn) for k, fn in calls.items()}
+        return {k: f.result() for k, f in futures.items()}
+
+
 def _money(value: Decimal | None) -> str | None:
     return None if value is None else format(value, "f")
 
@@ -51,10 +59,17 @@ def sync_outcomes(db: Session, user_id: UUID, client: DeltaOrderClient, *, now: 
     rows = list(db.scalars(select(DeltaLiveOrder).where(DeltaLiveOrder.user_id == user_id, DeltaLiveOrder.status.in_(("placed", "filled", "closed", "cancelled")))))
     if not rows:
         return counts
-    orders, fills = _pages(client, "/v2/orders/history", "?page_size=100"), _pages(client, "/v2/fills", "?page_size=100")
-    txns, positions = _pages(client, "/v2/wallet/transactions", "?page_size=100"), _get(client, "/v2/positions/margined")
+    finished = {o.order_id for o in db.scalars(select(DeltaLiveOutcome).where(DeltaLiveOutcome.user_id == user_id, DeltaLiveOutcome.outcome.not_in(("still_open", "unknown"))))}
+    if all(r.id in finished for r in rows):
+        return counts                                   # every order already has a final outcome: nothing to ask Delta
+    got = _parallel(orders=lambda: _pages(client, "/v2/orders/history", "?page_size=100"), fills=lambda: _pages(client, "/v2/fills", "?page_size=100"),
+                    txns=lambda: _pages(client, "/v2/wallet/transactions", "?page_size=100"), positions=lambda: _get(client, "/v2/positions/margined"),
+                    open_orders=lambda: _get(client, "/v2/orders", "?state=open&page_size=50"))
+    orders, fills, txns, positions = got["orders"], got["fills"], got["txns"], got["positions"]
     if orders is None or fills is None or txns is None:
         return counts
+    seen = {x.get("id") for x in orders}
+    orders = orders + [o for o in (got["open_orders"] or []) if o.get("id") not in seen]   # live bracket legs are only in the open list, not in the history
     open_products = {p.get("product_id") for p in (positions or []) if Decimal(str(p.get("size") or 0)) != 0}
     for row in rows:
         existing = db.scalar(select(DeltaLiveOutcome).where(DeltaLiveOutcome.order_id == row.id))
@@ -82,15 +97,15 @@ def sync_outcomes(db: Session, user_id: UUID, client: DeltaOrderClient, *, now: 
 
 def wallet_snapshot(client: DeltaOrderClient, now: datetime) -> dict[str, Any]:
     """Wallet, open positions, open orders, today's and all-time realised P&L straight from Delta. Raises on any unreadable core piece so the caller can mark it stale."""
-    balances = _get(client, "/v2/wallet/balances")
+    got = _parallel(balances=lambda: _get(client, "/v2/wallet/balances"), positions=lambda: _get(client, "/v2/positions/margined"),
+                    open_orders=lambda: _get(client, "/v2/orders", "?state=open&page_size=50"), txns=lambda: _pages(client, "/v2/wallet/transactions", "?page_size=100", pages=20))
+    balances = got["balances"]
     if balances is None:
         raise RuntimeError("wallet unreadable")
     usd = next((b for b in balances if str(b.get("asset_symbol")).upper() == "USD"), None)
     if usd is None:
         raise RuntimeError("no USD wallet")
-    positions = _get(client, "/v2/positions/margined") or []
-    open_orders = _get(client, "/v2/orders", "?state=open&page_size=50") or []
-    txns = _pages(client, "/v2/wallet/transactions", "?page_size=100", pages=20) or []
+    positions, open_orders, txns = got["positions"] or [], got["open_orders"] or [], got["txns"] or []
     start = day_start_utc(now)
     today = all_time = Decimal(0)
     for t in txns:
@@ -139,6 +154,10 @@ def report(db: Session, user_id: UUID, client_factory=DeltaOrderClient, *, now: 
 
 
 def _order_view(o: DeltaLiveOrder, out: DeltaLiveOutcome | None) -> dict[str, Any]:
+    if out is None and o.status in ("rejected", "error"):          # Delta refused it: there is no position and no money moved, so it is not "unknown"
+        return {"id": str(o.id), "time": o.created_at.isoformat(), "symbol": o.symbol, "side": o.side, "contracts": o.contracts, "leverage": o.leverage, "status": o.status,
+                "entry_price": None, "stop_price": _money(o.stop_price), "target_price": _money(o.target_price), "block_reason": o.block_reason, "outcome": "rejected",
+                "outcome_label": lifecycle.LABELS["rejected"], "exit_at": None, "exit_price": None, "realized_pnl": None, "fees": None, "funding": None, "net_pnl": None}
     return {
         "id": str(o.id), "time": o.created_at.isoformat(), "symbol": o.symbol, "side": o.side, "contracts": o.contracts, "leverage": o.leverage, "status": o.status,
         "entry_price": _money(out.entry_price if out and out.entry_price is not None else o.entry_price), "stop_price": _money(o.stop_price), "target_price": _money(o.target_price),

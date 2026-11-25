@@ -36,9 +36,19 @@ describe('CryptoLiveReport', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<CryptoLiveReport />);
     await screen.findByText('Target hit');
-    await vi.advanceTimersByTimeAsync(5_100);
+    await vi.advanceTimersByTimeAsync(15_100);                     // refresh every 15 s, never overlapping
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Stale'));
     expect(screen.getByText('Target hit')).toBeTruthy();
     vi.useRealTimers();
+  });
+});
+
+describe('CryptoLiveReport while loading', () => {
+  it('says it is loading, and never "no live orders", until Delta has answered', () => {
+    apiRequest.mockReturnValue(new Promise(() => {}));            // Delta still answering
+    render(<CryptoLiveReport />);
+    expect(screen.getByRole('status').textContent).toMatch(/Loading from Delta/);
+    expect(screen.queryByText('No live orders yet.')).toBeNull();
+    expect(screen.queryByText('No open positions.')).toBeNull();
   });
 });

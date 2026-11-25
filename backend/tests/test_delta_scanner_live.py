@@ -179,3 +179,14 @@ def test_a_paper_scanner_run_never_builds_an_order_client(engine, monkeypatch):
     monkeypatch.setattr(scan, "load_candles", lambda *a, **k: candles * 10)
     with Session(engine) as db:
         scan.run_once(db, db.get(DeltaScanner, sid), T0 + timedelta(days=1))
+
+
+def test_freshness_is_judged_at_the_moment_of_sending_not_when_a_slow_pass_started(engine, monkeypatch):
+    # a pass that began 20 minutes ago hands over a signal that was fresh THEN: by the time it would be sent it is stale (seen live on 25 Nov: a 4.5-minute pass)
+    from datetime import datetime, timezone
+    _uid, sid = _setup(engine, monkeypatch, execute_live=True, email="sl9@example.com")
+    broker = Broker()
+    entries, candles, at = _entry_and_candles(datetime.now(timezone.utc) - timedelta(minutes=20))
+    with Session(engine) as db:
+        row = live.maybe_place_scanner(db, db.get(DeltaScanner, sid), SPEC, entries, candles, at, broker.factory())
+        assert row.status == "blocked" and "signal_fresh" in row.block_reason and broker.writes == []

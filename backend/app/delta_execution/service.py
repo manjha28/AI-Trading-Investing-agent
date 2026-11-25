@@ -76,6 +76,7 @@ def attempt_order(db: Session, ft: Source, spec: Spec, intent: DeltaOrderIntent,
                   client_factory: ClientFactory = DeltaOrderClient) -> DeltaLiveOrder | None:
     """Run the guard-rails on one intent and, only if EVERY check passes, set the leverage and place it. Idempotent per signal."""
     db.refresh(ft)                                  # the Live switch is read from the database at the moment of sending, never from a copy loaded earlier in the pass
+    now = max(now, _now())                          # the gate judges freshness at the moment of sending: a pass that started minutes ago must not make a stale signal look fresh
     user_id = ft.user_id
     cid = client_order_id(intent, user_id)
     existing = db.scalar(select(DeltaLiveOrder).where(DeltaLiveOrder.client_order_id == cid))
