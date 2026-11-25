@@ -271,3 +271,4 @@
 - 2026-11-25: After the NSE close, provisional daily closes (Dhan quotes) are captured for the whole Market watch list, not only watchlist/holdings, until Dhan publishes the candle next morning.
 - 2026-11-25: Research: all crypto strategies re-run on Delta's own data (R3 + 17 variations, trend rejection, lower-high volume, absorption with fixed trail); reports/delta_all_strategies.md.
 - 2026-11-25: Research: dynamic entries (confirmation, volume, RSI, trend) and exits (ratchet, EMA9 flip, RSI flip, volume reversal) on 7 crypto strategy runs (252 variants); reports/dynamic_entries_exits.md.
+- 2026-11-25: Research: [Smith] VWAP Deviation+ script replicated and traded on Delta BTC/ETH/SOL/XRP (27 variants); reports/smith_vwap.md.
