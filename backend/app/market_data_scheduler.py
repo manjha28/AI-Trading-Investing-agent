@@ -839,6 +839,9 @@ def _capture_dhan_session_closes(captured_at: datetime) -> bool:
                     requested_ids.add(instrument.id)
                     break
 
+        # The whole Market watch list, not only watchlist and holdings: Dhan publishes the daily candle only the next morning, so without this every other
+        # stock showed the previous session as "stale" all evening (25 Nov 2026: 375 of 383). One batched quote call covers them; real Dhan data only.
+        requested_ids |= set(candidates)
         local_now = captured_at.astimezone(IST)
         target_by_id: dict[UUID, tuple[Instrument, InstrumentProviderIdentifier, object]] = {}
         for instrument_id in requested_ids:
