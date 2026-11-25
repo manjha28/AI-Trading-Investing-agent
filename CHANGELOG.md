@@ -260,3 +260,4 @@
 - 2026-11-25: Fixes: live gate judges freshness at send time; outcome sync finds open bracket legs and labels rejected orders; Live report loading state and parallel Delta reads; Dhan realised kept per IST day (migration 0081); official close refresh skipped while NSE trades; Dhan sync timing per endpoint; Signals dashboard loading text.
 - 2026-11-25: Research: 5 EMA exit variants (30) on BTC/ETH/SOL/LISTA 5m/15m; root cause of the 05:16 order's ~12R target; reports/five_ema_exits.md.
 - 2026-11-25: Research: owner's trend + rejection rule (6 variants) on BTC/ETH; reports/trend_rejection.md.
+- 2026-11-25: Research: owner's marked lower-high shorts with volume (16 variants); reports/lower_high_volume.md.
