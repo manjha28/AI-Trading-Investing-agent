@@ -13,9 +13,10 @@ from sqlalchemy.orm import Session
 from app.crypto_delta.candles import RESOLUTION_SECONDS, CandleDataError, load_candles, sync_candles
 from app.crypto_delta.forward import WARMUP_BARS, FiveEmaParams, fetch_spec, replay
 from app.delta_scanner.portfolio import RiskRules, simulate
+from app.delta_scanner.trend_strategies import TREND_STRATEGIES, trades as trend_trades
 from app.models.delta_scanner import DeltaScanner
 
-STRATEGIES = ("five_ema_alert", "funding_extreme")
+STRATEGIES = ("five_ema_alert", "funding_extreme", "trend_donchian_4h", "momentum_56d", "rsi2_daily")
 FUNDING_PARAMS = (0.9, 12, 48, 2.5)        # frozen: funding percentile, stall bars, hold bars, stop in ATR (Part D2 finalist, hash 00bd99ec7d9baf79). UNPROVEN: it did not pass the pass rule.
 
 
@@ -69,6 +70,11 @@ def run_once(db: Session, sc: DeltaScanner, now: datetime | None = None, *, tran
             spec = fetch_spec(symbol, transport=transport)
             if sc.strategy_key == "funding_extreme":
                 per_symbol[symbol] = {"contract_value": spec.contract_value, "trades": _funding_trades(db, symbol, spec, start, now, transport)}
+                continue
+            if sc.strategy_key in TREND_STRATEGIES:
+                closed, opened = trend_trades(db, sc.strategy_key, symbol, spec, start, now, transport)
+                per_symbol[symbol] = {"contract_value": spec.contract_value, "trades": closed}
+                open_now += [{"symbol": symbol, **x} for x in opened]
                 continue
             sync_candles(db, symbol, sc.resolution, start - step * WARMUP_BARS, now, now=now, transport=transport)
             candles = load_candles(db, symbol, sc.resolution, start - step * WARMUP_BARS, now, now=now)

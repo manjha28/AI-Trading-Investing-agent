@@ -11,7 +11,7 @@ describe('CryptoScanner strategy picker', () => {
   it('offers the strategies and sends the chosen one', async () => {
     render(<CryptoScanner />);
     const select = await screen.findByLabelText('Scanner strategy');
-    expect(Array.from((select as HTMLSelectElement).options).map((o) => o.value)).toEqual(['five_ema_alert', 'funding_extreme']);
+    expect(Array.from((select as HTMLSelectElement).options).map((o) => o.value)).toEqual(['five_ema_alert', 'funding_extreme', 'trend_donchian_4h', 'momentum_56d', 'rsi2_daily']);
     fireEvent.change(select, { target: { value: 'funding_extreme' } });
     expect((screen.getByLabelText('Scanner resolution') as HTMLSelectElement).disabled).toBe(true);       // defined on 1-hour bars only
     fireEvent.change(screen.getByLabelText('Symbols'), { target: { value: 'BTCUSD' } });

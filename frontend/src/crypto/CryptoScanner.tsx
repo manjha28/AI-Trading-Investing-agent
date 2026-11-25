@@ -8,8 +8,12 @@ type Scanner = { id: string; name: string; strategy_key?: string; resolution: st
 const STRATEGY_OPTIONS = [
   { key: 'five_ema_alert', label: '5 EMA alert candle (paper)', note: 'Short/long on the alert candle breaking its own extreme; any resolution.' },
   { key: 'funding_extreme', label: 'Funding extremes (Unproven, frozen parameters)', note: 'Fades extreme funding on 1-hour bars; parameters are frozen and the result is unproven.' },
+  { key: 'trend_donchian_4h', label: 'Trend: 4h Donchian 50/25 + 3 ATR trail (Unproven)', note: 'Long above the 50-bar high, short below the 50-bar low; exit on the 25-bar channel or a 3 ATR trailing stop. Best backtest candidate on BTC/ETH/SOL/XRP; paper only.' },
+  { key: 'momentum_56d', label: 'Trend: 56-day momentum, long-short (Unproven)', note: 'Holds the sign of the 56-day return on daily bars. Strong in trending markets, lost in choppy ones; paper only.' },
+  { key: 'rsi2_daily', label: 'Mean reversion: Connors RSI(2) 5/95 (Unproven)', note: 'Buys RSI(2) < 5 above the 200-day average, shorts RSI(2) > 95 below it, exits at the 5-day average. Steadiest backtest, small returns; paper only.' },
 ] as const;
 const RESOLUTION_OPTIONS = ['5m', '15m', '1h'] as const;
+const FIXED_RES = new Set(['funding_extreme', 'trend_donchian_4h', 'momentum_56d', 'rsi2_daily']);   // these read their own bars (1h/4h/daily) and run hourly
 const strategyLabel = (key?: string) => STRATEGY_OPTIONS.find((o) => o.key === key)?.label ?? key ?? '—';
 const usd = (v: string | null | undefined) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v) < 0 ? '-' : ''}$${Math.abs(Number(v)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
@@ -27,7 +31,7 @@ export function CryptoScanner() {
   useEffect(() => { void load(); }, [load]);
   const act = async (fn: () => Promise<unknown>) => { setBusy(true); setError(null); try { await fn(); await load(); } catch (e) { setError(messageOf(e)); } finally { setBusy(false); } };
   const loadTop = () => act(async () => { setTop((await apiRequest<{ symbols: Top[] }>('/delta-scanner/universe/top?n=10')).symbols); });
-  const create = (topN: number) => act(async () => { await apiRequest('/delta-scanner', { method: 'POST', body: JSON.stringify({ symbols: text, top_liquid: topN, strategy_key: strategy, resolution: strategy === 'funding_extreme' ? '1h' : resolution }) }); setText(''); });
+  const create = (topN: number) => act(async () => { await apiRequest('/delta-scanner', { method: 'POST', body: JSON.stringify({ symbols: text, top_liquid: topN, strategy_key: strategy, resolution: FIXED_RES.has(strategy) ? '1h' : resolution }) }); setText(''); });
   const setLive = (s: Scanner, enabled: boolean) => {
     if (enabled && !window.confirm(`Turn ${s.name} LIVE? New signals become REAL orders on your Delta account: 1 contract each, leveraged, with a stop and a target attached. They only go out while Delta live is armed (Overview switch). Expect losses as well as wins.`)) return;
     void act(async () => { await apiRequest(`/delta-scanner/${s.id}/live`, { method: 'PUT', body: JSON.stringify({ enabled }) }); });
@@ -43,7 +47,7 @@ export function CryptoScanner() {
       <div className="crypto-form">
         <label>Strategy <select value={strategy} onChange={(e) => setStrategy(e.target.value)} aria-label="Scanner strategy">
           {STRATEGY_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}</select></label>
-        <label>Resolution <select value={strategy === 'funding_extreme' ? '1h' : resolution} disabled={strategy === 'funding_extreme'} onChange={(e) => setResolution(e.target.value)} aria-label="Scanner resolution">
+        <label>Resolution <select value={FIXED_RES.has(strategy) ? '1h' : resolution} disabled={FIXED_RES.has(strategy)} onChange={(e) => setResolution(e.target.value)} aria-label="Scanner resolution">
           {RESOLUTION_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}</select></label>
         <small className="crypto-sub">{STRATEGY_OPTIONS.find((o) => o.key === strategy)?.note}</small>
         <label>Add symbols (comma separated) <input value={text} onChange={(e) => setText(e.target.value)} placeholder="BTCUSD, ETHUSD, SOLUSD" aria-label="Symbols" /></label>

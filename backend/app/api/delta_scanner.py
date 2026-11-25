@@ -95,8 +95,8 @@ def list_scanners(active_session: UserSession = Depends(require_verified_session
 
 @router.post("")
 def create_scanner(body: ScannerCreate, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, Any]:
-    if body.strategy_key == "funding_extreme":
-        body.resolution = "1h"                                              # the unproven candidate is defined on 1-hour bars
+    if body.strategy_key in ("funding_extreme", "trend_donchian_4h", "momentum_56d", "rsi2_daily"):
+        body.resolution = "1h"                                              # these run hourly; each rule reads its own bars (1h, 4h or daily)
     if body.strategy_key not in service.STRATEGIES or body.resolution not in RESOLUTIONS:
         raise HTTPException(status_code=422, detail="Unsupported strategy or resolution.")
     try:
@@ -119,7 +119,7 @@ def create_scanner(body: ScannerCreate, active_session: UserSession = Depends(re
     now = datetime.now(timezone.utc)
     row = DeltaScanner(user_id=active_session.user_id, name=(body.name or f"Scanner {body.strategy_key} {body.resolution} ({len(symbols)})").strip(), strategy_key=body.strategy_key,
                        resolution=body.resolution, symbols=symbols, params={"ema": body.ema, "rr": str(body.rr), "direction": body.direction, "stop_buffer_pct": "0", "slippage_bps": str(body.slippage_bps)},
-                       wallet_usd=body.wallet_usd, risk_pct=body.risk_pct, total_risk_cap_pct=body.total_risk_cap_pct, leverage_cap=body.leverage_cap, label=("unproven" if body.strategy_key == "funding_extreme" else "paper"),
+                       wallet_usd=body.wallet_usd, risk_pct=body.risk_pct, total_risk_cap_pct=body.total_risk_cap_pct, leverage_cap=body.leverage_cap, label=("unproven" if body.strategy_key in ("funding_extreme", "trend_donchian_4h", "momentum_56d", "rsi2_daily") else "paper"),
                        start_time=now, status="active", created_at=now, updated_at=now)
     db.add(row)
     db.commit()

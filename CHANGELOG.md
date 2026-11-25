@@ -274,3 +274,4 @@
 - 2026-11-25: Research: [Smith] VWAP Deviation+ script replicated and traded on Delta BTC/ETH/SOL/XRP (27 variants); reports/smith_vwap.md.
 - 2026-11-25: Research: battery of 11 published strategy families (40 variants) on Delta data; reports/strategy_battery.md.
 - 2026-11-26: Research: literature round (Delta low-turnover strategies, 603 variants; NSE equity swing strategies); no live change; reports/2026-11-26-literature-delta.md, 2026-11-26-literature-equity.md.
+- 2026-11-25: Delta scanner: three paper-only trend candidates (4h Donchian 50/25 + ATR trail, 56-day momentum, Connors RSI(2) 5/95) selectable on the scanner page.
