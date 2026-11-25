@@ -275,3 +275,4 @@
 - 2026-11-25: Research: battery of 11 published strategy families (40 variants) on Delta data; reports/strategy_battery.md.
 - 2026-11-26: Research: literature round (Delta low-turnover strategies, 603 variants; NSE equity swing strategies); no live change; reports/2026-11-26-literature-delta.md, 2026-11-26-literature-equity.md.
 - 2026-11-25: Delta scanner: three paper-only trend candidates (4h Donchian 50/25 + ATR trail, 56-day momentum, Connors RSI(2) 5/95) selectable on the scanner page.
+- 2026-11-25: Research: 4h near-pump longs and squeeze-aware shorts with Smith VWAP bands (36 variants); reports/slow_4h_pump.md.
