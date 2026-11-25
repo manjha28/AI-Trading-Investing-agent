@@ -250,3 +250,4 @@
 - 2026-11-25 Confidence: honest proof test (no model qualifies); label now 'Unproven · N similar setups' (A4)
 - 2026-11-25 Multibagger: price filter (presets, min/max, URL + local storage), last close per stock (A5)
 - 2026-11-25 Daily report: uniform card heights, Why as overlay (B1); research_sections_v2 flag for Ready/Hold/Radar cards, default off (B2)
+- 2026-11-25: Journal: one real fill stored as trade-book + trade-history copies is collapsed (23 Nov P&L now known); login/baseline scripts.
