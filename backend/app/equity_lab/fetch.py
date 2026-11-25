@@ -57,7 +57,8 @@ def main(out: str, since: str) -> None:
         d["t"] = pd.to_datetime(d.ts, utc=True).dt.tz_convert("Asia/Kolkata")
         d = d[(d.t.dt.time >= pd.Timestamp("09:15").time()) & (d.t.dt.time < pd.Timestamp("15:30").time())].set_index("t")
         r = d.resample("5min", label="left", closed="left").agg({"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}).dropna()
-        np.savez_compressed(f, t=(r.index.tz_convert("UTC").astype("int64") // 10**9).to_numpy(), **{k: r[k].to_numpy(np.float32) for k in "ohlcv"})
+        # epoch seconds, whatever the index resolution (astype("int64") // 10**9 was wrong for second-resolution indexes)
+        np.savez_compressed(f, t=np.array([int(x.timestamp()) for x in r.index], dtype=np.int64), **{k: r[k].to_numpy(np.float32) for k in "ohlcv"})
         done += 1
         if done % 25 == 0:
             print(f"{done} stocks written", flush=True)

@@ -35,11 +35,31 @@ COST_RT = 10.6 + 4.0          # bps per round trip (costs above + 2 bps slippage
 SQ = 15 * 60 + 15             # 15:15 IST in minutes
 
 
+def _seconds(t: np.ndarray) -> np.ndarray:
+    """The first download stored epoch time in thousands of seconds (a pandas resolution slip). Each true bar time is a multiple of 300 s inside
+    [t x 1000, t x 1000 + 1000); per IST day the bars are placed from 09:15 onward at the earliest such time after the previous bar. Exact when no bar
+    of the day is missing (75 bars); otherwise a bar can land up to 15 minutes early."""
+    if t.max() > 10**9:
+        return t
+    k = t.astype(np.int64) * 1000
+    day = (k + 19800) // 86400                                       # IST date of each bar
+    out, prev, cur = np.empty(len(t), dtype=np.int64), 0, None
+    for i in range(len(k)):
+        if day[i] != cur:
+            cur = day[i]
+            prev = cur * 86400 - 19800 + (9 * 3600 + 10 * 60)         # 09:10 IST that day, so the first bar is 09:15 or later
+        c = max(-(-k[i] // 300) * 300, prev + 300)
+        out[i] = c
+        prev = c
+    return out
+
+
 def load_all() -> dict[str, pd.DataFrame]:
     out = {}
     for f in sorted(DATA.glob("*.npz")):
         z = np.load(f)
         d = pd.DataFrame({k: z[k] for k in ("t", "o", "h", "l", "c", "v")})
+        d["t"] = _seconds(d.t.to_numpy())
         ts = pd.to_datetime(d.t, unit="s", utc=True).dt.tz_convert("Asia/Kolkata")
         d["day"], d["mins"] = ts.dt.date, ts.dt.hour * 60 + ts.dt.minute
         out[f.stem] = d
@@ -97,7 +117,7 @@ def run_symbol(sym: str, d: pd.DataFrame, uni: dict) -> dict[str, list[dict]]:
         avg_or30 = float(np.mean(or30w[max(0, gi - 20):gi]))
 
         def add(name, side, i0, entry, stop, target):
-            if entry <= 0 or (side > 0 and stop >= entry) or (side < 0 and stop <= entry):
+            if i0 >= b or entry <= 0 or (side > 0 and stop >= entry) or (side < 0 and stop <= entry):
                 return
             px, why = _exit(d, i0, side, entry, stop, target)
             res.setdefault(name, []).append({"symbol": sym, "day": str(day), "bps": _bps(side, entry, px), "why": why, "side": side})

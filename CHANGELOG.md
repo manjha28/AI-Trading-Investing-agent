@@ -277,3 +277,4 @@
 - 2026-11-25: Delta scanner: three paper-only trend candidates (4h Donchian 50/25 + ATR trail, 56-day momentum, Connors RSI(2) 5/95) selectable on the scanner page.
 - 2026-11-25: Research: 4h near-pump longs and squeeze-aware shorts with Smith VWAP bands (36 variants); reports/slow_4h_pump.md.
 - 2026-11-26: UI simplification (frontend only): top-bar live pill, Crypto · Delta 4 tabs and test cards, Research daily-report cards and buckets, Overview/Journal declutter; not deployed.
+- 2026-11-25: Research: classic intraday day-trading rules on 150 liquid NSE stocks, 1 year of Dhan 5-minute data (37 variants); reports/equity_daytrade.md.
