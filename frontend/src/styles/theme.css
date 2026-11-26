@@ -397,3 +397,30 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .depth-ask i { background: var(--negative); } .depth-bid i { background: var(--positive); } .depth-ask span:first-child { color: var(--negative); } .depth-bid span:first-child { color: var(--positive); }
 .depth-mid { margin: 4px 0; padding: 4px; text-align: center; font-size: 12px; border-block: 1px solid rgba(128,128,128,.3); }
 .depth-tape { max-height: 220px; overflow: auto; } .depth-tape li.positive { color: var(--positive); } .depth-tape li.negative { color: var(--negative); }
+
+/* 26 Nov audit: layout breakages (no redesign) */
+/* a text-styled button is text, never a grey native button */
+.link-button { appearance: none; background: none; border: 0; padding: 0; font: inherit; color: var(--link); cursor: pointer; text-align: left; }
+.link-button:hover { text-decoration: underline; }
+.watch-symbol .link-button { color: inherit; }
+.section-tabs { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.section-tabs button { appearance: none; background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; cursor: pointer; }
+.section-tabs button.active, .section-tabs button[aria-selected="true"], .section-tabs button[aria-current] { color: var(--text); border-color: var(--positive); }
+/* crypto pages: nothing is cut off on the right; a wide table scrolls inside its own box */
+.crypto-page { grid-template-columns: minmax(0, 1fr); }
+.crypto-page > *, .crypto-forward > *, .crypto-live-report > * { min-width: 0; max-width: 100%; }
+.crypto-forward, .crypto-live-report { min-width: 0; }
+.crypto-table { display: block; max-width: 100%; overflow-x: auto; }
+.crypto-forward .crypto-table td:last-child { white-space: normal; min-width: 200px; }
+/* the last column (actions / updated) stays visible while a wide table scrolls */
+.watch-table th:last-child, .watch-table td:last-child { position: sticky; right: 0; background: var(--surface-1); }
+.sl-library .sl-table th:last-child, .sl-library .sl-table td.sl-actions { position: sticky; right: 0; background: var(--surface-1); }
+.sl-library .sl-actions { min-width: 150px; }
+@media (max-width: 700px) {
+  .workspace-header .header-actions { flex-direction: row; align-items: center; }
+  .app-frame .header-search { flex: 1 1 auto; max-width: none; }
+  .app-frame .header-search input:not([type=checkbox]) { width: 100%; }
+}
+@media (max-width: 480px) {
+  .overview-page .portfolio-metrics .metric strong { font-size: var(--fs-4); letter-spacing: 0; }
+}

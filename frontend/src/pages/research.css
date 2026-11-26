@@ -437,11 +437,6 @@
 .rt-slot-ladder .rt-range { display: flex; gap: 4px; flex-wrap: nowrap; white-space: nowrap; }
 .rt-slot-notes { height: 104px; flex: none; overflow: hidden; display: grid; align-content: start; gap: 2px; } .rt-slot-notes .rt-note { margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .rt-buy .rt-why { flex: none; height: 28px; margin-top: auto; }
-.rt-buy .rt-why[open] > :not(summary) { position: absolute; left: 8px; right: 8px; z-index: 6; }
-.rt-buy .rt-why[open] { position: static; }
-.rt-buy .rt-why[open]::after { content: ''; position: absolute; inset: 0; z-index: 4; background: var(--rt-panel); opacity: .96; pointer-events: none; border-radius: 10px; }
-.rt-buy .rt-why[open] > summary { position: absolute; z-index: 7; left: 14px; top: 10px; }
-.rt-buy .rt-why[open] > :not(summary) { top: 40px; max-height: calc(100% - 100px); overflow: auto; }
 .rt-buy > footer { height: 40px; flex: none; margin-top: 0; } .rt-buy > footer small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .rt-buy > footer .rt-btn { white-space: nowrap; }
 .rt-buy .rt-chips .rt-chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
@@ -454,3 +449,12 @@
 .rt-count { background: var(--rt-raised); border: 1px solid var(--rt-border); border-radius: 10px; padding: 0 8px; font-size: 12px; margin-left: 6px; }
 .rt-buy-hold { border-top-color: var(--link); } .rt-buy-radar { border-top-color: #b48cff; }
 .rt-slot-status .rt-action { color: var(--rt-text); }
+
+/* the "Why n/100?" panel opens inside its own card, in normal flow: nothing is drawn over anything else */
+.rt-buy .rt-why[open] { height: auto; flex: none; background: var(--rt-panel); }
+.rt-buy-grid:has(.rt-why[open]) { align-items: start; }
+.rt-buy:has(.rt-why[open]) { height: auto; }
+/* the status line is one line: the state pill truncates, it never covers the setup chip */
+.rt-buy .rt-slot-status .rt-setup { display: flex; flex-wrap: nowrap; align-items: center; margin: 0; }
+.rt-buy .rt-slot-status .rt-setup .rt-chip { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-line-clamp: unset; min-height: 24px; flex: 0 0 auto; max-width: 40%; }
+.rt-buy .rt-slot-status .rt-setup .rt-chip:first-child { flex: 1 1 0; max-width: none; }
