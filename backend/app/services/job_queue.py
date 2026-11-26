@@ -165,6 +165,24 @@ def reclaim_stale(db: Session, *, now: datetime | None = None, lease_seconds: in
     return reclaimed
 
 
+def close_orphaned_backtests(db: Session, *, now: datetime | None = None, older_than: timedelta = timedelta(minutes=10)) -> int:
+    """A backtest left "queued"/"running" although its job is finished or gone (the server restarted under it) is marked failed, with the reason."""
+    from app.models.strategies import BacktestRun
+
+    now = now or now_utc()
+    closed = 0
+    for run in db.scalars(select(BacktestRun).where(BacktestRun.status.in_(("queued", "running")), BacktestRun.created_at < now - older_than)):
+        job = db.scalar(select(Job).where(Job.user_id == run.user_id, Job.idempotency_key == f"backtest:{run.id}"))
+        if job is not None and job.status in ("queued", "running"):
+            continue
+        run.status, run.finished_at = "failed", now
+        run.error = (job.error if job is not None and job.error else None) or "Interrupted: the background job ended without finishing this backtest. Run it again."
+        closed += 1
+    if closed:
+        db.commit()
+    return closed
+
+
 def retry(db: Session, job: Job) -> Job:
     """Owner action: put a failed or cancelled job back in the queue with a fresh attempt budget."""
     if job.status not in ("failed", "cancelled"):

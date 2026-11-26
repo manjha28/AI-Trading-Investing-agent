@@ -286,3 +286,4 @@
 - 2026-11-26: Event-loop watchdog logs what blocked the server (broker feeds drop with keepalive timeouts).
 - 2026-11-26: Layout fixes from the audit: grey crypto/feed buttons, cut-off crypto and strategy tables, research card status line and Why panel, phone header and Overview values.
 - 2026-11-26: Equity live feed: the Dhan instrument master is no longer downloaded on the event loop (it froze the server and dropped the broker feeds every minute).
+- 2026-11-26: Backtest-only strategies are no longer scheduled for scans; backtests whose job died are closed as interrupted; sandbox order cap labelled.

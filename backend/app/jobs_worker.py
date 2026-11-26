@@ -101,6 +101,9 @@ def _housekeeping(do_scheduler: bool, do_reclaim: bool) -> None:
             moved = job_queue.reclaim_stale(db)
             if moved:
                 logger.warning("jobs_reclaimed count=%s", len(moved))
+            stuck = job_queue.close_orphaned_backtests(db)
+            if stuck:
+                logger.warning("backtests_closed_as_interrupted count=%s", stuck)
         if do_scheduler:
             scan_scheduler.tick(db)
 

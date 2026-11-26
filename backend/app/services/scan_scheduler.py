@@ -87,6 +87,10 @@ def tick(db: Session, now: datetime | None = None) -> dict[str, int]:
             sched.last_skip_reason, sched.next_run_at = "strategy_not_active", None
             continue
         defn = StrategyDefinition.model_validate(version.definition)
+        from app.services.engine_strategies import is_engine
+        if is_engine(defn):                                             # backtest-only: queueing it only produced a run of nothing every cycle
+            sched.last_skip_reason, sched.next_run_at = "backtest_only_strategy_not_scanned", None
+            continue
         market = market_key_of(defn)
         if sched.next_run_at is None:
             sched.next_run_at = next_scan_time(now, sched.cadence_minutes, market)

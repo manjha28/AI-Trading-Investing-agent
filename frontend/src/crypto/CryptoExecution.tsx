@@ -124,7 +124,7 @@ export function CryptoExecution() {
           <div className="crypto-readiness-grid">
             <div><span>Execution state</span><strong>{delta ? <ExecutionStateChip venue={delta} /> : '—'}</strong><small>{delta ? (delta.effective.reasons.join('; ') || 'Orders can be sent now') : 'The server has not reported it yet'}</small></div>
             <div><span>Mode</span><strong>{status.mode.effective}</strong><small>{status.mode.live_blocked ? status.mode.reason : 'Research mode does not decide live orders: the execution state does'}</small></div>
-            <div><span>Max order notional</span><strong>{status.limits.max_order_notional} {status.limits.currency}</strong><small>Fails closed on unknown inputs</small></div>
+            <div><span title="The limit used by the risk-check sandbox on this tab. The cap that applies to real Delta orders is the one shown on Forward test.">Sandbox max order notional</span><strong>{status.limits.max_order_notional} {status.limits.currency}</strong><small>Fails closed on unknown inputs</small></div>
             <div><span>Max total exposure</span><strong>{status.limits.max_total_exposure} {status.limits.currency}</strong><small>Price must be under {status.limits.max_price_age_seconds}s old</small></div>
             <div><span>Credentials</span><strong>Backend secrets</strong><small>{status.capabilities.execution_credentials}</small></div>
             <div><span>Audit events</span><strong>{status.audit_events}</strong><small>Append-only, owner-scoped</small></div>
