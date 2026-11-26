@@ -12,9 +12,16 @@ import traceback
 logger = logging.getLogger(__name__)
 
 
+def _ours(filename: str) -> bool:
+    return "site-packages" not in filename and "/usr/local/lib" not in filename and "/usr/lib" not in filename
+
+
 def _frames(frame, limit: int) -> str:
-    stack = traceback.extract_stack(frame)[-limit:]
-    return " <- ".join(f"{f.filename.split('/site-packages/')[-1].split('/app/', 1)[-1]}:{f.lineno} {f.name}" for f in reversed(stack))
+    """The innermost two frames (what it is waiting on), then this application's own frames (who asked for it)."""
+    stack = traceback.extract_stack(frame)
+    inner = list(reversed(stack[-2:]))
+    ours = [f for f in reversed(stack[:-2]) if _ours(f.filename)][:limit]
+    return " <- ".join(f"{f.filename.split('/site-packages/')[-1].split('/app/', 1)[-1]}:{f.lineno} {f.name}" for f in inner + ours)
 
 
 def snapshot(loop_thread: int) -> str:
