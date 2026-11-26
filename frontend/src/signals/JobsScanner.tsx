@@ -170,6 +170,11 @@ export function ScannerSchedulePanel({ strategies }: { strategies: StrategyRow[]
   );
 }
 
+const byDay = (runs: ScanRunView[]): [string, ScanRunView[]][] => [...runs.reduce((m, r) => {
+  const day = r.started_at ? new Date(r.started_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : 'Not started';
+  return m.set(day, [...(m.get(day) ?? []), r]);
+}, new Map<string, ScanRunView[]>())];
+
 export function ScanHistoryPanel({ onShowRejections }: { onShowRejections: (scanRunId: string) => void }) {
   const { data, error, load } = useLoad<ScanRunView[]>('/scan-runs?limit=30', (runs) => runs.some((r) => r.status === 'running'));
   return (
@@ -178,12 +183,14 @@ export function ScanHistoryPanel({ onShowRejections }: { onShowRejections: (scan
       {error && <Notice tone="bad">Could not load scan history: {error} <button type="button" className="sl-link" onClick={() => void load()}>Retry</button></Notice>}
       {!error && data === null && <p className="sl-muted" role="status">Loading scan history… (gives up after 15 s)</p>}
       {data !== null && data.length === 0 && <Empty title="No scans recorded yet">Press “Scan now” in Live Signals, or enable a schedule.</Empty>}
-      {data !== null && data.length > 0 && (
-        <Scroll label="Scan runs">
+      {data !== null && data.length > 0 && byDay(data).map(([day, runs], n) => (
+        <details key={day} className="sl-issue-group" open={n === 0}>
+          <summary><strong>{day}</strong> · {runs.length} scan{runs.length === 1 ? '' : 's'} · {runs.reduce((a, r) => a + r.new_signals, 0)} new signal(s){runs.some((r) => r.errors.length) ? ` · ${runs.filter((r) => r.errors.length).length} with errors` : ''}</summary>
+        <Scroll label={`Scan runs ${day}`}>
           <table className="sl-table sl-compact">
             <thead><tr><th>Started (IST)</th><th>Trigger</th><th>Status</th><th>Covered</th><th className="sl-r">Signals</th><th>Suppressed</th></tr></thead>
             <tbody>
-              {data.map((r) => (
+              {runs.map((r) => (
                 <tr key={r.scan_run_id}>
                   <td>{fmtIst(r.started_at)}</td><td>{r.trigger === 'schedule' ? 'Scheduled' : r.trigger === 'manual' ? 'Manual' : '—'}</td>
                   <td><Pill tone={r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'bad' : 'info'}>{r.status}</Pill>{r.errors.length > 0 && <div className="sl-muted">{r.errors.length} error{r.errors.length === 1 ? '' : 's'}: {r.errors[0].error}</div>}</td>
@@ -195,7 +202,8 @@ export function ScanHistoryPanel({ onShowRejections }: { onShowRejections: (scan
             </tbody>
           </table>
         </Scroll>
-      )}
+        </details>
+      ))}
     </section>
   );
 }

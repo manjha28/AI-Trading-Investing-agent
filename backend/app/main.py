@@ -198,6 +198,8 @@ async def lifespan(_app: FastAPI):
     if settings.master_bar_refresh_enabled and "pytest" not in sys.modules:
         from app.minute_bar_completion import minute_bar_completion_loop
         _leader(minute_bar_completion_loop, 'minute_completion')      # after the close: every stock's full 1-minute candles for the last few days
+        from app.history_tier_backfill import history_tier_backfill_loop
+        _leader(history_tier_backfill_loop, 'history_tiers')          # market closed only: 2 years for Nifty 50 and holdings, 6 months for the rest
     if "pytest" not in sys.modules:
         from app.mcx_open_check import mcx_open_check_loop
         _leader(mcx_open_check_loop, 'mcx_open_check')

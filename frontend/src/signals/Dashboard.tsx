@@ -16,6 +16,17 @@ export function Dashboard({ health, loading, error, goto, reload }: { health: He
   const windowDays = health.data_health.find((h) => h.window_days != null)?.window_days ?? 5;
   return (
     <div className="sl-dashboard">
+      {(health.counts.active === 0 || health.recent_backtests.length === 0) && (
+        <section className="sl-card sl-next" aria-label="Getting started">
+          <header className="sl-card-head"><h3>Getting started</h3></header>
+          <ol>
+            <li className={health.counts.total ? 'done' : ''}><span>Get a strategy</span><button type="button" onClick={() => goto('registry')}>Pick a ready one</button><button type="button" onClick={() => goto('builder')}>Build your own</button></li>
+            <li className={health.recent_backtests.length ? 'done' : ''}><span>Test it on past prices</span><button type="button" onClick={() => goto('backtesting')}>Run a backtest</button></li>
+            <li><span>Try it on live prices with paper money</span><button type="button" onClick={() => goto('forward')}>Start a forward test</button></li>
+            <li className={health.counts.active ? 'done' : ''}><span>Switch it on to get signals</span><button type="button" onClick={() => goto('live')}>Open live signals</button></li>
+          </ol>
+        </section>
+      )}
       <div className="sl-stats" aria-label="Strategy counts">
         <Stat label="Total strategies" value={health.counts.total} /><Stat label="Active" value={health.counts.active} tone={health.counts.active ? 'pos' : undefined} />
         <Stat label="Suspended" value={health.counts.suspended} /><Stat label="Retired" value={health.counts.retired} />
@@ -31,7 +42,7 @@ export function Dashboard({ health, loading, error, goto, reload }: { health: He
         <section className="sl-card"><header className="sl-card-head"><h3>Recent backtests</h3><button type="button" onClick={() => goto('backtesting')}>Open</button></header>
           {health.recent_backtests.length ? <Scroll label="Recent backtests"><table className="sl-table sl-compact"><thead><tr><th>When</th><th>Kind</th><th>Status</th><th>Trades</th><th>Return</th></tr></thead><tbody>
             {health.recent_backtests.map((r) => <tr key={r.id}><td>{fmtTime(r.created_at)}</td><td>{r.kind}</td><td><StatusPill status={r.status} /></td><td className="sl-r">{String(r.metrics?.total_trades ?? '—')}</td><td className="sl-r">{r.metrics ? fmtPct(r.metrics.return_pct as number) : '—'}</td></tr>)}
-          </tbody></table></Scroll> : <Empty title="No backtests yet">Run one from the Backtesting tab.</Empty>}
+          </tbody></table></Scroll> : <Empty title="No backtests yet">Run one under Backtest.</Empty>}
         </section>
       </div>
       <section className="sl-card"><header className="sl-card-head"><h3>Market-data health (1-minute)</h3></header>

@@ -398,3 +398,23 @@ def test_live_orders_are_listed_owner_scoped_with_the_brokers_verbatim_reply(cli
     other = TestClient(app)
     login(other, engine, "other-orders@example.com")
     assert other.get(f"{LIVE}/orders").json()["orders"] == []
+
+
+def test_own_strategy_is_paper_only_and_owner_scoped(client, engine):
+    login(client, engine, "own@example.com")
+    iid = add_inst(engine, "SBIN")
+    nse_sessions(engine, iid)
+    saved = client.post(f"{API}/strategies", headers=h(client), json={"definition": definition(iid, stop={"mode": "percent", "value": 1}, target={"mode": "rr", "value": 2})})
+    assert saved.status_code == 201, saved.text
+    key = f"own:{saved.json()['id']}"
+    refused = client.post(FT, headers=h(client), json={"strategy_key": key, "execute_live": True})
+    assert refused.status_code == 422 and "paper" in refused.json()["detail"]
+    made = client.post(FT, headers=h(client), json={"strategy_key": key})
+    assert made.status_code == 201, made.text
+    assert made.json()["execute_live"] is False and made.json()["instrument_total"] == 1 and made.json()["name"] == "EMA cross"
+    assert client.put(f"{FT}/{made.json()['id']}/execute-live", headers=h(client), json={"enabled": True}).status_code == 422
+    from fastapi.testclient import TestClient
+    from app.main import app
+    other = TestClient(app)
+    login(other, engine, "other-own@example.com")
+    assert other.post(FT, headers=h(other), json={"strategy_key": key}).status_code == 404

@@ -175,7 +175,7 @@ export function Backtesting({ meta, strategies, instruments, initialStrategyId, 
   const single = result && result.metrics ? (result as unknown as SingleResult) : null;
 
   if (!intraday.length) {
-    return <Notice tone="info">Create or import an intraday strategy first. Legacy daily strategies are backtested in the “Legacy daily research” tab.</Notice>;
+    return <Notice tone="info">Create or import an intraday strategy first: pick one in Strategies → Strategy Registry, or build one in the Strategy Builder.</Notice>;
   }
 
   return (
@@ -341,8 +341,9 @@ function Summary({ r }: { r: SingleResult }) {
         <Stat label="Profit factor (net)" value={num('profit_factor_net')} /><Stat label="Expectancy / trade" value={fmtMoney(m.expectancy_per_trade as string)} />
         <Stat label="Max drawdown" value={fmtPct(m.max_drawdown_pct as number)} tone="neg" /><Stat label="Avg hold (min)" value={num('avg_holding_minutes')} />
       </div>
+      <details className="sl-more-figures"><summary>All figures and charges</summary>
       <dl className="sl-kv" aria-label="Detailed metrics">
-        {[['Gross P&L before costs', 'gross_pnl_before_costs'], ['Gross profit (before costs)', 'gross_profit'], ['Gross loss (before costs)', 'gross_loss'], ['Slippage', 'total_slippage'], ['Charges', 'total_charges'], ['Net profit', 'net_profit'],
+        {[['Gross profit (before costs)', 'gross_profit'], ['Gross loss (before costs)', 'gross_loss'],
           ['Winning / losing', ''], ['Average win', 'avg_win'], ['Average loss', 'avg_loss'], ['Avg risk/reward', 'avg_risk_reward'], ['Avg R multiple', 'avg_r_multiple'], ['Largest win', 'largest_win'], ['Largest loss', 'largest_loss'],
           ['Max consecutive wins', 'max_consecutive_wins'], ['Max consecutive losses', 'max_consecutive_losses'], ['Profit factor (gross)', 'profit_factor_gross'], ['Max drawdown amount', 'max_drawdown_amount'], ['Sharpe', 'sharpe_ratio'], ['Sortino', 'sortino_ratio']]
           .map(([label, key]) => <div key={label}><dt>{label}</dt><dd>{key ? num(key) : `${m.winning_trades} / ${m.losing_trades}`}</dd></div>)}
@@ -360,6 +361,7 @@ function Summary({ r }: { r: SingleResult }) {
           </dl>
         </section>
       )}
+      </details>
       <p className="sl-muted">Sharpe/Sortino: {String(m.ratios_note)}</p>
       <p className="sl-muted">{r.benchmark.label}: {r.benchmark.average_return_pct == null ? '—' : fmtPct(r.benchmark.average_return_pct)} (average across instruments)</p>
       {r.trade_distribution && <><h4>Trade distribution (net P&amp;L)</h4><BarChart label="Trades per P&L bucket" bars={r.trade_distribution.map((b) => ({ key: `${b.from.toFixed(0)}…${b.to.toFixed(0)}`, v: b.count }))} format={(v) => `${v} trades`} /></>}

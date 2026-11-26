@@ -184,3 +184,20 @@ fieldset.sl-card { margin: 0; } .sl-card legend { padding: 0 6px; font-weight: 6
 .reg-metrics div { display: grid; gap: 2px; } .reg-metrics dt { color: var(--text-muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; } .reg-metrics dd { margin: 0; font-variant-numeric: tabular-nums; }
 .ft-limits { margin: 6px 0 10px; padding-left: 18px; font-size: 12.5px; } .ft-kill { border-color: var(--negative) !important; color: var(--negative); font-weight: 700; }
 .ft-live-flag { display: flex; gap: 8px; align-items: center; margin: 8px 0; font-size: 12.5px; }
+
+/* first-time help, quieter row actions, grouped indicators (26 Nov) */
+.sl-next ol { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+.sl-next li span { display: inline-block; min-width: 260px; }
+.sl-next li button { margin-right: 6px; }
+.sl-next li.done span { color: var(--text-muted); text-decoration: line-through; }
+.sl-first-actions { justify-content: center; margin-top: 10px; }
+.sl-more { display: inline-block; vertical-align: middle; } .sl-more summary { cursor: pointer; font-size: 11.5px; color: var(--text-muted); padding: 4px 8px; }
+.sl-more > div { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 6px; }
+.sl-table.sl-ind td:first-child { min-width: 260px; overflow-wrap: anywhere; }
+.sl-table.sl-ind tr.sl-cat th { text-align: left; text-transform: capitalize; font-size: 13px; padding-top: 10px; }
+.sl-more-figures summary { cursor: pointer; color: var(--text-muted); margin: 8px 0; }
+.sl-activate { list-style: none; margin: 0; padding: 0; } .sl-activate li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.sl-todo { margin: 0; color: var(--caution); font-size: 13px; }
+.sl-readback p { margin: 2px 0; font-size: 13.5px; }
+.sl-table.sl-ind tbody td:first-child { white-space: normal; max-width: 320px; }
+.sl-table.sl-ind tbody td:first-child button { text-align: left; white-space: normal; }

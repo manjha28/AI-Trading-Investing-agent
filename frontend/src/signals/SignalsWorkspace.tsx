@@ -22,8 +22,8 @@ import { useSlow } from '../hooks/useSlow';
 // The workbench: build strategies from every indicator, keep a library of code-defined ones, and backtest many strategies over many symbols.
 // (VAR research, derivatives data and the legacy daily page are no longer part of this page; their code is untouched.)
 const TABS = [
-  ['dashboard', 'Strategy Dashboard'], ['library', 'Strategy Library'], ['registry', 'Strategy Registry'], ['builder', 'Strategy Builder'], ['lab', 'Backtest Lab'],
-  ['backtesting', 'Backtesting'], ['forward', 'Forward Test'], ['live', 'Live Signals'], ['jobs', 'Jobs & scanner'], ['indicators', 'Indicator Library'], ['import', 'Import & Validation'],
+  ['dashboard', 'Strategy Dashboard'], ['library', 'Strategy Library'], ['registry', 'Strategy Registry'], ['builder', 'Strategy Builder'], ['lab', 'Compare strategies'],
+  ['backtesting', 'Test one strategy'], ['forward', 'Forward Test'], ['live', 'Live Signals'], ['jobs', 'Jobs & scanner'], ['indicators', 'Indicator Library'], ['import', 'Import & Validation'],
 ] as const;
 type Tab = (typeof TABS)[number][0];
 // Two levels: six primary sections, with the detailed tabs inside the section that owns them. Every tab stays reachable.
@@ -147,7 +147,7 @@ export function SignalsWorkspace() {
           {tab === 'library' && (
             <>
               {notice && <Notice tone="ok">{notice}</Notice>}
-              <Library strategies={strategies} loading={loading} error={error} readiness={readiness} onReload={refreshAll} onEdit={editStrategy} onOpenStarter={openStarter} onDraft={openDraft} onBacktest={(s) => { setBtStrategy(s.id); setTab('backtesting'); }} />
+              <Library onRegistry={() => setTab('registry')} onBuild={() => { setDraft(blankDraft()); setTab('builder'); }} strategies={strategies} loading={loading} error={error} readiness={readiness} onReload={refreshAll} onEdit={editStrategy} onOpenStarter={openStarter} onDraft={openDraft} onBacktest={(s) => { setBtStrategy(s.id); setTab('backtesting'); }} />
             </>
           )}
           {tab === 'backtesting' && <Backtesting meta={meta} strategies={strategies} instruments={instruments} initialStrategyId={btStrategy} onUsed={refreshAll} onStoredChanged={refreshAll} />}

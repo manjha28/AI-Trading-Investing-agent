@@ -308,6 +308,16 @@ def rules(defn: StrategyDefinition) -> dict[str, Condition | None]:
     return {"long_entry": defn.long_entry, "short_entry": defn.short_entry, "long_exit": defn.long_exit, "short_exit": defn.short_exit}
 
 
+def _always_true(node: Compare) -> bool:
+    """"price (or volume) above a number that is zero or less", either way round."""
+    left, right = node.left, node.right
+    if node.op in (">", ">=") and isinstance(left, PriceOperand) and getattr(right, "kind", None) == "const":
+        return float(right.value) <= 0
+    if node.op in ("<", "<=") and isinstance(right, PriceOperand) and getattr(left, "kind", None) == "const":
+        return float(left.value) <= 0
+    return False
+
+
 def validate_definition(defn: StrategyDefinition) -> tuple[list[dict[str, str]], Requirements | None]:
     """(issues, requirements). Any issue with level 'error' blocks saving."""
     issues: list[dict[str, str]] = []
@@ -378,6 +388,11 @@ def validate_definition(defn: StrategyDefinition) -> tuple[list[dict[str, str]],
         err("a strategy needs at least one entry condition (long_entry or short_entry)")
     if defn.python is not None and any(rules(defn).values()):
         err("a Python strategy must not also carry builder conditions")
+    for name, cond in rules(defn).items():
+        if name.endswith("entry") and cond is not None and any(isinstance(n, Compare) and _always_true(n) for n, _ in _walk(cond)):
+            warn("this condition is always true (a price or volume is always above zero), so it does not filter anything", name)
+    if defn.python is None and has_entry and defn.stop.mode == "none" and defn.options is None:
+        warn("no stop-loss: a losing trade is only closed by an exit condition or at square-off", "stop")
     if defn.long_entry is not None and not defn.constraints.allow_long:
         warn("long_entry is defined but longs are disabled", "constraints")
     if defn.short_entry is not None and not defn.constraints.allow_short:

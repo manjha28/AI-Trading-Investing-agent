@@ -291,3 +291,4 @@
 - 26 Nov: Backtest Lab can fetch missing 1-minute history in one click; Research card score ring no longer cut off.
 - 26 Nov: Research daily report splits Buy now (price inside the range, judged on the price shown) from a new Wait for entry tile group, each with search, sort and show more; checkboxes sit beside their labels; Multibagger score legend.
 - 26 Nov: after the close, every stock's full 1-minute candles for the last few days are fetched; repeated failed jobs are grouped with a count and can be deleted.
+- 26 Nov: Signals pages made easier for a first-time user (getting-started list, builder example, plain-words read-back and save reasons, grouped indicators and scan history); paper forward tests for your own strategies; Nifty 50 and holdings keep 2 years of 1-minute candles, other stocks 6 months, downloaded while the market is closed.

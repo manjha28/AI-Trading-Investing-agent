@@ -36,12 +36,13 @@ export function emptyDefinition(market: Definition['market'] = 'equity_in'): Def
   };
 }
 
-export function newCompare(ref?: string): Compare {
-  return {
-    type: 'compare',
-    left: ref ? { kind: 'indicator', ref } : { kind: 'price', field: 'close', timeframe: '1m' },
-    op: '>', right: { kind: 'const', value: 0 }, within: 1,
-  };
+/** A new condition that already means something: two indicators cross, price crosses one indicator, or the close is above the previous close. Never "price above 0". */
+export function newCompare(decls: Definition['indicators'] = [], timeframe = '5m'): Compare {
+  const close: Operand = { kind: 'price', field: 'close', timeframe };
+  const ref = (n: number): Operand => ({ kind: 'indicator', ref: decls[n].alias });
+  if (decls.length >= 2) return { type: 'compare', left: ref(0), op: 'crosses_above', right: ref(1), within: 1 };
+  if (decls.length === 1) return { type: 'compare', left: close, op: 'crosses_above', right: ref(0), within: 1 };
+  return { type: 'compare', left: close, op: '>', right: { ...close, offset: 1 }, within: 1 };
 }
 
 export function describeOperand(op: Operand, decls: Definition['indicators']): string {
@@ -95,4 +96,20 @@ export function fmtTime(iso: string | null | undefined): string {
 
 export function metaIndicator(meta: Meta | null, id: string): IndicatorInfo | undefined {
   return meta?.indicators.find((i) => i.id === id);
+}
+
+const plain = (text: string) => text.replace(/\.value/g, '').replace(/@\w+/g, '').replace(/\[-(\d+)\]/g, ' ($1 candle(s) ago)').replace(/,close\)/g, ')').replace(/_/g, ' ');
+
+/** The strategy read back in ordinary words, so a first-time user can check it says what they meant. */
+export function readBack(d: Definition): string[] {
+  const out: string[] = [];
+  const say = (c: Condition) => plain(describeCondition(c, d.indicators));
+  if (d.long_entry && d.constraints.allow_long) out.push(`Buy when ${say(d.long_entry)}.`);
+  if (d.short_entry && d.constraints.allow_short) out.push(`Sell short when ${say(d.short_entry)}.`);
+  if (d.long_exit) out.push(`Close a buy when ${say(d.long_exit)}.`);
+  if (d.short_exit) out.push(`Close a short when ${say(d.short_exit)}.`);
+  const rule = (r: Definition['stop'], name: string) => (r.mode === 'percent' ? `${name} ${r.value}% from entry` : r.mode === 'atr' ? `${name} ${r.value} × ATR from entry` : r.mode === 'rr' ? `${name} ${r.value} × the risk` : r.mode === 'level' ? `${name} at an indicator level` : null);
+  const exits = [rule(d.stop, 'stop-loss') ?? 'no stop-loss', rule(d.target, 'target') ?? 'no target'].join(', ');
+  if (out.length) out.push(`Exits: ${exits}; any open trade is closed at the end of the day.`, `Checked when each ${d.decision_timeframe} candle closes, on ${d.universe.length} stock${d.universe.length === 1 ? '' : 's'}.`);
+  return out;
 }

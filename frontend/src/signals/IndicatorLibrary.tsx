@@ -6,8 +6,13 @@ export function IndicatorLibrary({ meta, onUse }: { meta: Meta; onUse: (id: stri
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('all');
   const [openId, setOpenId] = useState<string | null>(null);
+  const [openCat, setOpenCat] = useState<string | null>(null);
   const cats = useMemo(() => ['all', ...Array.from(new Set(meta.indicators.map((i) => i.category)))], [meta]);
   const rows = meta.indicators.filter((i) => (cat === 'all' || i.category === cat) && (!q.trim() || `${i.name} ${i.id}`.toLowerCase().includes(q.trim().toLowerCase())));
+  const grouped = cat === 'all' && !q.trim();                       // the whole library opens as a list of categories; a search or a category shows its rows directly
+  const first = cats[1] ?? '';
+  const shown = openCat ?? first;
+  const ordered = grouped ? [...rows].sort((a, b) => cats.indexOf(a.category) - cats.indexOf(b.category)) : rows;
   return (
     <div>
       <div className="sl-filters" role="search">
@@ -17,18 +22,22 @@ export function IndicatorLibrary({ meta, onUse }: { meta: Meta; onUse: (id: stri
       </div>
       <p className="sl-muted">Every indicator is computed from completed candles only, returns nothing (not an estimate) during warm-up, and is the same code used by live signals and backtests.</p>
       <Scroll label="Indicators">
-        <table className="sl-table">
+        <table className="sl-table sl-ind">
           <thead><tr><th>Indicator</th><th>Category</th><th>Outputs</th><th>Parameters (default)</th><th>Warm-up</th><th /></tr></thead>
           <tbody>
-            {rows.map((i) => (
+            {ordered.map((i, n) => (
               <Fragment key={i.id}>
-                <tr>
+                {grouped && ordered[n - 1]?.category !== i.category && (
+                  <tr className="sl-cat"><th colSpan={6}><button type="button" className="sl-link" aria-expanded={shown === i.category} onClick={() => setOpenCat(shown === i.category ? '' : i.category)}>
+                    {i.category.replace('_', ' ')} ({ordered.filter((x) => x.category === i.category).length})</button></th></tr>
+                )}
+                {(!grouped || shown === i.category) && <tr>
                   <td><button type="button" className="sl-link" aria-expanded={openId === i.id} onClick={() => setOpenId(openId === i.id ? null : i.id)}>{i.name}</button> <code>{i.id}</code></td>
                   <td>{i.category.replace('_', ' ')}</td><td title={i.outputs.join(', ')}>{i.outputs.length > 8 ? `${i.outputs.slice(0, 8).join(', ')} … +${i.outputs.length - 8} more` : i.outputs.join(', ')}</td>
                   <td>{Object.entries(i.params).map(([k, p]) => `${k}=${p.default}`).join(', ') || '—'}</td><td className="sl-r">{i.minimum_bars_default} bars</td>
                   <td><button type="button" onClick={() => onUse(i.id)}>Use in builder</button></td>
-                </tr>
-                {openId === i.id && (
+                </tr>}
+                {openId === i.id && (!grouped || shown === i.category) && (
                   <tr className="sl-detail"><td colSpan={6}>
                     <p><strong>Formula:</strong> {i.formula}</p>
                     {i.notes && <p><strong>Note:</strong> {i.notes}</p>}

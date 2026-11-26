@@ -1,7 +1,7 @@
 import type { Compare, Condition, Group, IndicatorDecl, Meta, Operand, TimeWindow } from './types';
 import { newCompare } from './lab';
 
-type Ctx = { decls: IndicatorDecl[]; meta: Meta; disabled?: boolean };
+type Ctx = { decls: IndicatorDecl[]; meta: Meta; disabled?: boolean; timeframe?: string };
 
 function OperandEditor({ value, onChange, ctx, side }: { value: Operand; onChange: (o: Operand) => void; ctx: Ctx; side: string }) {
   const first = ctx.decls[0]?.alias;
@@ -100,8 +100,8 @@ function GroupBox({ value, onChange, onRemove, ctx, depth }: { value: Group; onC
           <option value="and">ALL of (AND)</option><option value="or">ANY of (OR)</option><option value="not">NOT</option>
         </select>
         <span className="sl-group-actions">
-          <button type="button" disabled={ctx.disabled} onClick={() => onChange({ ...value, children: [...value.children, newCompare(ctx.decls[0]?.alias)] })}>+ Condition</button>
-          <button type="button" disabled={ctx.disabled || depth >= 5} onClick={() => onChange({ ...value, children: [...value.children, { type: 'group', op: 'or', children: [newCompare(ctx.decls[0]?.alias)] }] })}>+ Group</button>
+          <button type="button" disabled={ctx.disabled} onClick={() => onChange({ ...value, children: [...value.children, newCompare(ctx.decls, ctx.timeframe)] })}>+ Condition</button>
+          <button type="button" disabled={ctx.disabled || depth >= 5} onClick={() => onChange({ ...value, children: [...value.children, { type: 'group', op: 'or', children: [newCompare(ctx.decls, ctx.timeframe)] }] })}>+ Group</button>
           <button type="button" disabled={ctx.disabled} onClick={() => onChange({ ...value, children: [...value.children, { type: 'time_window', start: '09:30', end: '14:30' }] })}>+ Time window</button>
           <button type="button" className="sl-icon" aria-label="Remove group" disabled={ctx.disabled} onClick={onRemove}>✕</button>
         </span>
@@ -119,17 +119,17 @@ function Node({ value, onChange, ctx, depth }: { value: Condition; onChange: (c:
   return <CompareRow value={value} onChange={onChange} onRemove={() => onChange(null)} ctx={ctx} />;
 }
 
-export function ConditionEditor({ title, value, onChange, decls, meta, disabled }: {
-  title: string; value: Condition | null; onChange: (c: Condition | null) => void; decls: IndicatorDecl[]; meta: Meta; disabled?: boolean;
+export function ConditionEditor({ title, value, onChange, decls, meta, disabled, timeframe }: {
+  title: string; value: Condition | null; onChange: (c: Condition | null) => void; decls: IndicatorDecl[]; meta: Meta; disabled?: boolean; timeframe?: string;
 }) {
-  const ctx: Ctx = { decls, meta, disabled };
+  const ctx: Ctx = { decls, meta, disabled, timeframe };
   return (
     <section className="sl-rule" aria-label={title}>
       <header><h4>{title}</h4>
         {!value && !disabled && (
           <span className="sl-group-actions">
-            <button type="button" onClick={() => onChange(newCompare(decls[0]?.alias))}>+ Condition</button>
-            <button type="button" onClick={() => onChange({ type: 'group', op: 'and', children: [newCompare(decls[0]?.alias)] })}>+ AND / OR group</button>
+            <button type="button" onClick={() => onChange(newCompare(decls, timeframe))}>+ Condition</button>
+            <button type="button" onClick={() => onChange({ type: 'group', op: 'and', children: [newCompare(decls, timeframe)] })}>+ AND / OR group</button>
           </span>
         )}
       </header>

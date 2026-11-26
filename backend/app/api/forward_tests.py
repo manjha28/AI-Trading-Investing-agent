@@ -16,7 +16,7 @@ from app.api.auth import get_active_session, require_csrf
 from app.db import get_db
 from app.dhan_execution import policy
 from app.dhan_execution import service as live
-from app.models import Instrument, UserSession
+from app.models import Instrument, Strategy, StrategyVersion, UserSession
 from app.models.forward_live import DhanLiveOrder, ForwardTest
 from app.services import execution_state
 from app.services import forward_test as fts
@@ -46,6 +46,23 @@ def _now() -> datetime:
 
 
 # ───────────────────────── forward tests ─────────────────────────
+OWN_PREFIX = "own:"
+
+
+def _own_strategy(db: Session, user_id: UUID, key: str) -> tuple[str, dict[str, Any]]:
+    """(name, definition) of one of this user's saved intraday strategies. Python/Pine-file and options strategies are not replayed here."""
+    try:
+        strategy_id = UUID(key.removeprefix(OWN_PREFIX))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown strategy.") from None
+    strategy = db.scalar(select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user_id))
+    version = None if strategy is None else db.scalar(select(StrategyVersion).where(StrategyVersion.strategy_id == strategy.id, StrategyVersion.version == strategy.current_version))
+    if version is None or version.definition is None:
+        raise HTTPException(status_code=404, detail="Unknown strategy.")
+    raw = dict(version.definition)
+    if raw.get("python") is not None or raw.get("options") is not None or raw.get("engine") is not None:
+        raise HTTPException(status_code=422, detail="Only strategies built from conditions can be forward tested here (not Python, options or engine strategies).")
+    return strategy.name, raw
 class CreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(default="", max_length=80)
@@ -101,13 +118,21 @@ def _default_start(now: datetime) -> date:
 @router.post("", status_code=201)
 def create_forward_test(body: CreateBody, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf),
                         db: Session = Depends(get_db)) -> dict[str, Any]:
-    try:
-        spec = registry_get(body.strategy_key)
-        raw = spec.definition(body.params)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Unknown registry strategy.") from None
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from None
+    own_universe: list[str] = []
+    if body.strategy_key.startswith(OWN_PREFIX):                          # the owner's own saved strategy: paper only, never on the live allowlist
+        if body.execute_live:
+            raise HTTPException(status_code=422, detail="Your own strategies can only be forward tested on paper.")
+        spec_name, raw = _own_strategy(db, active_session.user_id, body.strategy_key)
+        own_universe = list(raw.get("universe") or [])
+    else:
+        try:
+            spec = registry_get(body.strategy_key)
+            raw = spec.definition(body.params)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Unknown registry strategy.") from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        spec_name = spec.name
     defn = StrategyDefinition.model_validate(raw)
     errors = [i["message"] for i in validate_definition(defn)[0] if i["level"] == "error"]
     if errors:
@@ -126,7 +151,11 @@ def create_forward_test(body: CreateBody, active_session: UserSession = Depends(
         u = lab.resolve_universe(db, active_session.user_id, body.universe)
         picked.update({i.id: i for i in u["instruments"]})
         excluded = u["excluded"]
-    for iid in body.instruments:
+    wanted = list(body.instruments) or ([UUID(x) for x in own_universe if x != lab.MASTER_TOKEN] if not body.universe else [])
+    whole_list = whole_list or (not body.universe and not body.instruments and lab.MASTER_TOKEN in own_universe)
+    if whole_list and not body.universe:
+        picked.update({i.id: i for i in lab.resolve_universe(db, active_session.user_id, "master")["instruments"]})
+    for iid in wanted:
         inst = db.get(Instrument, iid)
         if inst is None:
             raise HTTPException(status_code=404, detail=f"instrument {iid} not found")
@@ -141,7 +170,7 @@ def create_forward_test(body: CreateBody, active_session: UserSession = Depends(
             raise HTTPException(status_code=422, detail=f"No verified Dhan security id for: {', '.join(no_id)}; live orders need one.")
     now = _now()
     suffix = f" ({int(body.params['timeframe_min'])}m)" if "timeframe_min" in body.params else ""
-    ft = ForwardTest(user_id=active_session.user_id, name=(body.name.strip() or f"{spec.name}{suffix}")[:80], strategy_key=body.strategy_key, definition=raw,
+    ft = ForwardTest(user_id=active_session.user_id, name=(body.name.strip() or f"{spec_name}{suffix}")[:80], strategy_key=body.strategy_key, definition=raw,
                      definition_hash=definition_hash(raw), instrument_ids=([lab.MASTER_TOKEN] if whole_list else [str(i) for i in picked]), quantity=body.quantity,
                      start_date=body.start_date or _default_start(now), status="active", execute_live=body.execute_live, slippage_bps=body.slippage_bps,
                      cost_profile=body.cost_profile, created_at=now, updated_at=now)

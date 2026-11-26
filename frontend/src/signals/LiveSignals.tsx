@@ -1,3 +1,4 @@
+import { apiRequest } from '../api';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { DISCLAIMER, fmtTime, lab, messageOf } from './lab';
 import { LifecycleChip } from './LifecycleChip';
@@ -33,6 +34,11 @@ export function LiveSignals({ strategies, instruments = [], onChanged }: { strat
   const [showRejections, setShowRejections] = useState(false);
   const [rejectionRun, setRejectionRun] = useState<string | null>(null);
   const active = strategies.filter((s) => s.kind === 'intraday' && s.status === 'active');
+  const idle = strategies.filter((s) => s.kind === 'intraday' && s.status === 'suspended');
+  const activate = async (id: string) => {
+    setError(null);
+    try { await apiRequest(`/strategies/${id}/activate`, { method: 'POST', body: '{}' }); onChanged(); } catch (e) { setError(messageOf(e)); }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -110,6 +116,13 @@ export function LiveSignals({ strategies, instruments = [], onChanged }: { strat
       </p>
       <ScanSummary scan={lastScan} latest={latestRecorded} onShowRejections={(run) => { setRejectionRun(run); setShowRejections(true); }} />
       {status === 'suppressed' && <Notice tone="info">Suppressed candidates are scan rejections, not signals. They are listed under “Suppressed candidates” below.</Notice>}
+      {!active.length && idle.length > 0 && (
+        <section className="sl-card" aria-label="Switch a strategy on">
+          <header className="sl-card-head"><h3>Switch a strategy on to get signals</h3></header>
+          <p className="sl-muted">Switching on only produces signals to read. It places no order.</p>
+          <ul className="sl-activate">{idle.slice(0, 8).map((s) => <li key={s.id}><span>{s.name} <small className="sl-muted">{s.decision_timeframe}</small></span><button type="button" onClick={() => void activate(s.id)}>Activate {s.name}</button></li>)}</ul>
+        </section>
+      )}
       {!shown.length ? (
         <Empty title={rows.length ? 'No signals match the direction filter' : 'No signals for the current filters'}>
           {active.length

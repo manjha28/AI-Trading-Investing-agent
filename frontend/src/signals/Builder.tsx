@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConditionEditor } from './ConditionEditor';
-import { DISCLAIMER, defaultParams, describeCondition, lab, messageOf, nextAlias } from './lab';
+import { DISCLAIMER, defaultParams, describeCondition, lab, messageOf, nextAlias, readBack } from './lab';
 import { OptionsPanel } from './OptionsPanel';
 import { Field, Notice, Pill, Scroll } from './shared';
 import { RULES, type Condition, type Definition, type Operand, type InstrumentRow, type Meta, type RuleName, type StrategyRow, type ValidateResult } from './types';
@@ -74,7 +74,11 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
     const info = meta.indicators.find((i) => i.id === pick) ?? available[0];
     if (!info) return;
     const alias = nextAlias(info.id, d.indicators.map((x) => x.alias));
-    patch({ indicators: [...d.indicators, { alias, indicator: info.id, params: defaultParams(info), timeframe: d.decision_timeframe }] });
+    const params = defaultParams(info);
+    // a second copy of the same indicator starts with a different length, so the two can be told apart
+    const used = d.indicators.filter((x) => x.indicator === info.id).map((x) => Number(x.params.length));
+    if (used.length && typeof params.length === 'number') { let length = params.length; while (used.includes(length)) length *= 2; params.length = length; }
+    patch({ indicators: [...d.indicators, { alias, indicator: info.id, params, timeframe: d.decision_timeframe }] });
   };
   const setIndicator = (i: number, next: Definition['indicators'][number] | null) => {
     const list = d.indicators.slice();
@@ -82,9 +86,42 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
     patch({ indicators: list });
   };
 
+  const example = () => {
+    const ema = meta.indicators.find((i) => i.id === 'ema');
+    if (!ema) return;
+    const tf = d.decision_timeframe;
+    patch({
+      name: d.name.trim() || 'Example: EMA 9 / 21 cross', description: 'Buy when the fast average crosses above the slow one.',
+      indicators: [{ alias: 'fast', indicator: 'ema', params: { ...defaultParams(ema), length: 9 }, timeframe: tf }, { alias: 'slow', indicator: 'ema', params: { ...defaultParams(ema), length: 21 }, timeframe: tf }],
+      long_entry: { type: 'compare', left: { kind: 'indicator', ref: 'fast' }, op: 'crosses_above', right: { kind: 'indicator', ref: 'slow' }, within: 1 },
+      stop: { ...d.stop, mode: 'percent', value: 1 }, target: { ...d.target, mode: 'rr', value: 2 },
+    });
+  };
+  const untouched = !draft.editing && !isPython && !isOptions && !d.indicators.length && !d.long_entry && !d.short_entry;
+
+  const addPreset = async (key: 'nifty50' | 'watchlist') => {
+    setInstError(null);
+    try {
+      const [universes, all] = await Promise.all([
+        lab<{ presets: { key: string; symbols: string[]; excluded: { symbol: string }[] }[] }>('/lab/universes'),
+        lab<InstrumentRow[]>(`/instruments?market=${d.market}&query=`),
+      ]);
+      const preset = universes.presets.find((p) => p.key === key);
+      const wanted = new Set([...(preset?.symbols ?? []), ...(preset?.excluded ?? []).map((e) => e.symbol)]);
+      const ids = all.filter((i) => wanted.has(i.symbol) && i.bars_1m > 0).map((i) => i.id);
+      if (!ids.length) { setInstError('None of those stocks has stored 1-minute prices yet.'); return; }
+      patch({ universe: [...new Set([...d.universe, ...ids])].slice(0, 200) });
+    } catch (e) { setInstError(messageOf(e)); }
+  };
+
   const errors = (validation?.issues ?? []).filter((x) => x.level === 'error');
   const warnings = (validation?.issues ?? []).filter((x) => x.level === 'warning');
   const canSave = !saving && validation?.valid === true && d.name.trim().length > 0 && d.universe.length > 0;
+  const todo = [
+    ...(d.name.trim() ? [] : ['give it a name']), ...(d.universe.length ? [] : ['choose at least one stock']),
+    ...errors.filter((x) => !(x.where === 'name' || /^name /.test(x.message))).map((x) => x.message),
+  ];
+  const sentences = isPython || isOptions ? [] : readBack(d);
 
   const save = async () => {
     setSaving(true);
@@ -119,6 +156,10 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
         </div>
       </div>
       {saveError && <Notice tone="bad">{saveError}</Notice>}
+      {!canSave && !saving && todo.length > 0 && <p className="sl-todo" role="status">To save: {todo.join('; ')}.</p>}
+      {warnings.map((x) => <Notice key={`${x.where}${x.message}`} tone="warn">{x.message}</Notice>)}
+      {untouched && <div className="sl-toolbar"><button type="button" onClick={example}>Start from an example (EMA 9 / 21 cross)</button><span className="sl-muted">Or follow these: 1. add indicators, 2. say when to buy, 3. set a stop and target, 4. choose stocks.</span></div>}
+      {sentences.length > 0 && <div className="sl-card sl-readback" aria-label="Your strategy in words">{sentences.map((s) => <p key={s}>{s}</p>)}</div>}
       {(d.source.provenance as { derived_from?: { name: string; version: number } }).derived_from && (
         <Notice tone="info">Customizing a copy of <strong>{(d.source.provenance as { derived_from: { name: string } }).derived_from.name}</strong> v{(d.source.provenance as { derived_from: { version: number } }).derived_from.version}. Saving creates a new strategy under the name above; the original and its versions are unchanged.</Notice>
       )}
@@ -150,6 +191,7 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
           <legend>Universe <span className="sl-muted">({d.universe.length} selected)</span></legend>
           <Field label="Search instruments"><input value={instQuery} onChange={(e) => setInstQuery(e.target.value)} placeholder="Symbol or name" /></Field>
           {instError && <Notice tone="bad">{instError}</Notice>}
+          <div className="sl-toolbar"><button type="button" onClick={() => void addPreset('nifty50')}>Add Nifty 50</button><button type="button" onClick={() => void addPreset('watchlist')}>Add my watchlist</button>{d.universe.length > 0 && <button type="button" onClick={() => patch({ universe: [] })}>Clear</button>}</div>
           <div className="sl-chips" aria-label="Selected instruments">{d.universe.map((id) => <button type="button" key={id} className="sl-chip" onClick={() => toggleInstrument(id)} title="Remove">{nameOf(id)} ✕</button>)}</div>
           <Scroll label="Instrument results">
             <table className="sl-table sl-compact"><thead><tr><th>Symbol</th><th>1m bars</th><th>History</th><th /></tr></thead><tbody>
@@ -177,8 +219,9 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
           {isPython ? <Notice tone="info">Entry/exit logic is defined by the uploaded Python strategy.</Notice> : (
             <>
               <p className="sl-muted">Conditions are checked on completed {d.decision_timeframe} candles. Higher-timeframe operands become visible only after their own candle has closed.</p>
+              {!d.indicators.length && <p className="sl-muted">Rules usually compare indicators. <button type="button" className="sl-link" onClick={() => setSection('indicators')}>Add indicators first</button>, or compare price and volume directly.</p>}
               {RULES.map(({ key, label }) => (
-                <ConditionEditor key={key} title={label} value={d[key]} decls={d.indicators} meta={meta}
+                <ConditionEditor key={key} title={label} value={d[key]} decls={d.indicators} meta={meta} timeframe={d.decision_timeframe}
                   onChange={(c) => patch({ [key]: c } as Partial<Definition>)} />
               ))}
             </>

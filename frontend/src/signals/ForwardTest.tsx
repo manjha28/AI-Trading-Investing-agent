@@ -95,6 +95,7 @@ export function ForwardTest() {
   const [defaultStart, setDefaultStart] = useState('');
   const [strategies, setStrategies] = useState<RegistryStrategy[]>([]);
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [own, setOwn] = useState<{ id: string; name: string }[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [blockedAttempts, setBlockedAttempts] = useState<{ id: string; created_at: string; symbol: string; side: string; quantity: number; strategy_key: string; block_reason: string | null }[]>([]);
   const [selected, setSelected] = useState<FT | null>(null);
@@ -112,6 +113,8 @@ export function ForwardTest() {
   useEffect(() => {
     void loadStatus(); void loadTests(); void loadOrders();
     apiRequest<{ strategies: RegistryStrategy[] }>('/signals-lab/registry').then((r) => setStrategies(r.strategies)).catch(() => undefined);
+    apiRequest<{ id: string; name: string; kind?: string; status?: string; origin?: string; source_type?: string }[]>('/signals-lab/strategies')
+      .then((r) => setOwn((Array.isArray(r) ? r : []).filter((x) => x.kind === 'intraday' && x.status !== 'retired' && x.source_type !== 'python'))).catch(() => undefined);
     apiRequest<{ presets: Preset[] }>('/signals-lab/lab/universes').then((r) => setPresets(r.presets)).catch(() => undefined);
   }, [loadStatus, loadTests, loadOrders]);
   // keep the open test and ledger current while the page is visible
@@ -122,13 +125,14 @@ export function ForwardTest() {
   }, [selected?.id, loadStatus, loadOrders, loadTests, open]);
 
   const liveCapable = status?.limits.allowed_strategies ?? [];
+  const isOwn = form.strategy_key.startsWith('own:');
   const liveControls = !!status && status.execution.effective.state !== 'OFF';          // live-order controls exist only when the effective state is not OFF
   const canLive = liveControls && liveCapable.includes(form.strategy_key) && Number(form.quantity) === (status?.limits.max_order_quantity ?? 1);
 
   async function create() {
     setBusy(true); setError(null); setNotice(null);
     try {
-      const body = { strategy_key: form.strategy_key, universe: form.universe, quantity: Number(form.quantity), start_date: form.start_date || undefined, execute_live: form.live && canLive,
+      const body = { strategy_key: form.strategy_key, universe: isOwn && form.universe === 'own' ? null : form.universe, quantity: Number(form.quantity), start_date: form.start_date || undefined, execute_live: form.live && canLive,
         ...(form.strategy_key === 'five_ema_alert' ? { params: { timeframe_min: Number(form.candle), vwap_filter: form.vwap ? 1 : 0, ...(form.vwap ? { rr: 2 } : {}) } } : {}) };
       const made = await apiRequest<FT & { excluded?: { symbol: string }[]; instrument_total?: number }>('/forward-tests', { method: 'POST', body: JSON.stringify(body) });
       setNotice(`Created “${made.name}” from ${made.start_date}${made.whole_market_watch_list ? ` on the entire Market watch list (${made.instrument_total ?? '?'} symbols; their 1-minute data is refreshed in rotation, about every 7 minutes)` : ''}.${made.excluded?.length ? ` ${made.excluded.length} symbol(s) left out for lack of stored 1-minute data.` : ''} ${made.execute_live ? 'It is flagged for live orders but places none until you arm live execution.' : 'Paper only: no order is ever placed.'}`);
@@ -154,18 +158,19 @@ export function ForwardTest() {
       <Notice tone="info">Forward tests run a strategy on <strong>live data</strong> from the start date, counting only completed candles. By default they are <strong>paper</strong>: hypothetical trades at a fixed quantity after Indian charges and slippage, never real P&amp;L. Live orders exist only for the two allowlisted strategies at quantity 1, and only when you arm them below.</Notice>
       {error && <Notice tone="bad">{error}</Notice>}
       {notice && <Notice tone="ok">{notice}</Notice>}
-      <LivePanel status={status} reload={() => { void loadStatus(); void loadOrders(); }} />
 
       <section className="sl-card" aria-label="New forward test">
         <div className="sl-card-head"><h3>New forward test</h3></div>
         <div className="sl-row">
           <Field label="Strategy">
-            <select aria-label="Strategy" value={form.strategy_key} onChange={(e) => setForm({ ...form, strategy_key: e.target.value })}>
+            <select aria-label="Strategy" value={form.strategy_key} onChange={(e) => { const next = e.target.value; setForm({ ...form, strategy_key: next, universe: next.startsWith('own:') ? 'own' : form.universe === 'own' ? 'master' : form.universe }); }}>
               {strategies.map((x) => <option key={x.key} value={x.key}>{x.name}{liveCapable.includes(x.key) ? ' · live-capable' : ''}</option>)}
+              {own.length > 0 && <optgroup label="Your strategies (paper only)">{own.map((x) => <option key={x.id} value={`own:${x.id}`}>{x.name}</option>)}</optgroup>}
             </select>
           </Field>
           <Field label="Symbols">
             <select aria-label="Symbols" value={form.universe} onChange={(e) => setForm({ ...form, universe: e.target.value })}>
+              {isOwn && <option value="own">The stocks saved in this strategy</option>}
               {presets.map((p) => <option key={p.key} value={p.key}>{p.label} — {p.available} usable</option>)}
             </select>
           </Field>
@@ -245,6 +250,8 @@ export function ForwardTest() {
           )}
         </section>
       )}
+
+      <LivePanel status={status} reload={() => { void loadStatus(); void loadOrders(); }} />
 
       <section className="sl-card" aria-label="Live order ledger">
         <div className="sl-card-head"><h3>Live order ledger (real orders only)</h3></div>

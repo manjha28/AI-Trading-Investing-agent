@@ -128,9 +128,9 @@ async function mount() {
   await screen.findByRole('button', { name: 'Dashboard' });
   await waitFor(() => expect(screen.getByLabelText('Strategy counts')).toBeInTheDocument());
 }
-// Two levels: a primary section, then the tab inside it. `tab('Backtesting')` opens Backtest and then Backtesting.
+// Two levels: a primary section, then the tab inside it. `tab('Test one strategy')` opens Backtest and then Backtesting.
 const PRIMARY: Record<string, string> = { 'Strategy Dashboard': 'Dashboard', 'Strategy Library': 'Strategies', 'Strategy Registry': 'Strategies', 'Strategy Builder': 'Strategies', 'Indicator Library': 'Strategies', 'Import & Validation': 'Strategies',
-  'Backtest Lab': 'Backtest', Backtesting: 'Backtest', 'Forward Test': 'Forward test', 'Live Signals': 'Live signals', 'Jobs & scanner': 'Jobs' };
+  'Compare strategies': 'Backtest', 'Test one strategy': 'Backtest', 'Forward Test': 'Forward test', 'Live Signals': 'Live signals', 'Jobs & scanner': 'Jobs' };
 const tab = (name: string) => {
   fireEvent.click(screen.getByRole('button', { name: PRIMARY[name] }));
   const secondary = screen.queryByRole('navigation', { name: `${PRIMARY[name]} sections` });
@@ -254,8 +254,9 @@ describe('Signals workspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add DASH' }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Validation · 1/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Validation · 1/ }));
-    expect(await screen.findByText(/unknown indicator alias ghost/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/unknown indicator alias ghost/)).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Save strategy' })).toBeDisabled();
+    expect(screen.getByText(/^To save:/).textContent).toContain('unknown indicator alias ghost');       // the reason is said next to the button
   });
 
   it('editing an existing strategy saves a NEW version and says earlier versions are untouched', async () => {
@@ -507,7 +508,7 @@ describe('NIFTY options strategy', () => {
     install({ 'GET /signals-lab/strategies/s1': () => ({ ...DETAIL, versions: [{ ...DETAIL.versions[0], definition: { ...OPT_DEF, universe: ['i1'] } }] }), 'POST /signals-lab/backtests': () => RUN('queued'),
       'GET /signals-lab/backtests/r1': () => ({ ...RUN('completed'), result: { ...RESULT, trades: [optTrade], options_report: report, versions: { engine: 'e', indicator_library: '1', options_engine: 'options-engine/1.0.0' } } }) });
     await mount();
-    tab('Backtesting');
+    tab('Test one strategy');
     await waitFor(() => expect(screen.getByLabelText('Options data coverage')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
     const rep = within(await screen.findByLabelText('Options performance report'));
@@ -604,7 +605,7 @@ describe('Backtesting and live signals', () => {
       'GET /signals-lab/data-quality/*': () => ({ status: 'warn', bars: 1875, missing_pct: 1.2, issues: ['22 missing 1-minute candle(s)'] }),
     });
     await mount();
-    tab('Backtesting');
+    tab('Test one strategy');
     expect(await screen.findByLabelText('Backtest configuration')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('DASH ✕')).toBeInTheDocument());     // universe from the strategy version
     expect(within(screen.getByLabelText('Costs')).getByRole('combobox', { name: 'Cost profile' })).toHaveTextContent('India equity intraday');
@@ -653,7 +654,7 @@ describe('Backtesting and live signals', () => {
   it('shows progress while running and the engine error when a run fails', async () => {
     install({ 'POST /signals-lab/backtests': () => RUN('queued'), 'GET /signals-lab/backtests/r1': () => ({ ...RUN('failed'), error: 'no instrument has sufficient clean 1-minute data: DASH: 40 of 375 minutes' }) });
     await mount();
-    tab('Backtesting');
+    tab('Test one strategy');
     await waitFor(() => expect(screen.getByText('DASH ✕')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole('button', { name: 'Run backtest' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
@@ -667,7 +668,7 @@ describe('Backtesting and live signals', () => {
         folds: [{ train: ['2025-01-06T00:00:00', '2025-01-26T00:00:00'], test: ['2025-01-26T00:00:00', '2025-01-31T00:00:00'], chosen_params: { 'f.length': 11 }, train_result: { net_profit: '900.00' }, test_result: { total_trades: 7, net_profit: '321.50' } }], assumptions: {} } }),
     });
     await mount();
-    tab('Backtesting');
+    tab('Test one strategy');
     await waitFor(() => expect(screen.getByText('DASH ✕')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('combobox', { name: 'Analysis type' }));
     fireEvent.mouseDown(screen.getByRole('option', { name: 'Walk-forward' }));
@@ -746,7 +747,7 @@ describe('scalp_hold engine parameters', () => {
       'GET /signals-lab/backtests/r1': () => ({ ...RUN('completed'), result: { mode: 'scalp_hold', kind: 'single', slip_bps: 2, unverified_assumptions: [], refused_instruments: [], instruments: [], trades_total: 0, trades: [], summary: { n: 0 }, note: 'hypothetical', total_combos_evaluated: 0 } }),
     });
     await mount();
-    tab('Backtesting');
+    tab('Test one strategy');
     expect(await screen.findByLabelText('Engine parameters')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('engine signal_types'), { target: { value: 'B' } });
     fireEvent.change(screen.getByLabelText('engine H_minutes'), { target: { value: '60' } });

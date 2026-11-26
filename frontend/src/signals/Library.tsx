@@ -6,10 +6,10 @@ import type { Definition, Readiness, RunRow, StrategyRow } from './types';
 
 type Props = {
   strategies: StrategyRow[]; loading: boolean; error: string | null;
-  readiness?: Readiness | null; onReload: () => void; onEdit: (s: StrategyRow) => void; onOpenStarter: (s: StrategyRow) => void; onDraft: (d: Definition, text: string | null, note: string) => void; onBacktest: (s: StrategyRow) => void;
+  readiness?: Readiness | null; onReload: () => void; onEdit: (s: StrategyRow) => void; onOpenStarter: (s: StrategyRow) => void; onDraft: (d: Definition, text: string | null, note: string) => void; onBacktest: (s: StrategyRow) => void; onRegistry?: () => void; onBuild?: () => void;
 };
 
-export function Library({ strategies, loading, error, readiness, onReload, onEdit, onOpenStarter, onDraft, onBacktest }: Props) {
+export function Library({ strategies, loading, error, readiness, onReload, onEdit, onOpenStarter, onDraft, onBacktest, onRegistry, onBuild }: Props) {
   const [q, setQ] = useState('');
   const [kind, setKind] = useState('all');
   const [market, setMarket] = useState('all');
@@ -75,7 +75,8 @@ export function Library({ strategies, loading, error, readiness, onReload, onEdi
       {error && <Notice tone="bad">{error}</Notice>}
       {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
       {loading && !strategies.length ? <p className="sl-muted">Loading strategies…</p> : !rows.length ? (
-        <Empty title={strategies.length ? 'No strategies match these filters' : 'No strategies yet'}>{strategies.length ? 'Clear a filter to see the rest.' : 'Create one in the Strategy Builder or import Pine / Python.'}</Empty>
+        <><Empty title={strategies.length ? 'No strategies match these filters' : 'No strategies yet'}>{strategies.length ? 'Clear a filter to see the rest.' : 'Create one in the Strategy Builder or import Pine / Python.'}</Empty>
+          {!strategies.length && <div className="sl-toolbar sl-first-actions">{onRegistry && <button type="button" className="sl-primary" onClick={onRegistry}>Pick from the registry</button>}{onBuild && <button type="button" onClick={onBuild}>Build your own</button>}</div>}</>
       ) : (
         <Scroll label="Strategies">
           <table className="sl-table">
@@ -98,6 +99,10 @@ export function Library({ strategies, loading, error, readiness, onReload, onEdi
                   <td className="sl-hide-sm">{s.last_backtest ? <span title={`v${s.last_backtest.version}`}>{s.last_backtest.trades ?? 0} trades · {fmtPct(s.last_backtest.return_pct)}</span> : s.kind === 'intraday' ? <Pill tone="neutral" title={s.options_summary && !s.data_coverage?.ready ? 'Cannot be backtested: options data is not available' : 'No real backtest has been run for this strategy'}>{s.options_summary && !s.data_coverage?.ready ? 'not tested · data unavailable' : 'not tested'}</Pill> : <span className="sl-muted">—</span>}</td>
                   <td className="sl-actions">
                     <button type="button" onClick={() => open(s)}>Open</button>
+                    <button type="button" disabled={s.kind !== 'intraday'} title={s.kind !== 'intraday' ? 'Legacy daily strategies are not backtested here' : ''} onClick={() => onBacktest(s)}>Backtest</button>
+                    {s.status !== 'active' && <button type="button" disabled={s.status === 'retired'} onClick={() => setConfirm({ s, action: 'activate' })}>Activate</button>}
+                    {s.status === 'active' && <button type="button" onClick={() => setConfirm({ s, action: 'suspend' })}>Suspend</button>}
+                    <details className="sl-more"><summary>More</summary><div>
                     {s.origin === 'starter'
                       ? <><button type="button" className="sl-primary" onClick={() => onOpenStarter(s)} title="Opens an editable copy in the Strategy Builder; the starter itself is never changed">Open in Builder</button>
                           <button type="button" onClick={() => { setDupFor(s); setDupName(`${s.name.replace(/^Starter: /, '')} (custom)`); }} title="Saves an independent editable copy now">Customize</button></>
@@ -105,10 +110,8 @@ export function Library({ strategies, loading, error, readiness, onReload, onEdi
                       ? <button type="button" disabled={s.status === 'retired'} onClick={() => onEdit(s)} title={s.status === 'retired' ? 'Retired strategies cannot be versioned: duplicate instead' : 'Creates a new version'}>Edit as new version</button>
                       : <button type="button" onClick={() => convert(s)} title="Creates an unsaved intraday draft; the legacy row is never modified">Convert to intraday draft</button>}
                     {s.origin !== 'starter' && <button type="button" onClick={() => { setDupFor(s); setDupName(`${s.name} copy`); }}>Duplicate</button>}
-                    {s.status !== 'active' && <button type="button" disabled={s.status === 'retired'} onClick={() => setConfirm({ s, action: 'activate' })}>Activate</button>}
-                    {s.status === 'active' && <button type="button" onClick={() => setConfirm({ s, action: 'suspend' })}>Suspend</button>}
                     <button type="button" className="sl-danger-text" disabled={s.status === 'retired'} onClick={() => setConfirm({ s, action: 'retire' })}>Retire</button>
-                    <button type="button" disabled={s.kind !== 'intraday'} title={s.kind !== 'intraday' ? 'Legacy daily strategies are backtested in the Legacy tab' : ''} onClick={() => onBacktest(s)}>Backtest</button>
+                    </div></details>
                   </td>
                 </tr>
               ))}

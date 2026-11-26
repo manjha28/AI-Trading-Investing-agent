@@ -4,6 +4,16 @@ import { Field, Notice, Pill, Scroll, StatusPill } from './shared';
 import { PineDiagnosisView } from './PineDiagnosisView';
 import type { Definition, Meta, PineReport, PythonReport } from './types';
 
+const SAMPLE_PINE = `//@version=5
+strategy("Sample EMA cross")
+fast = ta.ema(close, 9)
+slow = ta.ema(close, 21)
+if ta.crossover(fast, slow)
+    strategy.entry("long", strategy.long)
+if ta.crossunder(fast, slow)
+    strategy.close("long")
+`;
+
 export function ImportPanel({ meta, onDraft }: { meta: Meta; onDraft: (d: Definition, sourceText: string, note: string) => void }) {
   const [kind, setKind] = useState<'pine' | 'python'>('pine');
   const [market, setMarket] = useState('equity_in');
@@ -58,6 +68,7 @@ export function ImportPanel({ meta, onDraft }: { meta: Meta; onDraft: (d: Defini
           {file && <p className="sl-muted">Selected <code>{file.name}</code> · {file.text.length.toLocaleString()} characters</p>}
           <div className="sl-row">
             <button type="button" className="sl-primary" disabled={!file || busy} onClick={analyze}>{busy ? 'Analyzing…' : 'Analyze compatibility'}</button>
+            {kind === 'pine' && <button type="button" onClick={() => { setPine(null); setPy(null); setError(null); setFileError(null); setFile({ name: 'sample-ema-cross.pine', text: SAMPLE_PINE }); }}>Use a sample script</button>}
             {kind === 'python' && <button type="button" onClick={() => setShowTemplate(!showTemplate)}>{showTemplate ? 'Hide' : 'Show'} template &amp; interface</button>}
           </div>
           {error && <Notice tone="bad">{error}</Notice>}
