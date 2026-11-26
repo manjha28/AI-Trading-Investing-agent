@@ -466,3 +466,4 @@
 .rt-more { justify-self: center; }
 .rt-root label.rt-v2-toggle, .rt-daily .rt-v2-bar label, .mb-page .mb-filters label { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
 .mb-legend { margin: 0; font-size: 13px; }
+.rt-why-cell { display: block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

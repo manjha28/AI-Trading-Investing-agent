@@ -234,9 +234,11 @@ export default function App() {
           <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={17} /><span>Signals</span></button>
           <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={17} /><span>Crypto · Delta</span></button>
         </nav>
+        <div className="sidebar-foot">
         <DhanStatusRow allowed={sessionVerified} onOpen={() => setActiveView('brokers')} />
         <p className="sidebar-user">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</p>
         <button className="signout-button" onClick={signOut}><LogOut size={16} /><span>Sign out</span></button>
+        </div>
       </aside>
 
       <main className="workspace">

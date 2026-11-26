@@ -393,11 +393,13 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
 
       {kpiAnalytics && (
         <section className="journal-summary" aria-label="Journal performance">
-          <div className="journal-summary-main"><span>Net realized P&amp;L{hasKpiFilter ? ' (filtered)' : ''}</span><strong className={kpiAnalytics.net_pnl === null ? '' : Number(kpiAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{kpiAnalytics.net_pnl === null ? '—' : formatMoney(kpiAnalytics.net_pnl, journalCurrency)}</strong></div>
-          <div><span title="Share of closed trades that made money">Win rate</span><strong>{kpiAnalytics.win_rate === null ? '—' : `${kpiAnalytics.win_rate}%`}</strong><small>{kpiAnalytics.wins} wins · {kpiAnalytics.losses} losses</small></div>
-          <div><span title="Money won divided by money lost; above 1 means the wins outweigh the losses">Profit factor</span><strong>{kpiAnalytics.profit_factor ?? '—'}</strong></div>
-          <div><span title="Largest fall from a high point of your running profit">Max drawdown</span><strong className={kpiAnalytics.max_drawdown !== null && Number(kpiAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{kpiAnalytics.max_drawdown === null ? '—' : formatMoney(kpiAnalytics.max_drawdown, journalCurrency)}</strong></div>
-          <div><span title="Average profit or loss of one closed trade">Expectancy</span><strong>{kpiAnalytics.expectancy === null ? '—' : formatMoney(kpiAnalytics.expectancy, journalCurrency)}</strong></div>
+          {[
+            { label: 'Net realized P&L', value: kpiAnalytics.net_pnl === null ? '—' : formatMoney(kpiAnalytics.net_pnl, journalCurrency), tone: kpiAnalytics.net_pnl === null ? '' : Number(kpiAnalytics.net_pnl) >= 0 ? 'positive' : 'negative', note: hasKpiFilter ? 'closed trades, filtered' : 'all closed trades' },
+            { label: 'Win rate', value: kpiAnalytics.win_rate === null ? '—' : `${kpiAnalytics.win_rate}%`, tone: '', note: `${kpiAnalytics.wins} wins · ${kpiAnalytics.losses} losses` },
+            { label: 'Profit factor', value: kpiAnalytics.profit_factor ?? '—', tone: '', note: 'money won ÷ money lost' },
+            { label: 'Max drawdown', value: kpiAnalytics.max_drawdown === null ? '—' : formatMoney(kpiAnalytics.max_drawdown, journalCurrency), tone: kpiAnalytics.max_drawdown !== null && Number(kpiAnalytics.max_drawdown) > 0 ? 'negative' : '', note: 'largest fall from a high' },
+            { label: 'Expectancy', value: kpiAnalytics.expectancy === null ? '—' : formatMoney(kpiAnalytics.expectancy, journalCurrency), tone: '', note: 'average per closed trade' },
+          ].map((k) => <div key={k.label}><span>{k.label}</span><strong className={k.tone}>{k.value}</strong><small>{k.note}</small></div>)}
         </section>
       )}
       {kpiAnalytics && (kpiAnalytics.unpriced_closed_trades || kpiAnalytics.includes_estimated_charges) ? <p className="journal-caveat">{kpiAnalytics.unpriced_closed_trades ? `${kpiAnalytics.unpriced_closed_trades} matched trades lack charge data. ` : ''}{kpiAnalytics.includes_estimated_charges ? 'Includes ESTIMATED charges for fills Dhan has not priced yet.' : ''}</p> : null}

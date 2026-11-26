@@ -183,3 +183,18 @@ describe('DailyReport · Buy now holds only stocks priced inside their range', (
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });
+
+describe('DailyReport · the other lists share one table', () => {
+  it('shows hold and radar as table rows with a status, not as tiles', async () => {
+    const radar = { ...hold, instrument_id: 'i7', symbol: 'RAD', name: 'Radar Ltd', held: false, quantity: null, bucket: 'radar', action: 'On radar: no range yet' };
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [], radar: [radar] }, counts: { ...report.counts, buy: 0, radar: 1 } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    const table = await screen.findByRole('table', { name: 'Everything else' });
+    expect(table.textContent).toContain('RAD'); expect(table.textContent).toContain('BBB');
+    expect(document.querySelector('.rt-buy')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Radar' }));
+    const only = await screen.findByRole('table', { name: 'Radar' });
+    expect(only.textContent).toContain('RAD'); expect(only.textContent).not.toContain('BBB');
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
+});
