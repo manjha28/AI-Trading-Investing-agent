@@ -46,13 +46,7 @@ export function CryptoDeltaPage() {
 
   return (
     <main className="crypto-page">
-      <div className="crypto-intro">
-        <div>
-          <p className="eyebrow">DELTA EXCHANGE INDIA · CRYPTO PERPETUALS</p>
-          <h2>Perpetuals workspace</h2>
-          <p className="crypto-sub">Watch, chart and backtest perpetual contracts. Separate from the Indian-equity system. Decision support, not investment advice. <ExecutionStateChip venue={states?.delta} /></p>
-        </div>
-      </div>
+      <p className="crypto-sub">Delta Exchange India perpetuals, separate from your Indian shares. Decision support, not investment advice. <ExecutionStateChip venue={states?.delta} /></p>
       <nav className="crypto-tabs" role="tablist" aria-label="Crypto workspace">
         {TABS.map((item) => (
           <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}</button>

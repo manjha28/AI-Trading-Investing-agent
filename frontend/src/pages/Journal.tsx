@@ -1,7 +1,7 @@
 import { DhanReconciliation } from '../components/DhanReconciliation';
 import { useEffect, useId, useMemo, useState } from 'react';
 import {
-  CalendarDays, ChevronLeft, ChevronRight, CircleDollarSign, Pencil, Plus, Search, Trash2, Upload, X,
+  CalendarDays, ChevronLeft, ChevronRight, Pencil, Plus, Search, Trash2, Upload, X,
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import {
@@ -357,12 +357,7 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
 
   return (
     <div className="journal-page">
-      <header className="journal-heading">
-        <div>
-          <p className="eyebrow">TRADE REVIEW</p>
-          <h2>Trading journal</h2>
-          <p>Review recorded decisions, realized outcomes, and patterns across your trades.</p>
-        </div>
+      <header className="journal-heading journal-heading-slim">
         <div className="journal-heading-actions">
         <button className="secondary-button journal-add-button" type="button" onClick={() => {
           if (editingTrade) cancelEditingTrade();
@@ -396,17 +391,22 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
         {(dateFrom || dateTo || selectedDate || strategyFilter || setupFilter || sideFilter || assetFilter || search) && <button className="journal-clear-filters" type="button" onClick={clearFilters}><X size={13} /> Clear filters</button>}
       </div>
 
-      <div className="data-note journal-data-note"><CircleDollarSign size={16} /><span>Broker executions from Dhan are read-only; manual trades remain separately labelled. Realized broker P&amp;L is calculated from matched fills with FIFO and is unavailable when provider charges are missing.</span></div>
-
       {kpiAnalytics && (
-        <section className="journal-kpis" aria-label="Journal performance">
-          <article className="journal-kpi journal-kpi-primary"><span>Net realized P&amp;L</span><strong className={kpiAnalytics.net_pnl === null ? '' : Number(kpiAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{kpiAnalytics.net_pnl === null ? '—' : formatMoney(kpiAnalytics.net_pnl, journalCurrency)}</strong><small>{kpiAnalytics.unpriced_closed_trades ? `${kpiAnalytics.unpriced_closed_trades} matched trades lack charge data` : `${journalCurrency} · matched closed trades${hasKpiFilter ? ' · filtered' : ''}`}</small><small>Expired outcomes unknown are excluded from realized metrics.</small>{kpiAnalytics.includes_estimated_charges && <small className="negative">Includes ESTIMATED charges for fills Dhan has not priced yet.</small>}</article>
-          <article className="journal-kpi"><span>Win rate</span><strong>{kpiAnalytics.win_rate === null ? '—' : `${kpiAnalytics.win_rate}%`}</strong><small>{kpiAnalytics.wins} wins · {kpiAnalytics.losses} losses</small></article>
-          <article className="journal-kpi"><span>Profit factor</span><strong>{kpiAnalytics.profit_factor ?? '—'}</strong><small>Closed-trade analytics</small></article>
-          <article className="journal-kpi"><span>Expectancy</span><strong>{kpiAnalytics.expectancy === null ? '—' : formatMoney(kpiAnalytics.expectancy, journalCurrency)}</strong><small>Per closed trade</small></article>
-          <article className="journal-kpi"><span>Max drawdown</span><strong className={kpiAnalytics.max_drawdown !== null && Number(kpiAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{kpiAnalytics.max_drawdown === null ? '—' : formatMoney(kpiAnalytics.max_drawdown, journalCurrency)}</strong><small>Closed-trade sequence</small></article>
-          <article className="journal-kpi"><span>Journal records</span><strong>{kpiAnalytics.trades_logged}</strong><small>{kpiAnalytics.fill_count} fills + {kpiAnalytics.manual_trade_count} manual = {kpiAnalytics.trades_logged} records</small><small>{kpiAnalytics.fifo_match_slices} FIFO match slices + {kpiAnalytics.manual_trade_count} manual records · {kpiAnalytics.matched_closed_trades} closed trades</small><small>{kpiAnalytics.real_open_positions} real open · {kpiAnalytics.unattributed_fill_rows} unattributable · {kpiAnalytics.expired_trades} expired · {kpiAnalytics.unmatched_fill_rows} unmatched</small><small>{kpiAnalytics.fill_reconciliation}</small></article>
+        <section className="journal-summary" aria-label="Journal performance">
+          <div className="journal-summary-main"><span>Net realized P&amp;L{hasKpiFilter ? ' (filtered)' : ''}</span><strong className={kpiAnalytics.net_pnl === null ? '' : Number(kpiAnalytics.net_pnl) >= 0 ? 'positive' : 'negative'}>{kpiAnalytics.net_pnl === null ? '—' : formatMoney(kpiAnalytics.net_pnl, journalCurrency)}</strong></div>
+          <div><span title="Share of closed trades that made money">Win rate</span><strong>{kpiAnalytics.win_rate === null ? '—' : `${kpiAnalytics.win_rate}%`}</strong><small>{kpiAnalytics.wins} wins · {kpiAnalytics.losses} losses</small></div>
+          <div><span title="Money won divided by money lost; above 1 means the wins outweigh the losses">Profit factor</span><strong>{kpiAnalytics.profit_factor ?? '—'}</strong></div>
+          <div><span title="Largest fall from a high point of your running profit">Max drawdown</span><strong className={kpiAnalytics.max_drawdown !== null && Number(kpiAnalytics.max_drawdown) > 0 ? 'negative' : ''}>{kpiAnalytics.max_drawdown === null ? '—' : formatMoney(kpiAnalytics.max_drawdown, journalCurrency)}</strong></div>
+          <div><span title="Average profit or loss of one closed trade">Expectancy</span><strong>{kpiAnalytics.expectancy === null ? '—' : formatMoney(kpiAnalytics.expectancy, journalCurrency)}</strong></div>
         </section>
+      )}
+      {kpiAnalytics && (kpiAnalytics.unpriced_closed_trades || kpiAnalytics.includes_estimated_charges) ? <p className="journal-caveat">{kpiAnalytics.unpriced_closed_trades ? `${kpiAnalytics.unpriced_closed_trades} matched trades lack charge data. ` : ''}{kpiAnalytics.includes_estimated_charges ? 'Includes ESTIMATED charges for fills Dhan has not priced yet.' : ''}</p> : null}
+      {kpiAnalytics && (
+        <details className="journal-checks"><summary>Check the numbers ({kpiAnalytics.trades_logged} records)</summary>
+          <p>Broker executions from Dhan are read-only; manual trades remain separately labelled. Realized broker P&amp;L is calculated from matched fills with FIFO and is unavailable when provider charges are missing. Expired outcomes unknown are excluded from realized metrics.</p>
+          <p>{kpiAnalytics.fill_count} fills + {kpiAnalytics.manual_trade_count} manual = {kpiAnalytics.trades_logged} records. {kpiAnalytics.fifo_match_slices} FIFO match slices + {kpiAnalytics.manual_trade_count} manual records · {kpiAnalytics.matched_closed_trades} closed trades.</p>
+          <p>{kpiAnalytics.real_open_positions} real open · {kpiAnalytics.unattributed_fill_rows} unattributable · {kpiAnalytics.expired_trades} expired · {kpiAnalytics.unmatched_fill_rows} unmatched. {kpiAnalytics.fill_reconciliation}</p>
+        </details>
       )}
       {journalCurrency === 'INR' && <details className="journal-recon"><summary>Reconcile with Dhan (Closed today vs the journal)</summary><DhanReconciliation /></details>}
 

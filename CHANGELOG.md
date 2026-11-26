@@ -295,3 +295,4 @@
 - 26 Nov: downloader for Dhan index and expired-option data (research only; not deployed, not yet run: no access token).
 - 26 Nov: Signals redesign: guided five-step strategy builder (full editor one click away), forward tests led by your own tests with real orders folded away, data health folded on the dashboard, more space and larger text; strategy registry unchanged.
 - 26 Nov: crypto markets table: the 'Last' price heading was hidden below 1500px wide, shifting every heading onto the wrong numbers; fixed.
+- 26 Nov: page addresses (refresh and Back keep your place), search suggestions, rupees first for new portfolios, India time in crypto, one orders status in the header, trade journal summary on one line with the bookkeeping folded, market watch lists symbols only (name and chart on click), crypto live report leads with balance and today.

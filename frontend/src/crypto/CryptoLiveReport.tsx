@@ -1,3 +1,4 @@
+import { formatIST } from '../lib/formatIST';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api';
 import { messageOf } from './cryptoApi';
@@ -12,7 +13,7 @@ type Report = { wallet?: { total: string; available: string; margin_in_use: stri
 const REFRESH_MS = 15_000;     // never overlaps: a refresh only starts once the previous one has answered
 const usd = (v: string | null | undefined, digits = 4) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v) < 0 ? '-' : ''}$${Math.abs(Number(v)).toFixed(digits)}`);
 const num = (v: string | null | undefined) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }));
-const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 19) + ' UTC' : '—');
+const when = (iso?: string | null) => formatIST(iso);
 
 /** Live Delta account as Delta reports it: wallet, positions, open orders, realised P&L and what became of every live order. Read only. */
 export function CryptoLiveReport() {
@@ -37,12 +38,16 @@ export function CryptoLiveReport() {
       {stale && <p role="alert" className="crypto-error">Stale: {error ?? report?.error ?? 'Delta could not be read'}. Showing the last copy from {when(report?.synced_at ?? null)}.</p>}
       {!report && !error && <p className="crypto-sub" role="status" aria-busy="true">Loading from Delta… (positions, orders and outcomes appear once Delta has answered)</p>}
       {w && (
-        <dl className="crypto-kpis" aria-label="Wallet">
+        <dl className="crypto-lead" aria-label="Balance and today">
           <div><dt>Total balance</dt><dd>{usd(w.total)}</dd></div>
+          <div><dt>Realised today</dt><dd>{usd(report?.realized_pnl?.today)}</dd></div>
+        </dl>
+      )}
+      {w && (
+        <dl className="crypto-kpis" aria-label="Wallet">
           <div><dt>Available</dt><dd>{usd(w.available)}</dd></div>
           <div><dt>Margin in use</dt><dd>{usd(w.margin_in_use)}</dd></div>
           <div><dt>Unrealised P&amp;L</dt><dd>{usd(w.unrealised_pnl)}</dd></div>
-          <div><dt>Realised today</dt><dd>{usd(report?.realized_pnl?.today)}</dd></div>
           <div><dt>Realised all-time</dt><dd>{usd(report?.realized_pnl?.all_time)}</dd></div>
         </dl>
       )}

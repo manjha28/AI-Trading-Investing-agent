@@ -102,7 +102,7 @@ describe('MarketWatch · equities', () => {
     expect(within(screen.getByText('BBB').closest('tr')!).getByText('stale')).toBeTruthy();       // a one-session gap is stale too: the API flag decides
     expect(within(screen.getByText('AAA').closest('tr')!).queryByText('stale')).toBeNull();
     expect(screen.getByText(/3 need a refreshed close/)).toBeTruthy(); // CCC (none) + BBB (1 session) + ONGC (7 sessions): the same stale flag the API sends
-    expect(screen.getByText(/2 stale closes not counted in ▲ ▼ \(as of 19 Nov 2026\)/)).toBeTruthy();   // advance/decline use current closes only
+    expect(screen.getByText(/3 need a refreshed close/).getAttribute('title')).toMatch(/2 stale closes not counted in ▲ ▼ \(as of 19 Nov 2026\)/);   // advance/decline use current closes only
     expect(screen.getByText('2026-11-20', { selector: '.watch-strip b' })).toBeTruthy(); // the latest completed session
   });
 
@@ -374,7 +374,7 @@ describe('MarketWatch · header counts and row selection', () => {
     await screen.findByText('AAA');
     const strip = document.querySelector('.watch-strip')!;
     expect(within(strip as HTMLElement).getByText(/4/, { selector: 'b' })).toBeTruthy();
-    expect(screen.getByText(/\+ 1 without a current close \(CCC\)/)).toBeTruthy();                       // CCC has no close at all: named, not silent
+    expect(screen.getByText(/need a refreshed close/).getAttribute('title')).toContain('No stored or live close: CCC');   // CCC has no close at all: named, not silent
     expect(within(screen.getByText('AAA').closest('tr')!).getByText('100.05')).toBeTruthy();             // 100.03 shown on the 0.05 tick
     fireEvent.click(screen.getByRole('button', { name: 'Gainers' }));
     await waitFor(() => expect(symbolsShown()).toEqual(['AAA', 'ONGC']));
@@ -384,12 +384,16 @@ describe('MarketWatch · header counts and row selection', () => {
   it('opens the detail panel when a row is clicked', async () => {
     mockApi();
     render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
-    expect(screen.getByText('Select a symbol to chart it.')).toBeTruthy();
+    expect(screen.queryByRole('complementary', { name: 'Chart' })).toBeNull();                 // no empty panel: the table has the full width
+    expect(screen.queryByText('BBB Ltd')).toBeNull();                                          // company names are not in the list
     const tr = await tableRow('BBB');
     fireEvent.click(tr);
     await waitFor(() => expect(screen.getByRole('heading', { name: 'BBB' })).toBeTruthy());
     expect(tr.getAttribute('aria-selected')).toBe('true');
-    expect(screen.queryByText('Select a symbol to chart it.')).toBeNull();
+    expect(screen.getByText('BBB Ltd')).toBeTruthy();                                          // the name appears with the details
+    fireEvent.click(screen.getByRole('button', { name: 'Close chart' }));
+    expect(screen.queryByRole('complementary', { name: 'Chart' })).toBeNull();
+    fireEvent.click(tr);
     expect(screen.getByRole('tab', { name: 'Chart' })).toBeTruthy();
   });
 });

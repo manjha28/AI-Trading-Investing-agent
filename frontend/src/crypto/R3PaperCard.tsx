@@ -1,3 +1,4 @@
+import { formatIST } from '../lib/formatIST';
 import { useEffect, useState } from 'react';
 import { apiRequest } from '../api';
 import { messageOf } from './cryptoApi';
@@ -12,7 +13,7 @@ type Status = {
   go_no_go?: { decided: boolean; reason?: string; passed?: boolean }; label?: string;
 };
 
-const when = (iso?: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) + ' UTC' : '—');
+const when = (iso?: string | null) => formatIST(iso);
 
 /** The frozen R3 paper test (1-hour range breakout, 3R target, 48 h time stop) that runs on the separate lab machine. Paper only. */
 export function R3PaperCard() {

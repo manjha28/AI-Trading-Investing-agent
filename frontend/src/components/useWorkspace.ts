@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { viewFromHash } from '../lib/viewRoute';
 import { ApiRequestError, apiRequest, downloadCsv, isAbortError } from '../api';
 import { BASIS_SESSION_CLOSE, FRESHNESS_PRIOR_CLOSE, basisForFreshnessStatus, deriveMarketDataStatus, resolveMarketPrice, type PriceStateRow, type ValuationBasis } from '../lib/priceStates';
 
@@ -496,8 +497,21 @@ export function useWorkspace() {
   const [csvPreview, setCsvPreview] = useState<CsvImportPreview | null>(null);
   const [importingCsv, setImportingCsv] = useState(false);
   const [activeView, setActiveView] = useState<'overview' | 'journal' | 'market-data' | 'brokers' | 'alerts' | 'corporate-actions' | 'research' | 'signals' | 'crypto-delta' | 'market-watch'>(
-    () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : 'overview',
+    () => new URLSearchParams(window.location.search).has('broker_connected') ? 'brokers' : viewFromHash(window.location.hash) ?? 'overview',
   );
+  useEffect(() => {                                              // keep the address in step with the page
+    if (window.location.hash === '#forward-record') return;
+    const wanted = `#/${activeView}`;
+    if (window.location.hash === wanted) return;
+    const url = `${window.location.pathname}${window.location.search}${wanted}`;
+    if (viewFromHash(window.location.hash)) window.history.pushState(null, '', url); else window.history.replaceState(window.history.state, '', url);
+  }, [activeView]);
+  useEffect(() => {                                              // Back and Forward
+    const onPop = () => { const next = viewFromHash(window.location.hash); if (next) setActiveView(next); };
+    window.addEventListener('popstate', onPop);
+    window.addEventListener('hashchange', onPop);
+    return () => { window.removeEventListener('popstate', onPop); window.removeEventListener('hashchange', onPop); };
+  }, []);
   const [openMarketInstrumentId, setOpenMarketInstrumentId] = useState<string | null>(null);
   useEffect(() => {
     const url = new URL(window.location.href);

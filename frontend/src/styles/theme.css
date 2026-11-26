@@ -424,3 +424,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 @media (max-width: 480px) {
   .overview-page .portfolio-metrics .metric strong { font-size: var(--fs-4); letter-spacing: 0; }
 }
+
+/* 26 Nov audit round: search suggestions, orders state in the header, journal summary, full-width market watch, crypto lead figures */
+.header-search { position: relative; }
+.header-suggest { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; margin: 0; padding: 4px; list-style: none; background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: 8px; }
+.header-suggest button { display: flex; width: 100%; justify-content: space-between; gap: 10px; padding: 8px 10px; background: none; border: 0; color: var(--text); text-align: left; cursor: pointer; }
+.header-suggest button:hover, .header-suggest button:focus-visible { background: var(--surface-2); }
+.header-suggest small, .header-suggest-none { color: var(--text-muted); font-size: 12px; } .header-suggest-none { padding: 8px 10px; }
+.header-orders { display: inline-flex; gap: 6px; }
+.journal-heading-slim { justify-content: flex-end; }
+.journal-summary { display: flex; flex-wrap: wrap; gap: 14px 36px; align-items: flex-start; padding: 14px 18px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; }
+.journal-summary div { display: grid; gap: 3px; } .journal-summary span { color: var(--text-muted); font-size: 12px; } .journal-summary small { color: var(--text-muted); font-size: 11px; }
+.journal-summary strong { font-family: var(--font-mono); font-size: 18px; font-weight: 500; }
+.journal-summary .journal-summary-main strong { font-size: 30px; }
+.journal-caveat { margin: 6px 0 0; font-size: 12px; color: var(--caution); }
+.journal-checks { margin: 8px 0; } .journal-checks summary { cursor: pointer; color: var(--text-muted); font-size: 12.5px; } .journal-checks p { margin: 6px 0; color: var(--text-muted); font-size: 12px; max-width: 90ch; }
+.watch-split.watch-split-full { grid-template-columns: minmax(0, 1fr); }
+.watch-company { margin: 2px 0 0; color: var(--text-muted); font-size: 13px; }
+.crypto-lead { display: flex; flex-wrap: wrap; gap: 14px 48px; margin: 12px 0 0; } .crypto-lead dt { color: var(--text-muted); font-size: 12px; } .crypto-lead dd { margin: 2px 0 0; font-family: var(--font-mono); font-size: 30px; }
+@media (max-width: 700px) { .header-search { flex: 1 1 auto; min-width: 0; } .header-search input { width: 100%; min-width: 0; } .header-orders:not(.armed) { display: none; } }          /* on a phone the orders state shows whenever it is anything but off */
+.journal-summary span[title] { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; justify-self: start; }
+.watch-chart-panel .section-heading { flex-wrap: wrap; align-items: flex-start; }
+.watch-chart-panel .section-heading > div:first-child { flex: 1 1 100%; }
+.watch-chart-panel .watch-close { order: 3; margin-left: auto; }

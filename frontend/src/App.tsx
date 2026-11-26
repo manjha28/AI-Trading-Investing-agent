@@ -1,12 +1,13 @@
-import { Activity, ArrowDownLeft, Bitcoin, TrendingUp, BookOpen, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, Target, Wallet } from 'lucide-react';
+import { Activity, Bitcoin, TrendingUp, BookOpen, CircleAlert, Landmark, LogOut, PanelLeftClose, PanelLeftOpen, ShieldCheck, Target, Wallet } from 'lucide-react';
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { apiRequest } from './api';
 import { marketStatusLabel } from './lib/priceStates';
-import { footerWording, sidebarWording } from './lib/executionState';
 import { useExecutionState } from './hooks/useExecutionState';
 import { useWorkspace } from './components/useWorkspace';
 import { AlertsBell } from './components/AlertsBell';
 import { MobileNav } from './components/MobileNav';
+import { HeaderSearch } from './components/HeaderSearch';
+import { ExecutionStateChip } from './components/ExecutionStateChip';
 import { CodeInput } from './components/ui/kit';
 import { DhanStatusRow } from './components/DhanStatusRow';
 import { SlowBackendBanner } from './components/SlowBackendBanner';
@@ -233,7 +234,6 @@ export default function App() {
           <button className={activeView === 'signals' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('signals')}><Target size={17} /><span>Signals</span></button>
           <button className={activeView === 'crypto-delta' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('crypto-delta')}><Bitcoin size={17} /><span>Crypto · Delta</span></button>
         </nav>
-        <div className="sidebar-status"><span className={`status-dot ${marketDataStatus}`} /><span title={executionStates ? [executionStates.dhan, executionStates.delta].map((v) => `${v.label}: ${v.effective.reasons.join('; ') || 'orders can be sent now'}`).join('\n') : undefined}>{sidebarWording(executionStates)}</span><span>Market data: {marketStatusLabel(marketDataStatus)}</span></div>
         <DhanStatusRow allowed={sessionVerified} onOpen={() => setActiveView('brokers')} />
         <p className="sidebar-user">{user.email} · {user.email_verified ? 'Email verified' : 'Email unverified'}</p>
         <button className="signout-button" onClick={signOut}><LogOut size={16} /><span>Sign out</span></button>
@@ -243,11 +243,9 @@ export default function App() {
         <TopLoadingBar />
         <SlowBackendBanner />
         <header className="workspace-header">
-          <form className="header-search" role="search" onSubmit={(event) => { event.preventDefault(); setWatchSearch((current) => ({ q: marketQuery.trim(), n: current.n + 1 })); setActiveView('market-watch'); }}>
-            <Search size={15} aria-hidden="true" />
-            <input type="search" aria-label="Search instruments" placeholder="Search instruments" value={marketQuery} onChange={(event) => setMarketQuery(event.target.value)} />
-          </form>
+          <HeaderSearch value={marketQuery} onChange={setMarketQuery} onSearch={(q) => { setWatchSearch((current) => ({ q, n: current.n + 1 })); setActiveView('market-watch'); }} />
           <div className="header-actions">
+            {sessionVerified && <span className={[executionStates?.dhan, executionStates?.delta].some((v) => v && v.effective.state !== 'OFF') ? 'header-orders armed' : 'header-orders'} aria-label="Live orders"><ExecutionStateChip venue={executionStates?.dhan} /><ExecutionStateChip venue={executionStates?.delta} /></span>}
             <button className="header-menu-button" type="button" aria-expanded={headerMenuOpen} aria-label="Menu" onClick={() => setHeaderMenuOpen((open) => !open)}>☰</button>
             <AlertsBell refreshKey={bellKey} onOpenStock={(id) => openStock(id)} onOpenResearch={(id) => { setResearchFocus((cur) => ({ instrumentId: id, nonce: (cur?.nonce ?? 0) + 1 })); setActiveView('research'); }} />
             <div className={headerMenuOpen ? "header-menu open" : "header-menu"}>
@@ -353,7 +351,7 @@ export default function App() {
         ) : activeView === 'overview' ? (
           <OverviewPage brokerAccessAllowed={!!twoFactorStatus?.session_verified} workspace={{addInstrumentToWatchlist: workspace.addInstrumentToWatchlist, cancelEditingTransaction: workspace.cancelEditingTransaction, coverage: workspace.coverage, csvContent: workspace.csvContent, csvPreview: workspace.csvPreview, currency: workspace.currency, editingTransaction: workspace.editingTransaction, exportTransactionCsv: workspace.exportTransactionCsv, importTransactionCsv: workspace.importTransactionCsv, importingCsv: workspace.importingCsv, loadTransactionCsv: workspace.loadTransactionCsv, loadingPortfolio: workspace.loadingPortfolio, marketDataStatus: workspace.marketDataStatus, portfolioId: workspace.portfolioId, previewTransactionCsv: workspace.previewTransactionCsv, refreshPortfolioValuation: workspace.refreshPortfolioValuation, refreshingValuation: workspace.refreshingValuation, removeInstrumentFromWatchlist: workspace.removeInstrumentFromWatchlist, riskMetrics: workspace.riskMetrics, setActiveView: workspace.setActiveView, setOpenMarketInstrumentId: workspace.setOpenMarketInstrumentId, setCoverageVersion: workspace.setCoverageVersion, setThesisSymbol: workspace.setThesisSymbol, setTransactionType: workspace.setTransactionType, submitTransaction: workspace.submitTransaction, summary: workspace.summary, thesisSymbol: workspace.thesisSymbol, transactionType: workspace.transactionType, valuation: workspace.valuation, valuationBySymbol: workspace.valuationBySymbol, watchlist: workspace.watchlist, watchlistLoadState: workspace.watchlistLoadState, watchlistLoadError: workspace.watchlistLoadError, refreshWatchlist: workspace.refreshWatchlist, setBrokerPriceRows: workspace.setBrokerPriceRows, brokerRefreshKey: workspace.brokerRefreshKey}} />
         ) : null}
-        <footer className="workspace-footer"><span><ArrowDownLeft size={14} /> {footerWording(executionStates)}</span><span>Data entered by you · {portfolios.length} portfolio{portfolios.length === 1 ? '' : 's'}</span></footer>
+        <footer className="workspace-footer"><span>Data entered by you · {portfolios.length} portfolio{portfolios.length === 1 ? '' : 's'}</span></footer>
         </Suspense>
       </main>
       <MobileNav activeView={activeView} setActiveView={setActiveView} onSignOut={signOut} />

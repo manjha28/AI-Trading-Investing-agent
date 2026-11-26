@@ -93,7 +93,7 @@ const WatchRow = memo(function WatchRow({ row, selected, onSelect, onToggleStar 
   return (
     <tr className={`${selected ? 'watch-selected' : ''}`} onClick={() => onSelect(row.instrument_id)} aria-selected={selected} title={row.reason ?? undefined}>
       <td className="watch-starcell"><button type="button" className={`watch-star ${row.starred ? 'on' : ''}`} aria-label={row.starred ? `Remove ${row.symbol} from watchlist` : `Add ${row.symbol} to watchlist`} aria-pressed={row.starred} onClick={(event) => { event.stopPropagation(); onToggleStar(row); }}>{row.starred ? '★' : '☆'}</button></td>
-      <td className="watch-symbol"><span className={`watch-dot ${row.isLive ? 'live' : ''}`} /><strong>{row.symbol}</strong>{row.hasAlert && <Bell className="watch-alert-dot" size={11} aria-label="has alert" role="img" />}<small>{row.name}</small></td>
+      <td className="watch-symbol"><span className={`watch-dot ${row.isLive ? 'live' : ''}`} /><strong>{row.symbol}</strong>{row.hasAlert && <Bell className="watch-alert-dot" size={11} aria-label="has alert" role="img" />}</td>
       <td className="watch-sector">{row.sector ?? '—'}</td>
       <td className={`watch-num watch-ltp ${flash ? `flash-${flash}` : ''}`}>{price(row.ltp)}</td>
       <td className={`watch-num ${tone(row.chg)}`}>{signed(row.chg)}</td>
@@ -343,19 +343,16 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
     <div className="watch-page">
       <div className="watch-strip" role="status">
         <span className={`watch-status watch-status-${status}`}>● {statusLabel}</span>
-        {universeSession && <span title="Latest completed NSE session">session <b>{universeSession}</b></span>}
-        <span title={scope?.rule ?? `${universe.length} in the master list`}><b>{shown.length}</b> instruments{shown.length < universe.length ? ` of ${universe.length}` : ''}{scope ? ` (${scope.stocks} stocks + ${scope.funds_and_etfs} funds/ETFs)` : ''}</span>
-        <span><b>{stats.ticking}</b> live</span>
+        <span title={scope?.rule ?? `${universe.length} in the master list`}><b>{shown.length}</b> instruments{shown.length < universe.length ? ` of ${universe.length}` : ''}</span>
         <span className="positive">▲ <b>{stats.up}</b></span>
         <span className="negative">▼ <b>{stats.down}</b></span>
-        {noClose.length > 0 && <span className="watch-missing" title="No stored or live close exists for these, so they have no price or change">+ {noClose.length} without a current close ({noClose.slice(0, 6).join(', ')}{noClose.length > 6 ? ', …' : ''})</span>}
-        {stats.missing > 0 && <span className="watch-missing">{stats.missing} need a refreshed close</span>}
-        {stats.excluded > 0 && <span className="watch-missing" title="These closes are older than the last completed session, so they are left out of ▲ and ▼">{stats.excluded} stale closes not counted in ▲ ▼{stats.staleAsOf ? ` (as of ${formatISTDate(stats.staleAsOf)})` : ''}</span>}
-        <span className="watch-note">NSE · Dhan live feed · decision support, not investment advice</span>
+        {stats.missing > 0 && <span className="watch-missing" title={[noClose.length ? `No stored or live close: ${noClose.join(', ')}` : '', stats.excluded ? `${stats.excluded} stale closes not counted in ▲ ▼${stats.staleAsOf ? ` (as of ${formatISTDate(stats.staleAsOf)})` : ''}` : ''].filter(Boolean).join(' · ') || undefined}>{stats.missing} need a refreshed close</span>}
+        {stats.missing === 0 && noClose.length > 0 && <span className="watch-missing" title={noClose.join(', ')}>{noClose.length} without a close</span>}
+        <span className="watch-note">{universeSession && <>Last full session <b>{universeSession}</b> · </>}decision support, not investment advice</span>
       </div>
       {(error || streamError || (message && status !== 'active')) && <p className="alerts-notice" role="alert">{error ?? streamError ?? message}</p>}
 
-      <div className="watch-split">
+      <div className={selected ? 'watch-split' : 'watch-split watch-split-full'}>
         <section className="data-section watch-table-panel" aria-label="Market watch">
           <div className="watch-toolbar">
             <input type="search" placeholder="Search symbol or name (also finds instruments to add)" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search symbols" />
@@ -406,11 +403,11 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
           )}
         </section>
 
-        <aside className="data-section watch-chart-panel" aria-label="Chart">
-          {!selected ? <p className="table-empty">Select a symbol to chart it.</p> : (
+        {selected && <aside className="data-section watch-chart-panel" aria-label="Chart">
             <>
               <div className="section-heading">
-                <div><p className="eyebrow">{selected.venue} · {selected.sector ?? 'Equity'}</p><h3>{selected.symbol}</h3></div>
+                <div><p className="eyebrow">{selected.venue} · {selected.sector ?? 'Equity'}</p><h3>{selected.symbol}</h3>{selected.name !== selected.symbol && <p className="watch-company">{selected.name}</p>}</div>
+                <button type="button" className="secondary-button watch-close" aria-label="Close chart" onClick={() => setSelectedId(null)}>Close ✕</button>
                 <div className="crypto-resolutions" role="group" aria-label="Candle size">
                   {INTERVALS.map((i) => <button key={i} type="button" className={i === interval ? 'active' : ''} aria-pressed={i === interval} onClick={() => setIntervalValue(i)}>{i}</button>)}
                 </div>
@@ -437,8 +434,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
               </>}
               {selected.reason && <p className="crypto-sub">Day change unavailable: {selected.reason}.</p>}
             </>
-          )}
-        </aside>
+        </aside>}
       </div>
     </div>
   );
