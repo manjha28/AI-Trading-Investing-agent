@@ -98,7 +98,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .app-frame .error-banner, .app-frame .success-banner, .app-frame .data-note { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; padding: 9px 13px; border-radius: 4px; font-size: 12.5px; border: 1px solid var(--border-strong); border-left-width: 3px; }
 .app-frame .success-banner { color: #b5f3d9; border-left-color: var(--positive); background: var(--positive-soft); }
 .app-frame .error-banner { color: #ffb3ba; border-left-color: var(--negative); background: var(--negative-soft); }
-.app-frame .data-note { color: #f7d49a; border-left-color: var(--caution); background: var(--caution-soft); flex-wrap: wrap; }
+.app-frame .data-note { color: var(--caution-pale); border-left-color: var(--caution); background: var(--caution-soft); flex-wrap: wrap; }
 .app-frame .data-note > div { flex: 1 1 360px; line-height: 1.5; }
 .app-frame .data-note strong { color: #fff; }
 .app-frame .error-banner button, .app-frame .success-banner button { margin-left: auto; color: inherit; background: none; border: 0; font-size: 18px; line-height: 1; opacity: .7; }
@@ -187,7 +187,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 /* Price-provenance strip: quiet metadata line, not an alert */
 .provenance-strip { display: flex; align-items: center; gap: 8px; padding: 8px 12px; color: var(--text-muted); font-family: var(--font-mono); font-size: 11.5px; border: 1px solid var(--border); border-left: 3px solid var(--positive); border-radius: 4px; background: var(--surface-1); }
 .provenance-strip strong { color: var(--text); font-weight: 500; }
-.provenance-strip-delayed { border-left-color: var(--caution); background: var(--caution-soft); color: #f7d49a; }
+.provenance-strip-delayed { border-left-color: var(--caution); background: var(--caution-soft); color: var(--caution-pale); }
 
 /* ---------- Overview rail: breadth & sector ---------- */
 .rail-insight { display: grid; gap: 12px; }
@@ -276,7 +276,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .crypto-kpis > div { display: grid; gap: 4px; padding: 11px 13px; background: var(--surface-1); }
 .crypto-kpis span { color: var(--text-muted); font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; }
 .crypto-kpis strong { font-family: var(--font-mono); font-size: 15px; font-weight: 500; }
-.crypto-verdict-hypo { border-left-color: var(--caution); background: var(--caution-soft); color: #f7d49a; font-weight: 500; }
+.crypto-verdict-hypo { border-left-color: var(--caution); background: var(--caution-soft); color: var(--caution-pale); font-weight: 500; }
 .crypto-h4 { margin: 14px 0 6px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
 .crypto-details { margin: 12px 0; color: var(--text-muted); font-size: 12.5px; }
 .crypto-details summary { cursor: pointer; color: var(--caution); }
@@ -389,11 +389,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 /* ---- Delta depth panel (Crypto watch side panel) ---- */
 .depth-panel { display: grid; gap: 10px; font-variant-numeric: tabular-nums; }
 .depth-status { display: flex; gap: 8px; align-items: center; margin: 0; } .depth-status label { margin-left: auto; font-size: 12px; }
-.depth-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; border: 1px solid currentColor; } .depth-badge.live { color: #19d38a; } .depth-badge.stale { color: #f5a524; }
+.depth-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; border: 1px solid currentColor; } .depth-badge.live { color: var(--positive); } .depth-badge.stale { color: var(--caution); }
 .depth-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 0; } .depth-stats div { display: grid; } .depth-stats dt { font-size: 11px; opacity: .7; } .depth-stats dd { margin: 0; font-weight: 600; }
 .depth-book ul, .depth-tape { list-style: none; margin: 0; padding: 0; }
 .depth-head, .depth-row, .depth-tape li { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 6px; font-size: 12px; text-align: right; } .depth-head span:first-child, .depth-row span:first-child, .depth-tape li span:first-child { text-align: left; }
 .depth-row { position: relative; padding: 1px 4px; } .depth-row i { position: absolute; right: 0; top: 0; bottom: 0; opacity: .22; } .depth-row span { position: relative; }
-.depth-ask i { background: #ff5160; } .depth-bid i { background: #19d38a; } .depth-ask span:first-child { color: #ff5160; } .depth-bid span:first-child { color: #19d38a; }
+.depth-ask i { background: var(--negative); } .depth-bid i { background: var(--positive); } .depth-ask span:first-child { color: var(--negative); } .depth-bid span:first-child { color: var(--positive); }
 .depth-mid { margin: 4px 0; padding: 4px; text-align: center; font-size: 12px; border-block: 1px solid rgba(128,128,128,.3); }
-.depth-tape { max-height: 220px; overflow: auto; } .depth-tape li.positive { color: #19d38a; } .depth-tape li.negative { color: #ff5160; }
+.depth-tape { max-height: 220px; overflow: auto; } .depth-tape li.positive { color: var(--positive); } .depth-tape li.negative { color: var(--negative); }
