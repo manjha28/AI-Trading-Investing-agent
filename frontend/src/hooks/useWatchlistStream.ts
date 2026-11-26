@@ -119,6 +119,16 @@ export function nextNseOpenDelayMs(): number {
   return Math.max(1000, nextOpen - now.getTime());
 }
 
+// The Market watch page is unmounted when you open another page. The last tick received for each universe instrument is kept here so coming back shows that price
+// (marked 'last_seen', never live) instead of the older stored daily close. Today's (IST) ticks only; memory only, gone on reload.
+const universeLastQuotes = new Map<string, LiveWatchlistQuote>();
+export const istDay = (value: string | number | Date): string => new Date(value).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+export function clearUniverseQuoteMemory(): void { universeLastQuotes.clear(); }
+function rememberedUniverseQuotes(): Record<string, LiveWatchlistQuote> {
+  const today = istDay(Date.now());
+  return Object.fromEntries([...universeLastQuotes].filter(([, q]) => istDay(q.market_timestamp) === today).map(([id, q]) => [id, { ...q, freshness_status: 'last_seen' }]));
+}
+
 /**
  * Owns the only watchlist WebSocket connection in the app. Ticks are batched into
  * one state update per FLUSH_INTERVAL_MS, and the newest quote per instrument wins:
@@ -172,13 +182,13 @@ export function useWatchlistStream({
     let lastPacketReceivedAt: number | null = null;
     let socketOpenedAt: number | null = null;
     let staleAfterSeconds = 30;
-    let committed: Record<string, LiveWatchlistQuote> = {};
+    let committed: Record<string, LiveWatchlistQuote> = universe ? rememberedUniverseQuotes() : {};
     const pending = new Map<string, LiveWatchlistQuote>();
     let pendingFeedHealth: WatchlistFeedHealth | undefined;
 
     setStatus('connecting');
     setMessage(null);
-    setQuotes((current) => (Object.keys(current).length ? {} : current));
+    setQuotes((current) => (universe ? committed : Object.keys(current).length ? {} : current));
     setFeedHealth(null);
     setPortfolioValues(null);
     setLastSnapshotAt(null);
@@ -187,6 +197,7 @@ export function useWatchlistStream({
       flushTimer = undefined;
       if (cancelled) return;
       if (pending.size > 0) {
+        if (universe) pending.forEach((q, id) => universeLastQuotes.set(id, q));
         committed = { ...committed, ...Object.fromEntries(pending) };
         pending.clear();
         setQuotes(committed);
@@ -318,6 +329,7 @@ export function useWatchlistStream({
           if (parsed.type === 'instrument_error' && parsed.instrument_id && parsed.symbol && parsed.reason) {
             pending.delete(parsed.instrument_id);
             delete committed[parsed.instrument_id];
+            if (universe) universeLastQuotes.delete(parsed.instrument_id);
             if (flushTimer !== undefined && pending.size === 0) {
               window.clearTimeout(flushTimer);
               flushTimer = undefined;

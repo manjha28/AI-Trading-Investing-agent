@@ -8,7 +8,7 @@ import { Bell } from 'lucide-react';
 import { StockAlerts } from '../components/StockAlerts';
 import { StockEvents } from '../components/StockEvents';
 import { CommodityWatch } from './CommodityWatch';
-import { useWatchlistStream } from '../hooks/useWatchlistStream';
+import { useWatchlistStream, istDay } from '../hooks/useWatchlistStream';
 import { tickPrice } from '../lib/formatPrice';
 
 type UniverseRow = {
@@ -163,7 +163,9 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
   }, [starredIds, universeIds, loading, loadUniverse]);
 
   const rows = useMemo<ViewRow[]>(() => universe.map((u) => {
-    const q = quotes[u.instrument_id];
+    // a remembered tick gives way to the stored close once that day's daily bar exists (the official close)
+    const seen = quotes[u.instrument_id];
+    const q = seen && seen.freshness_status === 'last_seen' && u.last_close_date && u.last_close_date >= istDay(seen.market_timestamp) ? undefined : seen;
     const detail = q?.detail;
     const live = Boolean(q);
     return {
@@ -174,7 +176,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
       vol: q ? (detail?.bar?.volume ?? u.volume) : u.volume,
       lo: q ? (detail?.bar?.low ?? u.day_low ?? null) : (u.day_low ?? null),
       hi: q ? (detail?.bar?.high ?? u.day_high ?? null) : (u.day_high ?? null),
-      live, isLive: live && q.freshness_status === 'live', tickAt: q ? q.receivedAt : null,
+      live, isLive: q?.freshness_status === 'live', tickAt: q ? q.receivedAt : null,
     };
   }), [universe, quotes, starredIds, alertIds]);
 
