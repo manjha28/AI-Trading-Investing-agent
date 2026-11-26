@@ -155,39 +155,13 @@ export function ForwardTest() {
 
   return (
     <div className="sl-stack">
-      <Notice tone="info">Forward tests run a strategy on <strong>live data</strong> from the start date, counting only completed candles. By default they are <strong>paper</strong>: hypothetical trades at a fixed quantity after Indian charges and slippage, never real P&amp;L. Live orders exist only for the two allowlisted strategies at quantity 1, and only when you arm them below.</Notice>
+      <p className="sl-muted">Forward tests run a strategy on <strong>live data</strong> with <strong>paper</strong> money: hypothetical trades after Indian charges and slippage, never real P&amp;L. Real orders exist only for two strategies at quantity 1, and only if you turn them on.</p>
       {error && <Notice tone="bad">{error}</Notice>}
       {notice && <Notice tone="ok">{notice}</Notice>}
 
-      <section className="sl-card" aria-label="New forward test">
-        <div className="sl-card-head"><h3>New forward test</h3></div>
-        <div className="sl-row">
-          <Field label="Strategy">
-            <select aria-label="Strategy" value={form.strategy_key} onChange={(e) => { const next = e.target.value; setForm({ ...form, strategy_key: next, universe: next.startsWith('own:') ? 'own' : form.universe === 'own' ? 'master' : form.universe }); }}>
-              {strategies.map((x) => <option key={x.key} value={x.key}>{x.name}{liveCapable.includes(x.key) ? ' · live-capable' : ''}</option>)}
-              {own.length > 0 && <optgroup label="Your strategies (paper only)">{own.map((x) => <option key={x.id} value={`own:${x.id}`}>{x.name}</option>)}</optgroup>}
-            </select>
-          </Field>
-          <Field label="Symbols">
-            <select aria-label="Symbols" value={form.universe} onChange={(e) => setForm({ ...form, universe: e.target.value })}>
-              {isOwn && <option value="own">The stocks saved in this strategy</option>}
-              {presets.map((p) => <option key={p.key} value={p.key}>{p.label} — {p.available} usable</option>)}
-            </select>
-          </Field>
-          {form.strategy_key === 'five_ema_alert' && (
-            <Field label="5-EMA candle"><select aria-label="5-EMA candle" value={form.candle} onChange={(e) => setForm({ ...form, candle: e.target.value })}><option value="5">5-minute</option><option value="15">15-minute</option></select></Field>
-          )}
-          <Field label="Quantity per trade"><input aria-label="Quantity" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} inputMode="numeric" /></Field>
-          <Field label="Start date"><input aria-label="Start date" type="date" value={form.start_date || defaultStart} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></Field>
-        </div>
-        {form.strategy_key === 'five_ema_alert' && <label className="ft-live-flag"><input type="checkbox" aria-label="VWAP filter" checked={form.vwap} onChange={(e) => setForm({ ...form, vwap: e.target.checked })} /> Only trade with VWAP (sell below, buy above) at 1:2 — the closest-to-break-even 5-EMA variant in the study (out-of-sample profit factor 0.98 on a thin sample; still not net-positive)</label>}
-        {liveControls && <label className="ft-live-flag"><input type="checkbox" checked={form.live && canLive} disabled={!canLive} onChange={(e) => setForm({ ...form, live: e.target.checked })} /> Also place live orders for this test (allowlisted strategies, quantity {status?.limits.max_order_quantity ?? 1}; still needs arming)</label>}
-        <div className="sl-toolbar"><button type="button" className="sl-primary" disabled={busy || !form.strategy_key} onClick={() => void create()}>{busy ? 'Creating…' : 'Create forward test'}</button></div>
-      </section>
-
       <section className="sl-card" aria-label="Forward tests">
         <div className="sl-card-head"><h3>Your forward tests</h3></div>
-        {tests.length === 0 ? <p className="sl-muted">None yet.</p> : (
+        {tests.length === 0 ? <p className="sl-muted">None yet. Start one below.</p> : (
           <ul className="lab-history">
             {tests.map((t) => (
               <li key={t.id}><button type="button" className={selected?.id === t.id ? 'active' : ''} onClick={() => { setConfirmDelete(false); void open(t.id); }}>
@@ -251,6 +225,34 @@ export function ForwardTest() {
         </section>
       )}
 
+      <section className="sl-card" aria-label="New forward test">
+        <div className="sl-card-head"><h3>New forward test</h3></div>
+        <div className="sl-row">
+          <Field label="Strategy">
+            <select aria-label="Strategy" value={form.strategy_key} onChange={(e) => { const next = e.target.value; setForm({ ...form, strategy_key: next, universe: next.startsWith('own:') ? 'own' : form.universe === 'own' ? 'master' : form.universe }); }}>
+              {strategies.map((x) => <option key={x.key} value={x.key}>{x.name}{liveCapable.includes(x.key) ? ' · live-capable' : ''}</option>)}
+              {own.length > 0 && <optgroup label="Your strategies (paper only)">{own.map((x) => <option key={x.id} value={`own:${x.id}`}>{x.name}</option>)}</optgroup>}
+            </select>
+          </Field>
+          <Field label="Symbols">
+            <select aria-label="Symbols" value={form.universe} onChange={(e) => setForm({ ...form, universe: e.target.value })}>
+              {isOwn && <option value="own">The stocks saved in this strategy</option>}
+              {presets.map((p) => <option key={p.key} value={p.key}>{p.label} — {p.available} usable</option>)}
+            </select>
+          </Field>
+          {form.strategy_key === 'five_ema_alert' && (
+            <Field label="5-EMA candle"><select aria-label="5-EMA candle" value={form.candle} onChange={(e) => setForm({ ...form, candle: e.target.value })}><option value="5">5-minute</option><option value="15">15-minute</option></select></Field>
+          )}
+          <Field label="Quantity per trade"><input aria-label="Quantity" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} inputMode="numeric" /></Field>
+          <Field label="Start date"><input aria-label="Start date" type="date" value={form.start_date || defaultStart} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></Field>
+        </div>
+        {form.strategy_key === 'five_ema_alert' && <label className="ft-live-flag"><input type="checkbox" aria-label="VWAP filter" checked={form.vwap} onChange={(e) => setForm({ ...form, vwap: e.target.checked })} /> Only trade with VWAP (sell below, buy above) at 1:2 — the closest-to-break-even 5-EMA variant in the study (out-of-sample profit factor 0.98 on a thin sample; still not net-positive)</label>}
+        {liveControls && <label className="ft-live-flag"><input type="checkbox" checked={form.live && canLive} disabled={!canLive} onChange={(e) => setForm({ ...form, live: e.target.checked })} /> Also place live orders for this test (allowlisted strategies, quantity {status?.limits.max_order_quantity ?? 1}; still needs arming)</label>}
+        <div className="sl-toolbar"><button type="button" className="sl-primary" disabled={busy || !form.strategy_key} onClick={() => void create()}>{busy ? 'Creating…' : 'Create forward test'}</button></div>
+      </section>
+
+      <details className="sl-real" open={!!status && (status.armed || status.execution.effective.state !== 'OFF')}>
+        <summary>Real orders with Dhan: {status ? (status.armed ? 'on' : 'off') : 'checking'}</summary>
       <LivePanel status={status} reload={() => { void loadStatus(); void loadOrders(); }} />
 
       <section className="sl-card" aria-label="Live order ledger">
@@ -274,6 +276,7 @@ export function ForwardTest() {
             <tbody>{blockedAttempts.map((b) => <tr key={b.id}><td>{when(b.created_at)}</td><td>{b.symbol}</td><td>{b.side}</td><td className="r">{b.quantity}</td><td>{b.strategy_key}</td><td>{b.block_reason ?? '—'}</td></tr>)}</tbody></table></Scroll>
         )}
       </section>
+      </details>
     </div>
   );
 }

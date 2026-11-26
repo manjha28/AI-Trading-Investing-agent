@@ -30,7 +30,7 @@ type Tab = (typeof TABS)[number][0];
 const GROUPS: { id: string; label: string; tabs: Tab[] }[] = [
   { id: 'dashboard', label: 'Dashboard', tabs: ['dashboard'] },
   { id: 'strategies', label: 'Strategies', tabs: ['library', 'registry', 'builder', 'indicators', 'import'] },
-  { id: 'backtest', label: 'Backtest', tabs: ['lab', 'backtesting'] },
+  { id: 'backtest', label: 'Backtest', tabs: ['backtesting', 'lab'] },
   { id: 'forward', label: 'Forward test', tabs: ['forward'] },
   { id: 'live', label: 'Live signals', tabs: ['live'] },
   { id: 'jobs', label: 'Jobs', tabs: ['jobs'] },
@@ -125,7 +125,6 @@ export function SignalsWorkspace() {
   return (
     <section className="sl-root" aria-label="Signals workspace">
       <header className="sl-head">
-        <div><p className="eyebrow">INTRADAY · 1-MINUTE BASE DATA</p><h1>Signals</h1></div>
         <p className="sl-muted">Strategy research, backtesting and signal monitoring for Indian equities. Decision support only: nothing here places orders.</p>
       </header>
       <nav className="sl-tabs" aria-label="Signals sections">
@@ -139,11 +138,12 @@ export function SignalsWorkspace() {
       {(tab === 'forward' || tab === 'live') && <p className="sl-capability" aria-label="Live execution state"><ExecutionStateChip venue={executionStates?.dhan} /> <ExecutionStateChip venue={executionStates?.delta} /></p>}
       {notice && tab === 'builder' && <Notice tone="info">{notice}</Notice>}
       {error && !meta && <Notice tone="bad">{error}</Notice>}
+      <div className={tab === 'registry' ? 'sl-body' : 'sl-body sl-redesign'}>{/* the registry keeps its own look (the owner likes it) */}
       {!meta ? <p className="sl-muted">{loading ? (slowWorkspace ? 'Still loading (slow backend). This can take up to a minute…' : 'Loading Signals workspace…') : (error ?? 'The Signals workspace could not be loaded.')}</p> : (
         <>
           {tab === 'dashboard' && <Dashboard health={health} loading={loading} error={error} goto={(t) => setTab(t as Tab)} reload={() => void reloadHealth()} />}
           {tab === 'builder' && <Builder meta={meta} draft={draft} setDraft={setDraft} onReset={() => { setDraft(blankDraft()); setNotice(null); }}
-            onSaved={(_s, message) => { setDraft(blankDraft()); refreshAll(); setTab('library'); setNotice(message); }} />}
+            onSaved={(s, message, andTest) => { setDraft(blankDraft()); refreshAll(); if (andTest) { setBtStrategy(s.id); setTab('backtesting'); } else setTab('library'); setNotice(message); }} />}
           {tab === 'library' && (
             <>
               {notice && <Notice tone="ok">{notice}</Notice>}
@@ -167,6 +167,7 @@ export function SignalsWorkspace() {
           {tab === 'import' && <ImportPanel meta={meta} onDraft={openDraft} />}
         </>
       )}
+      </div>
     </section>
   );
 }

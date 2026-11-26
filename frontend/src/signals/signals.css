@@ -201,3 +201,46 @@ fieldset.sl-card { margin: 0; } .sl-card legend { padding: 0 6px; font-weight: 6
 .sl-readback p { margin: 2px 0; font-size: 13.5px; }
 .sl-table.sl-ind tbody td:first-child { white-space: normal; max-width: 320px; }
 .sl-table.sl-ind tbody td:first-child button { text-align: left; white-space: normal; }
+
+/* ── Signals redesign (26 Nov): space between blocks, larger text, one heading. The registry (outside .sl-redesign) is unchanged. ── */
+.sl-body { display: grid; gap: 14px; min-width: 0; }
+.sl-redesign .sl-stack, .sl-redesign .sl-dashboard, .sl-redesign .sl-builder, .sl-redesign .sl-library { display: grid; gap: 16px; min-width: 0; }
+.sl-redesign .sl-card { border-radius: 12px; padding: 16px 18px; }
+.sl-redesign .sl-card-head { margin-bottom: 12px; }
+.sl-root .sl-redesign h2 { font-size: 22px; } .sl-root .sl-redesign h3 { font-size: 16px; }
+.sl-redesign .sl-muted { font-size: 13px; line-height: 1.5; }
+.sl-redesign .sl-table td, .sl-redesign .sl-table tbody th { font-size: 13px; }
+.sl-redesign .sl-table th, .sl-redesign .sl-table td { padding: 9px 10px; }
+.sl-redesign .sl-stats { gap: 12px; }
+.sl-redesign .sl-grid-2 { gap: 16px; }
+.sl-redesign .sl-grid2 { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.sl-redesign .lab-history button { border-radius: 10px; padding: 12px 14px; }
+.sl-redesign details.sl-real > summary, .sl-redesign details.sl-health > summary { cursor: pointer; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-1); font-size: 14px; font-weight: 600; }
+.sl-redesign details.sl-real[open] > summary, .sl-redesign details.sl-health[open] > summary { margin-bottom: 12px; }
+.sl-redesign details.sl-real > section, .sl-redesign details.sl-health > section { margin-bottom: 12px; }
+/* guided builder */
+.sl-root .gb-switch { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; justify-self: start; }
+.sl-root .gb-switch button { border: 0; border-radius: 0; } .sl-root .gb-switch button.on { background: var(--surface-2); color: var(--text); font-weight: 600; }
+.gb { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start; }
+.gb-steps { display: grid; }
+.gb-step { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 14px; padding: 18px 0; border-top: 1px solid var(--border); }
+.gb-step > div { display: grid; gap: 10px; min-width: 0; justify-items: start; }
+.gb-num { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--accent); display: grid; place-items: center; font-weight: 600; font-size: 13px; }
+.gb-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; width: 100%; }
+.sl-root .gb-choices button { display: grid; gap: 3px; text-align: left; white-space: normal; padding: 12px; border-radius: 10px; align-content: start; }
+.sl-root .gb-choices button.on { border-color: var(--accent); background: var(--surface-2); }
+.gb-choices small { color: var(--text-muted); line-height: 1.35; }
+.gb-say { margin: 0; font-size: 17px; line-height: 2.2; max-width: 62ch; }
+.sl-root .gb-say .gb-blank, .sl-root .gb-inline .gb-blank { font-size: 15px; background: var(--surface-2); min-height: 32px; }
+.sl-root .gb-say input[type='number'] { width: 76px; text-align: center; }
+.gb-inline { font-size: 13px; color: var(--text-muted); }
+.gb-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.gb-pick { width: 100%; max-width: 420px; display: grid; gap: 6px; }
+.gb-pick ul { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
+.gb-pick li { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.gb-side { position: sticky; top: 12px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px; display: grid; gap: 10px; }
+.gb-side label { display: grid; gap: 4px; font-size: 13px; color: var(--text-muted); }
+.gb-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; color: var(--caution); }
+.gb-checks li.ok { color: var(--text-muted); }
+.gb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+@media (max-width: 900px) { .gb, .sl-redesign .sl-grid2 { grid-template-columns: minmax(0, 1fr); } .gb-side { position: static; } .gb-say { font-size: 15px; } }

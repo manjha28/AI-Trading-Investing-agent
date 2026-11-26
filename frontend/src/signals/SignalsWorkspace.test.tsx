@@ -128,6 +128,8 @@ async function mount() {
   await screen.findByRole('button', { name: 'Dashboard' });
   await waitFor(() => expect(screen.getByLabelText('Strategy counts')).toBeInTheDocument());
 }
+// A new blank strategy opens in the guided steps; most tests here exercise the full editor.
+const advancedEditor = () => { const b = screen.queryByRole('button', { name: 'Advanced editor' }); if (b) fireEvent.click(b); };
 // Two levels: a primary section, then the tab inside it. `tab('Test one strategy')` opens Backtest and then Backtesting.
 const PRIMARY: Record<string, string> = { 'Strategy Dashboard': 'Dashboard', 'Strategy Library': 'Strategies', 'Strategy Registry': 'Strategies', 'Strategy Builder': 'Strategies', 'Indicator Library': 'Strategies', 'Import & Validation': 'Strategies',
   'Compare strategies': 'Backtest', 'Test one strategy': 'Backtest', 'Forward Test': 'Forward test', 'Live Signals': 'Live signals', 'Jobs & scanner': 'Jobs' };
@@ -214,6 +216,7 @@ describe('Signals workspace', () => {
     install({ 'POST /signals-lab/strategies': (b) => ({ ...INTRADAY, id: 'new', name: (b as { definition: { name: string } }).definition.name, current_version: 1 }) });
     await mount();
     tab('Strategy Builder');
+    advancedEditor();
     fireEvent.change(await screen.findByPlaceholderText(/EMA 20\/50/), { target: { value: 'My cross' } });
     fireEvent.click(await screen.findByRole('button', { name: 'Add DASH' }));
     fireEvent.click(screen.getByRole('button', { name: /Indicators \(0\)/ }));
@@ -250,6 +253,7 @@ describe('Signals workspace', () => {
     install({ 'POST /signals-lab/validate': () => ({ valid: false, issues: [{ level: 'error', message: 'unknown indicator alias ghost', where: 'long_entry' }], requirements: null }) });
     await mount();
     tab('Strategy Builder');
+    advancedEditor();
     fireEvent.change(await screen.findByPlaceholderText(/EMA 20\/50/), { target: { value: 'Bad' } });
     fireEvent.click(await screen.findByRole('button', { name: 'Add DASH' }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Validation · 1/ })).toBeInTheDocument());

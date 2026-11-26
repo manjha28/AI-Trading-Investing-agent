@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConditionEditor } from './ConditionEditor';
+import { GuidedBuilder } from './GuidedBuilder';
+import { detectTemplate } from './templates';
 import { DISCLAIMER, defaultParams, describeCondition, lab, messageOf, nextAlias, readBack } from './lab';
 import { OptionsPanel } from './OptionsPanel';
 import { Field, Notice, Pill, Scroll } from './shared';
@@ -24,12 +26,15 @@ function retimeCondition(c: Condition | null, from: string, to: string): Conditi
 }
 
 export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
-  meta: Meta; draft: Draft; setDraft: (d: Draft) => void; onSaved: (s: StrategyRow, message: string) => void; onReset: () => void;
+  meta: Meta; draft: Draft; setDraft: (d: Draft) => void; onSaved: (s: StrategyRow, message: string, andTest?: boolean) => void; onReset: () => void;
 }) {
   const d = draft.definition;
   const isPython = d.python !== null;
   const [section, setSection] = useState<'logic' | 'indicators' | 'risk' | 'review' | 'options'>(draft.definition.options ? 'options' : 'logic');
   const isOptions = !!d.options;
+  // new strategies built from conditions open in the guided steps; anything the steps cannot show truthfully (edits, imports, copies, options, own conditions) opens in the full editor
+  const guidable = !draft.editing && d.source.type === 'visual' && !isPython && !isOptions && !(d.source.provenance as { derived_from?: unknown }).derived_from && detectTemplate(d).kind !== 'custom';
+  const [advanced, setAdvanced] = useState(!guidable);
   const [validation, setValidation] = useState<ValidateResult | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -123,7 +128,7 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
   ];
   const sentences = isPython || isOptions ? [] : readBack(d);
 
-  const save = async () => {
+  const save = async (andTest = false) => {
     setSaving(true);
     setSaveError(null);
     try {
@@ -131,7 +136,7 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
       const row = draft.editing
         ? await lab<StrategyRow>(`/strategies/${draft.editing.id}/versions`, { method: 'POST', body })
         : await lab<StrategyRow>('/strategies', { method: 'POST', body });
-      onSaved(row, draft.editing ? `Saved ${row.name} as version ${row.current_version}. Earlier versions are unchanged.` : `Created ${row.name} (suspended). Backtest it, then activate to monitor signals.`);
+      onSaved(row, draft.editing ? `Saved ${row.name} as version ${row.current_version}. Earlier versions are unchanged.` : `Created ${row.name} (suspended). Backtest it, then activate to monitor signals.`, andTest);
     } catch (e) {
       setSaveError(messageOf(e));
     } finally {
@@ -142,8 +147,26 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
   const toggleInstrument = (id: string) => patch({ universe: d.universe.includes(id) ? d.universe.filter((x) => x !== id) : [...d.universe, id] });
   const nameOf = (id: string) => instruments.find((i) => i.id === id)?.symbol ?? id.slice(0, 8);
 
+  const switcher = !draft.editing && !isOptions && !isPython && (
+    <div className="gb-switch" role="group" aria-label="Editor">
+      <button type="button" aria-pressed={!advanced} className={advanced ? '' : 'on'} disabled={!guidable} title={guidable ? '' : 'This strategy has rules the guided steps cannot show'} onClick={() => setAdvanced(false)}>Guided</button>
+      <button type="button" aria-pressed={advanced} className={advanced ? 'on' : ''} onClick={() => setAdvanced(true)}>Advanced editor</button>
+    </div>
+  );
+  if (!advanced) {
+    return (
+      <div className="sl-builder">
+        <div className="sl-toolbar"><h2>Build a strategy</h2><div className="sl-toolbar-actions">{switcher}<button type="button" onClick={onReset}>Start over</button></div></div>
+        {saveError && <Notice tone="bad">{saveError}</Notice>}
+        <GuidedBuilder d={d} patch={patch} meta={meta} instruments={instruments} query={instQuery} setQuery={setInstQuery} toggle={toggleInstrument} nameOf={nameOf} addPreset={(k) => void addPreset(k)} error={instError}
+          todo={todo} warnings={warnings.map((w) => w.message)} canSave={canSave} saving={saving} save={(andTest) => void save(andTest)} />
+      </div>
+    );
+  }
+
   return (
     <div className="sl-builder">
+      {switcher}
       <div className="sl-toolbar">
         <div>
           <h2>{draft.editing ? `Editing ${draft.editing.name}` : isOptions ? 'New options strategy' : 'New intraday strategy'}</h2>
@@ -152,7 +175,7 @@ export function Builder({ meta, draft, setDraft, onSaved, onReset }: {
         <div className="sl-toolbar-actions">
           <Pill tone={d.source.type === 'visual' ? 'info' : 'warn'}>source: {d.source.type}</Pill>
           <button type="button" onClick={onReset}>Reset</button>
-          <button type="button" className="sl-primary" disabled={!canSave} onClick={save}>{saving ? 'Saving…' : draft.editing ? `Save as version ${draft.editing.version + 1}` : 'Save strategy'}</button>
+          <button type="button" className="sl-primary" disabled={!canSave} onClick={() => void save()}>{saving ? 'Saving…' : draft.editing ? `Save as version ${draft.editing.version + 1}` : 'Save strategy'}</button>
         </div>
       </div>
       {saveError && <Notice tone="bad">{saveError}</Notice>}

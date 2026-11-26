@@ -45,6 +45,7 @@ export function Dashboard({ health, loading, error, goto, reload }: { health: He
           </tbody></table></Scroll> : <Empty title="No backtests yet">Run one under Backtest.</Empty>}
         </section>
       </div>
+      <details className="sl-health" open={bad.length > 0}><summary>Price data health: {bad.length ? `${bad.length} stock(s) need attention` : 'no problems found'}</summary>
       <section className="sl-card"><header className="sl-card-head"><h3>Market-data health (1-minute)</h3></header>
         <p className="sl-muted">Recent health is measured over the <strong>last {windowDays} days</strong> only. Stored history is everything saved for the instrument, whatever its age. Provider-unserved minutes are excluded from the missing share (the {REFUSE_PCT}% refusal limit is unchanged) and listed below.</p>
         {health.data_health.length ? <Scroll label="Market data health"><table className="sl-table sl-compact"><thead><tr><th>Instrument</th><th>Market</th><th>Status (last {windowDays}d)</th><th>Bars (last {windowDays}d)</th><th>Last bar age</th><th>Missing (last {windowDays}d)</th><th>Stored history (all time)</th><th>Issues</th></tr></thead><tbody>
@@ -55,6 +56,7 @@ export function Dashboard({ health, loading, error, goto, reload }: { health: He
         </tbody></table></Scroll> : <Empty title="No instruments in use">Strategies' universes appear here.</Empty>}
       </section>
       <BackfillPanel rows={health.data_health} onFinished={() => reload?.()} />
+      </details>
     </div>
   );
 }
