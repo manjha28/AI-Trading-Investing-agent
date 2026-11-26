@@ -53,7 +53,7 @@ const Row = memo(function Row({ m, selected, starred, live, cols, onSelect, onSt
     <tr className={`${selected ? 'watch-selected' : ''} ${last === null ? 'watch-nodata' : ''}`} onClick={() => onSelect(m)} aria-selected={selected}>
       <td className="watch-starcell"><button type="button" className={`watch-star ${starred ? 'on' : ''}`} aria-label={`${starred ? 'Remove' : 'Add'} ${m.symbol} ${starred ? 'from' : 'to'} watchlist`} aria-pressed={starred} onClick={(e) => { e.stopPropagation(); onStar(m.symbol); }}>{starred ? '★' : '☆'}</button></td>
       <td className="watch-symbol" title={`${t?.underlying_asset_symbol ?? m.symbol}${t?.leverage ? ` · up to ${t.leverage}x` : ''}`}><span className={`watch-dot ${live && last !== null ? 'live' : ''}`} /><button type="button" className="link-button" onClick={() => onSelect(m)}><strong>{m.symbol}</strong></button></td>
-      <td className={`watch-num watch-ltp ${flash ? `flash-${flash}` : ''}`}>{price(m.last_price)}</td>
+      <td className={`watch-num watch-ltp ${flash ? `flash-${flash}` : ''}`} title={`Source: ${m.quote_source ?? 'unknown'}${m.quote_time ? ` · observed ${m.quote_time}` : ''}`}>{price(m.last_price)}</td>
       {cols.has('chg') && <td className={`watch-num ${tone(chg)}`}>{signed(chg, '', chg !== null && Math.abs(chg) < 1 ? 4 : 2)}</td>}
       <td className={`watch-num ${tone(pct)}`}>{signed(pct, '%')}</td>
       {cols.has('range') && <td className="watch-range" aria-label="24h range"><DayRange low={num(t?.low)} high={num(t?.high)} last={last} /></td>}
