@@ -119,6 +119,15 @@ _DHAN_TICK_DERIVATIVE_INSTRUMENTS = ("OPTSTK", "OPTIDX", "FUTSTK", "FUTIDX")
 _DHAN_TICK_MCX_INSTRUMENTS = ("FUTCOM", "FUTIDX")  # MCX commodity/index futures only (the Market watch commodity section)
 _DHAN_TICK_CACHE: dict[tuple[str, str], Decimal | None] = {}
 _DHAN_TICK_INDEX: dict[str, tuple[int, dict[tuple[str, str], set[str]]]] = {}
+_SCRIP_MASTER_LOCK = threading.Lock()
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _float32_wire_to_price(raw: float, tick: Decimal) -> Decimal:
@@ -959,8 +968,16 @@ class DhanAdapter(BrokerAdapter):
     def _scrip_master(cls, force: bool = False) -> list[dict[str, str]]:
         """The Dhan instrument master, cached for 24h. ``force`` re-downloads while the old copy keeps serving until the new one is swapped in."""
         now = time.monotonic()
-        if not force and cls._scrip_master_cache and now - cls._scrip_master_cache[0] < 86400:
-            return cls._scrip_master_cache[1]
+        cached = cls._scrip_master_cache
+        if not force and cached and (now - cached[0] < 86400 or _on_event_loop()):
+            return cached[1]                                            # never download on the event loop while any copy exists: the warm loop refreshes it
+        with _SCRIP_MASTER_LOCK:                                        # one download at a time; whoever waited uses the copy the first one fetched
+            if cls._scrip_master_cache is not cached and cls._scrip_master_cache and not force:
+                return cls._scrip_master_cache[1]
+            return cls._download_scrip_master(now)
+
+    @classmethod
+    def _download_scrip_master(cls, now: float) -> list[dict[str, str]]:
         try:
             with httpx.stream(
                 "GET",
@@ -2557,9 +2574,13 @@ class DhanAdapter(BrokerAdapter):
                                 try:
                                     # Decoding is microseconds of pure CPU. Sending every frame through the
                                     # (small) default thread pool queued the feed behind unrelated database jobs.
-                                    quotes, retained_packets, unknown_response_count = (
-                                        self.decode_market_feed_frame(message, current)
-                                    )
+                                    # Exception: until the instrument master is in memory, decoding downloads it
+                                    # (about 230,000 rows); on the event loop that froze the process and dropped every feed.
+                                    if DhanAdapter._scrip_master_cache is None:
+                                        decoded = await asyncio.to_thread(self.decode_market_feed_frame, message, current)
+                                    else:
+                                        decoded = self.decode_market_feed_frame(message, current)
+                                    quotes, retained_packets, unknown_response_count = decoded
                                 except BrokerAdapterError as error:
                                     _log_dhan_bad_frame_once(message)
                                     raise error
