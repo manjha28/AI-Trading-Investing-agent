@@ -287,3 +287,4 @@
 - 2026-11-26: Layout fixes from the audit: grey crypto/feed buttons, cut-off crypto and strategy tables, research card status line and Why panel, phone header and Overview values.
 - 2026-11-26: Equity live feed: the Dhan instrument master is no longer downloaded on the event loop (it froze the server and dropped the broker feeds every minute).
 - 2026-11-26: Backtest-only strategies are no longer scheduled for scans; backtests whose job died are closed as interrupted; sandbox order cap labelled.
+- 2026-11-26: Market watch: today's price for every stock from one bulk Dhan quote a minute in market hours; the open page reloads the table each minute.

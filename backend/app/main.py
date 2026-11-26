@@ -193,6 +193,9 @@ async def lifespan(_app: FastAPI):
                 await asyncio.sleep(60)
         _leader(delta_paper_loop, 'delta_paper')
     if "pytest" not in sys.modules:
+        from app.universe_quote_refresh import universe_quote_refresh_loop
+        _leader(universe_quote_refresh_loop, 'universe_quotes')       # today's price for every Market watch stock, one bulk request a minute in market hours
+    if "pytest" not in sys.modules:
         from app.mcx_open_check import mcx_open_check_loop
         _leader(mcx_open_check_loop, 'mcx_open_check')
     if settings.forward_test_enabled and "pytest" not in sys.modules:

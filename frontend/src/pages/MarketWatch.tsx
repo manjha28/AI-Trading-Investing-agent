@@ -156,6 +156,11 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
     } catch (e) { setError(messageOf(e)); } finally { setLoading(false); }
   }, []);
   useEffect(() => { void loadUniverse(); }, [loadUniverse]);
+  // the server refreshes today's prices every minute in market hours; pick them up while the page is open (live ticks still apply on top)
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (!document.hidden) void loadUniverse(); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadUniverse]);
   // A symbol starred (here or on Overview) after the table loaded must appear without a page reload.
   const requestedMissing = useRef('');
   useEffect(() => {
