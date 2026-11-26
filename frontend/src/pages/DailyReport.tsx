@@ -28,7 +28,7 @@ const HORIZONS = ['swing', 'positional', 'long_term'] as const;
 const HORIZON_NAME: Record<string, string> = { swing: 'Swing', positional: 'Positional', long_term: 'Long-term' };
 const HORIZON_SPAN: Record<string, string> = { swing: 'days to weeks', positional: 'weeks to months', long_term: 'months to years' };
 const TABS: { key: Bucket | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' }, { key: 'buy', label: 'Ready to buy' }, { key: 'setup_waiting', label: 'Set up, waiting' }, { key: 'radar', label: 'Radar' }, { key: 'hold', label: 'Hold' }, { key: 'no_new_entry', label: 'No new entry' }, { key: 'stale_data', label: 'Not current' }, { key: 'not_enough_data', label: 'Needs data' },
+  { key: 'all', label: 'All' }, { key: 'buy', label: 'Buy now' }, { key: 'setup_waiting', label: 'Wait for entry' }, { key: 'radar', label: 'Radar' }, { key: 'hold', label: 'Hold' }, { key: 'no_new_entry', label: 'No new entry' }, { key: 'stale_data', label: 'Not current' }, { key: 'not_enough_data', label: 'Needs data' },
 ];
 const REC_TEXT: Record<string, string> = { BUY: 'Buy', HOLD: 'Hold', AVOID: 'Avoid', WAIT: 'Wait', INSUFFICIENT_EVIDENCE: 'No data' };
 const POLL_FAST_MS = 15_000;
@@ -88,7 +88,7 @@ function PriceLine({ price }: { price: PriceBlock | null | undefined }) {
 
 /** Horizontal price ladder: stop, entry zone, last close and targets drawn to scale. */
 export function Ladder({ levels, lastClose }: { levels: Levels; lastClose?: string | null }) {
-  const stop = Number(levels.stop); const lo = Number(levels.entry_zone?.low); const hi = Number(levels.entry_zone?.high); const close = Number(levels.reference_close);
+  const stop = Number(levels.stop); const lo = Number(levels.entry_zone?.low); const hi = Number(levels.entry_zone?.high); const close = Number(lastClose ?? levels.reference_close);
   const targets = (levels.targets ?? []).map((t) => ({ ...t, v: Number(t.price) }));
   const max = Math.max(...targets.map((t) => t.v), hi); const min = stop; const span = Math.max(max - min, 1e-9);
   const pos = (v: number) => `${Math.min(100, Math.max(0, ((v - min) / span) * 100))}%`;
@@ -108,10 +108,27 @@ export function Ladder({ levels, lastClose }: { levels: Levels; lastClose?: stri
   </div>;
 }
 
-/** The number a Ready-to-buy card shows when it opens: the positional horizon if it is a BUY, otherwise the first BUY horizon. The list is sorted by exactly this number. */
+/** The price a card is judged on: the price it shows (today's quote or the latest close), unless that is stale; then the close the research used. */
+export const cardPrice = (row: Row): string | null | undefined => (row.price && !row.price.stale ? row.price.value : row.last_close);
+
+/** "Buy now" means the price is inside the buy range of a BUY horizon; anything else waits. `gap` is how far the price is from the nearest range (a share of the price);
+ *  Infinity when no range is waiting to be reached (for example the first target is already below the price). The positional horizon is preferred when it qualifies. */
+export function entryFor(row: Row): { horizon: string | undefined; inRange: boolean; gap: number } {
+  const buys = HORIZONS.filter((h) => row.horizons[h]?.recommendation === 'BUY').sort((a, b) => Number(b === 'positional') - Number(a === 'positional'));
+  const price = cardPrice(row);
+  const states = buys.map((h) => ({ h, kind: cardState(row.levels[h], price).kind }));
+  const inside = states.find((s) => s.kind === 'in_band');
+  if (inside) return { horizon: inside.h, inRange: true, gap: 0 };
+  const waits = states.filter((s) => s.kind === 'above_band' || s.kind === 'below_band').map((s) => {
+    const zone = row.levels[s.h]?.entry_zone; const p = Number(price ?? row.levels[s.h]?.reference_close);
+    return { h: s.h, gap: Math.abs(p - Number(s.kind === 'above_band' ? zone?.high : zone?.low)) / p };
+  }).sort((a, b) => a.gap - b.gap);
+  return waits.length ? { horizon: waits[0].h, inRange: false, gap: waits[0].gap } : { horizon: buys[0], inRange: false, gap: Infinity };
+}
+
+/** The horizon a card opens on; the list is sorted by exactly the number shown for it. */
 export function displayedHorizon(row: Row): string | undefined {
-  const buys = HORIZONS.filter((h) => row.horizons[h]?.recommendation === 'BUY');
-  return buys.includes('positional' as never) ? 'positional' : buys[0];
+  return entryFor(row).horizon;
 }
 export function displayedScore(row: Row): number {
   const h = displayedHorizon(row);
@@ -122,14 +139,16 @@ export function sortByDisplayedScore(rows: Row[]): Row[] {
   return [...rows].sort((a, b) => displayedScore(b) - displayedScore(a) || (b.confidence?.score ?? 0) - (a.confidence?.score ?? 0) || a.symbol.localeCompare(b.symbol));
 }
 
-function BuyCard({ row, onOpen, showAction = false }: { row: Row; onOpen: (row: Row) => void; showAction?: boolean }) {
+function BuyCard({ row, onOpen, showAction = false, waiting = false }: { row: Row; onOpen: (row: Row) => void; showAction?: boolean; waiting?: boolean }) {
   const buyHorizons = HORIZONS.filter((h) => row.horizons[h]?.recommendation === 'BUY');
-  const [horizon, setHorizon] = useState<string>(buyHorizons.includes('positional' as never) ? 'positional' : buyHorizons[0] ?? 'positional');
+  const [chosen, setHorizon] = useState<string | null>(null);
+  const horizon = chosen ?? displayedHorizon(row) ?? 'positional';
+  const price = cardPrice(row);
   const active = HORIZONS.includes(horizon as never) ? horizon : buyHorizons[0];                // any horizon can be opened: a Hold or Avoid horizon explains itself instead of being a dead button
   const conf = row.horizons[active]?.buy_confidence ?? row.confidence;
   const levels = row.levels[active];
   const evid = evidenceChip(conf);
-  return <article className={`rt-buy${showAction ? ` rt-buy-${row.bucket}` : ''}`}>
+  return <article className={`rt-buy${showAction ? ` rt-buy-${row.bucket}` : ''}${waiting ? ' rt-buy-waiting' : ''}`}>
     <header className="rt-head">
       <div className="rt-head-id"><button type="button" className="rt-sym" onClick={() => onOpen(row)} title={row.symbol}>{row.symbol}</button><span className="rt-name" title={row.name}>{row.name}</span></div>
       {conf && (conf.kind === 'factor_v2' ? <RankBadge conf={conf} /> : <Ring score={conf.score} band={shownBand(conf)} />)}
@@ -144,8 +163,8 @@ function BuyCard({ row, onOpen, showAction = false }: { row: Row; onOpen: (row: 
           {HORIZON_NAME[h]}<small>{on ? 'Buy' : REC_TEXT[rec ?? ''] ?? '—'}</small></button>;
       })}
     </div>
-    <div className="rt-slot-status">{showAction && levels?.status !== 'available' && <p className="rt-setup rt-action" title={[row.action, ...(row.radar_reasons ?? [])].join(' · ')}>{row.action}{row.radar_reasons?.[0] ? ` · ${row.radar_reasons[0]}` : ''}</p>}{levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${cardState(levels, row.last_close).kind === 'in_band' ? 'rt-chip-ok' : 'rt-chip-warn'}`} title={cardState(levels, row.last_close).reason ?? cardState(levels, row.last_close).label}>{cardState(levels, row.last_close).compact}</span> <span className="rt-chip">{(levels.selected_setup ?? '').replace(/_/g, ' ').toLowerCase()}</span>{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}</div>
-    <div className="rt-slot-ladder">{levels?.status === 'available' ? <Ladder levels={levels} lastClose={row.last_close} /> : row.horizons[active]?.recommendation !== 'BUY'
+    <div className="rt-slot-status">{showAction && levels?.status !== 'available' && <p className="rt-setup rt-action" title={[row.action, ...(row.radar_reasons ?? [])].join(' · ')}>{row.action}{row.radar_reasons?.[0] ? ` · ${row.radar_reasons[0]}` : ''}</p>}{levels?.status === 'available' && <p className="rt-setup"><span className={`rt-chip ${cardState(levels, price).kind === 'in_band' ? 'rt-chip-ok' : 'rt-chip-warn'}`} title={cardState(levels, price).reason ?? cardState(levels, price).label}>{cardState(levels, price).compact}</span> {levels.selected_setup && <span className="rt-chip">{levels.selected_setup.replace(/_/g, ' ').toLowerCase()}</span>}{levels.breakout_trigger && <span className="rt-chip">trigger {inr(levels.breakout_trigger)}</span>}</p>}</div>
+    <div className="rt-slot-ladder">{levels?.status === 'available' ? <Ladder levels={levels} lastClose={price} /> : row.horizons[active]?.recommendation !== 'BUY'
       ? <p className="rt-note"><b>{HORIZON_NAME[active]}: {REC_TEXT[row.horizons[active]?.recommendation ?? ''] ?? 'no call'}.</b> {[...(row.horizons[active]?.why_not ?? []), row.horizons[active]?.data_note].filter(Boolean).join(' · ') || 'No buy signal on this horizon, so no levels are drawn.'}</p>
       : <p className="rt-note">{levels?.reason ?? 'No levels for this horizon.'}</p>}</div>
     <div className="rt-slot-notes">{levels?.status === 'available' && <p className="rt-note">Last close {inr(levels.reference_close)}{levels.prior_high_reference ? ` · prior high ${inr(levels.prior_high_reference)}` : ''} · {HORIZON_SPAN[active]}</p>}
@@ -165,13 +184,13 @@ function BuyCard({ row, onOpen, showAction = false }: { row: Row; onOpen: (row: 
 }
 
 /** One card per stock, as before. The list payload is compact, so the long derivations and the "Why" parts of THIS card are fetched when its "Why" section is opened. */
-function LazyBuyCard({ row, onOpen, showAction = false }: { row: Row; onOpen: (row: Row) => void; showAction?: boolean }) {
+function LazyBuyCard({ row, onOpen, showAction = false, waiting = false }: { row: Row; onOpen: (row: Row) => void; showAction?: boolean; waiting?: boolean }) {
   const [full, setFull] = useState<Row | null>(null);
   const load = () => {
     if (full) return;
     void apiRequest<Row>(`/research/daily-report/${row.instrument_id}`).then((r) => { if (r && r.instrument_id === row.instrument_id) setFull(r); }).catch(() => undefined);
   };
-  return <div onClickCapture={(e) => { if ((e.target as HTMLElement).closest('summary')) load(); }}><BuyCard row={full ? { ...row, ...full } : row} onOpen={onOpen} showAction={showAction} /></div>;
+  return <div onClickCapture={(e) => { if ((e.target as HTMLElement).closest('summary')) load(); }}><BuyCard row={full ? { ...row, ...full, price: full.price ?? row.price } : row} onOpen={onOpen} showAction={showAction} waiting={waiting} /></div>;
 }
 
 function CompactRow({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
@@ -201,6 +220,30 @@ function useSectionsV2(): [boolean, (on: boolean) => void] {
 type SortMode = 'score' | 'symbol' | 'held';
 const sortRows = (rows: Row[], mode: SortMode) => (mode === 'symbol' ? [...rows].sort((a, b) => a.symbol.localeCompare(b.symbol)) : mode === 'held' ? [...rows].sort((a, b) => Number(b.held) - Number(a.held) || a.symbol.localeCompare(b.symbol)) : sortByDisplayedScore(rows));
 
+const PAGE = 24;
+
+/** One group of research tiles with its own search and sort. Tiles are added 24 at a time so the page stays quick to scroll. */
+function CardSection({ title, hint, empty, rows, onOpen, waiting = false }: { title: string; hint: string; empty: string; rows: Row[]; onOpen: (row: Row) => void; waiting?: boolean }) {
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<'near' | 'score' | 'symbol'>(waiting ? 'near' : 'score');
+  const [limit, setLimit] = useState(PAGE);
+  const term = query.trim().toUpperCase();
+  const found = rows.filter((r) => !term || r.symbol.toUpperCase().includes(term) || r.name.toUpperCase().includes(term));
+  const sorted = sort === 'symbol' ? [...found].sort((a, b) => a.symbol.localeCompare(b.symbol))
+    : sort === 'near' ? sortByDisplayedScore(found).sort((a, b) => { const x = entryFor(a).gap; const y = entryFor(b).gap; return x === y ? 0 : x - y; })
+      : sortByDisplayedScore(found);
+  return <section className="rt-section" aria-label={title}>
+    <div className="rt-section-head">
+      <h3 className="rt-h">{title} <b className="rt-count">{found.length}</b> <small>{hint}</small></h3>
+      {rows.length > 1 && <div className="rt-v2-bar"><input type="search" placeholder="Search symbol or name" aria-label={`Search ${title}`} value={query} onChange={(e) => setQuery(e.target.value)} />
+        <select aria-label={`Sort ${title}`} value={sort} onChange={(e) => setSort(e.target.value as 'near' | 'score' | 'symbol')}>{waiting && <option value="near">Closest to buy range</option>}<option value="score">Highest score</option><option value="symbol">Symbol A to Z</option></select></div>}
+    </div>
+    {found.length === 0 ? <p className="rt-note">{rows.length === 0 ? empty : 'No match for this search.'}</p>
+      : <div className="rt-buy-grid">{sorted.slice(0, limit).map((r) => <LazyBuyCard key={r.instrument_id} row={r} onOpen={onOpen} waiting={waiting} />)}</div>}
+    {sorted.length > limit && <button type="button" className="rt-btn rt-ghost rt-more" onClick={() => setLimit(limit + PAGE)}>Show more ({sorted.length - limit} remaining)</button>}
+  </section>;
+}
+
 /** Ready to buy, Hold and Radar in one card style (the same card as the buy cards, fields that do not apply shown as a dash), each section with its count, plus one search and one sort. */
 function SectionsV2({ buckets, onOpen }: { buckets: { buy: Row[]; hold: Row[]; radar: Row[] }; onOpen: (row: Row) => void }) {
   const [query, setQuery] = useState('');
@@ -208,7 +251,7 @@ function SectionsV2({ buckets, onOpen }: { buckets: { buy: Row[]; hold: Row[]; r
   const term = query.trim().toUpperCase();
   const match = (r: Row) => !term || r.symbol.toUpperCase().includes(term) || r.name.toUpperCase().includes(term);
   const parts: { key: 'buy' | 'hold' | 'radar'; title: string; hint: string }[] = [
-    { key: 'buy', title: 'Ready to buy', hint: 'a buy signal with a range' }, { key: 'hold', title: 'Hold', hint: 'in your portfolio: keep holding' }, { key: 'radar', title: 'Radar', hint: 'buy signal, no range yet' },
+    { key: 'buy', title: 'Buy now', hint: 'price is inside the buy range' }, { key: 'hold', title: 'Hold', hint: 'in your portfolio: keep holding' }, { key: 'radar', title: 'Radar', hint: 'buy signal, no range yet' },
   ];
   return <div className="rt-v2" data-testid="sections-v2">
     <div className="rt-v2-bar"><input type="search" placeholder="Search symbol or name" aria-label="Search sections" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -241,15 +284,16 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
   const rows = useMemo(() => (report ? (tab === 'all' ? (Object.values(report.buckets).flat() as Row[]) : (report.buckets[tab] ?? [])) : []), [report, tab]);
   if (!report) return <section className="rt-card rt-daily" aria-label="Daily report">{error ? <p className="rt-alert rt-alert-error" role="alert">{error}</p> : <div className="rt-skel-block" aria-busy="true">Loading the daily report…</div>}</section>;
   const total = Object.values(report.counts).reduce((a, b) => a + b, 0);
-  const buys = tab === 'all' || tab === 'buy' ? report.buckets.buy : [];
-  const waiting = tab === 'all' || tab === 'setup_waiting' ? (report.buckets.setup_waiting ?? []) : [];
-  const hasWaiting = report.counts.setup_waiting !== undefined;
+  const candidates = [...report.buckets.buy, ...(report.buckets.setup_waiting ?? [])];     // split here, on the price each tile shows now
+  const inRange = candidates.filter((r) => entryFor(r).inRange);
+  const waiting = candidates.filter((r) => !entryFor(r).inRange);
+  const counts: Partial<Record<Bucket, number>> = { ...report.counts, buy: inRange.length, setup_waiting: waiting.length };
   const nonBuy = rows.filter((r) => r.bucket !== 'buy' && r.bucket !== 'setup_waiting' && !(v2 && (r.bucket === 'hold' || r.bucket === 'radar')));
   const needs = nonBuy.filter((r) => r.bucket === 'not_enough_data');          // collapsed by default: the reason is on each row
   const allOthers = tab === 'not_enough_data' ? nonBuy : nonBuy.filter((r) => r.bucket !== 'not_enough_data');
   const others = allOthers.slice(0, limit);
   const tiles: { key: Bucket; label: string; hint: string }[] = [
-    { key: 'buy', label: 'Ready to buy', hint: hasWaiting ? 'in the band now' : 'with a range' }, ...(hasWaiting ? [{ key: 'setup_waiting' as Bucket, label: 'Set up, waiting', hint: 'levels set, price not in band' }] : []), { key: 'radar', label: 'Radar', hint: 'buy signal, no range yet' }, { key: 'hold', label: 'Hold', hint: 'in your portfolio' },
+    { key: 'buy', label: 'Buy now', hint: 'price inside the buy range' }, { key: 'setup_waiting', label: 'Wait for entry', hint: 'price outside the range' }, { key: 'radar', label: 'Radar', hint: 'buy signal, no range yet' }, { key: 'hold', label: 'Hold', hint: 'in your portfolio' },
     { key: 'no_new_entry', label: 'No new entry', hint: 'not a buy now' }, { key: 'stale_data', label: 'Not current', hint: 'close or research is old' }, { key: 'not_enough_data', label: 'Needs data', hint: 'too little stored data' },
   ];
   return <section className="rt-daily" aria-label="Daily report">
@@ -262,12 +306,12 @@ export function DailyReport({ onOpen }: { onOpen: (instrument: Instrument) => vo
     {report.coverage && <details className="rt-cover"><summary><b>Coverage</b> · {report.coverage.researched_current} of {report.coverage.universe} stocks researched and current{report.coverage.stale > 0 ? ` · ${report.coverage.stale} not current` : ''}{report.coverage.never_researched > 0 ? ` · ${report.coverage.never_researched} waiting` : ''} · last run {when(report.coverage.last_research_at)}</summary>
       <p className="rt-note"><b>Universe:</b> {report.coverage.universe_rule}</p><p className="rt-note"><b>Schedule:</b> {report.coverage.schedule}</p>
       <p className="rt-note">Every stock in the universe is listed below, including any that failed or are still waiting. Nothing is hidden.</p></details>}
-    <div className="rt-tiles">{tiles.map((t) => <button key={t.key} type="button" className={`rt-tile rt-tile-${t.key}${tab === t.key ? ' active' : ''}`} onClick={() => setTab(tab === t.key ? 'all' : t.key)}><b>{report.counts[t.key] ?? 0}</b><span>{t.label}</span><small>{t.hint}</small></button>)}</div>
-    <div className="rt-seg rt-seg-wide" role="tablist" aria-label="Filter">{TABS.filter((t) => t.key !== 'setup_waiting' || hasWaiting).map((t) => <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''} onClick={() => setTab(t.key)}>{t.label}</button>)}</div>
+    <div className="rt-tiles">{tiles.map((t) => <button key={t.key} type="button" className={`rt-tile rt-tile-${t.key}${tab === t.key ? ' active' : ''}`} onClick={() => setTab(tab === t.key ? 'all' : t.key)}><b>{counts[t.key] ?? 0}</b><span>{t.label}</span><small>{t.hint}</small></button>)}</div>
+    <div className="rt-seg rt-seg-wide" role="tablist" aria-label="Filter">{TABS.map((t) => <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''} onClick={() => setTab(t.key)}>{t.label}</button>)}</div>
     {total === 0 && <div className="rt-card rt-empty-state"><h3>Nothing to report yet</h3><p>Add a stock to a watchlist or record a holding. It is researched automatically and appears here within a minute or two.</p></div>}
-    {v2 && (tab === 'all' || tab === 'buy' || tab === 'hold' || tab === 'radar') && <SectionsV2 buckets={{ buy: tab === 'all' || tab === 'buy' ? report.buckets.buy : [], hold: tab === 'all' || tab === 'hold' ? (report.buckets.hold ?? []) : [], radar: tab === 'all' || tab === 'radar' ? (report.buckets.radar ?? []) : [] }} onOpen={open} />}
-    {!v2 && buys.length > 0 && <><h3 className="rt-h">Ready to buy <small>highest confidence first, by the number shown on each card</small></h3><div className="rt-buy-grid">{sortByDisplayedScore(buys).map((r) => <LazyBuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
-    {waiting.length > 0 && <><h3 className="rt-h">Set up, waiting <small>levels are set; price is not in the buy band yet</small></h3><div className="rt-buy-grid">{waiting.map((r) => <LazyBuyCard key={r.instrument_id} row={r} onOpen={open} />)}</div></>}
+    {v2 && (tab === 'all' || tab === 'buy' || tab === 'hold' || tab === 'radar') && <SectionsV2 buckets={{ buy: tab === 'all' || tab === 'buy' ? inRange : [], hold: tab === 'all' || tab === 'hold' ? (report.buckets.hold ?? []) : [], radar: tab === 'all' || tab === 'radar' ? (report.buckets.radar ?? []) : [] }} onOpen={open} />}
+    {!v2 && total > 0 && (tab === 'all' || tab === 'buy') && <CardSection title="Buy now" hint="price is inside the buy range" empty="No stock is inside its buy range right now." rows={inRange} onOpen={open} />}
+    {total > 0 && (tab === 'all' || tab === 'setup_waiting') && <CardSection title="Wait for entry" hint="a buy signal, but the price is outside the range" empty="No stock is waiting for an entry." rows={waiting} onOpen={open} waiting />}
     {others.length > 0 && <div className="rt-card rt-compact"><div className="rt-table-wrap"><table className="rt-table"><thead><tr><th>Stock</th><th>Portfolio</th><th>What to do</th><th title="Swing / Positional / Long-term">S · P · L</th><th className="r">Last close</th><th>Researched</th></tr></thead>
       <tbody>{others.map((r) => <CompactRow key={r.instrument_id} row={r} onOpen={open} />)}</tbody></table></div>
       {allOthers.length > limit && <p className="rt-note"><button type="button" className="rt-btn rt-ghost" onClick={() => setLimit(limit + 100)}>Show more ({allOthers.length - limit} remaining)</button></p>}

@@ -34,13 +34,13 @@ describe('DailyReport', () => {
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'i1', symbol: 'AAA' }));
   });
 
-  it('v2: shows a neutral factor rank with the setup grade, a Set up waiting group, and no confidence wording', async () => {
+  it('v2: shows a neutral factor rank with the setup grade, a Wait for entry group, and no confidence wording', async () => {
     mockApi.mockImplementation(() => Promise.resolve(reportV2));
     render(<DailyReport onOpen={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
     expect(screen.getAllByText('Factor rank 12th of 249 (factor screen)').length).toBeGreaterThan(0);
     expect(screen.getByText('Gamma Ltd')).toBeTruthy();
-    expect(screen.getAllByText(/Set up, waiting/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Wait for entry/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^(In buy band|Wait:)/).length).toBeGreaterThan(0);                 // a short status chip; the full reason is its tooltip
     expect(screen.queryByRole('img', { name: /Score \d+ out of 100/ })).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
@@ -84,7 +84,7 @@ describe('DailyReport', () => {
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 
-  it('sorts Ready to buy by exactly the number shown on each card and hides the prior high when it is missing', async () => {
+  it('sorts Buy now by exactly the number shown on each card and hides the prior high when it is missing', async () => {
     const mk = (id: string, sym: string, shown: number, headline: number, withPrior: boolean) => ({ ...buy, instrument_id: id, symbol: sym, name: `${sym} Ltd`,
       horizons: { positional: { recommendation: 'BUY', score: 80, confidence: 80, buy_confidence: { ...conf, score: shown }, why_not: [] } }, confidence: { ...conf, score: headline },
       levels: { positional: { ...levels, prior_high_reference: withPrior ? '110.00' : undefined } } });
@@ -162,6 +162,24 @@ describe('DailyReport · card header (24 Nov layout)', () => {
     await screen.findByText('Alpha Ltd');
     expect(screen.getByRole('img', { name: /Score 72 out of 100, High/ })).toBeTruthy();
     expect(screen.getByText(/stale/)).toBeTruthy(); expect(screen.getByText('₹99.00').closest('.rt-priceline')?.className).toContain('stale');
+    mockApi.mockImplementation(() => Promise.resolve(report));
+  });
+});
+
+describe('DailyReport · Buy now holds only stocks priced inside their range', () => {
+  it('moves a buy stock outside its range to its own Wait for entry tiles, judged on the price shown now', async () => {
+    const live = (value: string) => ({ value, kind: 'ltp', as_of: '2026-11-24T07:35:00Z', change: null, change_pct: null, stale: false });
+    const mk = (id: string, sym: string, price: string) => ({ ...buy, instrument_id: id, symbol: sym, name: `${sym} Ltd`, price: live(price) });
+    // research close is 101.50 (inside 100-103) for all three; only the price now decides
+    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [mk('a', 'INRANGE', '102.00'), mk('b', 'FARUP', '112.00'), mk('c', 'JUSTUP', '104.00')] }, counts: { ...report.counts, buy: 3 } }));
+    render(<DailyReport onOpen={vi.fn()} />);
+    const now = await screen.findByRole('region', { name: 'Buy now' });
+    const wait = screen.getByRole('region', { name: 'Wait for entry' });
+    const symbols = (el: HTMLElement) => Array.from(el.querySelectorAll('.rt-sym')).map((b) => b.textContent);
+    expect(symbols(now)).toEqual(['INRANGE']);
+    expect(symbols(wait)).toEqual(['JUSTUP', 'FARUP']);                       // closest to its range first
+    expect(screen.getByRole('button', { name: /^1\s*Buy now/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^2\s*Wait for entry/ })).toBeTruthy();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });

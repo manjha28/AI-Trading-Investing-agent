@@ -458,3 +458,11 @@
 .rt-buy .rt-slot-status .rt-setup { display: flex; flex-wrap: nowrap; align-items: center; margin: 0; }
 .rt-buy .rt-slot-status .rt-setup .rt-chip { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-line-clamp: unset; min-height: 24px; flex: 0 0 auto; max-width: 40%; }
 .rt-buy .rt-slot-status .rt-setup .rt-chip:first-child { flex: 1 1 0; max-width: none; }
+
+/* Daily report groups (26 Nov): each group has its own search and sort; waiting tiles carry an amber edge */
+.rt-section { display: grid; gap: 10px; }
+.rt-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.rt-buy-waiting { border-top-color: var(--rt-mid); }
+.rt-more { justify-self: center; }
+.rt-root label.rt-v2-toggle, .rt-daily .rt-v2-bar label, .mb-page .mb-filters label { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
+.mb-legend { margin: 0; font-size: 13px; }

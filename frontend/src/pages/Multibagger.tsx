@@ -145,6 +145,7 @@ export function Multibagger({ onOpen }: { onOpen?: (symbol: string) => void }) {
       </div>
       {priceActive && <p className="ui-muted">Price is the latest stored daily close. Low-price stocks are often illiquid: the tradability gates below are shown unchanged, and a stock with no stored close is left out of a price filter.</p>}
 
+      <p className="ui-muted mb-legend">Scores out of 100: Q quality, G growth, V valuation, T timing, X cross-check. Select a row for its full checklist.</p>
       <DataTable caption="Multibagger screen" columns={columns} rows={rows} rowKey={(i) => i.instrument_id} virtualiseAbove={40} loading={!data && !error} error={error} onRetry={load}
         selectedKey={items.find((i) => i.symbol === selected)?.instrument_id ?? null} onRowClick={(i) => setSelected(i.symbol)}
         empty={<>{priceEmpty ?? 'No stocks match these filters.'} <Button variant="ghost" size="sm" onClick={() => { setKlass('all'); setQuery(''); setBuyZone(false); setFewUnknown(false); setMinQ(0); setPrice({ min: '', max: '' }); }}>Clear filters</Button></>} />
