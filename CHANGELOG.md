@@ -290,3 +290,4 @@
 - 2026-11-26: Market watch: today's price for every stock from one bulk Dhan quote a minute in market hours; the open page reloads the table each minute.
 - 26 Nov: Backtest Lab can fetch missing 1-minute history in one click; Research card score ring no longer cut off.
 - 26 Nov: Research daily report splits Buy now (price inside the range, judged on the price shown) from a new Wait for entry tile group, each with search, sort and show more; checkboxes sit beside their labels; Multibagger score legend.
+- 26 Nov: after the close, every stock's full 1-minute candles for the last few days are fetched; repeated failed jobs are grouped with a count and can be deleted.

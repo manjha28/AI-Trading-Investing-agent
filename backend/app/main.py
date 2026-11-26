@@ -195,6 +195,9 @@ async def lifespan(_app: FastAPI):
     if "pytest" not in sys.modules:
         from app.universe_quote_refresh import universe_quote_refresh_loop
         _leader(universe_quote_refresh_loop, 'universe_quotes')       # today's price for every Market watch stock, one bulk request a minute in market hours
+    if settings.master_bar_refresh_enabled and "pytest" not in sys.modules:
+        from app.minute_bar_completion import minute_bar_completion_loop
+        _leader(minute_bar_completion_loop, 'minute_completion')      # after the close: every stock's full 1-minute candles for the last few days
     if "pytest" not in sys.modules:
         from app.mcx_open_check import mcx_open_check_loop
         _leader(mcx_open_check_loop, 'mcx_open_check')

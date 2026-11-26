@@ -93,6 +93,22 @@ def test_permanent_failure_does_not_retry_and_a_lost_lease_cannot_overwrite(sqli
     assert job_queue.heartbeat(sqlite_db, job2.id, "someone-else") is False
 
 
+def test_delete_finished_removes_only_failed_jobs_of_that_owner_and_error(sqlite_db):
+    uid, other = _new_user(sqlite_db), _new_user(sqlite_db)
+
+    def failed(owner, error):
+        job, _ = job_queue.enqueue(sqlite_db, user_id=owner, job_type="scan", payload={})
+        job.status, job.error = "failed", error
+        sqlite_db.commit()
+
+    for owner, error in ((uid, "backtest-only"), (uid, "backtest-only"), (uid, "provider down"), (other, "backtest-only")):
+        failed(owner, error)
+    job_queue.enqueue(sqlite_db, user_id=uid, job_type="scan", payload={})                      # still queued: never deleted
+    assert job_queue.delete_finished(sqlite_db, uid, job_type="scan", error="backtest-only") == 2
+    assert job_queue.delete_finished(sqlite_db, uid) == 1
+    assert sorted((j.user_id == uid, j.status) for j in sqlite_db.scalars(select(Job))) == [(False, "failed"), (True, "queued")]
+
+
 def test_one_running_job_per_concurrency_key(sqlite_db):
     uid = _new_user(sqlite_db)
     a, _ = job_queue.enqueue(sqlite_db, user_id=uid, job_type="scan", payload={}, concurrency_key="scan:s1")

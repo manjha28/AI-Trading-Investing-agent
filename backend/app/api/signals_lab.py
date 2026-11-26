@@ -854,6 +854,17 @@ def list_jobs(status: str | None = Query(default=None, pattern="^(queued|running
     return [_job_out(j) for j in db.scalars(q.order_by(Job.created_at.desc()).limit(limit))]
 
 
+class DeleteJobsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_type: str | None = Field(default=None, max_length=40)
+    error: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/jobs/delete-failed")
+def delete_failed_jobs(body: DeleteJobsBody, active_session: UserSession = Depends(require_verified_session), _: UserSession = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, int]:
+    return {"deleted": job_queue.delete_finished(db, active_session.user_id, job_type=body.job_type, error=body.error)}
+
+
 @router.get("/jobs/{job_id}")
 def get_job(job_id: UUID, active_session: UserSession = Depends(require_verified_session), db: Session = Depends(get_db)) -> dict[str, Any]:
     return _job_out(_owned_job(db, job_id, active_session.user_id))

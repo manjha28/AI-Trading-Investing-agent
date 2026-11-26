@@ -30,6 +30,13 @@ export function JobsPanel() {
   const { data, error, load } = useLoad<JobRow[]>('/jobs?limit=100', (jobs) => jobs.some((j) => j.status === 'queued' || j.status === 'running'));
   const [actionError, setActionError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<JobRow | null>(null);
+  const [deleting, setDeleting] = useState<{ body: { job_type?: string; error?: string }; text: string } | null>(null);
+  const remove = async () => {
+    if (!deleting) return;
+    setActionError(null);
+    try { await withTimeout(lab<{ deleted: number }>('/jobs/delete-failed', { method: 'POST', body: deleting.body })); await load(); } catch (e) { setActionError(messageOf(e)); }
+    setDeleting(null);
+  };
   const act = async (job: JobRow, what: 'retry' | 'cancel') => {
     setActionError(null);
     try { await withTimeout(lab<JobRow>(`/jobs/${job.id}/${what}`, { method: 'POST', body: {} })); await load(); } catch (e) { setActionError(messageOf(e)); }
@@ -47,14 +54,12 @@ export function JobsPanel() {
       {data !== null && data.length > 0 && JOB_GROUPS.map((g) => {
         const rows = data.filter((j) => j.status === g.status);
         if (!rows.length) return null;
-        return (
-          <details key={g.status} open={g.status === 'failed' || g.status === 'running' || g.status === 'queued'} className="sl-issue-group">
-            <summary><Pill tone={g.tone}>{g.label}</Pill> {rows.length} job{rows.length === 1 ? '' : 's'}</summary>
+        const table = (list: JobRow[]) => (
             <Scroll label={`${g.label} jobs`}>
               <table className="sl-table sl-compact">
                 <thead><tr><th>Job</th><th>Progress</th><th>Attempts</th><th>Created</th><th>Finished</th><th>Detail</th><th /></tr></thead>
                 <tbody>
-                  {rows.map((j) => (
+                  {list.map((j) => (
                     <tr key={j.id}>
                       <td>{describe(j)}<div className="sl-muted"><code>{j.id.slice(0, 8)}</code></div></td>
                       <td>
@@ -75,9 +80,29 @@ export function JobsPanel() {
                 </tbody>
               </table>
             </Scroll>
+        );
+        const finishedBadly = g.status === 'failed' || g.status === 'cancelled';
+        // the same failure repeated is one line with a count, not one line per attempt
+        const kinds = finishedBadly ? [...rows.reduce((m, j) => m.set(`${j.job_type}|${j.error ?? ''}`, [...(m.get(`${j.job_type}|${j.error ?? ''}`) ?? []), j]), new Map<string, JobRow[]>()).values()] : [];
+        return (
+          <details key={g.status} open={g.status === 'failed' || g.status === 'running' || g.status === 'queued'} className="sl-issue-group">
+            <summary><Pill tone={g.tone}>{g.label}</Pill> {rows.length} job{rows.length === 1 ? '' : 's'}</summary>
+            {g.status === 'failed' && <div className="sl-toolbar"><button type="button" onClick={() => setDeleting({ body: {}, text: 'every failed and cancelled job' })}>Delete all failed jobs</button></div>}
+            {!finishedBadly && table(rows)}
+            {kinds.map((list) => (
+              <div key={`${list[0].job_type}|${list[0].error}`} className="sl-job-kind">
+                <p><strong>{list.length} × {describe(list[0])}</strong> <span className="sl-muted">last on {fmtIst(list[0].created_at)}</span><br />{list[0].error ?? 'No error message was recorded.'}</p>
+                <div className="sl-toolbar">
+                  <button type="button" onClick={() => void act(list[0], 'retry')}>Run latest again</button>
+                  <button type="button" onClick={() => setDeleting({ body: { job_type: list[0].job_type, ...(list[0].error ? { error: list[0].error } : {}) }, text: `all ${describe(list[0])} jobs with this error` })}>Delete these</button>
+                </div>
+                <details><summary>Show each run</summary>{table(list)}</details>
+              </div>
+            ))}
           </details>
         );
       })}
+      {deleting && <ConfirmDialog title="Delete these jobs?" confirmLabel="Delete" danger onCancel={() => setDeleting(null)} onConfirm={() => void remove()} body={<p>This removes {deleting.text}, with their empty scan-history lines. It cannot be undone.</p>} />}
       {cancelling && <ConfirmDialog title="Cancel this queued job?" confirmLabel="Cancel job" danger onCancel={() => setCancelling(null)} onConfirm={() => void act(cancelling, 'cancel')} body={<p>It has not started. You can retry it later.</p>} />}
     </section>
   );

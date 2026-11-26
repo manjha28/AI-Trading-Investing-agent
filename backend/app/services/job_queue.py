@@ -183,6 +183,25 @@ def close_orphaned_backtests(db: Session, *, now: datetime | None = None, older_
     return closed
 
 
+def delete_finished(db: Session, user_id: UUID, *, job_type: str | None = None, error: str | None = None) -> int:
+    """Owner action: remove failed and cancelled jobs (optionally only one kind with one error), with the empty scan-history rows they left. Nothing else is touched."""
+    from sqlalchemy import delete
+
+    from app.models.jobs import ScanRun
+
+    q = select(Job.id).where(Job.user_id == user_id, Job.status.in_(("failed", "cancelled")))
+    if job_type is not None:
+        q = q.where(Job.job_type == job_type)
+    if error is not None:
+        q = q.where(Job.error == error)
+    ids = list(db.scalars(q))
+    if ids:
+        db.execute(delete(ScanRun).where(ScanRun.user_id == user_id, ScanRun.job_id.in_(ids), ScanRun.pairs_scanned == 0, ScanRun.new_signals == 0))
+        db.execute(delete(Job).where(Job.id.in_(ids)))
+        db.commit()
+    return len(ids)
+
+
 def retry(db: Session, job: Job) -> Job:
     """Owner action: put a failed or cancelled job back in the queue with a fresh attempt budget."""
     if job.status not in ("failed", "cancelled"):

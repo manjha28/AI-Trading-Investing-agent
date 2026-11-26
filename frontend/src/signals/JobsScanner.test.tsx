@@ -28,7 +28,7 @@ describe('JobsPanel', () => {
       return jobs;
     });
     render(<JobsPanel />);
-    expect(await screen.findByText('RuntimeError: provider down')).toBeInTheDocument();
+    expect((await screen.findAllByText('RuntimeError: provider down')).length).toBeGreaterThan(0);
     expect(screen.getByText('running backtest')).toBeInTheDocument();
     expect(screen.getAllByRole('progressbar').some((p) => p.getAttribute('aria-valuenow') === '40')).toBe(true);
     const groups = document.querySelectorAll('details.sl-issue-group');
@@ -36,6 +36,20 @@ describe('JobsPanel', () => {
     expect(groups[0].hasAttribute('open')).toBe(true);
     fireEvent.click(within(groups[0] as HTMLElement).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(api.mock.calls.some(([p, i]) => p === '/signals-lab/jobs/f1/retry' && (i as { method?: string }).method === 'POST')).toBe(true));
+  });
+
+  it('shows a repeated failure as one line with a count, and deletes that group only after confirming', async () => {
+    const err = 'engine-backed strategies are backtest-only';
+    const jobs = ['a', 'b', 'c'].map((id) => job({ id, job_type: 'scan', status: 'failed', error: err, payload: { trigger: 'schedule' } }));
+    api.mockImplementation(async (path: string) => (path === '/signals-lab/jobs/delete-failed' ? { deleted: 3 } : jobs));
+    render(<JobsPanel />);
+    expect(await screen.findByText('3 × Scan · scheduled')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete these' }));
+    expect(api.mock.calls.some(([p]) => p === '/signals-lab/jobs/delete-failed')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(api.mock.calls.some(([p]) => p === '/signals-lab/jobs/delete-failed')).toBe(true));
+    const sent = api.mock.calls.find(([p]) => p === '/signals-lab/jobs/delete-failed')!;
+    expect(JSON.parse((sent[1] as { body: string }).body)).toEqual({ job_type: 'scan', error: err });
   });
 
   it('shows a failure path and Retry when jobs cannot be loaded', async () => {
