@@ -386,7 +386,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
           {fuzzy && <p className="watch-fuzzy" role="status">No exact match for “{query.trim()}” — showing the closest symbols.</p>}
           {loading ? <p className="table-empty">Loading the market universe…</p> : (
             <div className="watch-scroll">
-              <table className="watch-table">
+              <table className="watch-table equity-table">
                 <thead><tr>
                   <th aria-label="Watchlist" />
                   <th><button type="button" onClick={() => sortBy('symbol')}>Symbol{arrow('symbol')}</button></th>

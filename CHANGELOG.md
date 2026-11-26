@@ -294,3 +294,4 @@
 - 26 Nov: Signals pages made easier for a first-time user (getting-started list, builder example, plain-words read-back and save reasons, grouped indicators and scan history); paper forward tests for your own strategies; Nifty 50 and holdings keep 2 years of 1-minute candles, other stocks 6 months, downloaded while the market is closed.
 - 26 Nov: downloader for Dhan index and expired-option data (research only; not deployed, not yet run: no access token).
 - 26 Nov: Signals redesign: guided five-step strategy builder (full editor one click away), forward tests led by your own tests with real orders folded away, data health folded on the dashboard, more space and larger text; strategy registry unchanged.
+- 26 Nov: crypto markets table: the 'Last' price heading was hidden below 1500px wide, shifting every heading onto the wrong numbers; fixed.
