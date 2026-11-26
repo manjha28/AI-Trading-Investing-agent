@@ -353,7 +353,7 @@ export function Strategies() {
 
   return (
     <section className="strategies-page">
-      <p className="coverage-message">Signals never place orders.</p>
+      <p className="coverage-message">Decision support, not investment advice. Signals never place orders.</p>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {message && <div className="success-banner" role="status">{message}</div>}
       <>

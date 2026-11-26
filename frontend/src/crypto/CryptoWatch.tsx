@@ -24,11 +24,9 @@ function DayRange({ low, high, last }: { low: number | null; high: number | null
   return <><span>{price(String(low))}</span><span className="watch-range-bar">{pos !== null && <i style={{ left: `${pos}%` }} />}</span><span>{price(String(high))}</span></>;
 }
 
-type ColId = 'chg' | 'range' | 'oi' | 'oi6' | 'mark' | 'bidask' | 'updated';
-const EXTRA_COLS: { id: ColId; label: string }[] = [{ id: 'chg', label: 'Change (abs)' }, { id: 'range', label: '24h range' }, { id: 'oi', label: 'Open interest' }, { id: 'oi6', label: 'OI 6h' }, { id: 'mark', label: 'Mark' }, { id: 'bidask', label: 'Bid / Ask' }, { id: 'updated', label: 'Updated' }];
-type RowProps = { m: Market; selected: boolean; starred: boolean; live: boolean; cols: ReadonlySet<ColId>; onSelect: (m: Market) => void; onStar: (symbol: string) => void };
+type RowProps = { m: Market; selected: boolean; starred: boolean; live: boolean; onSelect: (m: Market) => void; onStar: (symbol: string) => void };
 
-const Row = memo(function Row({ m, selected, starred, live, cols, onSelect, onStar }: RowProps) {
+const Row = memo(function Row({ m, selected, starred, live, onSelect, onStar }: RowProps) {
   const t = m.ticker;
   const last = num(m.last_price);
   const prev = useRef<number | null>(last);
@@ -52,29 +50,24 @@ const Row = memo(function Row({ m, selected, starred, live, cols, onSelect, onSt
   return (
     <tr className={`${selected ? 'watch-selected' : ''} ${last === null ? 'watch-nodata' : ''}`} onClick={() => onSelect(m)} aria-selected={selected}>
       <td className="watch-starcell"><button type="button" className={`watch-star ${starred ? 'on' : ''}`} aria-label={`${starred ? 'Remove' : 'Add'} ${m.symbol} ${starred ? 'from' : 'to'} watchlist`} aria-pressed={starred} onClick={(e) => { e.stopPropagation(); onStar(m.symbol); }}>{starred ? '★' : '☆'}</button></td>
-      <td className="watch-symbol" title={`${t?.underlying_asset_symbol ?? m.symbol}${t?.leverage ? ` · up to ${t.leverage}x` : ''}`}><span className={`watch-dot ${live && last !== null ? 'live' : ''}`} /><button type="button" className="link-button" onClick={() => onSelect(m)}><strong>{m.symbol}</strong></button></td>
-      <td className={`watch-num watch-ltp ${flash ? `flash-${flash}` : ''}`} title={`Source: ${m.quote_source ?? 'unknown'}${m.quote_time ? ` · observed ${m.quote_time}` : ''}`}>{price(m.last_price)}</td>
-      {cols.has('chg') && <td className={`watch-num ${tone(chg)}`}>{signed(chg, '', chg !== null && Math.abs(chg) < 1 ? 4 : 2)}</td>}
+      <td className="watch-symbol"><span className={`watch-dot ${live && last !== null ? 'live' : ''}`} /><button type="button" className="link-button" onClick={() => onSelect(m)}><strong>{m.symbol}</strong></button><small>{t?.underlying_asset_symbol ?? ''}{t?.leverage ? ` · up to ${t.leverage}x` : ''}</small></td>
+      <td className={`watch-num watch-ltp ${flash ? `flash-${flash}` : ''}`}>{price(m.last_price)}</td>
+      <td className={`watch-num ${tone(chg)}`}>{signed(chg, '', chg !== null && Math.abs(chg) < 1 ? 4 : 2)}</td>
       <td className={`watch-num ${tone(pct)}`}>{signed(pct, '%')}</td>
-      {cols.has('range') && <td className="watch-range" aria-label="24h range"><DayRange low={num(t?.low)} high={num(t?.high)} last={last} /></td>}
+      <td className="watch-range" aria-label="24h range"><DayRange low={num(t?.low)} high={num(t?.high)} last={last} /></td>
       <td className="watch-num">{compact(num(t?.turnover_usd ?? m.volume_24h))}</td>
-      {cols.has('oi') && <td className="watch-num">{compact(num(t?.oi_value_usd))}</td>}
-      {cols.has('oi6') && <td className={`watch-num ${tone(oiChange)}`}>{oiChange === null ? '—' : `${oiChange > 0 ? '▲ +' : oiChange < 0 ? '▼ -' : ''}${compact(Math.abs(oiChange))}`}</td>}
+      <td className="watch-num">{compact(num(t?.oi_value_usd))}</td>
+      <td className={`watch-num ${tone(oiChange)}`}>{oiChange === null ? '—' : `${oiChange > 0 ? '▲ +' : oiChange < 0 ? '▼ -' : ''}${compact(Math.abs(oiChange))}`}</td>
       <td className={`watch-num ${tone(funding)}`} title="Funding rate as reported by Delta">{funding === null ? '—' : `${funding.toFixed(4)}%`}</td>
-      {cols.has('mark') && <td className="watch-num">{price(m.mark_price)}</td>}
-      {cols.has('bidask') && <td className="watch-num">{t?.best_bid && t?.best_ask ? `${price(t.best_bid)} / ${price(t.best_ask)}` : '—'}</td>}
-      {cols.has('updated') && <td className={`watch-num watch-age ${age !== null && age > STALE_AFTER_S ? 'watch-stale' : ''}`} title={`Source: ${m.quote_source ?? 'unknown'}${m.quote_time ? ` · observed ${m.quote_time}` : ''}`}>{age === null ? '—' : age < 60 ? `${age}s` : `${Math.round(age / 60)}m`}</td>}
+      <td className="watch-num">{price(m.mark_price)}</td>
+      <td className="watch-num">{t?.best_bid && t?.best_ask ? `${price(t.best_bid)} / ${price(t.best_ask)}` : '—'}</td>
+      <td className={`watch-num watch-age ${age !== null && age > STALE_AFTER_S ? 'watch-stale' : ''}`} title={`Source: ${m.quote_source ?? 'unknown'}${m.quote_time ? ` · observed ${m.quote_time}` : ''}`}>{age === null ? '—' : age < 60 ? `${age}s` : `${Math.round(age / 60)}m`}</td>
     </tr>
   );
 });
 
 /** The Crypto watch: the same strip, toolbar, flashing prices and range bars as the equity Market watch, over Delta's public ticker. Unknown values show —, never zero. */
 export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; setSymbol?: (symbol: string) => void; onSelect?: (m: Market) => void }) {
-  const [cols, setCols] = useState<ReadonlySet<ColId>>(() => {
-    try { const raw = window.localStorage.getItem('crypto.watch.cols'); if (raw) return new Set((JSON.parse(raw) as string[]).filter((c): c is ColId => EXTRA_COLS.some((e) => e.id === c))); } catch { /* default */ }
-    return new Set<ColId>();
-  });
-  const toggleCol = (id: ColId) => setCols((cur) => { const next = new Set(cur); if (next.has(id)) next.delete(id); else next.add(id); try { window.localStorage.setItem('crypto.watch.cols', JSON.stringify([...next])); } catch { /* convenience only */ } return next; });
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loading, setLoading] = useState(true);       // never say "no contracts" while the first request is in flight
   const [error, setError] = useState<{ since: Date; message: string } | null>(null);
@@ -184,10 +177,14 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
       <div className="watch-strip" role="status">
         <span className={`watch-status watch-status-${status === 'paused' ? 'market_closed' : status}`}>● {label}</span>
         <span><b>{rows.length}</b> contracts{rows.length < live.length ? ` of ${live.length}` : ''}</span>
-        <span title={'Live ' + stats.ticking + ' · up ' + stats.up + ' · down ' + stats.down + ' · open interest $' + compact(stats.oi)}>24h vol <b>${compact(stats.vol)}</b></span>
+        <span><b>{stats.ticking}</b> live</span>
+        <span className="positive">▲ <b>{stats.up}</b></span>
+        <span className="negative">▼ <b>{stats.down}</b></span>
+        <span title="Sum of 24h turnover across live contracts">24h vol <b>${compact(stats.vol)}</b></span>
+        <span title="Sum of open interest across live contracts">OI <b>${compact(stats.oi)}</b></span>
         {age !== null && age > STALE_AFTER_S && <span className="watch-missing">newest quote {age < 3600 ? `${Math.round(age / 60)}m` : `${Math.round(age / 3600)}h`} old{!wanted ? ' · feed paused' : ''}</span>}
         <FeedToggle onChange={setWanted} />
-        <span className="watch-note">Delta Exchange India · public feed</span>
+        <span className="watch-note">Delta Exchange India · public feed · decision support, not investment advice</span>
       </div>
       {error && (
         <p className="alerts-notice" role="alert">
@@ -197,9 +194,6 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
       <section className="data-section watch-table-panel" aria-label="Perpetual contracts">
         <div className="watch-toolbar">
           <input type="search" placeholder="Search contract, e.g. SOL" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search contracts" />
-          <details className="watch-columns"><summary>Columns</summary>
-            <div className="watch-columns-menu">{EXTRA_COLS.map((c) => <label key={c.id}><input type="checkbox" checked={cols.has(c.id)} onChange={() => toggleCol(c.id)} /> {c.label}</label>)}</div>
-          </details>
           <div className="watch-modes" role="group" aria-label="Filter">
             {([['all', 'All'], ['watchlist', `Watchlist (${starred.length})`], ['gainers', 'Gainers'], ['losers', 'Losers']] as const).map(([id, text]) => (
               <button key={id} type="button" className={mode === id ? 'active' : ''} aria-pressed={mode === id} onClick={() => setMode(id)}>{text}</button>
@@ -212,21 +206,21 @@ export function CryptoWatch({ symbol, setSymbol, onSelect }: { symbol: string; s
               <th aria-label="Watchlist" />
               <th><button type="button" onClick={() => sortBy('symbol')}>Contract{arrow('symbol')}</button></th>
               <th className="watch-num"><button type="button" onClick={() => sortBy('last')}>Last{arrow('last')}</button></th>
-              {cols.has('chg') && <th className="watch-num"><button type="button" onClick={() => sortBy('chg')}>Chg{arrow('chg')}</button></th>}
+              <th className="watch-num"><button type="button" onClick={() => sortBy('chg')}>Chg{arrow('chg')}</button></th>
               <th className="watch-num"><button type="button" onClick={() => sortBy('chgPct')}>24h %{arrow('chgPct')}</button></th>
-              {cols.has('range') && <th>24h range</th>}
+              <th>24h range</th>
               <th className="watch-num"><button type="button" onClick={() => sortBy('volume')}>Volume (USD){arrow('volume')}</button></th>
-              {cols.has('oi') && <th className="watch-num"><button type="button" onClick={() => sortBy('oi')}>Open interest (USD){arrow('oi')}</button></th>}
-              {cols.has('oi6') && <th className="watch-num">OI 6h</th>}
+              <th className="watch-num"><button type="button" onClick={() => sortBy('oi')}>Open interest (USD){arrow('oi')}</button></th>
+              <th className="watch-num">OI 6h</th>
               <th className="watch-num" title="Funding rate as reported by Delta"><button type="button" onClick={() => sortBy('funding')}>Funding{arrow('funding')}</button></th>
-              {cols.has('mark') && <th className="watch-num">Mark</th>}
-              {cols.has('bidask') && <th className="watch-num">Bid / Ask</th>}
-              {cols.has('updated') && <th className="watch-num">Updated</th>}
+              <th className="watch-num">Mark</th>
+              <th className="watch-num">Bid / Ask</th>
+              <th className="watch-num">Updated</th>
             </tr></thead>
             <tbody>
-              {rows.map((m) => <Row key={m.product_id} m={m} selected={m.symbol === symbol} starred={starred.includes(m.symbol)} live={wanted} cols={cols} onSelect={select} onStar={onStar} />)}
-              {rows.length === 0 && loading && <tr><td colSpan={6 + cols.size} className="table-empty" role="status" aria-busy="true">Loading contracts…</td></tr>}
-              {rows.length === 0 && !loading && !error && <tr><td colSpan={6 + cols.size} className="table-empty">{mode === 'watchlist' ? 'No starred contracts yet. Tap ☆ on a row to add it.' : 'No live contracts match. The public feed may be paused or still starting.'}</td></tr>}
+              {rows.map((m) => <Row key={m.product_id} m={m} selected={m.symbol === symbol} starred={starred.includes(m.symbol)} live={wanted} onSelect={select} onStar={onStar} />)}
+              {rows.length === 0 && loading && <tr><td colSpan={13} className="table-empty" role="status" aria-busy="true">Loading contracts…</td></tr>}
+              {rows.length === 0 && !loading && !error && <tr><td colSpan={13} className="table-empty">{mode === 'watchlist' ? 'No starred contracts yet. Tap ☆ on a row to add it.' : 'No live contracts match. The public feed may be paused or still starting.'}</td></tr>}
             </tbody>
           </table>
         </div>

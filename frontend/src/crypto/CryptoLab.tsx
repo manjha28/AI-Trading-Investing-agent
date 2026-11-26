@@ -49,7 +49,6 @@ export function CryptoLab({ symbol, setSymbol, resolution, setResolution }: Prop
   const [run, setRun] = useState<Run | null>(null);
   const [candles, setCandles] = useState<Candles | null>(null);
   const [history, setHistory] = useState<Run[]>([]);
-  const [allHistory, setAllHistory] = useState(false);
 
   const strategy = meta?.strategies.find((item) => item.id === strategyId);
 
@@ -165,17 +164,6 @@ export function CryptoLab({ symbol, setSymbol, resolution, setResolution }: Prop
     } catch (e) { setError(messageOf(e)); }
   }
 
-  // identical re-runs (same strategy, contract, candles, trades and result) collapse into one row marked x3
-  const grouped = useMemo(() => {
-    const seen = new Map<string, { run: Run; n: number }>();
-    for (const h of history) {
-      const key = [h.strategy_name, h.symbol, h.resolution, h.bars_used, h.metrics.closed_trades, h.metrics.net_pnl, h.status].join('|');
-      const hit = seen.get(key);
-      if (hit) hit.n += 1; else seen.set(key, { run: h, n: 1 });
-    }
-    return [...seen.values()];
-  }, [history]);
-
   const markers = useMemo<TradeMarker[]>(() => (run?.trades ?? []).flatMap((t) => [
     { time: t.entry_time, kind: 'entry' as const, side: t.side, text: t.side === 'long' ? 'L' : 'S' },
     { time: t.exit_time, kind: 'exit' as const, side: t.side, ...exitMarker(t.exit_reason) },
@@ -191,15 +179,14 @@ export function CryptoLab({ symbol, setSymbol, resolution, setResolution }: Prop
   return (
     <div className="crypto-lab">
       <section className="data-section" aria-label="Backtest setup">
-        <div className="section-heading"><div><p className="eyebrow">STRATEGY LAB</p><h3>Backtest a perpetual strategy <span className="info-tip" tabIndex={0} role="note" aria-label="About backtests" title="Replays completed Delta candles only; signals are decided at a bar's close and filled at the next open. Fees come from the exchange's own contract data. Results are hypothetical and never mixed with real P&L.">ⓘ</span></h3></div></div>
+        <div className="section-heading"><div><p className="eyebrow">STRATEGY LAB</p><h3>Backtest a perpetual strategy</h3></div></div>
+        <p className="crypto-sub">Replays completed Delta candles only; signals are decided at a bar's close and filled at the next open. Fees come from the exchange's own contract data. Results are hypothetical and never mixed with real P&amp;L.</p>
         {strategy && <p className="crypto-sub"><strong>{strategy.name}.</strong> {strategy.description}</p>}
         <form className="crypto-form" onSubmit={(event) => void submit(event)}>
           <label>Strategy<select value={strategyId} onChange={(event) => setStrategyId(event.target.value)}>{meta?.strategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
           <label>Contract<input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} required /></label>
           <label>Candle size<select value={resolution} onChange={(event) => setResolution(event.target.value)}>{RESOLUTIONS.map((r) => <option key={r} value={r}>{r}</option>)}</select></label>
           <label>History (days)<input value={days} onChange={(event) => setDays(event.target.value)} inputMode="numeric" /></label>
-          <button className="primary-button" type="submit" disabled={busy || !strategy}>{busy ? 'Running…' : 'Run backtest'}</button>
-          <details className="crypto-advanced"><summary>Advanced settings</summary><div className="crypto-form crypto-advanced-grid">
           <label>Leverage (max {contract?.max_leverage ?? '—'}x)<input value={leverage} onChange={(event) => setLeverage(event.target.value)} inputMode="decimal" aria-label="Leverage" /></label>
           <label>Position size<select value={sizingMode} onChange={(event) => setSizingMode(event.target.value as SizingMode)} aria-label="Position size">{(Object.keys(SIZING_LABEL) as SizingMode[]).map((k) => <option key={k} value={k}>{SIZING_LABEL[k]}</option>)}</select></label>
           {sizingMode === 'contracts'
@@ -210,15 +197,15 @@ export function CryptoLab({ symbol, setSymbol, resolution, setResolution }: Prop
           {strategy?.params.map((spec) => spec.kind === 'bool'
             ? <label key={spec.key} className="crypto-check"><input type="checkbox" checked={values[spec.key] === 'true'} onChange={(event) => setValues({ ...values, [spec.key]: String(event.target.checked) })} /> {spec.label}</label>
             : <label key={spec.key}>{spec.label}<input value={values[spec.key] ?? ''} onChange={(event) => setValues({ ...values, [spec.key]: event.target.value })} inputMode="decimal" title={`${spec.minimum ?? ''} – ${spec.maximum ?? ''}`} /></label>)}
-          </div></details>
+          <button className="primary-button" type="submit" disabled={busy || !strategy}>{busy ? 'Running…' : 'Run backtest'}</button>
         </form>
         {contractError && <p className="crypto-sub" role="status">Contract data: {contractError}</p>}
         {contract && (
-          <details className="crypto-contract-details"><summary>Contract lot and margin</summary><p className="crypto-sub" aria-label="Contract lot and margin">
+          <p className="crypto-sub" aria-label="Contract lot and margin">
             <strong>{contract.symbol}</strong>: 1 contract = <strong>{plain(contract.units_per_contract ?? contract.contract_value)}</strong> of the underlying · tick {plain(contract.tick_size)} · taker fee {(Number(contract.taker_fee_rate) * 100).toFixed(3)}%
             {contract.initial_margin_pct ? <> · initial margin {contract.initial_margin_pct}% (max leverage {plain(contract.max_leverage)}x) · maintenance margin {plain(contract.maintenance_margin_pct)}%</> : null}
             {contract.position_size_limit ? <> · position limit {contract.position_size_limit.toLocaleString()} contracts</> : null}. Margin per contract ≈ price × {plain(contract.units_per_contract ?? contract.contract_value)} ÷ leverage.
-          </p></details>
+          </p>
         )}
         {error && <p className="error-message" role="alert">{error}</p>}
       </section>
@@ -305,9 +292,9 @@ export function CryptoLab({ symbol, setSymbol, resolution, setResolution }: Prop
         {history.length === 0 ? <p className="table-empty">No backtests yet.</p> : (
           <div className="table-scroll"><table>
             <thead><tr><th>Run</th><th>Strategy</th><th>Contract</th><th>Candles</th><th>Trades</th><th>Net P&amp;L</th><th>Status</th><th /><th /></tr></thead>
-            <tbody>{grouped.slice(0, allHistory ? undefined : 5).map(({ run: h, n }) => (
+            <tbody>{history.map((h) => (
               <tr key={h.id}>
-                <td>{new Date(h.created_at).toLocaleString()}{n > 1 ? ` ×${n}` : ''}</td><td>{h.strategy_name}</td><td>{h.symbol} · {h.resolution}</td><td>{h.bars_used}</td>
+                <td>{new Date(h.created_at).toLocaleString()}</td><td>{h.strategy_name}</td><td>{h.symbol} · {h.resolution}</td><td>{h.bars_used}</td>
                 <td>{dash(h.metrics.closed_trades)}</td><td className={tone(h.metrics.net_pnl)}>{dash(h.metrics.net_pnl)}</td><td>{h.status === 'completed' ? 'hypothetical' : h.status}</td>
                 <td>{h.status === 'completed' && <button className="text-button" type="button" onClick={() => void open(h.id)}>Open</button>}</td>
                 <td>{confirmDelete === h.id
@@ -315,7 +302,7 @@ export function CryptoLab({ symbol, setSymbol, resolution, setResolution }: Prop
                   : <button className="text-button" type="button" aria-label={`Delete ${h.strategy_name} ${h.symbol} run`} onClick={() => setConfirmDelete(h.id)}>Delete</button>}</td>
               </tr>
             ))}</tbody>
-          </table>{grouped.length > 5 && <p className="crypto-sub"><button type="button" className="link-button" onClick={() => setAllHistory((v) => !v)}>{allHistory ? 'Show fewer' : `Show all ${grouped.length}`}</button></p>}</div>
+          </table></div>
         )}
       </section>
     </div>

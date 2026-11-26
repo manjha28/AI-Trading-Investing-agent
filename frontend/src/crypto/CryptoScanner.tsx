@@ -80,7 +80,7 @@ export function CryptoScanner() {
           <h4>Signal log</h4>
           <table className="crypto-table"><thead><tr><th>Entry time</th><th>Symbol</th><th>Side</th><th>Taken</th><th>Reason</th></tr></thead>
             <tbody>{(open.signal_log ?? []).slice(-30).reverse().map((l, i) => <tr key={i}><td>{l.entry_time.replace('T', ' ').slice(0, 16)}</td><td>{l.symbol}</td><td>{l.side}</td><td>{l.taken ? 'yes' : 'no'}</td><td>{l.reason}</td></tr>)}</tbody></table>
-          <p className="crypto-sub">{open.live_note}</p>
+          <p className="crypto-sub">{open.live_note} Decision support, not investment advice.</p>
         </div>
       )}
     </section>

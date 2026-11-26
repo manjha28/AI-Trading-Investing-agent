@@ -279,3 +279,4 @@
 - 2026-11-26: UI simplification (frontend only): top-bar live pill, Crypto · Delta 4 tabs and test cards, Research daily-report cards and buckets, Overview/Journal declutter; not deployed.
 - 2026-11-25: Research: classic intraday day-trading rules on 150 liquid NSE stocks, 1 year of Dhan 5-minute data (37 variants); reports/equity_daytrade.md.
 - 2026-11-26: Equity Market watch load: covering index on daily bars (migration 0082) so the table no longer waits on cold disk reads; not yet deployed.
+- 2026-11-26: Reverted the 25-26 Nov UI simplification (56fe355, fc48165); functional features kept (R3 card, new scanner strategies, live report, scanner Live switch, equity watch fixes).

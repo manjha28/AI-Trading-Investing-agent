@@ -109,8 +109,7 @@ describe('CryptoDeltaPage', () => {
   it('runs a backtest from the strategy lab and labels everything hypothetical', async () => {
     const calls = mockApi();
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'Strategies' }));
-    fireEvent.click(await screen.findByRole('tab', { name: 'Backtests' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Strategy lab' }));
     await screen.findByText(/Long while fast above slow/);
     fireEvent.click(await screen.findByRole('button', { name: 'Run backtest' }));
     expect(await screen.findByText(/Not a position, an order, or real P&L/)).toBeTruthy();
@@ -140,8 +139,7 @@ describe('CryptoDeltaPage', () => {
       return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }));
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'Strategies' }));
-    fireEvent.click(await screen.findByRole('tab', { name: 'Backtests' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Strategy lab' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Run backtest' }));
     expect(await screen.findByText('Candles were re-downloaded from Delta for this run.')).toBeTruthy();
     expect((await screen.findByTestId('candle-chart')).textContent).toBe('3 candles, 4 markers'); // the stub renders the mocked array
@@ -152,7 +150,7 @@ describe('CryptoDeltaPage', () => {
   it('states plainly on the Execution tab that orders are not placed', async () => {
     mockApi();
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'System' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Execution' }));
     expect(await screen.findByText('Delta orders: OFF')).toBeTruthy();
     expect(await screen.findByText(/the deployment flag DELTA_LIVE_EXECUTION_ENABLED is off/)).toBeTruthy();
     expect(screen.getByText('1000 USD')).toBeTruthy();
@@ -161,7 +159,7 @@ describe('CryptoDeltaPage', () => {
   it('runs a risk check and shows blocked results with the unverifiable exposure reason', async () => {
     const calls = mockApi();
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'System' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Execution' }));
     await screen.findByText('Delta orders: OFF');
     fireEvent.change(screen.getByLabelText(/Limit price/), { target: { value: '60000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run risk check' }));
@@ -174,8 +172,7 @@ describe('CryptoDeltaPage', () => {
   it('shows each contract\'s own lot size, margin and leverage limit, and caps the leverage field to what the contract allows', async () => {
     mockApi();
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'Strategies' }));
-    fireEvent.click(await screen.findByRole('tab', { name: 'Backtests' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Strategy lab' }));
     const info = await screen.findByLabelText('Contract lot and margin');
     expect(info.textContent).toContain('1 contract = 0.001 of the underlying');
     expect(info.textContent).toContain('initial margin 0.5% (max leverage 200x)');
@@ -191,8 +188,7 @@ describe('CryptoDeltaPage', () => {
   it('sizes by USD notional or % risked, sending exactly the matching field', async () => {
     const calls = mockApi();
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'Strategies' }));
-    fireEvent.click(await screen.findByRole('tab', { name: 'Backtests' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Strategy lab' }));
     await screen.findByText(/Long while fast above slow/);
     fireEvent.change(screen.getByLabelText('Position size'), { target: { value: 'notional_usd' } });
     fireEvent.change(screen.getByLabelText('Size value'), { target: { value: '500' } });
@@ -214,8 +210,7 @@ describe('CryptoDeltaPage', () => {
   it('shows the strategy and every parameter the run used, plus capital, leverage, sizing, fees and margin', async () => {
     mockApi();
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'Strategies' }));
-    fireEvent.click(await screen.findByRole('tab', { name: 'Backtests' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Strategy lab' }));
     await screen.findByText(/Long while fast above slow/);
     fireEvent.click(await screen.findByRole('button', { name: 'Run backtest' }));
     const settings = within(await screen.findByLabelText('Run settings'));
@@ -236,8 +231,7 @@ describe('CryptoDeltaPage', () => {
   it('deletes a stored run only after confirmation, from the history list or the open result', async () => {
     const calls = mockApi();
     render(<CryptoDeltaPage />);
-    fireEvent.click(await screen.findByRole('tab', { name: 'Strategies' }));
-    fireEvent.click(await screen.findByRole('tab', { name: 'Backtests' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Strategy lab' }));
     const del = await screen.findByRole('button', { name: 'Delete EMA crossover (trend) BTCUSD run' });
     fireEvent.click(del);
     expect(calls.some((c) => c.init?.method === 'DELETE')).toBe(false);                    // nothing happens until it is confirmed

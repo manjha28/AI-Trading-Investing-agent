@@ -98,6 +98,7 @@ export function StockAlerts({ instrumentId, symbol, lastPrice, onChanged }: { in
       {events.length === 0 ? <p className="crypto-sub">Nothing has fired for this stock.</p> : (
         <ul className="stock-list">{events.map((e) => <li key={e.id}><span><strong>{ruleLabel(e.rule_type)}</strong> <small>{when(e.fired_at)}</small></span><span className={`severity-badge severity-${e.severity}`}>{e.severity}</span></li>)}</ul>
       )}
+      <p className="crypto-sub">Decision support, not investment advice.</p>
     </div>
   );
 }

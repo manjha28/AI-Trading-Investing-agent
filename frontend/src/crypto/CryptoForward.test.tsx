@@ -14,11 +14,11 @@ describe('CryptoForward', () => {
 
   it('lists paper tests, labels them hypothetical and shows unknown win rate as a dash', async () => {
     apiRequest.mockResolvedValue({ tests: [test, { ...test, id: 'b', name: 'empty', summary: { ...summary, closed_trades: 0, win_rate: null, net_pnl: '0' } }] });
-    render(<CryptoForward symbol="BTCUSD" resolution="15m" part="tests" />);
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
     expect(await screen.findByText('5 EMA BTCUSD 15m')).toBeTruthy();
-    expect(screen.getByLabelText('About paper tests').getAttribute('title')).toMatch(/never mixes with real P&L/);
-    expect(screen.getByText(/win 50%/)).toBeTruthy();
-    expect(screen.getAllByText(/win —/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/never mixes with real P&L/)).toBeTruthy();
+    expect(screen.getByText('50.0%')).toBeTruthy();
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
   it('starts a test on the selected contract and shows a failure plainly', async () => {
@@ -26,8 +26,7 @@ describe('CryptoForward', () => {
       if (init?.method === 'POST') return Promise.reject(new Error('BTCUSD is not a perpetual contract.'));
       return Promise.resolve({ tests: [] });
     });
-    render(<CryptoForward symbol="BTCUSD" resolution="15m" part="tests" />);
-    fireEvent.click(await screen.findByText('New paper test…'));
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
     fireEvent.click(await screen.findByText('Start paper test'));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('not a perpetual contract'));
     const post = apiRequest.mock.calls.find((c) => c[1]?.method === 'POST');
@@ -46,15 +45,16 @@ describe('CryptoForward live controls', () => {
 
   it('OFF with the flag off: states the reason from the backend and offers no live control at all', async () => {
     serve(status(false, false, 'OFF', ['the deployment flag DELTA_LIVE_EXECUTION_ENABLED is off']));
-    render(<CryptoForward symbol="BTCUSD" resolution="15m" part="live" />);
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
     expect(await screen.findByText(/the deployment flag DELTA_LIVE_EXECUTION_ENABLED is off/)).toBeTruthy();
+    expect(screen.getByText('Delta: OFF')).toBeTruthy();
     expect(screen.queryByLabelText('Confirmation phrase')).toBeNull(); expect(screen.queryByText(/Kill switch/)).toBeNull();
     expect(screen.queryByText(/Live: o(n|ff)/)).toBeNull();
   });
 
   it('flag on but not armed: turning live on needs no typing, only a warning step that names the venue, strategy, quantity cap and leverage', async () => {
     serve(status(true, false, 'OFF', ['you have not armed live execution']));
-    render(<CryptoForward symbol="BTCUSD" resolution="15m" part="live" />);
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
     const arm = await screen.findByRole('button', { name: 'Turn live orders on…' });
     expect(screen.queryByLabelText('Confirmation phrase')).toBeNull();
     fireEvent.click(arm);
@@ -68,22 +68,14 @@ describe('CryptoForward live controls', () => {
       { orders: [{ id: 'o1', created_at: '2026-11-23T19:50:17Z', symbol: 'BTCUSD', side: 'buy', contracts: 1, leverage: 25, status: 'rejected', block_reason: 'insufficient_margin', delta_order_id: null }],
         blocked_attempts: [{ id: 'b1', created_at: '2026-11-23T19:00:00Z', symbol: 'ETHUSD', side: 'sell', contracts: 1, block_reason: 'signal_fresh: stale' }] },
       [{ id: 't1', name: '5 EMA BTCUSD 5m', symbol: 'BTCUSD', resolution: '5m', status: 'active', contracts: 1, start_time: '2026-11-23T10:00:00Z', last_run_at: null, last_error: null, execute_live: false, label: 'x', summary: null, open_positions: [], params: { ema: 5, rr: '3', direction: -1 } }]);
-    render(<CryptoForward symbol="BTCUSD" resolution="15m" part="live" />);
+    render(<CryptoForward symbol="BTCUSD" resolution="15m" />);
     expect(await screen.findByText(/Kill switch/)).toBeTruthy();
-    expect(screen.getByLabelText("Limits and today's activity").getAttribute('title')).toContain('Today: 1 sent to Delta (1 rejected by the broker) · 2 blocked attempts (never sent)');
-    expect(screen.queryByText(/Orders off/i)).toBeNull();
-    expect(screen.queryByText('ETHUSD')).toBeNull();                       // blocked attempts are collapsed to one line
-    fireEvent.click(screen.getByRole('button', { name: 'view' }));
-    const row = screen.getByText('ETHUSD').closest('tr') as HTMLElement;
-    expect(within(row).getByText('Signal stale').getAttribute('title')).toContain('signal_fresh');
-    cleanup();
-    serve(status(true, true, 'ARMED_BUT_BLOCKED', ['no Delta forward test has its live switch on']), { orders: [], blocked_attempts: [] },
-      [{ id: 't1', name: '5 EMA BTCUSD 5m', symbol: 'BTCUSD', resolution: '5m', status: 'active', contracts: 1, start_time: '2026-11-23T10:00:00Z', last_run_at: null, last_error: null, execute_live: false, label: 'x', summary: null, open_positions: [], params: { ema: 5, rr: '3', direction: -1 } }]);
-    const t1 = { id: 't1', name: '5 EMA BTCUSD 5m', symbol: 'BTCUSD', resolution: '5m', status: 'active', contracts: 1, start_time: '2026-11-23T10:00:00Z', last_run_at: null, last_error: null, execute_live: false, label: 'x', summary: null, open_positions: [], trades: [], params: { ema: 5, rr: '3', direction: -1 } };
-    const base = apiRequest.getMockImplementation()!;
-    apiRequest.mockImplementation((path: string) => (path.endsWith('/forward-tests/t1') ? Promise.resolve(t1) : base(path)));
-    render(<CryptoForward symbol="BTCUSD" resolution="15m" part="tests" />);
-    fireEvent.click(await screen.findByText('5 EMA BTCUSD 5m'));
     expect(await screen.findByRole('button', { name: 'Live: off' })).toBeTruthy();
+    expect(screen.getByText(/Today: 1 sent to Delta \(1 rejected by the broker\) · 2 blocked attempts \(never sent\)/)).toBeTruthy();
+    expect(screen.queryByText(/Orders off/i)).toBeNull();
+    const ledger = screen.getByRole('heading', { name: 'Live order ledger (real orders only)' }).nextElementSibling as HTMLElement;
+    expect(within(ledger).getByText('BTCUSD')).toBeTruthy(); expect(within(ledger).getByText('insufficient_margin')).toBeTruthy(); expect(within(ledger).queryByText('ETHUSD')).toBeNull();
+    const blocked = screen.getByRole('heading', { name: /Blocked attempts/ }).nextElementSibling as HTMLElement;
+    expect(within(blocked).getByText('ETHUSD')).toBeTruthy(); expect(within(blocked).getByText(/signal_fresh/)).toBeTruthy();
   });
 });

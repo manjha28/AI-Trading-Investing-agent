@@ -1162,13 +1162,3 @@ html, body, #root { max-width: 100%; overflow-x: clip; }
   .header-menu { display: none; position: absolute; right: 0; top: 44px; z-index: 6; flex-direction: column; gap: 8px; min-width: 220px; padding: 12px; border-radius: 12px; background: #101a2b; border: 1px solid #243247; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
   .header-menu.open { display: flex; }
 }
-
-/* Top-bar status pill (one live-state indicator; details in the popover) */
-.status-pill-wrap { position: relative; }
-.status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line, #d0d5dd); background: #f2f4f7; color: #475467; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
-.status-pill-blocked { background: #fffaeb; color: #93370d; border-color: #fedf89; }
-.status-pill-live { background: #fef3f2; color: #b42318; border-color: #fda29b; }
-.status-popover { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; width: min(360px, 90vw); background: #fff; border: 1px solid #d0d5dd; border-radius: 10px; box-shadow: 0 8px 24px rgba(16, 24, 40, 0.16); padding: 12px; display: grid; gap: 10px; }
-.status-popover-row { display: grid; gap: 2px; }
-.status-popover-row small { color: #667085; overflow-wrap: anywhere; }
-.status-popover-actions { display: flex; gap: 8px; align-items: center; justify-content: space-between; }

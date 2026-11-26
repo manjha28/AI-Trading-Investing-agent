@@ -28,7 +28,7 @@ describe('DailyReport', () => {
     await waitFor(() => expect(screen.getByText('Alpha Ltd')).toBeTruthy());
     expect(screen.getByRole('img', { name: /Score 72 out of 100, unproven/ })).toBeTruthy();
     expect(screen.getByText('₹95.00')).toBeTruthy();
-    expect(screen.getByText(/Held at Dhan/).getAttribute('title')).toMatch(/keep holding/);
+    expect(screen.getByText(/keep holding/)).toBeTruthy();
     expect(screen.getByText(/Decision support, not investment advice/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'AAA' }));
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'i1', symbol: 'AAA' }));
@@ -94,6 +94,7 @@ describe('DailyReport', () => {
     await waitFor(() => expect(screen.getByText('BBB Ltd')).toBeTruthy());
     const order = screen.getAllByRole('button').map((b) => b.textContent).filter((t) => ['AAA', 'BBB', 'CCC'].includes(t ?? ''));
     expect(order.slice(0, 3)).toEqual(['BBB', 'CCC', 'AAA']);
+    expect(screen.getAllByText(/prior high/).length).toBe(2);                                    // BBB has no prior high: that part of the line is hidden, not "prior high —"
     expect(screen.queryByText(/prior high —/)).toBeNull();
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
@@ -103,7 +104,7 @@ describe('DailyReport', () => {
       horizons: { positional: { recommendation: 'INSUFFICIENT_EVIDENCE', score: null, confidence: null, why_not: [], data_note: 'Listed recently: only 2 weekly candles stored; positional needs 40' } } };
     mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, not_enough_data: [short] }, counts: { ...report.counts, not_enough_data: 1 } }));
     render(<DailyReport onOpen={vi.fn()} />);
-    await waitFor(() => expect(screen.getAllByTitle(/Listed recently: only 2 weekly candles stored; positional needs 40/).length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByText(/Listed recently: only 2 weekly candles stored; positional needs 40/)).toBeTruthy());
     mockApi.mockImplementation(() => Promise.resolve(report));
   });
 });
@@ -139,11 +140,11 @@ describe('DailyReport · card header (24 Nov layout)', () => {
   it('shows the price line, one short evidence chip, and no band while the measured result is not yet separating; the full sentence sits in the Why fold', async () => {
     const wc = { line: 'Measured win rate 50% (avg setup 38%) · based on 118 similar past setups', band: 'Medium', band_label: 'Medium (not yet separating)', tooltip: 'interval 40-60%', expected_r: 0.12 };
     const c = { ...conf, win_confidence: wc };
-    const card = { ...buy, price: { value: '101.5', kind: 'ltp', as_of: '2026-11-24T07:35:00Z', change: '12.4', change_pct: '0.61', stale: false }, horizons: { ...buy.horizons, positional: { ...buy.horizons.positional, buy_confidence: c } }, confidence: c };
+    const card = { ...buy, price: { value: '2040.5', kind: 'ltp', as_of: '2026-11-24T07:35:00Z', change: '12.4', change_pct: '0.61', stale: false }, horizons: { ...buy.horizons, positional: { ...buy.horizons.positional, buy_confidence: c } }, confidence: c };
     mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [card] } }));
     render(<DailyReport onOpen={vi.fn()} />);
     await screen.findByText('Alpha Ltd');
-    expect(screen.getByText('₹101.50')).toBeTruthy();                                              // current price in large type
+    expect(screen.getByText('₹2,040.50')).toBeTruthy();                                              // current price in large type
     expect(screen.getByText(/\+₹12\.40 \(\+0\.61%\)/)).toBeTruthy(); expect(screen.getByText(/as of 13:05 IST/)).toBeTruthy();
     expect(screen.getByText('Win rate 50% · 118 past setups')).toBeTruthy();                      // the short chip
     expect(screen.getByRole('img', { name: /Score 72 out of 100, unproven/ })).toBeTruthy();        // no "High" next to "not yet separating"
@@ -162,18 +163,5 @@ describe('DailyReport · card header (24 Nov layout)', () => {
     expect(screen.getByRole('img', { name: /Score 72 out of 100, High/ })).toBeTruthy();
     expect(screen.getByText(/stale/)).toBeTruthy(); expect(screen.getByText('₹99.00').closest('.rt-priceline')?.className).toContain('stale');
     mockApi.mockImplementation(() => Promise.resolve(report));
-  });
-
-  it('Ready to buy holds only cards in the buy band: a card above the band waits, and one whose first target is below the price becomes No new entry', async () => {
-    const inBand = { ...buy, price: { value: '101.5', kind: 'close', as_of: null, change: null, change_pct: null, stale: false } };
-    const above = { ...buy, instrument_id: 'i7', symbol: 'ABV', name: 'Above Ltd', price: { value: '108', kind: 'close', as_of: null, change: null, change_pct: null, stale: false }, last_close: '108' };
-    const passed = { ...buy, instrument_id: 'i8', symbol: 'PSD', name: 'Passed Ltd', price: { value: '130', kind: 'close', as_of: null, change: null, change_pct: null, stale: false }, last_close: '130' };
-    mockApi.mockImplementation(() => Promise.resolve({ ...report, buckets: { ...report.buckets, buy: [inBand, above, passed] }, counts: { ...report.counts, buy: 3 } }));
-    render(<DailyReport onOpen={vi.fn()} />);
-    await screen.findByText('Alpha Ltd');
-    const tile = (label: string) => screen.getByRole('button', { name: new RegExp(`^\\d+\\s*${label}`) }).textContent;
-    expect(tile('Ready to buy')).toMatch(/^1/); expect(tile('Set up, waiting')).toMatch(/^1/); expect(tile('No new entry')).toMatch(/^1/);
-    expect(screen.getByText('Above Ltd')).toBeTruthy();
-    expect(screen.getAllByText('No new entry').length).toBeGreaterThan(0);
   });
 });

@@ -371,7 +371,6 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
         }}>
           <Plus size={16} /> Add trade
         </button>
-        <details className="journal-add-more"><summary className="secondary-button">More ▾</summary>
         <button className="secondary-button" type="button" onClick={() => void backfillDhanTrades()} disabled={backfillBusy || csvBusy}>
           {backfillBusy ? 'Backfilling…' : 'Backfill trade history'}
         </button>
@@ -382,12 +381,10 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
             event.currentTarget.value = '';
           }} />
         </label>
-        </details>
         </div>
       </header>
       {brokerImportMessage && <p className="data-note" role="status">{brokerImportMessage}</p>}
 
-      <details className="journal-filters" open={!!(dateFrom || dateTo || selectedDate || strategyFilter || setupFilter || sideFilter || assetFilter || search)}><summary>Filters</summary>
       <div className="journal-toolbar" aria-label="Trade filters">
         <label>From<input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
         <label>To<input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
@@ -398,11 +395,8 @@ export function JournalPage({ workspace }: { workspace: Pick<WorkspaceState, 'ca
         <label>Market<select value={assetFilter} onChange={(event) => setAssetFilter(event.target.value)}><option value="">All markets</option><option value="equity">Equity</option><option value="future">Future</option><option value="option">Option</option></select></label>
         {(dateFrom || dateTo || selectedDate || strategyFilter || setupFilter || sideFilter || assetFilter || search) && <button className="journal-clear-filters" type="button" onClick={clearFilters}><X size={13} /> Clear filters</button>}
       </div>
-      </details>
 
-      <details className="journal-note-fold"><summary>ⓘ About broker data and FIFO matching</summary>
       <div className="data-note journal-data-note"><CircleDollarSign size={16} /><span>Broker executions from Dhan are read-only; manual trades remain separately labelled. Realized broker P&amp;L is calculated from matched fills with FIFO and is unavailable when provider charges are missing.</span></div>
-      </details>
 
       {kpiAnalytics && (
         <section className="journal-kpis" aria-label="Journal performance">
