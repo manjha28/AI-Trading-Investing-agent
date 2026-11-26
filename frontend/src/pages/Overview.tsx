@@ -245,7 +245,6 @@ type ValuationHistoryResponse = {
 };
 
 const HISTORY_RANGES = [
-  { label: '1D', milliseconds: 24 * 60 * 60 * 1000 },
   { label: '1W', milliseconds: 7 * 24 * 60 * 60 * 1000 },
   { label: '1M', milliseconds: 30 * 24 * 60 * 60 * 1000 },
   { label: '3M', milliseconds: 90 * 24 * 60 * 60 * 1000 },
@@ -676,7 +675,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
   const [history, setHistory] = useState<ValuationHistoryResponse | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [historyRange, setHistoryRange] = useState<(typeof HISTORY_RANGES)[number]['label']>('1D');
+  const [historyRange, setHistoryRange] = useState<(typeof HISTORY_RANGES)[number]['label']>('1M');
   const [railTab, setRailTab] = useState<'watchlist' | 'sector' | 'breadth'>('watchlist');
   const [railSummary, setRailSummary] = useState<RailSummary | null>(null);
   const [railError, setRailError] = useState<string | null>(null);
@@ -995,18 +994,15 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
     ? history?.portfolio_scoped ?? []
     : history?.owner_wide ?? [];
   const historyTimes = historyRows.map((row) => Date.parse(row.timestamp)).filter(Number.isFinite);
-  const historyStart = historyTimes.length ? Math.min(...historyTimes) : null;
   const historyEnd = historyTimes.length ? Math.max(...historyTimes) : null;
   const selectedHistoryRange = HISTORY_RANGES.find((range) => range.label === historyRange) ?? HISTORY_RANGES[0];
-  const historyRangeCovered = (range: (typeof HISTORY_RANGES)[number]) =>
-    historyStart !== null && historyEnd !== null && historyEnd - historyStart >= range.milliseconds;
-  const chartStart = historyEnd === null ? null : historyEnd - selectedHistoryRange.milliseconds;
-  const chartRows = chartStart === null || historyEnd === null
+  const chartRows = historyEnd === null
     ? []
-    : historyRows.filter((row) => {
-      const timestamp = Date.parse(row.timestamp);
-      return timestamp >= chartStart && timestamp <= historyEnd;
-    });
+    : historyRows.filter((row) => Date.parse(row.timestamp) >= historyEnd - selectedHistoryRange.milliseconds);
+  // The axis spans the days actually stored in the range, so a short history still fills the chart.
+  const chartStart = chartRows.length ? Date.parse(chartRows[0].timestamp) : 0;
+  const chartSpan = chartRows.length > 1 ? Date.parse(chartRows[chartRows.length - 1].timestamp) - chartStart : 0;
+  const dayLabel = (timestamp: string) => new Date(timestamp).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
   const chartValues = chartRows
     .map((row) => row.market_value === null ? null : Number(row.market_value))
     .filter((value): value is number => value !== null && Number.isFinite(value));
@@ -1028,7 +1024,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
       previousChartTime = null;
       continue;
     }
-    if (previousChartTime !== null && timestamp - previousChartTime > 6 * 60 * 1000) {
+    if (previousChartTime !== null && timestamp - previousChartTime > 5 * 24 * 60 * 60 * 1000) {
       if (chartSegment.length) chartSegments.push(chartSegment);
       chartSegment = [];
     }
@@ -1036,7 +1032,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
     chartSegment.push({
       row,
       value,
-      x: 52 + ((timestamp - (chartStart ?? timestamp)) / selectedHistoryRange.milliseconds) * 720,
+      x: chartSpan ? 52 + ((timestamp - chartStart) / chartSpan) * 720 : 412,
       y: 190 - ((value - plotMin) / (plotMax - plotMin)) * 160,
     });
     previousChartTime = timestamp;
@@ -1300,7 +1296,6 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
                   {HISTORY_RANGES.map((range) => (
                     <button
                       className={historyRange === range.label ? 'history-range active' : 'history-range'}
-                      disabled={!historyRangeCovered(range)}
                       key={range.label}
                       onClick={() => setHistoryRange(range.label)}
                       type="button"
@@ -1312,16 +1307,16 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
             {historyLoading ? <Skeleton width="100%" /> : historyError ? (
               <div className="table-empty" role="status">{historyError}</div>
             ) : historyRows.length === 0 ? (
-              <div className="table-empty">Collecting - first data at the next market open.</div>
+              <div className="table-empty">Collecting - first data after the next market close.</div>
             ) : (
               <>
                 {!historyUsesPortfolio && <p className="history-scope-note">Showing owner-wide history from stored portfolio snapshots.</p>}
                 {(() => {
                   const last = [...historyRows].reverse().find((r) => r.market_value !== null);
-                  return last ? <p className="history-scope-note">Latest point {formatMoney(String(last.market_value), last.currency)} as of {formatIST(last.timestamp)}: a stored snapshot, so it can differ from the Holdings value card above, which uses live prices.</p> : null;
+                  return last ? <p className="history-scope-note">Last day close {formatMoney(String(last.market_value), last.currency)} on {dayLabel(last.timestamp)}, so it can differ from the Holdings value card above, which uses live prices.</p> : null;
                 })()}
                 {chartValues.length === 0 ? (
-                  <div className="table-empty">No complete market-value points are available in this range.</div>
+                  <div className="table-empty">No day-close values are available in this range.</div>
                 ) : (
                   <>
                     <div className="history-chart-wrap">
@@ -1340,7 +1335,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
                           <g key={`history-segment-${index}`}>
                             {segment.length > 1 && <polyline className="history-line" points={segment.map((point) => `${point.x},${point.y}`).join(' ')} />}
                             {segment.map((point) => (
-                              <circle className="history-point" cx={point.x} cy={point.y} key={point.row.timestamp} r="3">
+                              <circle className="history-point" style={point.row.complete ? undefined : { fill: 'var(--surface-1)', stroke: 'var(--positive-mid)' }} cx={point.x} cy={point.y} key={point.row.timestamp} r="3">
                                 <title>
                                   {`${formatIST(point.row.timestamp)} · ${formatMoney(String(point.value), point.row.currency)} · ${point.row.valuation_basis} · ${point.row.source}${historyProviderLabel(point.row)}${point.row.complete ? '' : ` · partial: ${point.row.reason ?? 'incomplete valuation'}`}`}
                                 </title>
@@ -1351,8 +1346,7 @@ export function OverviewPage({ workspace, brokerAccessAllowed = true }: { worksp
                       </svg>
                     </div>
                     <div className="history-chart-caption">
-                      {chartRows.length} stored observations · gaps over 6 minutes are not connected.
-                      {!HISTORY_RANGES.some(historyRangeCovered) && ' A range becomes available when stored data covers it.'}
+                      {dayLabel(chartRows[0].timestamp)} to {dayLabel(chartRows[chartRows.length - 1].timestamp)} · {chartValues.length} day {chartValues.length === 1 ? 'close' : 'closes'}. Days with no stored close are not estimated; a hollow point is a partial valuation.
                     </div>
                   </>
                 )}

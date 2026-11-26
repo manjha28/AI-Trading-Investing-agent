@@ -6,7 +6,7 @@ from fastapi import Response
 from sqlalchemy.orm import Session
 
 from app.api.corporate_actions import list_corporate_actions
-from app.api.portfolio_transactions import _thin
+from app.api.portfolio_transactions import _day_close_ids, _thin
 from app.models import CorporateAction, Instrument, User
 from tests.test_crypto_delta import engine  # noqa: F401
 
@@ -18,6 +18,14 @@ def test_thin_keeps_at_most_n_points_evenly_and_always_the_newest():
     out = _thin(rows, 600)
     assert len(out) == 600 and out[0] == 0 and out[-1] == 9_999 and out == sorted(out)
     assert _thin(rows[:50], 600) == rows[:50]                                  # a short series is returned whole
+
+
+def test_value_history_keeps_one_close_per_trading_day():
+    at = lambda day, hour, minute: datetime(2026, 11, day, hour, minute, tzinfo=timezone.utc)   # 10:00 UTC = 15:30 IST
+    rows = [("intraday", at(23, 9, 0), True, 1), ("close", at(23, 10, 5), True, 2), ("later-partial", at(23, 10, 30), False, 3),
+            ("no-close-day", at(24, 9, 59), True, 4), ("partial-only", at(25, 10, 5), False, 5), ("no-value", at(25, 10, 10), False, None),
+            ("saturday", at(28, 10, 5), True, 6)]
+    assert _day_close_ids(rows) == ["close", "partial-only"]
 
 
 def test_corporate_actions_are_paged_newest_first_with_the_total_in_a_header(engine):  # noqa: F811

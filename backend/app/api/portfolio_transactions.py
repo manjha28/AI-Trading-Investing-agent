@@ -812,6 +812,23 @@ def _thin(rows: list, max_points: int) -> list:
     return picked + [rows[-1]]
 
 
+def _day_close_ids(snapshots: list) -> list:
+    """One snapshot id per IST trading day: the last one taken at or after the 15:30 close that has a value, a complete one first.
+
+    ``snapshots`` are (id, timestamp, complete, market_value), oldest first. A day with no such snapshot is left out, never estimated."""
+    picked: dict = {}
+    for snapshot_id, timestamp, complete, market_value in snapshots:
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        local = timestamp.astimezone(ZoneInfo("Asia/Kolkata"))
+        if market_value is None or local.weekday() >= 5 or local.time() < time(15, 30):
+            continue
+        day = local.date()
+        if day not in picked or complete or not picked[day][1]:
+            picked[day] = (snapshot_id, complete)
+    return [snapshot_id for snapshot_id, _ in picked.values()]
+
+
 @router.get("/history")
 def portfolio_valuation_history(
     portfolio_id: UUID,
@@ -823,28 +840,18 @@ def portfolio_valuation_history(
 ):
     portfolio = get_owned_portfolio(db, user.id, portfolio_id)
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    owner_rows = list(db.scalars(
-        select(PortfolioValuationSnapshot)
-        .where(
-            PortfolioValuationSnapshot.owner_id == user.id,
-            PortfolioValuationSnapshot.scope == "owner",
-            PortfolioValuationSnapshot.portfolio_id.is_(None),
-            PortfolioValuationSnapshot.timestamp >= since,
-        )
-        .order_by(PortfolioValuationSnapshot.timestamp)
-        .limit(10_000)
-    ).all())
-    portfolio_rows = list(db.scalars(
-        select(PortfolioValuationSnapshot)
-        .where(
-            PortfolioValuationSnapshot.owner_id == user.id,
-            PortfolioValuationSnapshot.scope == "portfolio",
-            PortfolioValuationSnapshot.portfolio_id == portfolio.id,
-            PortfolioValuationSnapshot.timestamp >= since,
-        )
-        .order_by(PortfolioValuationSnapshot.timestamp)
-        .limit(10_000)
-    ).all())
+    def day_closes(*scope) -> list:
+        model = PortfolioValuationSnapshot
+        owned = (model.owner_id == user.id, *scope)
+        ids = _day_close_ids(db.execute(
+            select(model.id, model.timestamp, model.complete, model.market_value)
+            .where(*owned, model.timestamp >= since)
+            .order_by(model.timestamp)
+        ).all())
+        return list(db.scalars(select(model).where(*owned, model.id.in_(ids)).order_by(model.timestamp)).all())
+
+    owner_rows = day_closes(PortfolioValuationSnapshot.scope == "owner", PortfolioValuationSnapshot.portfolio_id.is_(None))
+    portfolio_rows = day_closes(PortfolioValuationSnapshot.scope == "portfolio", PortfolioValuationSnapshot.portfolio_id == portfolio.id)
     owner_total, portfolio_total = len(owner_rows), len(portfolio_rows)
     owner_rows, portfolio_rows = _thin(owner_rows, max_points), _thin(portfolio_rows, max_points)
     newest = {id(owner_rows[-1]) if owner_rows else None, id(portfolio_rows[-1]) if portfolio_rows else None}
