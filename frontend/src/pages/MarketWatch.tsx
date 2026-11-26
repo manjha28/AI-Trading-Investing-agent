@@ -19,6 +19,8 @@ type UniverseRow = {
   stale: boolean; sessions_behind: number | null; reason: string | null;
   /** false: not served by the Dhan live feed (e.g. a watchlisted symbol outside the NSE universe), so no live ticks. */
   live_feed?: boolean;
+  /** The server's newest stored tick, sent only when it is from a later session than the newest daily bar. */
+  quote?: { price: string; time: string; session: string; change: string | null; change_pct: string | null; day_high: string | null; day_low: string | null; volume: string | null } | null;
   /** true: added by the user with "Add to market watch" (can be removed again). */
   master_extra?: boolean;
   /** Low/high of the last stored daily bar (that bar's date), shown until a live quote supplies today's range. */
@@ -37,7 +39,7 @@ type SortKey = 'symbol' | 'ltp' | 'chgPct' | 'volume';
 export type PanelTab = 'chart' | 'alerts' | 'events';
 export type WatchFocus = { instrumentId: string; tab?: PanelTab; nonce: number };
 type Mode = 'all' | 'watchlist' | 'gainers' | 'losers' | 'live';
-type ViewRow = UniverseRow & { starred: boolean; hasAlert: boolean; ltp: string | null; chg: string | null; chgPct: string | null; vol: string | null; lo: string | null; hi: string | null; live: boolean; tickAt: number | null; isLive: boolean };
+type ViewRow = UniverseRow & { starred: boolean; hasAlert: boolean; ltp: string | null; chg: string | null; chgPct: string | null; vol: string | null; lo: string | null; hi: string | null; live: boolean; tickAt: number | null; isLive: boolean; quotedAt?: string | null };
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '1d'] as const;
 /** Days of history shown per interval (display window only). */
@@ -99,9 +101,11 @@ const WatchRow = memo(function WatchRow({ row, selected, onSelect, onToggleStar 
       <td className="watch-range" aria-label="Day range"><DayRange low={row.lo} high={row.hi} last={row.ltp} /></td>
       <td className="watch-num">{compact(row.vol)}</td>
       <td className={`watch-num watch-age ${!row.live && row.stale ? 'watch-stale' : ''}`}>
-        {row.live && row.tickAt ? new Date(row.tickAt).toLocaleTimeString('en-IN', { hour12: false }) : row.last_close_date ?? '—'}
+        {row.live && row.tickAt ? new Date(row.tickAt).toLocaleTimeString('en-IN', { hour12: false })
+          : row.quotedAt ? <span title={`Last price saved by the server: ${new Date(row.quotedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })} IST`}>{istDay(row.quotedAt) === istDay(Date.now()) ? new Date(row.quotedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : istDay(row.quotedAt)}</span>
+          : row.last_close_date ?? '—'}
         {row.live_feed === false && !row.live && <small title="Not on the Dhan live feed: shows the latest stored close">no live feed</small>}
-        {!row.live && row.last_close_date && row.stale && <small>stale</small>}
+        {!row.live && !row.quotedAt && row.last_close_date && row.stale && <small>stale</small>}
       </td>
     </tr>
   );
@@ -168,6 +172,15 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
     const q = seen && seen.freshness_status === 'last_seen' && u.last_close_date && u.last_close_date >= istDay(seen.market_timestamp) ? undefined : seen;
     const detail = q?.detail;
     const live = Boolean(q);
+    // after a reload there is no tick yet: the server's saved price for the newer session is shown, with its time, never as live
+    const saved = u.quote && (!q || (q.freshness_status === 'last_seen' && Date.parse(u.quote.time) > Date.parse(q.market_timestamp))) ? u.quote : null;
+    if (saved) {
+      return {
+        ...u, starred: starredIds.has(u.instrument_id), hasAlert: alertIds.has(u.instrument_id),
+        ltp: saved.price, chg: saved.change, chgPct: saved.change_pct, vol: saved.volume, lo: saved.day_low, hi: saved.day_high,
+        stale: saved.session === istDay(Date.now()) ? false : u.stale, live: false, isLive: false, tickAt: null, quotedAt: saved.time,
+      };
+    }
     return {
       ...u, starred: starredIds.has(u.instrument_id), hasAlert: alertIds.has(u.instrument_id),
       ltp: q ? q.close : u.last_close,

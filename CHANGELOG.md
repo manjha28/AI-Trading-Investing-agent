@@ -281,3 +281,4 @@
 - 2026-11-26: Equity Market watch load: covering index on daily bars (migration 0082) so the table no longer waits on cold disk reads; not yet deployed.
 - 2026-11-26: Reverted the 25-26 Nov UI simplification (56fe355, fc48165); functional features kept (R3 card, new scanner strategies, live report, scanner Live switch, equity watch fixes).
 - 2026-11-26: Equity Market watch: today's last received prices stay when you leave the page and come back (memory only, marked last seen).
+- 2026-11-26: Equity Market watch after a reload shows the server's saved price for the newer session (with its time), not the previous close.

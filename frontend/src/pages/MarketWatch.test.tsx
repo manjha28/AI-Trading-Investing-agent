@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarketWatch, type WatchWorkspace } from './MarketWatch';
 
 const stream = vi.hoisted(() => ({ value: { status: 'active', message: null as string | null, quotes: {} as Record<string, unknown> } }));
-vi.mock('../hooks/useWatchlistStream', () => ({ useWatchlistStream: () => stream.value }));
+vi.mock('../hooks/useWatchlistStream', () => ({ useWatchlistStream: () => stream.value, istDay: (v: string | number | Date) => new Date(v).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) }));
 vi.mock('../components/StockAlerts', () => ({ StockAlerts: ({ instrumentId, symbol }: { instrumentId: string; symbol: string }) => <div data-testid="alerts-panel">alerts for {symbol} ({instrumentId})</div> }));
 vi.mock('../components/StockEvents', () => ({ StockEvents: ({ symbol }: { symbol: string }) => <div data-testid="events-panel">actions and news for {symbol}</div> }));
 vi.mock('./CommodityWatch', () => ({ CommodityWatch: () => <div>commodity section stub</div> }));
@@ -405,5 +405,20 @@ describe('MarketWatch · a search is never silently empty', () => {
     expect(note.textContent).toContain('1 match');
     fireEvent.click(within(note.closest('p')!).getByRole('button', { name: 'Show all' }));
     await screen.findByText('ONGC');
+  });
+});
+
+describe('MarketWatch · after a reload', () => {
+  it("shows the server's saved price for the newer session instead of the previous close, and never as live", async () => {
+    stream.value = { status: 'market_closed', message: null, quotes: {} };
+    const saved = { price: '110.00', time: new Date().toISOString(), session: '2026-11-21', change: '10.00', change_pct: '10.00', day_high: '112.00', day_low: '99.00', volume: '5' };
+    const quoted = { ...row('QQQ', { last_close: '100.00', last_close_date: '2026-11-20', stale: false, sessions_behind: 1, reason: null }), quote: saved };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(String(url).endsWith('/market-data/universe') ? { count: 1, instruments: [quoted], expected_session: '2026-11-20' } : String(url).includes('/alerts/') ? [] : {}), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    render(<MarketWatch workspace={asWorkspace(makeWorkspace())} />);
+    const cell = await screen.findByText('QQQ');
+    const tr = cell.closest('tr') as HTMLElement;
+    expect(tr.textContent).toContain('110.00');
+    expect(within(tr).getByTitle(/Last price saved by the server/)).toBeTruthy();
+    expect(tr.querySelector('.watch-dot.live')).toBeNull();
   });
 });

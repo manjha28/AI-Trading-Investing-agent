@@ -15,7 +15,7 @@ from app.api import market_data
 from app.db import Base, get_db
 from app.main import app
 from app.models import (
-    CorporateAction, Instrument, InstrumentProviderIdentifier, MarketBar, User, ValuationProviderInput,
+    CorporateAction, Instrument, InstrumentProviderIdentifier, MarketBar, MarketQuote, User, ValuationProviderInput,
 )
 
 NOW = datetime.now(timezone.utc)
@@ -381,3 +381,25 @@ def test_rail_summary_without_ids_summarises_the_callers_watchlist_instead_of_ze
         db.commit()
     body = client.get("/api/v1/market-data/rail-summary").json()
     assert len(body["instruments"]) == 2 and "(2 instruments)" in body["scope"]
+
+
+def test_a_stored_quote_from_a_later_session_is_sent_so_a_reload_does_not_fall_back_to_the_previous_close(client, engine):
+    login(client, engine)
+    ist = ZoneInfo("Asia/Kolkata")
+    with Session(engine) as db:
+        item = stock("QUOTED")
+        db.add(item)
+        db.flush()
+        map_dhan(db, item)
+        today = NOW.astimezone(ist).date()
+        reference = datetime.combine(today, time.min, tzinfo=ist).astimezone(timezone.utc)
+        previous = market_data._expected_market_session_date(item, reference)
+        day_bar(db, item, previous, "100")
+        stamp = datetime.combine(today, time(0, 30), tzinfo=ist).astimezone(timezone.utc)       # TEST DATA: a quote dated today
+        db.add(MarketQuote(instrument_id=item.id, source="dhan_ws", timestamp=stamp, retrieved_at=stamp, open=Decimal("101"), high=Decimal("112"),
+                           low=Decimal("99"), close=Decimal("110"), volume=Decimal("5"), is_synthetic=False))
+        db.commit()
+    row = next(r for r in client.get("/api/v1/market-data/universe").json()["instruments"] if r["symbol"] == "QUOTED")
+    assert Decimal(row["last_close"]) == Decimal("100")                      # the stored daily close is still reported as what it is
+    assert Decimal(row["quote"]["price"]) == Decimal("110") and row["quote"]["session"] == today.isoformat()
+    assert row["quote"]["change_pct"] == "10.00"

@@ -7607,6 +7607,14 @@ def get_market_universe(
             CorporateAction.ex_date >= (horizon.date()),
         )
     ))
+    # The newest stored Dhan quote per instrument (one row per instrument and source), so a page reload still shows today's price before today's daily bar exists.
+    latest_quotes: dict[UUID, MarketQuote] = {}
+    for quote in db.scalars(select(MarketQuote).where(
+        MarketQuote.instrument_id.in_(list(ids)), MarketQuote.source.in_(("dhan_ws", "dhan")), MarketQuote.is_synthetic.is_(False),
+    )):
+        held = latest_quotes.get(quote.instrument_id)
+        if held is None or _utc(quote.timestamp) > _utc(held.timestamp):
+            latest_quotes[quote.instrument_id] = quote
     rows: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc)
     expected_session: date | None = None
@@ -7641,7 +7649,28 @@ def get_market_universe(
             if stale:  # stored data is true for its own date but is not today's: never present it as current
                 reason = (f"last stored close is {session.isoformat()}; {expected_session.isoformat()} is the latest "
                           f"completed session" + (f" ({reason})" if reason else ""))
+        # only a quote from a LATER session than the newest daily bar is news; its change is measured only against the immediately previous session's close
+        latest = latest_quotes.get(instrument_id)
+        today_quote: dict[str, Any] | None = None
+        if latest is not None:
+            zone = ZoneInfo(instrument.timezone)
+            quote_day = _utc(latest.timestamp).astimezone(zone).date()
+            if last is None or quote_day > _daily_session_date(last.timestamp):
+                base = None
+                if last is not None and _daily_session_date(last.timestamp) == _expected_market_session_date(
+                        instrument, datetime.combine(quote_day, datetime_time.min, tzinfo=zone).astimezone(timezone.utc)):
+                    base = last.close
+                    if instrument_id in with_actions:
+                        base, _note = _adjust_previous_daily_close(db, active_session.user_id, instrument, last.close, quote_day)
+                moved = latest.close - base if base else None
+                today_quote = {
+                    "price": str(latest.close), "time": _utc(latest.timestamp).isoformat(), "session": quote_day.isoformat(),
+                    "change": str(moved) if moved is not None else None,
+                    "change_pct": str((moved / base * Decimal("100")).quantize(Decimal("0.01"))) if moved is not None else None,
+                    "day_high": str(latest.high), "day_low": str(latest.low), "volume": str(latest.volume),
+                }
         rows.append({
+            "quote": today_quote,
             "instrument_id": str(instrument_id), "symbol": instrument.symbol, "name": instrument.display_name,
             "venue": instrument.venue, "sector": sectors.get(instrument_id),
             "live_feed": instrument_id in feed_ids,  # False: not served by the Dhan feed, so no live ticks
