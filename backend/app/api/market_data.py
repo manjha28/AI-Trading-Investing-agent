@@ -7654,8 +7654,12 @@ def get_market_universe(
         today_quote: dict[str, Any] | None = None
         if latest is not None:
             zone = ZoneInfo(instrument.timezone)
-            quote_day = _utc(latest.timestamp).astimezone(zone).date()
-            if last is None or quote_day > _daily_session_date(last.timestamp):
+            quoted_at = _utc(latest.timestamp).astimezone(zone)
+            quote_day = quoted_at.date()
+            # A quote saved overnight or on a holiday is the PREVIOUS session's last trade stamped later: never present it as a new session's price.
+            in_session = (instrument.country.upper() == "IN" and quote_day.weekday() < 5 and quote_day not in NSE_NON_TRADING_DATES
+                          and quoted_at.time() >= datetime_time(9, 15))
+            if in_session and (last is None or quote_day > _daily_session_date(last.timestamp)):
                 base = None
                 if last is not None and _daily_session_date(last.timestamp) == _expected_market_session_date(
                         instrument, datetime.combine(quote_day, datetime_time.min, tzinfo=zone).astimezone(timezone.utc)):

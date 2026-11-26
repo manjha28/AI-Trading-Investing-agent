@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api import market_data
+from app.config import NSE_NON_TRADING_DATES
 from app.db import Base, get_db
 from app.main import app
 from app.models import (
@@ -383,7 +384,8 @@ def test_rail_summary_without_ids_summarises_the_callers_watchlist_instead_of_ze
     assert len(body["instruments"]) == 2 and "(2 instruments)" in body["scope"]
 
 
-def test_a_stored_quote_from_a_later_session_is_sent_so_a_reload_does_not_fall_back_to_the_previous_close(client, engine):
+@pytest.mark.parametrize("at, shown", [(time(10, 0), True), (time(5, 0), False)])
+def test_a_stored_quote_is_sent_only_when_it_was_stamped_inside_a_later_trading_session(client, engine, at, shown):
     login(client, engine)
     ist = ZoneInfo("Asia/Kolkata")
     with Session(engine) as db:
@@ -391,15 +393,18 @@ def test_a_stored_quote_from_a_later_session_is_sent_so_a_reload_does_not_fall_b
         db.add(item)
         db.flush()
         map_dhan(db, item)
-        today = NOW.astimezone(ist).date()
-        reference = datetime.combine(today, time.min, tzinfo=ist).astimezone(timezone.utc)
-        previous = market_data._expected_market_session_date(item, reference)
+        day = NOW.astimezone(ist).date()
+        while day.weekday() >= 5 or day in NSE_NON_TRADING_DATES:
+            day -= timedelta(days=1)
+        previous = market_data._expected_market_session_date(item, datetime.combine(day, time.min, tzinfo=ist).astimezone(timezone.utc))
         day_bar(db, item, previous, "100")
-        stamp = datetime.combine(today, time(0, 30), tzinfo=ist).astimezone(timezone.utc)       # TEST DATA: a quote dated today
+        stamp = datetime.combine(day, at, tzinfo=ist).astimezone(timezone.utc)       # TEST DATA
         db.add(MarketQuote(instrument_id=item.id, source="dhan_ws", timestamp=stamp, retrieved_at=stamp, open=Decimal("101"), high=Decimal("112"),
                            low=Decimal("99"), close=Decimal("110"), volume=Decimal("5"), is_synthetic=False))
         db.commit()
     row = next(r for r in client.get("/api/v1/market-data/universe").json()["instruments"] if r["symbol"] == "QUOTED")
-    assert Decimal(row["last_close"]) == Decimal("100")                      # the stored daily close is still reported as what it is
-    assert Decimal(row["quote"]["price"]) == Decimal("110") and row["quote"]["session"] == today.isoformat()
-    assert row["quote"]["change_pct"] == "10.00"
+    assert Decimal(row["last_close"]) == Decimal("100")
+    if shown:
+        assert Decimal(row["quote"]["price"]) == Decimal("110") and row["quote"]["change_pct"] == "10.00" and row["quote"]["session"] == day.isoformat()
+    else:
+        assert row["quote"] is None          # an overnight stamp is the previous session's trade, not a new price

@@ -282,3 +282,4 @@
 - 2026-11-26: Reverted the 25-26 Nov UI simplification (56fe355, fc48165); functional features kept (R3 card, new scanner strategies, live report, scanner Live switch, equity watch fixes).
 - 2026-11-26: Equity Market watch: today's last received prices stay when you leave the page and come back (memory only, marked last seen).
 - 2026-11-26: Equity Market watch after a reload shows the server's saved price for the newer session (with its time), not the previous close.
+- 2026-11-26: Market watch fix: quotes stamped outside a trading session (overnight) are no longer shown as a new day's price.
