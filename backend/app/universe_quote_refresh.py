@@ -88,11 +88,14 @@ def _refresh_once() -> int:
 
 
 async def universe_quote_refresh_loop() -> None:
+    runs = 0
     while True:
         try:
             written = await asyncio.to_thread(_refresh_once)
-            if written:
-                logger.info("universe_quotes_refreshed written=%s", written)
+            if market_hours(datetime.now(timezone.utc)):
+                runs += 1
+                if runs <= 3 or runs % 30 == 0:                    # warning level so it shows in production logs: the first minutes, then half-hourly
+                    logger.warning("universe_quotes_refreshed run=%s written=%s", runs, written)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - a failed minute is retried; the table keeps the last stored quotes with their times
