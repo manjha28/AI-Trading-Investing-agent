@@ -423,7 +423,7 @@
    Missing content leaves the slot empty or shows "—"; it never shortens the card. The "Why" fold opens as an overlay so it cannot stretch its row. ---- */
 .rt-buy-grid { align-items: stretch; }
 .rt-buy { position: relative; display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 560px; }
-.rt-buy > header { height: 56px; flex: none; overflow: hidden; }
+.rt-buy > header { height: 84px; flex: none; overflow: hidden; }
 .rt-buy .rt-head-id { min-width: 0; flex: 1; } .rt-buy .rt-sym, .rt-buy .rt-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .rt-buy > .rt-price, .rt-buy > p:first-of-type { flex: none; }
 .rt-buy .rt-chips { height: 26px; flex: none; margin-top: 0; flex-wrap: nowrap; overflow: hidden; }

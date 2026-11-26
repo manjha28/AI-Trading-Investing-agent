@@ -1,13 +1,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { downloadCsv } from '../api';
+import { apiRequest, downloadCsv } from '../api';
 import { fmtMoney, fmtPct, lab, messageOf } from './lab';
 import { Field, Notice, Pill, Scroll } from './shared';
 import { LineChart } from './charts';
 import { TradePlot } from './TradePlot';
-import type { Meta, StrategyRow, Trade } from './types';
+import type { BackfillJob, Meta, StrategyRow, Trade } from './types';
 
 type Coverage = { needed_bars: number; needed_sessions: number; symbols_checked: number; qualifying: number; best_bars: number; best_symbol: string | null; best_sessions: number; median_bars: number };
-type Preset = { key: string; label: string; available: number; symbols: string[]; excluded: { symbol: string; reason: string }[]; min_bars_1m: number; coverage?: Coverage | null };
+type Preset = { key: string; label: string; available: number; symbols: string[]; excluded: { symbol: string; reason: string; instrument_id?: string }[]; min_bars_1m: number; coverage?: Coverage | null };
 type Universes = { presets: Preset[]; max_strategies: number; max_instruments: number; note: string };
 type Headline = { total_trades?: number | null; net_profit?: string | null; profit_factor_net?: number | string | null; win_rate?: number | null; max_drawdown_pct?: number | null; expectancy_per_trade?: string | null; return_pct?: number | null };
 type Metrics = Headline & { gross_pnl_before_costs?: string | null; total_charges?: string | null; total_slippage?: string | null; sharpe_ratio?: number | null };
@@ -25,6 +25,36 @@ type Comparison = {
   shared_symbols: string[]; months: string[]; metric_keys: string[]; best: Record<string, string | null>; note: string;
 };
 type RunChartData = { trades?: Trade[]; equity_curve?: { t: string; equity: string | number; drawdown_pct?: number }[] };
+
+/** One click to fetch the missing 1-minute history for the symbols a preset had to leave out (existing batch backfill; market data only). */
+function FetchHistory({ ids, onDone }: { ids: string[]; onDone: () => void }) {
+  const [job, setJob] = useState<BackfillJob | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const running = !!job && job.status !== 'completed' && job.status !== 'failed';
+  useEffect(() => {
+    if (!job || !running) return undefined;
+    const timer = window.setInterval(() => {
+      apiRequest<BackfillJob>(`/market-data/history/sync-jobs/${job.id}`).then((next) => { setJob(next); if (next.status === 'completed' || next.status === 'failed') onDone(); }).catch((e) => setError(messageOf(e)));
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [job, running, onDone]);
+  const start = async () => {
+    setStarting(true); setError(null);
+    try { setJob(await apiRequest<BackfillJob>('/market-data/backfill/intraday-1m', { method: 'POST', body: JSON.stringify({ instrument_ids: ids.slice(0, FETCH_MAX), start: isoDate(FETCH_DAYS), end: isoDate(0) }) })); }
+    catch (e) { setError(messageOf(e)); } finally { setStarting(false); }
+  };
+  const count = Math.min(ids.length, FETCH_MAX);
+  const done = job?.instruments.filter((i) => !['queued', 'running', 'waiting_rate_limit'].includes(i.status)).length ?? 0;
+  const failed = job?.instruments.filter((i) => i.status === 'failed').length ?? 0;
+  return (
+    <div className="sl-toolbar">
+      <button type="button" className="sl-primary" disabled={starting || running} onClick={() => void start()}>{starting || running ? 'Fetching history…' : `Fetch 1-minute history for ${count} symbols`}</button>
+      {job && <span className="sl-muted" role="status">{job.status === 'failed' ? 'The fetch stopped with an error. Try again.' : `${done} of ${job.instruments.length} done${failed ? `, ${failed} failed` : ''}${running ? '. This takes several minutes; you can leave this open.' : '.'}`}</span>}
+      {error && <span className="sl-muted" role="alert">{error}</span>}
+    </div>
+  );
+}
 
 /** Loads one finished lab run on demand and plots its trades on candles plus its hypothetical equity curve. */
 function RunCharts({ runId, symbol }: { runId: string; symbol?: string | null }) {
@@ -57,6 +87,8 @@ type StartResult = { batch_id: string; runs: unknown[]; rejected: { strategy_id:
 
 type SortKey = 'rank' | 'strategy' | 'trades' | 'win' | 'net' | 'pf' | 'exp' | 'dd' | 'breadth';
 const POLL_MS = 2500;
+const FETCH_DAYS = 100;      // calendar days: comfortably more than the ~53 sessions a backtest needs
+const FETCH_MAX = 50;        // the backfill endpoint's limit per request
 const num = (v: unknown): number | null => { if (v === null || v === undefined || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 const tone = (v: unknown) => { const n = num(v); return n === null || n === 0 ? '' : n > 0 ? 'sl-pos' : 'sl-neg'; };
 const isoDate = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
@@ -105,7 +137,8 @@ export function BacktestLab({ meta, strategies }: { meta: Meta; strategies: Stra
   const activeId = useRef<string | null>(null);
 
   const loadHistory = useCallback(() => lab<{ batches: BatchListItem[] }>('/lab/batches').then((r) => setHistory(r.batches)).catch(() => undefined), []);
-  useEffect(() => { lab<Universes>('/lab/universes').then(setUniverses).catch((e) => setError(messageOf(e))); void loadHistory(); }, [loadHistory]);
+  const loadUniverses = useCallback(() => { void lab<Universes>('/lab/universes').then(setUniverses).catch((e) => setError(messageOf(e))); }, []);
+  useEffect(() => { loadUniverses(); void loadHistory(); }, [loadUniverses, loadHistory]);
 
   const loadBatch = useCallback(async (id: string, min: number) => {
     const b = await lab<Batch>(`/lab/batches/${id}?min_trades=${min}`);
@@ -191,7 +224,8 @@ export function BacktestLab({ meta, strategies }: { meta: Meta; strategies: Stra
           </Field>
           {current && (
             <>
-            {current.available === 0 && current.coverage && current.coverage.symbols_checked > 0 && <p className="sl-muted" role="status">No symbol qualifies yet: a backtest needs {current.coverage.needed_bars.toLocaleString('en-IN')} stored 1-minute bars (about {current.coverage.needed_sessions} sessions). Of {current.coverage.symbols_checked} checked, the best is {current.coverage.best_symbol} with {current.coverage.best_bars.toLocaleString('en-IN')} bars (about {current.coverage.best_sessions} sessions) and the median has {current.coverage.median_bars.toLocaleString('en-IN')}. Run a 1-minute backfill to add history.</p>}
+            {current.available === 0 && current.coverage && current.coverage.symbols_checked > 0 && <p className="sl-muted" role="status">No symbol qualifies yet: a backtest needs {current.coverage.needed_bars.toLocaleString('en-IN')} stored 1-minute bars (about {current.coverage.needed_sessions} sessions). Of {current.coverage.symbols_checked} checked, the best is {current.coverage.best_symbol} with {current.coverage.best_bars.toLocaleString('en-IN')} bars (about {current.coverage.best_sessions} sessions) and the median has {current.coverage.median_bars.toLocaleString('en-IN')}. Fetch the missing history below.</p>}
+            {current.excluded.some((e) => e.instrument_id) && <FetchHistory key={current.key} ids={current.excluded.flatMap((e) => (e.instrument_id ? [e.instrument_id] : []))} onDone={loadUniverses} />}
             <details className="lab-coverage"><summary>{current.available} symbols with enough 1-minute data{current.excluded.length ? ` · ${current.excluded.length} left out` : ''}</summary>
               <p className="sl-muted">Using: {current.symbols.join(', ') || '—'}</p>
               {current.excluded.length > 0 && <ul>{current.excluded.slice(0, 60).map((e) => <li key={e.symbol}><strong>{e.symbol}</strong> — {e.reason}</li>)}</ul>}

@@ -7,7 +7,11 @@ const calls: { path: string; method: string; body?: Record<string, unknown> }[] 
 let batchState: { finished: boolean; kind: string; rows: LabRow[] };
 const downloads: string[] = [];
 
-vi.mock('../api', () => ({ downloadCsv: async (path: string) => { downloads.push(path); } }));
+vi.mock('../api', () => ({ downloadCsv: async (path: string) => { downloads.push(path); },
+  apiRequest: async (path: string, init: { method?: string; body?: string } = {}) => {
+    calls.push({ path, method: init.method ?? 'GET', body: init.body ? JSON.parse(init.body) : undefined });
+    return { id: 'j1', status: 'queued', instruments: [{ instrument_id: 'w1', status: 'queued' }] };
+  } }));
 vi.mock('./lab', async (importOriginal) => {
   const original = await importOriginal<typeof import('./lab')>();
   return {
@@ -36,7 +40,7 @@ const comparisonBody = {
 const universes = { max_strategies: 12, max_instruments: 50, note: 'Intraday timeframes are built from stored 1-minute bars.', presets: [
   { key: 'has_1m', label: 'Everything with ≥ 1 year of 1-minute data', available: 0, symbols: [], excluded: [], min_bars_1m: 20000, coverage: { needed_bars: 20000, needed_sessions: 53, symbols_checked: 341, qualifying: 0, best_bars: 7517, best_symbol: 'BHAGERIA', best_sessions: 20, median_bars: 312 } },
   { key: 'watchlist', label: 'My watchlist', available: 1, symbols: ['SBIN'], excluded: [], min_bars_1m: 20000 },
-  { key: 'nifty50', label: 'Nifty 50', available: 2, symbols: ['TCS', 'INFY'], min_bars_1m: 20000, excluded: [{ symbol: 'MARUTI', reason: 'not in the instrument master' }, { symbol: 'WIPRO', reason: 'only 375 stored 1-minute bars (need 20000)' }] },
+  { key: 'nifty50', label: 'Nifty 50', available: 2, symbols: ['TCS', 'INFY'], min_bars_1m: 20000, excluded: [{ symbol: 'MARUTI', reason: 'not in the instrument master' }, { symbol: 'WIPRO', instrument_id: 'w1', reason: 'only 375 stored 1-minute bars (need 20000)' }] },
 ] };
 
 const meta = { cost_profiles: [{ id: 'dhan_nse_intraday', label: 'Dhan · NSE · Intraday', market: 'equity_in' }, { id: 'crypto_x', label: 'Crypto', market: 'crypto' }] } as unknown as Meta;
@@ -246,5 +250,14 @@ describe('BacktestLab · walk-forward, sweeps and comparison', () => {
     const note = await screen.findByText(/No symbol qualifies yet/);
     expect(note.textContent).toContain('needs 20,000 stored 1-minute bars (about 53 sessions)');
     expect(note.textContent).toContain('the best is BHAGERIA with 7,517 bars (about 20 sessions)'); expect(note.textContent).toContain('median has 312');
+  });
+
+  it('fetches the missing 1-minute history for the symbols it had to leave out', async () => {
+    render(<BacktestLab meta={meta} strategies={strategies} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch 1-minute history for 1 symbols' }));
+    await screen.findByText(/0 of 1 done/);
+    const sent = calls.find((c) => c.path === '/market-data/backfill/intraday-1m')!;
+    expect(sent.method).toBe('POST');
+    expect(sent.body?.instrument_ids).toEqual(['w1']);      // only the symbol with an instrument; "not in the master" cannot be fetched
   });
 });

@@ -83,7 +83,7 @@ def resolve_universe(db: Session, user_id: UUID, preset: str) -> dict[str, Any]:
         if inst is None:
             excluded.append({"symbol": symbol, "reason": "not in the instrument master"})
         elif counts.get(inst.id, 0) < MIN_BARS_1M:
-            excluded.append({"symbol": symbol, "reason": f"only {counts.get(inst.id, 0)} stored 1-minute bars (need {MIN_BARS_1M})"})
+            excluded.append({"symbol": symbol, "instrument_id": str(inst.id), "reason": f"only {counts.get(inst.id, 0)} stored 1-minute bars (need {MIN_BARS_1M})"})
         else:
             included.append(inst)
     included = included[:MAX_LAB_INSTRUMENTS]

@@ -288,3 +288,4 @@
 - 2026-11-26: Equity live feed: the Dhan instrument master is no longer downloaded on the event loop (it froze the server and dropped the broker feeds every minute).
 - 2026-11-26: Backtest-only strategies are no longer scheduled for scans; backtests whose job died are closed as interrupted; sandbox order cap labelled.
 - 2026-11-26: Market watch: today's price for every stock from one bulk Dhan quote a minute in market hours; the open page reloads the table each minute.
+- 26 Nov: Backtest Lab can fetch missing 1-minute history in one click; Research card score ring no longer cut off.
