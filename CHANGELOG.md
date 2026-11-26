@@ -283,3 +283,4 @@
 - 2026-11-26: Equity Market watch: today's last received prices stay when you leave the page and come back (memory only, marked last seen).
 - 2026-11-26: Equity Market watch after a reload shows the server's saved price for the newer session (with its time), not the previous close.
 - 2026-11-26: Market watch fix: quotes stamped outside a trading session (overnight) are no longer shown as a new day's price.
+- 2026-11-26: Event-loop watchdog logs what blocked the server (broker feeds drop with keepalive timeouts).

@@ -128,6 +128,10 @@ async def lifespan(_app: FastAPI):
     master_bars_task = None
     derivatives_tasks: list = []
     jobs_task = None
+    watchdog_task = None
+    if "pytest" not in sys.modules:
+        from app.loop_watchdog import watch_event_loop
+        watchdog_task = asyncio.create_task(watch_event_loop())       # logs what blocked the event loop (a blocked loop drops the broker feeds)
     if settings.job_worker_enabled and "pytest" not in sys.modules:
         from app.jobs_worker import job_worker_loop
         jobs_task = asyncio.create_task(job_worker_loop())
@@ -209,6 +213,8 @@ async def lifespan(_app: FastAPI):
         # Correlates upstream socket closes in the logs: a close right after this line is our own
         # shutdown (including uvicorn --reload), not an upstream failure.
         logging.getLogger(__name__).info("Application shutdown: closing upstream market-data WebSockets (not an upstream failure)")
+        if watchdog_task is not None:
+            watchdog_task.cancel()
         if dhan_capture_task is not None:
             dhan_capture_task.cancel()
             try:
