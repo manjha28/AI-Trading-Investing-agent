@@ -7579,8 +7579,9 @@ def get_market_universe(
     instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(list(ids))))}
     horizon = datetime.now(timezone.utc) - timedelta(days=21)
     bars: dict[UUID, list[MarketBar]] = {}
-    for bar in db.scalars(
-        select(MarketBar)
+    # only the columns in ix_market_bars_daily_cover, so the read stays inside that index (selecting the whole row took seconds on a cold cache)
+    for bar in db.execute(
+        select(MarketBar.instrument_id, MarketBar.timestamp, MarketBar.source, MarketBar.high, MarketBar.low, MarketBar.close, MarketBar.volume)
         .where(
             MarketBar.instrument_id.in_(list(ids)), MarketBar.interval == "1d",
             or_(MarketBar.source == "dhan", MarketBar.instrument_id.in_(list(extra_ids)) if extra_ids else False),

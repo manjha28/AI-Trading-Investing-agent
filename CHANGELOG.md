@@ -278,3 +278,4 @@
 - 2026-11-25: Research: 4h near-pump longs and squeeze-aware shorts with Smith VWAP bands (36 variants); reports/slow_4h_pump.md.
 - 2026-11-26: UI simplification (frontend only): top-bar live pill, Crypto · Delta 4 tabs and test cards, Research daily-report cards and buckets, Overview/Journal declutter; not deployed.
 - 2026-11-25: Research: classic intraday day-trading rules on 150 liquid NSE stocks, 1 year of Dhan 5-minute data (37 variants); reports/equity_daytrade.md.
+- 2026-11-26: Equity Market watch load: covering index on daily bars (migration 0082) so the table no longer waits on cold disk reads; not yet deployed.

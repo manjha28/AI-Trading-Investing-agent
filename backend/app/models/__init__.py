@@ -572,6 +572,8 @@ class MarketBar(Base):
         CheckConstraint("volume >= 0", name="ck_market_bars_nonnegative_volume"),
         CheckConstraint("is_synthetic = false", name="ck_market_bars_real_only"),
         Index("ix_market_bars_instrument_interval_time", "instrument_id", "interval", "timestamp"),
+        Index("ix_market_bars_daily_cover", "instrument_id", "timestamp", postgresql_where=text("interval = '1d'"),
+              postgresql_include=["source", "high", "low", "close", "volume", "is_synthetic"]),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
