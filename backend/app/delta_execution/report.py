@@ -101,7 +101,7 @@ def wallet_snapshot(client: DeltaOrderClient, now: datetime) -> dict[str, Any]:
                     open_orders=lambda: _get(client, "/v2/orders", "?state=open&page_size=50"), txns=lambda: _pages(client, "/v2/wallet/transactions", "?page_size=100", pages=20))
     balances = got["balances"]
     if balances is None:
-        reply = client.balances()                     # ask once more to say WHY: Delta's own error code, never the key or signature
+        reply = client._request("GET", "/v2/wallet/balances")   # ask once more to say WHY: Delta's own error code, never the key or signature
         problem = reply.body.get("error")
         seen = (problem.get("context") or {}).get("client_ip") if isinstance(problem, dict) else None
         raise RuntimeError(f"wallet unreadable: HTTP {reply.status_code or 'none'} {reply.error or 'no result'}" + (f" (Delta saw IP {seen})" if seen else ""))
