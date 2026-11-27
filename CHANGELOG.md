@@ -301,3 +301,4 @@
 - 27 Nov: Market watch (equities) shows live Dhan 20-level depth below the chart of the selected stock.
 - 27 Nov: Dhan/Delta status chips are buttons with a hover explanation; the Delta live report shows why the wallet could not be read.
 - 27 Nov: the arm warning opened from the top-bar Dhan/Delta chips is now visible (it was trapped inside the bar).
+- 2026-11-27: research only: spot price/volume features for NIFTY/BANKNIFTY/SENSEX do not predict beyond costs out of sample (app/equity_lab/spot_*.py, reports/2026-11-27-spot-driven-option-strategy.md); no paper test, nothing deployed.

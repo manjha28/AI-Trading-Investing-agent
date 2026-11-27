@@ -1,0 +1,133 @@
+model,features,horizon,by,slice,rows,predicted_up_pct,actual_up_pct,hit_rate_pct
+logistic,all features,15,index,BANKNIFTY,57228,51.4,50.6,51.3
+logistic,all features,15,index,NIFTY,57221,51.4,51.5,52.2
+logistic,all features,15,index,SENSEX,57267,51.4,51.3,51.8
+logistic,all features,15,year,2022,39639,51.5,51.1,51.6
+logistic,all features,15,year,2023,52837,51.3,51.5,51.8
+logistic,all features,15,year,2024,53104,51.8,50.8,51.6
+logistic,all features,15,year,2025,26136,50.7,51.2,52.5
+logistic,all features,15,time of day,09:15-10:00,21478,50.6,50.2,51.3
+logistic,all features,15,time of day,10:00-12:00,57334,51.2,51.3,51.7
+logistic,all features,15,time of day,12:00-14:00,57281,51.7,51.5,52.1
+logistic,all features,15,time of day,14:00-15:30,35623,51.8,50.9,51.6
+logistic,helpful features,15,index,BANKNIFTY,57228,51.6,50.6,51.3
+logistic,helpful features,15,index,NIFTY,57221,51.3,51.5,52.3
+logistic,helpful features,15,index,SENSEX,57267,51.3,51.3,51.5
+logistic,helpful features,15,year,2022,39639,51.5,51.1,51.6
+logistic,helpful features,15,year,2023,52837,51.4,51.5,51.2
+logistic,helpful features,15,year,2024,53104,51.7,50.8,51.8
+logistic,helpful features,15,year,2025,26136,50.6,51.2,52.6
+logistic,helpful features,15,time of day,09:15-10:00,21478,50.7,50.2,50.4
+logistic,helpful features,15,time of day,10:00-12:00,57334,51.3,51.3,51.6
+logistic,helpful features,15,time of day,12:00-14:00,57281,51.7,51.5,52.1
+logistic,helpful features,15,time of day,14:00-15:30,35623,51.7,50.9,51.8
+logistic,all features,30,index,BANKNIFTY,54834,51.8,50.8,50.9
+logistic,all features,30,index,NIFTY,54827,51.8,51.8,52.4
+logistic,all features,30,index,SENSEX,54871,51.8,51.4,52.0
+logistic,all features,30,year,2022,37961,52.0,51.4,52.2
+logistic,all features,30,year,2023,50632,51.4,51.6,51.3
+logistic,all features,30,year,2024,50892,52.4,50.9,51.6
+logistic,all features,30,year,2025,25047,50.9,51.3,52.4
+logistic,all features,30,time of day,09:15-10:00,21478,50.9,50.7,52.2
+logistic,all features,30,time of day,10:00-12:00,57334,51.7,51.6,51.9
+logistic,all features,30,time of day,12:00-14:00,57280,52.0,51.3,51.7
+logistic,all features,30,time of day,14:00-15:30,28440,52.3,51.2,51.1
+logistic,helpful features,30,index,BANKNIFTY,54834,51.9,50.8,50.6
+logistic,helpful features,30,index,NIFTY,54827,51.7,51.8,52.4
+logistic,helpful features,30,index,SENSEX,54871,51.6,51.4,51.8
+logistic,helpful features,30,year,2022,37961,52.0,51.4,52.1
+logistic,helpful features,30,year,2023,50632,51.4,51.6,51.0
+logistic,helpful features,30,year,2024,50892,52.2,50.9,51.5
+logistic,helpful features,30,year,2025,25047,50.9,51.3,52.4
+logistic,helpful features,30,time of day,09:15-10:00,21478,50.8,50.7,52.4
+logistic,helpful features,30,time of day,10:00-12:00,57334,51.7,51.6,51.5
+logistic,helpful features,30,time of day,12:00-14:00,57280,51.9,51.3,51.5
+logistic,helpful features,30,time of day,14:00-15:30,28440,52.0,51.2,51.6
+logistic,all features,60,index,BANKNIFTY,50047,51.8,50.7,51.0
+logistic,all features,60,index,NIFTY,50040,51.5,51.6,53.0
+logistic,all features,60,index,SENSEX,50084,51.5,51.1,51.6
+logistic,all features,60,year,2022,34611,52.3,51.5,53.0
+logistic,all features,60,year,2023,46222,50.8,51.5,51.4
+logistic,all features,60,year,2024,46469,52.3,50.6,51.6
+logistic,all features,60,year,2025,22869,50.6,51.1,51.6
+logistic,all features,60,time of day,09:15-10:00,21482,50.7,50.5,51.8
+logistic,all features,60,time of day,10:00-12:00,57330,51.6,51.2,52.4
+logistic,all features,60,time of day,12:00-14:00,57282,51.9,51.5,51.7
+logistic,all features,60,time of day,14:00-15:30,14077,52.3,50.8,50.7
+logistic,helpful features,60,index,BANKNIFTY,50047,52.0,50.7,50.9
+logistic,helpful features,60,index,NIFTY,50040,51.1,51.6,52.4
+logistic,helpful features,60,index,SENSEX,50084,51.4,51.1,50.9
+logistic,helpful features,60,year,2022,34611,52.2,51.5,52.3
+logistic,helpful features,60,year,2023,46222,50.8,51.5,50.3
+logistic,helpful features,60,year,2024,46469,52.1,50.6,51.9
+logistic,helpful features,60,year,2025,22869,50.7,51.1,51.2
+logistic,helpful features,60,time of day,09:15-10:00,21482,50.5,50.5,51.6
+logistic,helpful features,60,time of day,10:00-12:00,57330,51.6,51.2,51.4
+logistic,helpful features,60,time of day,12:00-14:00,57282,51.7,51.5,51.4
+logistic,helpful features,60,time of day,14:00-15:30,14077,51.7,50.8,51.1
+boosting,all features,15,index,BANKNIFTY,57228,51.3,50.6,51.5
+boosting,all features,15,index,NIFTY,57221,51.5,51.5,51.9
+boosting,all features,15,index,SENSEX,57267,51.5,51.3,51.9
+boosting,all features,15,year,2022,39639,51.0,51.1,50.8
+boosting,all features,15,year,2023,52837,51.9,51.5,51.4
+boosting,all features,15,year,2024,53104,51.4,50.8,52.8
+boosting,all features,15,year,2025,26136,51.1,51.2,52.1
+boosting,all features,15,time of day,09:15-10:00,21478,50.5,50.2,51.5
+boosting,all features,15,time of day,10:00-12:00,57334,51.4,51.3,52.0
+boosting,all features,15,time of day,12:00-14:00,57281,51.8,51.5,52.0
+boosting,all features,15,time of day,14:00-15:30,35623,51.7,50.9,51.3
+boosting,helpful features,15,index,BANKNIFTY,57228,51.4,50.6,51.6
+boosting,helpful features,15,index,NIFTY,57221,51.5,51.5,51.9
+boosting,helpful features,15,index,SENSEX,57267,51.5,51.3,52.1
+boosting,helpful features,15,year,2022,39639,50.9,51.1,50.6
+boosting,helpful features,15,year,2023,52837,52.0,51.5,51.3
+boosting,helpful features,15,year,2024,53104,51.4,50.8,53.1
+boosting,helpful features,15,year,2025,26136,51.2,51.2,52.3
+boosting,helpful features,15,time of day,09:15-10:00,21478,50.5,50.2,51.4
+boosting,helpful features,15,time of day,10:00-12:00,57334,51.3,51.3,51.8
+boosting,helpful features,15,time of day,12:00-14:00,57281,51.8,51.5,52.0
+boosting,helpful features,15,time of day,14:00-15:30,35623,51.7,50.9,52.0
+boosting,all features,30,index,BANKNIFTY,54834,51.6,50.8,51.3
+boosting,all features,30,index,NIFTY,54827,51.8,51.8,51.7
+boosting,all features,30,index,SENSEX,54871,51.9,51.4,51.6
+boosting,all features,30,year,2022,37961,51.1,51.4,50.9
+boosting,all features,30,year,2023,50632,52.4,51.6,50.8
+boosting,all features,30,year,2024,50892,51.9,50.9,52.5
+boosting,all features,30,year,2025,25047,51.3,51.3,52.1
+boosting,all features,30,time of day,09:15-10:00,21478,50.6,50.7,51.2
+boosting,all features,30,time of day,10:00-12:00,57334,51.7,51.6,51.7
+boosting,all features,30,time of day,12:00-14:00,57280,52.0,51.3,51.5
+boosting,all features,30,time of day,14:00-15:30,28440,52.2,51.2,51.6
+boosting,helpful features,30,index,BANKNIFTY,54834,51.6,50.8,51.3
+boosting,helpful features,30,index,NIFTY,54827,51.7,51.8,51.9
+boosting,helpful features,30,index,SENSEX,54871,51.8,51.4,51.4
+boosting,helpful features,30,year,2022,37961,51.2,51.4,49.9
+boosting,helpful features,30,year,2023,50632,52.4,51.6,50.8
+boosting,helpful features,30,year,2024,50892,51.7,50.9,53.1
+boosting,helpful features,30,year,2025,25047,51.3,51.3,52.4
+boosting,helpful features,30,time of day,09:15-10:00,21478,50.6,50.7,50.5
+boosting,helpful features,30,time of day,10:00-12:00,57334,51.7,51.6,51.6
+boosting,helpful features,30,time of day,12:00-14:00,57280,52.0,51.3,51.6
+boosting,helpful features,30,time of day,14:00-15:30,28440,52.1,51.2,52.1
+boosting,all features,60,index,BANKNIFTY,50047,51.4,50.7,51.3
+boosting,all features,60,index,NIFTY,50040,51.6,51.6,52.3
+boosting,all features,60,index,SENSEX,50084,51.6,51.1,51.3
+boosting,all features,60,year,2022,34611,51.6,51.5,51.3
+boosting,all features,60,year,2023,46222,52.0,51.5,51.3
+boosting,all features,60,year,2024,46469,51.3,50.6,52.2
+boosting,all features,60,year,2025,22869,51.1,51.1,51.6
+boosting,all features,60,time of day,09:15-10:00,21482,50.3,50.5,51.2
+boosting,all features,60,time of day,10:00-12:00,57330,51.5,51.2,51.8
+boosting,all features,60,time of day,12:00-14:00,57282,51.9,51.5,51.7
+boosting,all features,60,time of day,14:00-15:30,14077,52.0,50.8,51.3
+boosting,helpful features,60,index,BANKNIFTY,50047,51.7,50.7,51.1
+boosting,helpful features,60,index,NIFTY,50040,51.6,51.6,52.0
+boosting,helpful features,60,index,SENSEX,50084,51.7,51.1,51.5
+boosting,helpful features,60,year,2022,34611,52.0,51.5,50.6
+boosting,helpful features,60,year,2023,46222,51.8,51.5,51.6
+boosting,helpful features,60,year,2024,46469,51.3,50.6,52.3
+boosting,helpful features,60,year,2025,22869,51.2,51.1,51.4
+boosting,helpful features,60,time of day,09:15-10:00,21482,50.9,50.5,51.6
+boosting,helpful features,60,time of day,10:00-12:00,57330,51.5,51.2,51.8
+boosting,helpful features,60,time of day,12:00-14:00,57282,51.8,51.5,51.4
+boosting,helpful features,60,time of day,14:00-15:30,14077,52.5,50.8,51.0

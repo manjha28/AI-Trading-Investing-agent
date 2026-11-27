@@ -1,0 +1,517 @@
+model,target,horizon,feature,logloss_gain_on_validation,kept
+logistic,sign,15,dist_prev_high,0.000204,True
+logistic,sign,15,dist_prev_low,-4.9e-05,False
+logistic,sign,15,dist_prev_close,0.00381,True
+logistic,sign,15,gap,0.002119,True
+logistic,sign,15,or15_position,0.000461,True
+logistic,sign,15,or15_mid_dist,0.009378,True
+logistic,sign,15,or30_position,-3.1e-05,False
+logistic,sign,15,or30_mid_dist,0.016129,True
+logistic,sign,15,vwap_dist,0.005821,True
+logistic,sign,15,vwap_slope,0.000318,True
+logistic,sign,15,ma5_dist,0.000127,True
+logistic,sign,15,ma20_dist,0.00271,True
+logistic,sign,15,ma50_dist,0.000568,True
+logistic,sign,15,atr_pct,-0.000157,False
+logistic,sign,15,atr_rank,0.000465,True
+logistic,sign,15,since_day_high,0.000641,True
+logistic,sign,15,since_day_low,0.000213,True
+logistic,sign,15,swing_5m,0.000833,True
+logistic,sign,15,swing_15m,8.2e-05,True
+logistic,sign,15,return_1bar,0.000517,True
+logistic,sign,15,return_6bar,0.000279,True
+logistic,sign,15,adv_dec,0.000232,True
+logistic,sign,15,above_vwap_share,0.000543,True
+logistic,sign,15,above_vwap_share_chg,0.000185,True
+logistic,sign,15,rvol_cons,-6.9e-05,False
+logistic,sign,15,rvol_trend_cons,0.000129,True
+logistic,sign,15,updown_cons,0.000274,True
+logistic,sign,15,rvol_opt,-6.6e-05,False
+logistic,sign,15,rvol_trend_opt,-6e-06,False
+logistic,sign,15,updown_opt,-8.7e-05,False
+logistic,sign,15,ce_oi_chg,0.002261,True
+logistic,sign,15,pe_oi_chg,0.000811,True
+logistic,sign,15,oi_tilt_chg,0.000299,True
+logistic,sign,15,pcr,0.000542,True
+logistic,sign,15,pcr_chg,0.000146,True
+logistic,sign,15,atm_iv,0.000415,True
+logistic,sign,15,iv_chg_day,-1e-05,False
+logistic,sign,15,iv_chg_30m,-7.3e-05,False
+logistic,sign,15,vix,4e-05,True
+logistic,sign,15,vix_chg_day,-0.00013,False
+logistic,sign,15,minutes,-0.000133,False
+logistic,sign,15,weekday,-7e-06,False
+logistic,sign,15,expiry_day,0.000123,True
+logistic,sign,30,dist_prev_high,4e-06,True
+logistic,sign,30,dist_prev_low,-0.0003,False
+logistic,sign,30,dist_prev_close,0.008126,True
+logistic,sign,30,gap,0.002867,True
+logistic,sign,30,or15_position,0.000907,True
+logistic,sign,30,or15_mid_dist,0.015341,True
+logistic,sign,30,or30_position,0.000156,True
+logistic,sign,30,or30_mid_dist,0.020566,True
+logistic,sign,30,vwap_dist,0.0113,True
+logistic,sign,30,vwap_slope,-0.000633,False
+logistic,sign,30,ma5_dist,-4e-05,False
+logistic,sign,30,ma20_dist,0.001221,True
+logistic,sign,30,ma50_dist,0.001694,True
+logistic,sign,30,atr_pct,-0.000519,False
+logistic,sign,30,atr_rank,0.001201,True
+logistic,sign,30,since_day_high,0.001313,True
+logistic,sign,30,since_day_low,0.00019,True
+logistic,sign,30,swing_5m,0.000519,True
+logistic,sign,30,swing_15m,0.000285,True
+logistic,sign,30,return_1bar,0.000222,True
+logistic,sign,30,return_6bar,0.000715,True
+logistic,sign,30,adv_dec,0.000388,True
+logistic,sign,30,above_vwap_share,0.000272,True
+logistic,sign,30,above_vwap_share_chg,0.000147,True
+logistic,sign,30,rvol_cons,-0.000474,False
+logistic,sign,30,rvol_trend_cons,0.000375,True
+logistic,sign,30,updown_cons,0.000965,True
+logistic,sign,30,rvol_opt,6.6e-05,True
+logistic,sign,30,rvol_trend_opt,0.00014,True
+logistic,sign,30,updown_opt,0.000241,True
+logistic,sign,30,ce_oi_chg,0.001084,True
+logistic,sign,30,pe_oi_chg,-0.000102,False
+logistic,sign,30,oi_tilt_chg,0.000444,True
+logistic,sign,30,pcr,0.001228,True
+logistic,sign,30,pcr_chg,0.000128,True
+logistic,sign,30,atm_iv,0.000531,True
+logistic,sign,30,iv_chg_day,0.000442,True
+logistic,sign,30,iv_chg_30m,7.4e-05,True
+logistic,sign,30,vix,0.000111,True
+logistic,sign,30,vix_chg_day,-0.000125,False
+logistic,sign,30,minutes,-0.000275,False
+logistic,sign,30,weekday,5.7e-05,True
+logistic,sign,30,expiry_day,0.000303,True
+logistic,sign,60,dist_prev_high,-0.000126,False
+logistic,sign,60,dist_prev_low,-0.000104,False
+logistic,sign,60,dist_prev_close,0.014224,True
+logistic,sign,60,gap,0.006342,True
+logistic,sign,60,or15_position,0.000157,True
+logistic,sign,60,or15_mid_dist,0.02482,True
+logistic,sign,60,or30_position,0.000798,True
+logistic,sign,60,or30_mid_dist,0.012751,True
+logistic,sign,60,vwap_dist,0.00801,True
+logistic,sign,60,vwap_slope,0.000497,True
+logistic,sign,60,ma5_dist,0.000316,True
+logistic,sign,60,ma20_dist,0.004691,True
+logistic,sign,60,ma50_dist,0.004996,True
+logistic,sign,60,atr_pct,-0.00111,False
+logistic,sign,60,atr_rank,0.001539,True
+logistic,sign,60,since_day_high,0.002082,True
+logistic,sign,60,since_day_low,0.00064,True
+logistic,sign,60,swing_5m,0.000358,True
+logistic,sign,60,swing_15m,-0.000141,False
+logistic,sign,60,return_1bar,-8.6e-05,False
+logistic,sign,60,return_6bar,0.000818,True
+logistic,sign,60,adv_dec,0.001422,True
+logistic,sign,60,above_vwap_share,-0.000324,False
+logistic,sign,60,above_vwap_share_chg,3.4e-05,True
+logistic,sign,60,rvol_cons,-0.000344,False
+logistic,sign,60,rvol_trend_cons,8.2e-05,True
+logistic,sign,60,updown_cons,0.000336,True
+logistic,sign,60,rvol_opt,-0.00016,False
+logistic,sign,60,rvol_trend_opt,5.4e-05,True
+logistic,sign,60,updown_opt,0.000396,True
+logistic,sign,60,ce_oi_chg,0.001019,True
+logistic,sign,60,pe_oi_chg,0.00047,True
+logistic,sign,60,oi_tilt_chg,0.000144,True
+logistic,sign,60,pcr,0.001655,True
+logistic,sign,60,pcr_chg,-4.7e-05,False
+logistic,sign,60,atm_iv,-0.00033,False
+logistic,sign,60,iv_chg_day,0.00193,True
+logistic,sign,60,iv_chg_30m,-5.4e-05,False
+logistic,sign,60,vix,0.000564,True
+logistic,sign,60,vix_chg_day,-0.000146,False
+logistic,sign,60,minutes,-0.000842,False
+logistic,sign,60,weekday,-0.000265,False
+logistic,sign,60,expiry_day,0.000499,True
+logistic,big move,15,dist_prev_high,0.002535,True
+logistic,big move,15,dist_prev_low,0.002559,True
+logistic,big move,15,dist_prev_close,0.005456,True
+logistic,big move,15,gap,0.003614,True
+logistic,big move,15,or15_position,0.000104,True
+logistic,big move,15,or15_mid_dist,-0.000123,False
+logistic,big move,15,or30_position,0.000149,True
+logistic,big move,15,or30_mid_dist,0.000482,True
+logistic,big move,15,vwap_dist,9.2e-05,True
+logistic,big move,15,vwap_slope,-0.000197,False
+logistic,big move,15,ma5_dist,0.000665,True
+logistic,big move,15,ma20_dist,0.000924,True
+logistic,big move,15,ma50_dist,0.000269,True
+logistic,big move,15,atr_pct,0.009437,True
+logistic,big move,15,atr_rank,0.049991,True
+logistic,big move,15,since_day_high,0.003046,True
+logistic,big move,15,since_day_low,0.000427,True
+logistic,big move,15,swing_5m,7.4e-05,True
+logistic,big move,15,swing_15m,0.000387,True
+logistic,big move,15,return_1bar,-0.000272,False
+logistic,big move,15,return_6bar,8.4e-05,True
+logistic,big move,15,adv_dec,0.001037,True
+logistic,big move,15,above_vwap_share,0.000293,True
+logistic,big move,15,above_vwap_share_chg,2.2e-05,True
+logistic,big move,15,rvol_cons,0.000695,True
+logistic,big move,15,rvol_trend_cons,-2e-05,False
+logistic,big move,15,updown_cons,-6e-05,False
+logistic,big move,15,rvol_opt,0.006284,True
+logistic,big move,15,rvol_trend_opt,8.1e-05,True
+logistic,big move,15,updown_opt,0.000328,True
+logistic,big move,15,ce_oi_chg,0.001992,True
+logistic,big move,15,pe_oi_chg,0.001931,True
+logistic,big move,15,oi_tilt_chg,0.0001,True
+logistic,big move,15,pcr,0.002191,True
+logistic,big move,15,pcr_chg,0.000543,True
+logistic,big move,15,atm_iv,0.008025,True
+logistic,big move,15,iv_chg_day,0.000336,True
+logistic,big move,15,iv_chg_30m,0.000331,True
+logistic,big move,15,vix,0.003847,True
+logistic,big move,15,vix_chg_day,-0.000636,False
+logistic,big move,15,minutes,-0.000236,False
+logistic,big move,15,weekday,0.000213,True
+logistic,big move,15,expiry_day,-8.4e-05,False
+logistic,big move,30,dist_prev_high,0.00087,True
+logistic,big move,30,dist_prev_low,0.004902,True
+logistic,big move,30,dist_prev_close,0.017795,True
+logistic,big move,30,gap,0.010868,True
+logistic,big move,30,or15_position,0.000431,True
+logistic,big move,30,or15_mid_dist,0.00289,True
+logistic,big move,30,or30_position,0.001263,True
+logistic,big move,30,or30_mid_dist,0.001177,True
+logistic,big move,30,vwap_dist,0.000962,True
+logistic,big move,30,vwap_slope,-0.00139,False
+logistic,big move,30,ma5_dist,0.000223,True
+logistic,big move,30,ma20_dist,0.002058,True
+logistic,big move,30,ma50_dist,0.000115,True
+logistic,big move,30,atr_pct,0.019426,True
+logistic,big move,30,atr_rank,0.0711,True
+logistic,big move,30,since_day_high,0.003309,True
+logistic,big move,30,since_day_low,0.00024,True
+logistic,big move,30,swing_5m,2.3e-05,True
+logistic,big move,30,swing_15m,0.000704,True
+logistic,big move,30,return_1bar,4.5e-05,True
+logistic,big move,30,return_6bar,0.001153,True
+logistic,big move,30,adv_dec,0.001433,True
+logistic,big move,30,above_vwap_share,0.000654,True
+logistic,big move,30,above_vwap_share_chg,0.000183,True
+logistic,big move,30,rvol_cons,0.000692,True
+logistic,big move,30,rvol_trend_cons,1.3e-05,True
+logistic,big move,30,updown_cons,-1.9e-05,False
+logistic,big move,30,rvol_opt,0.007089,True
+logistic,big move,30,rvol_trend_opt,0.000102,True
+logistic,big move,30,updown_opt,0.000286,True
+logistic,big move,30,ce_oi_chg,0.002,True
+logistic,big move,30,pe_oi_chg,0.002132,True
+logistic,big move,30,oi_tilt_chg,0.000469,True
+logistic,big move,30,pcr,0.002856,True
+logistic,big move,30,pcr_chg,0.000504,True
+logistic,big move,30,atm_iv,0.009313,True
+logistic,big move,30,iv_chg_day,0.000252,True
+logistic,big move,30,iv_chg_30m,0.000191,True
+logistic,big move,30,vix,0.003605,True
+logistic,big move,30,vix_chg_day,-0.00038,False
+logistic,big move,30,minutes,-0.001948,False
+logistic,big move,30,weekday,2.4e-05,True
+logistic,big move,30,expiry_day,0.000187,True
+logistic,big move,60,dist_prev_high,0.002126,True
+logistic,big move,60,dist_prev_low,0.004882,True
+logistic,big move,60,dist_prev_close,0.023664,True
+logistic,big move,60,gap,0.013537,True
+logistic,big move,60,or15_position,0.000739,True
+logistic,big move,60,or15_mid_dist,0.00439,True
+logistic,big move,60,or30_position,0.001301,True
+logistic,big move,60,or30_mid_dist,0.000932,True
+logistic,big move,60,vwap_dist,0.002742,True
+logistic,big move,60,vwap_slope,-0.000235,False
+logistic,big move,60,ma5_dist,0.000288,True
+logistic,big move,60,ma20_dist,0.004054,True
+logistic,big move,60,ma50_dist,0.003433,True
+logistic,big move,60,atr_pct,0.023379,True
+logistic,big move,60,atr_rank,0.073729,True
+logistic,big move,60,since_day_high,0.003683,True
+logistic,big move,60,since_day_low,0.000355,True
+logistic,big move,60,swing_5m,1.1e-05,True
+logistic,big move,60,swing_15m,0.000111,True
+logistic,big move,60,return_1bar,-2.8e-05,False
+logistic,big move,60,return_6bar,0.001656,True
+logistic,big move,60,adv_dec,0.003523,True
+logistic,big move,60,above_vwap_share,0.001258,True
+logistic,big move,60,above_vwap_share_chg,0.000516,True
+logistic,big move,60,rvol_cons,0.000805,True
+logistic,big move,60,rvol_trend_cons,-5.3e-05,False
+logistic,big move,60,updown_cons,0.000364,True
+logistic,big move,60,rvol_opt,0.007831,True
+logistic,big move,60,rvol_trend_opt,0.000144,True
+logistic,big move,60,updown_opt,8.9e-05,True
+logistic,big move,60,ce_oi_chg,0.001891,True
+logistic,big move,60,pe_oi_chg,0.002683,True
+logistic,big move,60,oi_tilt_chg,0.00026,True
+logistic,big move,60,pcr,0.003296,True
+logistic,big move,60,pcr_chg,0.000213,True
+logistic,big move,60,atm_iv,0.007747,True
+logistic,big move,60,iv_chg_day,0.002545,True
+logistic,big move,60,iv_chg_30m,0.000248,True
+logistic,big move,60,vix,0.003852,True
+logistic,big move,60,vix_chg_day,0.000962,True
+logistic,big move,60,minutes,-0.002615,False
+logistic,big move,60,weekday,-0.000275,False
+logistic,big move,60,expiry_day,0.000659,True
+boosting,sign,15,dist_prev_high,0.000403,True
+boosting,sign,15,dist_prev_low,-5.3e-05,False
+boosting,sign,15,dist_prev_close,-5e-05,False
+boosting,sign,15,gap,0.000112,True
+boosting,sign,15,or15_position,2.3e-05,True
+boosting,sign,15,or15_mid_dist,-0.0001,False
+boosting,sign,15,or30_position,-8e-06,False
+boosting,sign,15,or30_mid_dist,3.9e-05,True
+boosting,sign,15,vwap_dist,-4e-06,False
+boosting,sign,15,vwap_slope,0.000108,True
+boosting,sign,15,ma5_dist,0.000422,True
+boosting,sign,15,ma20_dist,0.000296,True
+boosting,sign,15,ma50_dist,-4.4e-05,False
+boosting,sign,15,atr_pct,-2.6e-05,False
+boosting,sign,15,atr_rank,0.000343,True
+boosting,sign,15,since_day_high,-9e-06,False
+boosting,sign,15,since_day_low,5.6e-05,True
+boosting,sign,15,swing_5m,7e-06,True
+boosting,sign,15,swing_15m,-3e-06,False
+boosting,sign,15,return_1bar,0.00052,True
+boosting,sign,15,return_6bar,0.000344,True
+boosting,sign,15,adv_dec,9.4e-05,True
+boosting,sign,15,above_vwap_share,-0.000108,False
+boosting,sign,15,above_vwap_share_chg,1.7e-05,True
+boosting,sign,15,rvol_cons,9.8e-05,True
+boosting,sign,15,rvol_trend_cons,0.000121,True
+boosting,sign,15,updown_cons,1.3e-05,True
+boosting,sign,15,rvol_opt,3e-05,True
+boosting,sign,15,rvol_trend_opt,-7e-06,False
+boosting,sign,15,updown_opt,5e-06,True
+boosting,sign,15,ce_oi_chg,1.4e-05,True
+boosting,sign,15,pe_oi_chg,-1.1e-05,False
+boosting,sign,15,oi_tilt_chg,3.8e-05,True
+boosting,sign,15,pcr,9.4e-05,True
+boosting,sign,15,pcr_chg,6.8e-05,True
+boosting,sign,15,atm_iv,0.000153,True
+boosting,sign,15,iv_chg_day,1.8e-05,True
+boosting,sign,15,iv_chg_30m,-2.3e-05,False
+boosting,sign,15,vix,7.9e-05,True
+boosting,sign,15,vix_chg_day,0.000349,True
+boosting,sign,15,minutes,4e-05,True
+boosting,sign,15,weekday,-1.6e-05,False
+boosting,sign,15,expiry_day,-4e-06,False
+boosting,sign,30,dist_prev_high,0.000558,True
+boosting,sign,30,dist_prev_low,-3.5e-05,False
+boosting,sign,30,dist_prev_close,-8.6e-05,False
+boosting,sign,30,gap,-0.000154,False
+boosting,sign,30,or15_position,-1e-06,False
+boosting,sign,30,or15_mid_dist,-0.00033,False
+boosting,sign,30,or30_position,2e-06,True
+boosting,sign,30,or30_mid_dist,6.6e-05,True
+boosting,sign,30,vwap_dist,-0.000172,False
+boosting,sign,30,vwap_slope,-3.3e-05,False
+boosting,sign,30,ma5_dist,0.000546,True
+boosting,sign,30,ma20_dist,4.9e-05,True
+boosting,sign,30,ma50_dist,3.4e-05,True
+boosting,sign,30,atr_pct,-0.000457,False
+boosting,sign,30,atr_rank,0.000664,True
+boosting,sign,30,since_day_high,-0.000539,False
+boosting,sign,30,since_day_low,3.8e-05,True
+boosting,sign,30,swing_5m,-1e-06,False
+boosting,sign,30,swing_15m,0.0,True
+boosting,sign,30,return_1bar,0.000193,True
+boosting,sign,30,return_6bar,0.000831,True
+boosting,sign,30,adv_dec,0.000113,True
+boosting,sign,30,above_vwap_share,-8.5e-05,False
+boosting,sign,30,above_vwap_share_chg,2.7e-05,True
+boosting,sign,30,rvol_cons,-0.000159,False
+boosting,sign,30,rvol_trend_cons,4.6e-05,True
+boosting,sign,30,updown_cons,4.8e-05,True
+boosting,sign,30,rvol_opt,-0.0,False
+boosting,sign,30,rvol_trend_opt,-8e-06,False
+boosting,sign,30,updown_opt,-6e-06,False
+boosting,sign,30,ce_oi_chg,-7.2e-05,False
+boosting,sign,30,pe_oi_chg,-1.4e-05,False
+boosting,sign,30,oi_tilt_chg,6.7e-05,True
+boosting,sign,30,pcr,6.6e-05,True
+boosting,sign,30,pcr_chg,-1e-06,False
+boosting,sign,30,atm_iv,0.000217,True
+boosting,sign,30,iv_chg_day,0.000135,True
+boosting,sign,30,iv_chg_30m,-1.8e-05,False
+boosting,sign,30,vix,9.6e-05,True
+boosting,sign,30,vix_chg_day,0.000627,True
+boosting,sign,30,minutes,0.000108,True
+boosting,sign,30,weekday,-3.7e-05,False
+boosting,sign,30,expiry_day,-1e-06,False
+boosting,sign,60,dist_prev_high,0.001988,True
+boosting,sign,60,dist_prev_low,5e-06,True
+boosting,sign,60,dist_prev_close,-7.2e-05,False
+boosting,sign,60,gap,0.000179,True
+boosting,sign,60,or15_position,-2e-06,False
+boosting,sign,60,or15_mid_dist,-0.000181,False
+boosting,sign,60,or30_position,-0.0,False
+boosting,sign,60,or30_mid_dist,-0.000353,False
+boosting,sign,60,vwap_dist,-8.9e-05,False
+boosting,sign,60,vwap_slope,-0.000728,False
+boosting,sign,60,ma5_dist,0.00023,True
+boosting,sign,60,ma20_dist,0.000193,True
+boosting,sign,60,ma50_dist,0.000151,True
+boosting,sign,60,atr_pct,-1e-05,False
+boosting,sign,60,atr_rank,0.000769,True
+boosting,sign,60,since_day_high,0.00024,True
+boosting,sign,60,since_day_low,0.000114,True
+boosting,sign,60,swing_5m,0.0,False
+boosting,sign,60,swing_15m,-3e-06,False
+boosting,sign,60,return_1bar,-1.8e-05,False
+boosting,sign,60,return_6bar,4.7e-05,True
+boosting,sign,60,adv_dec,-6.6e-05,False
+boosting,sign,60,above_vwap_share,8.7e-05,True
+boosting,sign,60,above_vwap_share_chg,6.1e-05,True
+boosting,sign,60,rvol_cons,-1.1e-05,False
+boosting,sign,60,rvol_trend_cons,4e-06,True
+boosting,sign,60,updown_cons,-3.1e-05,False
+boosting,sign,60,rvol_opt,-3.7e-05,False
+boosting,sign,60,rvol_trend_opt,3e-06,True
+boosting,sign,60,updown_opt,2e-05,True
+boosting,sign,60,ce_oi_chg,-1.3e-05,False
+boosting,sign,60,pe_oi_chg,-0.0,False
+boosting,sign,60,oi_tilt_chg,6e-06,True
+boosting,sign,60,pcr,3.5e-05,True
+boosting,sign,60,pcr_chg,5e-06,True
+boosting,sign,60,atm_iv,-5.4e-05,False
+boosting,sign,60,iv_chg_day,0.000846,True
+boosting,sign,60,iv_chg_30m,4.1e-05,True
+boosting,sign,60,vix,0.000349,True
+boosting,sign,60,vix_chg_day,0.000413,True
+boosting,sign,60,minutes,-0.000451,False
+boosting,sign,60,weekday,-0.000123,False
+boosting,sign,60,expiry_day,0.0,False
+boosting,big move,15,dist_prev_high,0.000118,True
+boosting,big move,15,dist_prev_low,-3.9e-05,False
+boosting,big move,15,dist_prev_close,-7.8e-05,False
+boosting,big move,15,gap,7.4e-05,True
+boosting,big move,15,or15_position,0.0,False
+boosting,big move,15,or15_mid_dist,-4.5e-05,False
+boosting,big move,15,or30_position,-1e-06,False
+boosting,big move,15,or30_mid_dist,-1e-05,False
+boosting,big move,15,vwap_dist,-4e-06,False
+boosting,big move,15,vwap_slope,5e-05,True
+boosting,big move,15,ma5_dist,6e-06,True
+boosting,big move,15,ma20_dist,0.000122,True
+boosting,big move,15,ma50_dist,-1.3e-05,False
+boosting,big move,15,atr_pct,0.000808,True
+boosting,big move,15,atr_rank,0.016644,True
+boosting,big move,15,since_day_high,4.1e-05,True
+boosting,big move,15,since_day_low,3.8e-05,True
+boosting,big move,15,swing_5m,-0.0,False
+boosting,big move,15,swing_15m,1e-06,True
+boosting,big move,15,return_1bar,4.3e-05,True
+boosting,big move,15,return_6bar,8e-06,True
+boosting,big move,15,adv_dec,0.000694,True
+boosting,big move,15,above_vwap_share,6.7e-05,True
+boosting,big move,15,above_vwap_share_chg,1.9e-05,True
+boosting,big move,15,rvol_cons,0.000132,True
+boosting,big move,15,rvol_trend_cons,2e-06,True
+boosting,big move,15,updown_cons,1e-06,True
+boosting,big move,15,rvol_opt,0.018081,True
+boosting,big move,15,rvol_trend_opt,-2e-06,False
+boosting,big move,15,updown_opt,-4e-06,False
+boosting,big move,15,ce_oi_chg,0.000875,True
+boosting,big move,15,pe_oi_chg,0.00116,True
+boosting,big move,15,oi_tilt_chg,0.000193,True
+boosting,big move,15,pcr,0.000928,True
+boosting,big move,15,pcr_chg,4e-05,True
+boosting,big move,15,atm_iv,0.002756,True
+boosting,big move,15,iv_chg_day,0.000728,True
+boosting,big move,15,iv_chg_30m,0.000346,True
+boosting,big move,15,vix,0.001569,True
+boosting,big move,15,vix_chg_day,-5.8e-05,False
+boosting,big move,15,minutes,0.000788,True
+boosting,big move,15,weekday,4.3e-05,True
+boosting,big move,15,expiry_day,0.000187,True
+boosting,big move,30,dist_prev_high,0.000109,True
+boosting,big move,30,dist_prev_low,-0.000174,False
+boosting,big move,30,dist_prev_close,-0.000201,False
+boosting,big move,30,gap,8e-05,True
+boosting,big move,30,or15_position,-2e-06,False
+boosting,big move,30,or15_mid_dist,1e-06,True
+boosting,big move,30,or30_position,-2e-06,False
+boosting,big move,30,or30_mid_dist,0.000271,True
+boosting,big move,30,vwap_dist,-1.4e-05,False
+boosting,big move,30,vwap_slope,0.000549,True
+boosting,big move,30,ma5_dist,5e-06,True
+boosting,big move,30,ma20_dist,7.9e-05,True
+boosting,big move,30,ma50_dist,-1.7e-05,False
+boosting,big move,30,atr_pct,0.001431,True
+boosting,big move,30,atr_rank,0.018716,True
+boosting,big move,30,since_day_high,-0.000135,False
+boosting,big move,30,since_day_low,2.6e-05,True
+boosting,big move,30,swing_5m,0.0,True
+boosting,big move,30,swing_15m,0.0,False
+boosting,big move,30,return_1bar,2.1e-05,True
+boosting,big move,30,return_6bar,1.4e-05,True
+boosting,big move,30,adv_dec,5.8e-05,True
+boosting,big move,30,above_vwap_share,1.2e-05,True
+boosting,big move,30,above_vwap_share_chg,2.6e-05,True
+boosting,big move,30,rvol_cons,0.000224,True
+boosting,big move,30,rvol_trend_cons,1e-05,True
+boosting,big move,30,updown_cons,0.0,True
+boosting,big move,30,rvol_opt,0.025895,True
+boosting,big move,30,rvol_trend_opt,4e-06,True
+boosting,big move,30,updown_opt,6e-06,True
+boosting,big move,30,ce_oi_chg,0.000153,True
+boosting,big move,30,pe_oi_chg,0.001976,True
+boosting,big move,30,oi_tilt_chg,0.000226,True
+boosting,big move,30,pcr,0.00296,True
+boosting,big move,30,pcr_chg,6e-06,True
+boosting,big move,30,atm_iv,0.003556,True
+boosting,big move,30,iv_chg_day,0.001577,True
+boosting,big move,30,iv_chg_30m,0.000379,True
+boosting,big move,30,vix,0.001715,True
+boosting,big move,30,vix_chg_day,0.000224,True
+boosting,big move,30,minutes,0.000107,True
+boosting,big move,30,weekday,0.000102,True
+boosting,big move,30,expiry_day,0.000961,True
+boosting,big move,60,dist_prev_high,0.000184,True
+boosting,big move,60,dist_prev_low,-0.000216,False
+boosting,big move,60,dist_prev_close,5e-06,True
+boosting,big move,60,gap,0.000817,True
+boosting,big move,60,or15_position,-1e-05,False
+boosting,big move,60,or15_mid_dist,4.5e-05,True
+boosting,big move,60,or30_position,-4e-06,False
+boosting,big move,60,or30_mid_dist,0.000823,True
+boosting,big move,60,vwap_dist,-3e-06,False
+boosting,big move,60,vwap_slope,0.000134,True
+boosting,big move,60,ma5_dist,3e-05,True
+boosting,big move,60,ma20_dist,1.5e-05,True
+boosting,big move,60,ma50_dist,6.6e-05,True
+boosting,big move,60,atr_pct,0.000784,True
+boosting,big move,60,atr_rank,0.013809,True
+boosting,big move,60,since_day_high,3.5e-05,True
+boosting,big move,60,since_day_low,0.000452,True
+boosting,big move,60,swing_5m,0.0,False
+boosting,big move,60,swing_15m,0.0,False
+boosting,big move,60,return_1bar,0.0,False
+boosting,big move,60,return_6bar,1.3e-05,True
+boosting,big move,60,adv_dec,-0.000848,False
+boosting,big move,60,above_vwap_share,5.2e-05,True
+boosting,big move,60,above_vwap_share_chg,4.8e-05,True
+boosting,big move,60,rvol_cons,-7e-06,False
+boosting,big move,60,rvol_trend_cons,0.0,False
+boosting,big move,60,updown_cons,1.3e-05,True
+boosting,big move,60,rvol_opt,0.029368,True
+boosting,big move,60,rvol_trend_opt,-8e-06,False
+boosting,big move,60,updown_opt,4.7e-05,True
+boosting,big move,60,ce_oi_chg,0.000144,True
+boosting,big move,60,pe_oi_chg,0.00179,True
+boosting,big move,60,oi_tilt_chg,4.4e-05,True
+boosting,big move,60,pcr,0.002785,True
+boosting,big move,60,pcr_chg,-2.7e-05,False
+boosting,big move,60,atm_iv,0.003469,True
+boosting,big move,60,iv_chg_day,0.003029,True
+boosting,big move,60,iv_chg_30m,0.000425,True
+boosting,big move,60,vix,0.001129,True
+boosting,big move,60,vix_chg_day,0.000405,True
+boosting,big move,60,minutes,-0.000588,False
+boosting,big move,60,weekday,0.000199,True
+boosting,big move,60,expiry_day,0.002083,True
