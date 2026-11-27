@@ -300,3 +300,4 @@
 - 26 Nov: Holdings value history now shows one point per trading day, the stored value at the day's close (was every 5-minute snapshot as separate dots).
 - 27 Nov: Market watch (equities) shows live Dhan 20-level depth below the chart of the selected stock.
 - 27 Nov: Dhan/Delta status chips are buttons with a hover explanation; the Delta live report shows why the wallet could not be read.
+- 27 Nov: the arm warning opened from the top-bar Dhan/Delta chips is now visible (it was trapped inside the bar).
