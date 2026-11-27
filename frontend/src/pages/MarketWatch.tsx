@@ -10,6 +10,7 @@ import { StockEvents } from '../components/StockEvents';
 import { CommodityWatch } from './CommodityWatch';
 import { useWatchlistStream, istDay } from '../hooks/useWatchlistStream';
 import { tickPrice } from '../lib/formatPrice';
+import { depthStatusView, type DepthStatus } from '../lib/depthStatus';
 
 type UniverseRow = {
   instrument_id: string; symbol: string; name: string; venue: string; sector: string | null;
@@ -73,6 +74,67 @@ function editDistance(a: string, b: string): number {
     }
   }
   return prev[b.length];
+}
+
+type DepthLevel = { quantity: number; orders: number; price: string };
+type DepthBook = { instrument_id: string; timestamp: string; bids: DepthLevel[]; asks: DepthLevel[] };
+
+/** Live Dhan 20-level order book under the chart. The socket lives only while this is on screen; levels are shown as received, never filled in. */
+function StockDepth({ instrumentId, symbol }: { instrumentId: string; symbol: string }) {
+  const [status, setStatus] = useState<DepthStatus>('connecting');
+  const [message, setMessage] = useState('');
+  const [lastAt, setLastAt] = useState<string | null>(null);
+  const [book, setBook] = useState<DepthBook | null>(null);
+  useEffect(() => {
+    const url = new URL(`/api/v1/market-data/instruments/${instrumentId}/depth`, window.location.href);
+    url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(url);
+    let settled = false; // the server said why it stopped, so a close afterwards is not a new failure
+    let closing = false;
+    socket.onmessage = (event) => {
+      let m: { type?: string; status?: DepthStatus; message?: string; last_snapshot_at?: string | null } & Partial<DepthBook>;
+      try { m = JSON.parse(event.data as string); } catch { return; }
+      if (m.type === 'status' && m.status) {
+        settled = ['market_closed', 'unavailable', 'failed', 'unsupported'].includes(m.status);
+        setStatus(m.status); setMessage(m.message ?? '');
+      } else if (m.type === 'depth' && m.instrument_id === instrumentId) {
+        setStatus('active'); setMessage(''); setBook(m as DepthBook);
+      }
+      if (m.last_snapshot_at) setLastAt(m.last_snapshot_at);
+    };
+    socket.onclose = () => {
+      if (!closing && !settled) { setStatus('unavailable'); setMessage('The Dhan depth connection closed. Reopen the stock to try again.'); }
+    };
+    return () => {
+      closing = true;
+      if (socket.readyState === WebSocket.OPEN) socket.send('unsubscribe');
+      socket.close(1000, 'Depth closed');
+    };
+  }, [instrumentId]);
+  const view = depthStatusView(status, message, lastAt);
+  const levels = book ? Math.max(book.bids.length, book.asks.length) : 0;
+  const cell = (level: DepthLevel | undefined, field: 'quantity' | 'orders') => (level ? level[field].toLocaleString('en-IN') : '—');
+  return (
+    <section aria-label={`${symbol} market depth`}>
+      <h4>Market depth</h4>
+      <p className={`market-provenance depth-status depth-status-${view.tone}`} role="status"><strong>{view.label}</strong> · {view.text}</p>
+      {book && status !== 'active' && <p className="market-provenance">These levels are the last received snapshot and are not live.</p>}
+      {levels > 0 && (
+        <div className="table-scroll">
+          <table>
+            <thead><tr><th>Orders</th><th>Bid qty</th><th>Bid</th><th>Ask</th><th>Ask qty</th><th>Orders</th></tr></thead>
+            <tbody>{Array.from({ length: levels }, (_, i) => (
+              <tr key={i}>
+                <td>{cell(book?.bids[i], 'orders')}</td><td>{cell(book?.bids[i], 'quantity')}</td><td className="positive">{book?.bids[i]?.price ?? '—'}</td>
+                <td className="negative">{book?.asks[i]?.price ?? '—'}</td><td>{cell(book?.asks[i], 'quantity')}</td><td>{cell(book?.asks[i], 'orders')}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+      <p className="crypto-sub">Dhan 20-level depth, NSE equity only. Decision support, not investment advice.</p>
+    </section>
+  );
 }
 
 type RowProps = { row: ViewRow; selected: boolean; onSelect: (id: string) => void; onToggleStar: (row: ViewRow) => void };
@@ -431,6 +493,7 @@ function EquityWatch({ workspace, initialQuery, searchNonce, focus, onAlertsChan
                 <button className="secondary-button" type="button" onClick={() => setPanelTab('events')}>Actions &amp; news</button>
                 {chartNote && bars.length > 0 && <span className="crypto-sub">{chartNote}</span>}
               </div>
+              <StockDepth key={selected.instrument_id} instrumentId={selected.instrument_id} symbol={selected.symbol} />
               </>}
               {selected.reason && <p className="crypto-sub">Day change unavailable: {selected.reason}.</p>}
             </>

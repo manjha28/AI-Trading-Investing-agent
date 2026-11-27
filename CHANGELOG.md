@@ -298,3 +298,4 @@
 - 26 Nov: page addresses (refresh and Back keep your place), search suggestions, rupees first for new portfolios, India time in crypto, one orders status in the header, trade journal summary on one line with the bookkeeping folded, market watch lists symbols only (name and chart on click), crypto live report leads with balance and today.
 - 26 Nov: trade journal summary is five equal blocks; Dhan expiry and sign out pinned to the bottom of the sidebar; research radar, hold, no new entry, not current and needs data are one table in the multibagger style (buy tiles unchanged).
 - 26 Nov: Holdings value history now shows one point per trading day, the stored value at the day's close (was every 5-minute snapshot as separate dots).
+- 27 Nov: Market watch (equities) shows live Dhan 20-level depth below the chart of the selected stock.
