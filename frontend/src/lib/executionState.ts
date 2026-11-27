@@ -10,6 +10,20 @@ export type ExecutionStates = { dhan: VenueState; delta: VenueState; as_of: stri
 export const SHORT: Record<EffectiveState, string> = { OFF: 'OFF', ARMED_BUT_BLOCKED: 'ARMED BUT BLOCKED', LIVE: 'LIVE' };
 export const venueName = (v: VenueState) => (v.venue === 'dhan' ? 'Dhan' : 'Delta');
 
+/** The hover text on a venue's button: what the state means and how to change it. */
+export function explainState(v: VenueState): string {
+  const n = venueName(v);
+  const meaning = {
+    OFF: `OFF: live orders are not armed, so nothing is sent to ${n}.`,
+    ARMED_BUT_BLOCKED: `ARMED BUT BLOCKED: you turned live orders on, but something else still stops them, so nothing is sent to ${n}.`,
+    LIVE: `LIVE: real-money orders can be sent to ${n} now.`,
+  }[v.effective.state];
+  const how = v.armed
+    ? `Click to turn off: it disarms at once and cancels this app's unfilled ${n} orders. Filled positions stay open.`
+    : 'Click to turn on: a warning appears and you confirm it. A strategy must also be switched on for live before any order goes out.';
+  return [meaning, ...v.effective.reasons.map((r) => `• ${r}`), how].join('\n');
+}
+
 /** "Dhan OFF · Delta LIVE" for the sidebar. */
 export function sidebarWording(s: ExecutionStates | null): string {
   if (!s) return 'Execution: checking…';

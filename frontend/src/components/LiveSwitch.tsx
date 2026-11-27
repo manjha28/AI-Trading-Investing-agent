@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { apiRequest } from '../api';
 import { refreshExecutionState } from '../hooks/useExecutionState';
-import { venueName, type VenueState } from '../lib/executionState';
+import { explainState, venueName, type VenueState } from '../lib/executionState';
 import { ArmConfirm } from './ArmConfirm';
 
 const PATHS = { dhan: '/dhan-live', delta: '/crypto-delta/live' } as const;
@@ -25,7 +25,7 @@ export function LiveSwitch({ venue }: { venue: VenueState | null | undefined }) 
   return (
     <span className="live-switch">
       <button type="button" className={`live-switch-btn ${on ? 'is-on' : ''}`} disabled={busy} aria-pressed={on}
-        title={venue.effective.reasons.join('; ') || 'Orders can be sent now'}
+        title={explainState(venue)}
         onClick={() => (on ? void run('disarm') : setConfirming(true))}>
         {name} {live ? 'LIVE' : on ? 'on · waiting' : 'not live'}
       </button>

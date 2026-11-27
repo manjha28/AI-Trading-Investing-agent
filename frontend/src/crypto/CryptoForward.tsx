@@ -93,7 +93,7 @@ export function CryptoForward({ symbol, resolution }: { symbol: string; resoluti
       {error && <p role="alert" className="crypto-error">{error}</p>}
       {live && (
         <div className="crypto-live" aria-label="Live order controls">
-          <h3>Live orders <ExecutionStateChip venue={live.execution} /></h3>
+          <h3>Live orders <ExecutionStateChip venue={live.execution} onChanged={() => void loadLive()} /></h3>
           <p className="crypto-sub" data-testid="account-mode"><strong>{accountLine(live.execution)}</strong>. Limits: {live.limits.max_contracts} contract, leverage {live.limits.leverage}, daily loss cap {live.limits.max_daily_loss_usd} USD, notional cap {live.limits.max_notional_usd} USD.</p>
           <p className="crypto-sub">{todayLine(live.execution)}</p>
           {live.execution.deployment_flag.enabled && live.credentials_present && !live.armed && (

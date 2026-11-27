@@ -51,7 +51,7 @@ function LivePanel({ status, reload }: { status: LiveStatus | null; reload: () =
   };
   return (
     <section className="sl-card" aria-label="Live execution">
-      <div className="sl-card-head"><h3>Live order execution (Dhan)</h3><ExecutionStateChip venue={status.execution} /></div>
+      <div className="sl-card-head"><h3>Live order execution (Dhan)</h3><ExecutionStateChip venue={status.execution} onChanged={reload} /></div>
       <Notice tone="warn">{status.warning}</Notice>
       <ul className="ft-limits" aria-label="Hard limits">
         <li>Quantity per order: <strong>{status.limits.max_order_quantity}</strong> share</li>
